@@ -7,31 +7,36 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ── Session ──────────────────────────────────────────────────────────────────
+// Session
 app.use(session({
   secret: process.env.SESSION_SECRET || 'vbt-dispatch-secret-2025',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 } // 7 days
+  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
 }));
 
-// ── Config ───────────────────────────────────────────────────────────────────
+// Config
 const SHEET_ID  = '1T5pOeXmLmZyKKfq4YRl9aymXn9MQnNrqmcuyJluMhQs';
 const SHEET_TAB = 'Dispatch';
 
-// Users: { username: { password, role: 'manager' | 'driver' } }
+// Users — each driver login is tied to their truck ID
+// Change any password here, then commit to GitHub to redeploy
 const USERS = {
-  manager: { password: process.env.MANAGER_PASS || 'vbt2025!',  role: 'manager' },
-  driver:  { password: process.env.DRIVER_PASS  || 'driver123', role: 'driver'  },
+  manager:  { password: process.env.MANAGER_PASS  || 'vbt2025!',   role: 'manager', truckId: null       },
+  beryle:   { password: process.env.BERYLE_PASS   || 'beryle123',  role: 'driver',  truckId: 'beryle'   },
+  matthew:  { password: process.env.MATTHEW_PASS  || 'matthew123', role: 'driver',  truckId: 'matthew'  },
+  rigo:     { password: process.env.RIGO_PASS     || 'rigo123',    role: 'driver',  truckId: 'rigo'     },
+  leonardo: { password: process.env.LEONARDO_PASS || 'leo123',     role: 'driver',  truckId: 'leonardo' },
+  carlos:   { password: process.env.CARLOS_PASS   || 'carlos123',  role: 'driver',  truckId: 'carlos'   },
 };
 
-// ── Google Auth ───────────────────────────────────────────────────────────────
+// Google Auth
 let serviceAccount;
 if (process.env.SERVICE_ACCOUNT_JSON) {
   serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
 } else {
   try { serviceAccount = require('./service-account.json'); }
-  catch(e) { console.warn('No service-account.json found. Set SERVICE_ACCOUNT_JSON env var.'); }
+  catch(e) { console.warn('No service-account.json found.'); }
 }
 const auth = new google.auth.GoogleAuth({
   credentials: serviceAccount,
@@ -39,25 +44,22 @@ const auth = new google.auth.GoogleAuth({
 });
 const sheets = google.sheets({ version: 'v4', auth });
 
-// ── Auth middleware ───────────────────────────────────────────────────────────
+// Auth middleware
 function requireAuth(req, res, next) {
   if (req.session && req.session.user) return next();
   res.redirect('/login');
 }
-function requireManager(req, res, next) {
-  if (req.session && req.session.user && req.session.user.role === 'manager') return next();
-  res.status(403).json({ error: 'Manager access required' });
-}
 
-// ── Static files (serve app) ─────────────────────────────────────────────────
+// Static files (serve app) — protected by login
 app.use('/app', requireAuth, express.static(path.join(__dirname, 'public')));
 
-// ── Login page ────────────────────────────────────────────────────────────────
+// Root redirect
 app.get('/', (req, res) => {
   if (req.session && req.session.user) return res.redirect('/app');
   res.redirect('/login');
 });
 
+// Login page
 app.get('/login', (req, res) => {
   const error = req.query.error ? '<p class="err">Invalid username or password</p>' : '';
   res.send(`<!DOCTYPE html>
@@ -65,7 +67,7 @@ app.get('/login', (req, res) => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>VBT Dispatch — Login</title>
+  <title>VBT Dispatch</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:'IBM Plex Sans',system-ui,sans-serif;background:#f4f3ef;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -79,17 +81,16 @@ app.get('/login', (req, res) => {
     button:hover{background:#333}
     .err{color:#c00;font-size:13px;margin-bottom:14px;background:#fff0f0;padding:8px 12px;border-radius:8px;border:0.5px solid #fcc}
   </style>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans&display=swap" rel="stylesheet">
 </head>
 <body>
   <div class="card">
     <h1>VBT Dispatch</h1>
-    <p class="sub">Sign in to access the schedule</p>
+    <p class="sub">Sign in to access your schedule</p>
     ${error}
     <form method="POST" action="/login">
       <label>Username</label>
-      <input name="username" placeholder="manager or driver" autocomplete="username">
+      <input name="username" placeholder="e.g. beryle" autocomplete="username">
       <label>Password</label>
       <input name="password" type="password" placeholder="••••••••" autocomplete="current-password">
       <button type="submit">Sign in</button>
@@ -101,11 +102,11 @@ app.get('/login', (req, res) => {
 
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
-  const user = USERS[username];
+  const user = USERS[username ? username.toLowerCase().trim() : ''];
   if (!user || user.password !== password) {
     return res.redirect('/login?error=1');
   }
-  req.session.user = { username, role: user.role };
+  req.session.user = { username, role: user.role, truckId: user.truckId };
   res.redirect('/app');
 });
 
@@ -114,13 +115,20 @@ app.get('/logout', (req, res) => {
   res.redirect('/login');
 });
 
-// ── API: current user info ────────────────────────────────────────────────────
+// API: current user info (includes truckId so app knows which truck to show)
 app.get('/api/me', requireAuth, (req, res) => {
-  res.json({ username: req.session.user.username, role: req.session.user.role });
+  res.json({
+    username: req.session.user.username,
+    role: req.session.user.role,
+    truckId: req.session.user.truckId || null,
+  });
 });
 
-// ── API: sync to Google Sheets ────────────────────────────────────────────────
+// API: sync to Google Sheets (manager only)
 app.post('/api/sync', requireAuth, async (req, res) => {
+  if (req.session.user.role !== 'manager') {
+    return res.status(403).json({ error: 'Manager access required' });
+  }
   try {
     const { jobs, trucks } = req.body;
     if (!Array.isArray(jobs)) return res.status(400).json({ error: 'Invalid payload' });
@@ -128,13 +136,15 @@ app.post('/api/sync', requireAuth, async (req, res) => {
     const headers = [
       'ID','Truck','Truck #','Day','Supervisor','Driver','Customer',
       'Job Code','Material','Loads Ordered','Pickup','PO #',
-      'City / Address','Loads Delivered','Missing Loads','Notes','Last Updated'
+      'City / Address','Loads Delivered','Missing Loads','Notes',
+      'Start Time','First Load Time','Last Load Time','Last Updated'
     ];
 
     const rows = jobs.map(j => {
       const t = (trucks || []).find(x => x.id === j.truck);
       const l = Number(j.loads) || 0;
       const d = Number(j.delivered) || 0;
+      const ts = j.timestamps || {};
       return [
         j.id,
         t ? t.label : j.truck,
@@ -152,16 +162,17 @@ app.post('/api/sync', requireAuth, async (req, res) => {
         d,
         Math.max(0, l - d),
         j.notes || '',
+        ts.start || '',
+        ts.first || '',
+        ts.last  || '',
         new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })
       ];
     });
 
-    // Clear existing data then write fresh
     await sheets.spreadsheets.values.clear({
       spreadsheetId: SHEET_ID,
-      range: `${SHEET_TAB}!A:Q`,
+      range: `${SHEET_TAB}!A:T`,
     });
-
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
       range: `${SHEET_TAB}!A1`,
@@ -176,7 +187,7 @@ app.post('/api/sync', requireAuth, async (req, res) => {
   }
 });
 
-// ── Start ─────────────────────────────────────────────────────────────────────
+// Start
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`VBT Dispatch running at http://localhost:${PORT}`);
