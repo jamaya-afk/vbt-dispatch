@@ -239,6 +239,25 @@ body.is-manager .manager-only{display:flex}
         <div class="fld"><label>Loads delivered</label><input id="f-delivered" type="number" min="0" step="0.5" placeholder="0"></div>
       </div>
       <div class="fld"><label>Notes</label><textarea id="f-notes" placeholder="e.g. Deliver at 8:30, lot #s, special instructions..."></textarea></div>
+      <div id="timestamp-section" style="display:none">
+        <div class="fld" style="margin-top:4px">
+          <label>Timestamps</label>
+          <div style="display:flex;flex-direction:column;gap:7px;margin-top:4px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <button type="button" onclick="stampNow('f-ts-start')" style="padding:5px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:var(--font);white-space:nowrap">&#9654; Start time</button>
+              <input id="f-ts-start" readonly placeholder="not set" style="flex:1;padding:5px 8px;font-size:11px;font-family:var(--mono);border:0.5px solid var(--bdr);border-radius:var(--rad);background:var(--bg2);color:var(--txt2)">
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <button type="button" onclick="stampNow('f-ts-first')" style="padding:5px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:var(--font);white-space:nowrap">&#10003; First load</button>
+              <input id="f-ts-first" readonly placeholder="not set" style="flex:1;padding:5px 8px;font-size:11px;font-family:var(--mono);border:0.5px solid var(--bdr);border-radius:var(--rad);background:var(--bg2);color:var(--txt2)">
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <button type="button" onclick="stampNow('f-ts-last')" style="padding:5px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:var(--font);white-space:nowrap">&#9632; Last load</button>
+              <input id="f-ts-last" readonly placeholder="not set" style="flex:1;padding:5px 8px;font-size:11px;font-family:var(--mono);border:0.5px solid var(--bdr);border-radius:var(--rad);background:var(--bg2);color:var(--txt2)">
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="mfoot">
       <button class="btn-d" id="delete-btn" style="display:none" onclick="deleteJob()">Delete job</button>
@@ -278,6 +297,7 @@ let editingId  = null;
 let currentTab = 'manager';
 let missingOpen = true;
 let userRole   = 'driver';
+let userTruckId = null;
 
 function saveTrucks(){ try{localStorage.setItem('vbt_trucks',JSON.stringify(trucks))}catch(e){} }
 function saveJobs(){   try{localStorage.setItem('vbt_jobs',  JSON.stringify(jobs))}catch(e){} }
@@ -440,6 +460,12 @@ function renderDriverView(){
             ${j.city?`<b>Deliver to:</b> ${j.city}<br>`:''}
             ${j.supervisor?`<b>Supervisor:</b> ${j.supervisor}<br>`:''}
             ${j.notes?`<em style="color:var(--txt3)">${j.notes}</em>`:''}
+          ${j.timestamps&&(j.timestamps.start||j.timestamps.first||j.timestamps.last)?`
+            <div style="margin-top:6px;font-size:10px;font-family:var(--mono);color:var(--txt3);line-height:1.8">
+              ${j.timestamps.start?'&#9654; Start: '+j.timestamps.start+'<br>':''}
+              ${j.timestamps.first?'&#10003; First load: '+j.timestamps.first+'<br>':''}
+              ${j.timestamps.last?'&#9632; Last load: '+j.timestamps.last:''}
+            </div>`:''}
           </div>
           <div style="margin-top:6px">
             ${isMiss?`<span class="pill red">${miss} load${miss!==1?'s':''} missing</span>`:`<span class="pill green">Complete</span>`}
@@ -485,12 +511,36 @@ function openEdit(id){
   document.getElementById('f-city').value=j.city||'';
   document.getElementById('f-delivered').value=j.delivered||'';
   document.getElementById('f-notes').value=j.notes||'';
-  // Lock fields for drivers
-  ['f-truck','f-day','f-super','f-driver','f-customer','f-code','f-material','f-loads','f-pickup','f-po','f-city'].forEach(fid=>{
-    document.getElementById(fid).disabled=(userRole!=='manager');
-  });
+
+  if(userRole==='driver'){
+    // Drivers: all fields read-only EXCEPT delivered, notes, and timestamps
+    ['f-truck','f-day','f-super','f-driver','f-customer','f-code',
+     'f-material','f-loads','f-pickup','f-po','f-city'].forEach(fid=>{
+      const el=document.getElementById(fid);
+      el.disabled=true;
+      el.style.opacity='0.6';
+      el.style.cursor='default';
+    });
+    // Show timestamp section, hide it for managers
+    document.getElementById('timestamp-section').style.display='block';
+    // Pre-fill existing timestamps if any
+    const ts=j.timestamps||{};
+    document.getElementById('f-ts-start').value=ts.start||'';
+    document.getElementById('f-ts-first').value=ts.first||'';
+    document.getElementById('f-ts-last').value=ts.last||'';
+    setTimeout(()=>document.getElementById('f-delivered').focus(),80);
+  } else {
+    // Manager: all fields editable, hide timestamp section
+    ['f-truck','f-day','f-super','f-driver','f-customer','f-code',
+     'f-material','f-loads','f-pickup','f-po','f-city'].forEach(fid=>{
+      const el=document.getElementById(fid);
+      el.disabled=false;
+      el.style.opacity='';
+      el.style.cursor='';
+    });
+    document.getElementById('timestamp-section').style.display='none';
+  }
   document.getElementById('modal').style.display='flex';
-  if(userRole==='driver') setTimeout(()=>document.getElementById('f-delivered').focus(),80);
 }
 function quickLog(id){ openEdit(id); }
 function clearForm(){
@@ -512,7 +562,16 @@ function saveJob(){
       customer:g('f-customer'),code:g('f-code'),material:g('f-material'),
       loads:Number(g('f-loads'))||0,pickup:g('f-pickup'),po:g('f-po'),
       city:g('f-city'),delivered:Number(g('f-delivered'))||0,notes:g('f-notes'),
-    } : { ...orig, delivered:Number(g('f-delivered'))||0, notes:g('f-notes') };
+    } : {
+      ...orig,
+      delivered:Number(g('f-delivered'))||0,
+      notes:g('f-notes'),
+      timestamps:{
+        start: document.getElementById('f-ts-start').value||orig.timestamps?.start||'',
+        first: document.getElementById('f-ts-first').value||orig.timestamps?.first||'',
+        last:  document.getElementById('f-ts-last').value||orig.timestamps?.last||'',
+      }
+    };
     if(!job.customer){alert('Customer is required');return;}
     const i=jobs.findIndex(x=>x.id===editingId);
     jobs[i]={...job,id:editingId};
@@ -569,11 +628,19 @@ async function syncToSheets(){
 }
 
 // Init: get user role from server
+function stampNow(fieldId){
+  const now = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});
+  const el = document.getElementById(fieldId);
+  el.value = now;
+  el.style.color = 'var(--green)';
+}
+
 async function init(){
   try {
     const res=await fetch('/api/me');
     const data=await res.json();
     userRole=data.role;
+    userTruckId=data.truckId||null;
     document.getElementById('user-info').textContent=data.username;
     if(userRole==='manager') document.body.classList.add('is-manager');
   } catch(e){ userRole='driver'; }
@@ -582,8 +649,18 @@ async function init(){
   const fTruck=document.getElementById('f-truck');
   fTruck.innerHTML=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
 
-  // Drivers default to driver tab on phones
-  if(userRole==='driver' && window.innerWidth<768){
+  if(userRole==='driver'){
+    // Lock driver to their own truck — hide the manager tab
+    document.getElementById('tab-mgr').style.display='none';
+    // Pre-select their truck in driver view
+    if(userTruckId){
+      const ds=document.getElementById('driver-select');
+      ds.value=userTruckId;
+      // Hide other trucks from dropdown so they can't switch
+      Array.from(ds.options).forEach(opt=>{
+        if(opt.value!==userTruckId) opt.style.display='none';
+      });
+    }
     switchTab('driver');
   }
   render();
