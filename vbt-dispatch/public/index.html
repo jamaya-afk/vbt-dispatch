@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>VBT Dispatch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --font:'IBM Plex Sans',system-ui,sans-serif;
+  --mono:'IBM Plex Mono',monospace;
+  --bg:#ffffff;
+  --bg2:#f7f6f2;
+  --bg3:#f0efe9;
+  --txt:#111111;
+  --txt2:#666666;
+  --txt3:#aaaaaa;
+  --bdr:#e0dfd8;
+  --bdr2:#c8c7bf;
+  --rad:8px;
+  --radl:12px;
+  --green:#1a7a4a;--green-bg:#eaf7f0;--green-bdr:#a3d9bc;
+  --amber:#8a5c00;--amber-bg:#fff8e6;--amber-bdr:#f0d080;
+  --red:#c0392b;  --red-bg:#fdf0ee;  --red-bdr:#f0b0a8;
+  --blue:#1a5fa8; --blue-bg:#eaf2fd; --blue-bdr:#90bce8;
+  --info-bg:#eaf2fd;--info-txt:#1a5fa8;--info-bdr:#90bce8;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#1a1a18;--bg2:#242420;--bg3:#2e2e28;
+    --txt:#f0efe9;--txt2:#aaa9a0;--txt3:#666660;
+    --bdr:#38382f;--bdr2:#4a4a40;
+    --green:#3dd68c;--green-bg:#0d2e1e;--green-bdr:#1a5c3a;
+    --amber:#f0c040;--amber-bg:#2a2000;--amber-bdr:#6a4e00;
+    --red:#f07060;--red-bg:#2e0e0a;--red-bdr:#6a2820;
+    --blue:#60a8f0;--blue-bg:#0a1e36;--blue-bdr:#1a4a80;
+    --info-bg:#0a1e36;--info-txt:#60a8f0;--info-bdr:#1a4a80;
+  }
+}
+body{font-family:var(--font);background:var(--bg3);color:var(--txt);min-height:100vh}
+
+/* TOPBAR */
+.topbar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg);border-bottom:0.5px solid var(--bdr2);flex-wrap:wrap;position:sticky;top:0;z-index:50}
+.topbar h1{font-family:var(--mono);font-size:15px;font-weight:500;color:var(--txt);letter-spacing:-.02em;flex:1;min-width:140px}
+.week-nav{display:flex;align-items:center;gap:5px}
+.wbtn{border:0.5px solid var(--bdr2);background:transparent;cursor:pointer;color:var(--txt2);font-size:12px;padding:5px 10px;border-radius:var(--rad);font-family:var(--font)}
+.wbtn:hover{background:var(--bg2)}
+.week-label{font-family:var(--mono);font-size:11px;color:var(--txt);min-width:124px;text-align:center}
+.tab-btn{padding:5px 13px;font-size:12px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--font);white-space:nowrap}
+.tab-btn.active{background:var(--txt);color:var(--bg);border-color:transparent}
+.sync-btn{padding:5px 12px;font-size:12px;border:0.5px solid var(--info-bdr);border-radius:var(--rad);background:transparent;cursor:pointer;color:var(--info-txt);font-family:var(--font);white-space:nowrap}
+.sync-btn:hover{background:var(--info-bg)}
+.sync-btn:disabled{opacity:.5;cursor:not-allowed}
+.sync-status{font-size:11px;font-family:var(--mono);color:var(--txt2)}
+.sync-status.ok{color:var(--green)}
+.sync-status.err{color:var(--red)}
+.user-info{font-size:11px;color:var(--txt3);font-family:var(--mono)}
+.logout-btn{font-size:11px;color:var(--txt3);background:transparent;border:none;cursor:pointer;font-family:var(--font);text-decoration:underline}
+
+/* SUMMARY BAR */
+.summary-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;padding:12px 14px;background:var(--bg);border-bottom:0.5px solid var(--bdr)}
+.metric{background:var(--bg2);border-radius:var(--rad);padding:10px 12px}
+.metric .ml{font-size:10px;color:var(--txt2);margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em}
+.metric .mv{font-size:22px;font-weight:500;font-family:var(--mono);color:var(--txt)}
+.metric.warn .mv{color:var(--red)}
+
+/* MISSING PANEL */
+.missing-wrap{padding:12px 14px 0}
+.missing-panel{border:0.5px solid var(--red-bdr);border-radius:var(--radl);background:var(--bg);overflow:hidden}
+.missing-head{padding:10px 14px;background:var(--red-bg);display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
+.missing-head .mh-title{font-size:13px;font-weight:500;color:var(--red)}
+.missing-head .mh-toggle{font-size:11px;color:var(--red);opacity:.7}
+.missing-list{padding:10px 14px;display:flex;flex-direction:column;gap:6px}
+.missing-item{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg2);border-radius:var(--rad);font-size:12px;cursor:pointer}
+.missing-item:hover{background:var(--bg3)}
+.mi-cust{font-weight:500;color:var(--txt)}
+.mi-meta{color:var(--txt2);font-size:11px;margin-top:1px}
+.mi-badge{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--red);white-space:nowrap}
+
+/* MANAGER GRID */
+.manager-view{overflow-x:auto;padding:12px 14px 20px}
+.grid-wrap{min-width:700px;border-radius:var(--radl);border:0.5px solid var(--bdr2);overflow:hidden;background:var(--bg)}
+.day-label-row{display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--txt);color:var(--bg)}
+.dlday{font-family:var(--mono);font-size:13px;font-weight:500}
+.dldate{font-size:11px;opacity:.55;font-family:var(--mono)}
+.col-header-row{display:grid;background:var(--bg2);border-bottom:0.5px solid var(--bdr2)}
+.col-hdr{padding:6px 8px;font-size:10px;font-weight:500;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;border-right:0.5px solid var(--bdr);display:flex;flex-direction:column;gap:3px}
+.col-hdr:last-child{border-right:none}
+.truck-label{font-size:11px;color:var(--txt);font-weight:500}
+.truck-num-input{font-family:var(--mono);font-size:10px;background:transparent;border:0.5px solid transparent;border-radius:4px;color:var(--txt2);width:100%;padding:2px 4px;cursor:pointer;font-family:var(--mono)}
+.truck-num-input:hover{border-color:var(--bdr2)}
+.truck-num-input:focus{border-color:var(--bdr2);background:var(--bg);outline:none;color:var(--txt)}
+.jobs-cols{display:grid;border-bottom:0.5px solid var(--bdr)}
+.truck-col{border-right:0.5px solid var(--bdr);min-height:60px;padding:5px 0}
+.truck-col:last-child{border-right:none}
+.job-card{margin:3px 6px;padding:7px 9px;border-radius:var(--rad);border:0.5px solid var(--bdr);background:var(--bg);cursor:pointer;transition:background .1s}
+.job-card:hover{background:var(--bg2)}
+.job-card.missing{border-color:var(--red-bdr);background:var(--red-bg)}
+.jc-cust{font-size:11px;font-weight:500;color:var(--txt);line-height:1.3}
+.jc-sub{font-size:10px;color:var(--txt2);margin-top:2px;font-family:var(--mono)}
+.jc-pills{display:flex;gap:3px;margin-top:4px;flex-wrap:wrap}
+.pill{font-size:10px;padding:1px 6px;border-radius:20px;background:var(--bg2);color:var(--txt2);border:0.5px solid var(--bdr);white-space:nowrap}
+.pill.green{background:var(--green-bg);color:var(--green);border-color:var(--green-bdr)}
+.pill.amber{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-bdr)}
+.pill.red{background:var(--red-bg);color:var(--red);border-color:var(--red-bdr)}
+.add-btn{margin:3px 6px;padding:5px 7px;width:calc(100% - 12px);border:0.5px dashed var(--bdr2);border-radius:var(--rad);background:transparent;cursor:pointer;font-size:10px;color:var(--txt3);font-family:var(--font);text-align:left}
+.add-btn:hover{background:var(--bg2);color:var(--txt2)}
+
+/* DRIVER VIEW */
+.driver-view{padding:14px}
+.driver-bar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+.driver-bar label{font-size:13px;color:var(--txt2)}
+select{font-size:13px;padding:7px 10px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg);color:var(--txt);font-family:var(--font)}
+.drv-day{border:0.5px solid var(--bdr2);border-radius:var(--radl);background:var(--bg);overflow:hidden;margin-bottom:10px}
+.drv-day-head{padding:9px 14px;background:var(--bg2);display:flex;justify-content:space-between;align-items:center;border-bottom:0.5px solid var(--bdr)}
+.dday{font-size:13px;font-weight:500;color:var(--txt)}
+.dtot{font-size:12px;color:var(--txt2);font-family:var(--mono)}
+.dtot.warn{color:var(--red)}
+.drv-jobs{padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.drv-job{display:grid;grid-template-columns:1fr auto;gap:10px;padding:10px 12px;border:0.5px solid var(--bdr);border-radius:var(--rad);background:var(--bg2);align-items:start}
+.drv-job.missing{border-color:var(--red-bdr)}
+.djl .cust{font-size:13px;font-weight:500;color:var(--txt)}
+.djl .meta{font-size:11px;color:var(--txt2);margin-top:4px;line-height:1.7}
+.djr{text-align:right;min-width:70px}
+.djr .big{font-size:22px;font-weight:500;font-family:var(--mono);color:var(--txt)}
+.djr .lbl{font-size:10px;color:var(--txt3)}
+.log-btn{margin-top:8px;padding:5px 11px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg);cursor:pointer;color:var(--txt2);font-family:var(--font);display:block;width:100%}
+.log-btn:hover{background:var(--txt);color:var(--bg)}
+.no-jobs{padding:24px;text-align:center;font-size:13px;color:var(--txt3)}
+
+/* MODAL */
+.modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;z-index:200;overflow-y:auto}
+.modal{background:var(--bg);border-radius:var(--radl);border:0.5px solid var(--bdr2);width:100%;max-width:500px;margin:auto}
+.modal-head{padding:13px 16px;border-bottom:0.5px solid var(--bdr);display:flex;justify-content:space-between;align-items:center}
+.modal-head h2{font-size:14px;font-weight:500;font-family:var(--mono);color:var(--txt)}
+.mclose{background:transparent;border:none;cursor:pointer;font-size:22px;color:var(--txt2);line-height:1}
+.mbody{padding:14px 16px;display:flex;flex-direction:column;gap:11px}
+.fld{display:flex;flex-direction:column;gap:4px}
+.fld label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em}
+.fld input,.fld select,.fld textarea{width:100%;padding:8px 10px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg);color:var(--txt);font-size:13px;font-family:var(--font)}
+.fld input:focus,.fld select:focus,.fld textarea:focus{outline:none;border-color:var(--txt2)}
+.fld textarea{resize:vertical;min-height:56px}
+.frow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.mfoot{padding:11px 16px;border-top:0.5px solid var(--bdr);display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
+.btn-p{padding:8px 18px;background:var(--txt);color:var(--bg);border:none;border-radius:var(--rad);cursor:pointer;font-size:13px;font-family:var(--font)}
+.btn-p:hover{opacity:.85}
+.btn-s{padding:8px 18px;background:transparent;color:var(--txt2);border:0.5px solid var(--bdr2);border-radius:var(--rad);cursor:pointer;font-size:13px;font-family:var(--font)}
+.btn-d{padding:7px 14px;background:transparent;color:var(--red);border:0.5px solid var(--red-bdr);border-radius:var(--rad);cursor:pointer;font-size:12px;font-family:var(--font);margin-right:auto}
+
+/* MANAGER ONLY elements */
+.manager-only{display:none}
+body.is-manager .manager-only{display:flex}
+
+@media(max-width:600px){
+  .topbar{gap:6px}
+  .topbar h1{font-size:13px}
+  .frow{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>VBT Dispatch</h1>
+  <div class="week-nav">
+    <button class="wbtn" onclick="changeWeek(-1)">&#8592;</button>
+    <span class="week-label" id="week-label"></span>
+    <button class="wbtn" onclick="changeWeek(1)">&#8594;</button>
+  </div>
+  <button class="tab-btn active" id="tab-mgr" onclick="switchTab('manager')">Manager</button>
+  <button class="tab-btn" id="tab-drv" onclick="switchTab('driver')">Driver</button>
+  <button class="sync-btn manager-only" id="sync-btn" onclick="syncToSheets()">&#8593; Sync to Sheets</button>
+  <span class="sync-status" id="sync-status"></span>
+  <span class="user-info" id="user-info"></span>
+  <button class="logout-btn" onclick="window.location='/logout'">Logout</button>
+</div>
+
+<div id="manager-section">
+  <div class="summary-bar" id="summary-bar"></div>
+  <div id="missing-panel-wrap" class="missing-wrap"></div>
+  <div class="manager-view">
+    <div class="grid-wrap" id="grid-wrap"></div>
+  </div>
+</div>
+
+<div id="driver-section" style="display:none">
+  <div class="driver-view">
+    <div class="driver-bar">
+      <label>My Truck:</label>
+      <select id="driver-select" onchange="renderDriverView()"></select>
+    </div>
+    <div id="driver-day-list"></div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-bg" id="modal" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="modal-title">Add job</h2>
+      <button class="mclose" onclick="closeModal()">&#215;</button>
+    </div>
+    <div class="mbody">
+      <div class="frow">
+        <div class="fld"><label>Truck</label><select id="f-truck"></select></div>
+        <div class="fld"><label>Day</label><select id="f-day">
+          <option>Mon</option><option>Tue</option><option>Wed</option>
+          <option>Thu</option><option>Fri</option><option>Sat</option>
+        </select></div>
+      </div>
+      <div class="frow">
+        <div class="fld"><label>Supervisor on site</label><input id="f-super" placeholder="e.g. Billy"></div>
+        <div class="fld"><label>Driver name</label><input id="f-driver" placeholder="e.g. Beryle"></div>
+      </div>
+      <div class="frow">
+        <div class="fld"><label>Customer / Project</label><input id="f-customer" placeholder="e.g. Wilson Homes"></div>
+        <div class="fld"><label>Job code</label><input id="f-code" placeholder="e.g. WHAT-01"></div>
+      </div>
+      <div class="frow">
+        <div class="fld"><label>Material</label><select id="f-material">
+          <option>Fill Sand</option><option>3/4 Rock</option>
+          <option>Recycle Base</option><option>Cold Mix</option>
+          <option>Dirt</option><option>Base Rock</option><option>Other</option>
+        </select></div>
+        <div class="fld"><label>Loads ordered</label><input id="f-loads" type="number" min="0" step="0.5" placeholder="0"></div>
+      </div>
+      <div class="frow">
+        <div class="fld"><label>Pickup location</label><select id="f-pickup">
+          <option>VBT Yard</option><option>Keith Farms</option>
+          <option>CEMEX</option><option>Vulcan Sanger</option>
+          <option>Precision Bakersfield</option><option>Other</option>
+        </select></div>
+        <div class="fld"><label>PO #</label><input id="f-po" placeholder="e.g. PO 3083"></div>
+      </div>
+      <div class="frow">
+        <div class="fld"><label>Delivery city / address</label><input id="f-city" placeholder="e.g. Fresno"></div>
+        <div class="fld"><label>Loads delivered</label><input id="f-delivered" type="number" min="0" step="0.5" placeholder="0"></div>
+      </div>
+      <div class="fld"><label>Notes</label><textarea id="f-notes" placeholder="e.g. Deliver at 8:30, lot #s, special instructions..."></textarea></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn-d" id="delete-btn" style="display:none" onclick="deleteJob()">Delete job</button>
+      <button class="btn-s" onclick="closeModal()">Cancel</button>
+      <button class="btn-p" onclick="saveJob()">Save job</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat'];
+
+let trucks = JSON.parse(localStorage.getItem('vbt_trucks') || 'null') || [
+  {id:'beryle',   label:'Beryle',   truckNum:'Truck #2',  driver:'Beryle'},
+  {id:'matthew',  label:'Matthew',  truckNum:'Truck #4',  driver:'Matthew'},
+  {id:'rigo',     label:'Rigo',     truckNum:'Truck #14', driver:'Rigo'},
+  {id:'leonardo', label:'Leonardo', truckNum:'Truck #12', driver:'Leonardo'},
+  {id:'carlos',   label:'Carlos',   truckNum:'Truck #2B', driver:'Carlos'},
+];
+
+let jobs = JSON.parse(localStorage.getItem('vbt_jobs') || 'null') || [
+  {id:1,truck:'beryle',day:'Mon',supervisor:'Billy',driver:'Beryle',customer:'Wilson Homes',code:'WHAT-01',material:'Fill Sand',loads:7,pickup:'VBT Yard',po:'PO 3083',city:'Fresno',delivered:1,notes:'The Avenue — 2007 N Cobbler Dr'},
+  {id:2,truck:'beryle',day:'Mon',supervisor:'Enrique',driver:'Beryle',customer:'BCI',code:'3003A-02',material:'Fill Sand',loads:15,pickup:'VBT Yard',po:'PO 3083',city:'Fresno',delivered:9,notes:'Church and Fowler'},
+  {id:3,truck:'matthew',day:'Mon',supervisor:'Billy',driver:'Matthew',customer:'Wilson Homes',code:'WHAT-01',material:'Fill Sand',loads:7,pickup:'VBT Yard',po:'PO 3083',city:'Fresno',delivered:1,notes:'The Avenue'},
+  {id:4,truck:'matthew',day:'Mon',supervisor:'Enrique',driver:'Matthew',customer:'BCI',code:'3003A-02',material:'Fill Sand',loads:15,pickup:'VBT Yard',po:'PO 3083',city:'Fresno',delivered:9,notes:'Church and Fowler'},
+  {id:5,truck:'rigo',day:'Mon',supervisor:'Billy',driver:'Rigo',customer:'Wilson Homes',code:'WHAT-01',material:'Fill Sand',loads:7,pickup:'VBT Yard',po:'PO 3083',city:'Fresno',delivered:1,notes:''},
+  {id:6,truck:'rigo',day:'Mon',supervisor:'Enrique',driver:'Rigo',customer:'BCI',code:'3003A-02',material:'Fill Sand',loads:15,pickup:'VBT Yard',po:'PO 3083',city:'Fresno',delivered:6,notes:'Church and Fowler'},
+  {id:7,truck:'leonardo',day:'Mon',supervisor:'Mike',driver:'Leonardo',customer:'BCI',code:'3010B-06',material:'Fill Sand',loads:4,pickup:'Keith Farms',po:'PO 3083',city:'Lemoore',delivered:0,notes:'Smith and Oleander'},
+  {id:8,truck:'matthew',day:'Tue',supervisor:'Billy',driver:'Matthew',customer:'Wilson Homes',code:'WHAT-01',material:'Fill Sand',loads:7,pickup:'VBT Yard',po:'PO 3084',city:'Fresno',delivered:1,notes:'Missing 4'},
+  {id:9,truck:'beryle',day:'Wed',supervisor:'Enrique',driver:'Beryle',customer:'BCI',code:'3003A-02',material:'Fill Sand',loads:10,pickup:'VBT Yard',po:'PO 3085',city:'Fresno',delivered:6,notes:'Church and Fowler — missing 6'},
+  {id:10,truck:'rigo',day:'Thu',supervisor:'Silvano',driver:'Rigo',customer:'Dr Horton',code:'DRSG-04',material:'Fill Sand',loads:5,pickup:'VBT Yard',po:'PO 3086',city:'Merced',delivered:0,notes:'Sutton Grove'},
+];
+let nextId = Math.max(...jobs.map(j=>j.id),0)+1;
+
+let weekOffset = 0;
+let editingId  = null;
+let currentTab = 'manager';
+let missingOpen = true;
+let userRole   = 'driver';
+
+function saveTrucks(){ try{localStorage.setItem('vbt_trucks',JSON.stringify(trucks))}catch(e){} }
+function saveJobs(){   try{localStorage.setItem('vbt_jobs',  JSON.stringify(jobs))}catch(e){} }
+
+function getWeekStart(){
+  const d=new Date(), day=d.getDay(), diff=(day===0?-6:1-day);
+  const m=new Date(d); m.setDate(d.getDate()+diff+weekOffset*7); m.setHours(0,0,0,0); return m;
+}
+function weekDates(){
+  const m=getWeekStart();
+  return DAYS.map((_,i)=>{const d=new Date(m);d.setDate(m.getDate()+i);return d;});
+}
+function fmt(d){return d.toLocaleDateString('en-US',{month:'short',day:'numeric'})}
+function changeWeek(dir){weekOffset+=dir;render()}
+
+function switchTab(tab){
+  currentTab=tab;
+  document.getElementById('tab-mgr').classList.toggle('active',tab==='manager');
+  document.getElementById('tab-drv').classList.toggle('active',tab==='driver');
+  document.getElementById('manager-section').style.display=tab==='manager'?'block':'none';
+  document.getElementById('driver-section').style.display=tab==='driver'?'block':'none';
+  if(tab==='driver') renderDriverView();
+}
+
+function getMissingJobs(){
+  return jobs.filter(j=>{ const l=Number(j.loads)||0,d=Number(j.delivered)||0; return l>0&&d<l; });
+}
+
+function render(){
+  const dates=weekDates();
+  const mon=getWeekStart(),sun=new Date(mon);sun.setDate(mon.getDate()+5);
+  document.getElementById('week-label').textContent=fmt(mon)+' – '+fmt(sun);
+
+  const weekJobs=jobs;
+  const totalL=weekJobs.reduce((s,j)=>s+(Number(j.loads)||0),0);
+  const totalD=weekJobs.reduce((s,j)=>s+(Number(j.delivered)||0),0);
+  const missing=getMissingJobs();
+  const totalM=missing.reduce((s,j)=>s+(Number(j.loads)||0)-(Number(j.delivered)||0),0);
+  const sites=new Set(weekJobs.map(j=>j.customer)).size;
+
+  document.getElementById('summary-bar').innerHTML=`
+    <div class="metric"><div class="ml">Loads ordered</div><div class="mv">${totalL}</div></div>
+    <div class="metric"><div class="ml">Loads delivered</div><div class="mv">${totalD}</div></div>
+    <div class="metric ${totalM>0?'warn':''}"><div class="ml">Missing loads</div><div class="mv">${totalM}</div></div>
+    <div class="metric"><div class="ml">Job sites</div><div class="mv">${sites}</div></div>
+    <div class="metric"><div class="ml">Total jobs</div><div class="mv">${weekJobs.length}</div></div>
+  `;
+
+  // Missing panel
+  let mpH='';
+  if(missing.length>0){
+    mpH=`<div class="missing-panel">
+      <div class="missing-head" onclick="toggleMissing()">
+        <span class="mh-title">⚠ ${missing.length} job${missing.length>1?'s':''} with missing loads — ${totalM} loads short</span>
+        <span class="mh-toggle">${missingOpen?'▲ hide':'▼ show'}</span>
+      </div>`;
+    if(missingOpen){
+      mpH+=`<div class="missing-list">`;
+      missing.forEach(j=>{
+        const short=(Number(j.loads)||0)-(Number(j.delivered)||0);
+        const t=trucks.find(t=>t.id===j.truck);
+        mpH+=`<div class="missing-item" onclick="openEdit(${j.id})">
+          <div><div class="mi-cust">${j.customer}${j.code?' · '+j.code:''}</div>
+          <div class="mi-meta">${j.day} · ${t?t.label+' ('+t.truckNum+')':j.truck} · ${j.city||''}</div></div>
+          <span class="mi-badge">−${short} load${short!==1?'s':''}</span>
+        </div>`;
+      });
+      mpH+=`</div>`;
+    }
+    mpH+=`</div>`;
+  }
+  document.getElementById('missing-panel-wrap').innerHTML=mpH;
+
+  // Grid
+  const numT=trucks.length;
+  const colW=Math.floor(100/numT);
+  const cols=trucks.map(()=>colW+'%').join(' ');
+  let gh='';
+  dates.forEach((date,di)=>{
+    const dayName=DAYS[di];
+    gh+=`<div>
+      <div class="day-label-row"><span class="dlday">${dayName}</span><span class="dldate">${fmt(date)}</span></div>
+      <div class="col-header-row" style="grid-template-columns:${cols}">`;
+    trucks.forEach(t=>{
+      const isManager=userRole==='manager';
+      gh+=`<div class="col-hdr">
+        <span class="truck-label">${t.label}</span>
+        ${isManager
+          ? `<input class="truck-num-input" value="${t.truckNum}" title="Click to edit truck #" onchange="updateTruckNum('${t.id}',this.value)" onclick="event.stopPropagation()">`
+          : `<span style="font-family:var(--mono);font-size:10px;color:var(--txt3)">${t.truckNum}</span>`
+        }
+      </div>`;
+    });
+    gh+=`</div><div class="jobs-cols" style="grid-template-columns:${cols}">`;
+    trucks.forEach(t=>{
+      const tJobs=jobs.filter(j=>j.truck===t.id&&j.day===dayName);
+      gh+=`<div class="truck-col">`;
+      tJobs.forEach(j=>{
+        const l=Number(j.loads)||0,d=Number(j.delivered)||0,short=l-d;
+        const isMiss=l>0&&d<l;
+        let pills='';
+        if(l>0){
+          if(d>=l) pills=`<span class="pill green">${d}/${l} done</span>`;
+          else if(d>0) pills=`<span class="pill amber">${d}/${l}</span><span class="pill red">−${short}</span>`;
+          else pills=`<span class="pill">${l} loads</span>`;
+        }
+        gh+=`<div class="job-card ${isMiss?'missing':''}" onclick="openEdit(${j.id})">
+          <div class="jc-cust">${j.customer}</div>
+          <div class="jc-sub">${j.code||''}${j.city?' · '+j.city:''}</div>
+          <div class="jc-pills">${pills}<span class="pill">${j.material}</span></div>
+        </div>`;
+      });
+      if(userRole==='manager')
+        gh+=`<button class="add-btn" onclick="openAdd('${t.id}','${dayName}')">+ add job</button>`;
+      gh+=`</div>`;
+    });
+    gh+=`</div></div>`;
+  });
+  document.getElementById('grid-wrap').innerHTML=gh;
+
+  // Driver select
+  const ds=document.getElementById('driver-select');
+  const prev=ds.value;
+  ds.innerHTML=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
+  if(prev) ds.value=prev;
+}
+
+function toggleMissing(){ missingOpen=!missingOpen; render(); }
+
+function updateTruckNum(id,val){
+  const t=trucks.find(x=>x.id===id); if(t){t.truckNum=val;saveTrucks();}
+}
+
+function renderDriverView(){
+  const tid=document.getElementById('driver-select').value;
+  const dates=weekDates();
+  let html='';
+  dates.forEach((date,di)=>{
+    const dayName=DAYS[di];
+    const dayJobs=jobs.filter(j=>j.truck===tid&&j.day===dayName);
+    if(!dayJobs.length) return;
+    const tL=dayJobs.reduce((s,j)=>s+(Number(j.loads)||0),0);
+    const tD=dayJobs.reduce((s,j)=>s+(Number(j.delivered)||0),0);
+    const tM=tL-tD;
+    html+=`<div class="drv-day">
+      <div class="drv-day-head">
+        <span class="dday">${dayName} ${fmt(date)}</span>
+        <span class="dtot ${tM>0?'warn':''}">${tD}/${tL} delivered${tM>0?' · '+tM+' missing':''}</span>
+      </div>
+      <div class="drv-jobs">`;
+    dayJobs.forEach(j=>{
+      const l=Number(j.loads)||0,d=Number(j.delivered)||0,miss=l-d;
+      const isMiss=l>0&&d<l;
+      html+=`<div class="drv-job ${isMiss?'missing':''}">
+        <div class="djl">
+          <div class="cust">${j.customer}${j.code?` <span style="font-family:var(--mono);font-size:11px;color:var(--txt2)">· ${j.code}</span>`:''}</div>
+          <div class="meta">
+            <b>Material:</b> ${j.material}<br>
+            <b>Pickup:</b> ${j.pickup}${j.po?' &nbsp;·&nbsp; <b>PO:</b> '+j.po:''}<br>
+            ${j.city?`<b>Deliver to:</b> ${j.city}<br>`:''}
+            ${j.supervisor?`<b>Supervisor:</b> ${j.supervisor}<br>`:''}
+            ${j.notes?`<em style="color:var(--txt3)">${j.notes}</em>`:''}
+          </div>
+          <div style="margin-top:6px">
+            ${isMiss?`<span class="pill red">${miss} load${miss!==1?'s':''} missing</span>`:`<span class="pill green">Complete</span>`}
+          </div>
+        </div>
+        <div class="djr">
+          <div class="big">${d}<span style="font-size:14px;color:var(--txt2)">/${l}</span></div>
+          <div class="lbl">delivered</div>
+          <button class="log-btn" onclick="quickLog(${j.id})">Log loads</button>
+        </div>
+      </div>`;
+    });
+    html+=`</div></div>`;
+  });
+  document.getElementById('driver-day-list').innerHTML=html||`<div class="no-jobs">No jobs scheduled this week.</div>`;
+}
+
+function openAdd(truckId,day){
+  if(userRole!=='manager'){alert('Only managers can add jobs.');return;}
+  editingId=null;
+  document.getElementById('modal-title').textContent='Add job';
+  document.getElementById('delete-btn').style.display='none';
+  clearForm();
+  document.getElementById('f-truck').value=truckId;
+  document.getElementById('f-day').value=day;
+  document.getElementById('modal').style.display='flex';
+}
+function openEdit(id){
+  const j=jobs.find(x=>x.id===id); if(!j) return;
+  editingId=id;
+  document.getElementById('modal-title').textContent=userRole==='manager'?'Edit job':'Log loads';
+  document.getElementById('delete-btn').style.display=userRole==='manager'?'block':'none';
+  document.getElementById('f-truck').value=j.truck;
+  document.getElementById('f-day').value=j.day;
+  document.getElementById('f-super').value=j.supervisor||'';
+  document.getElementById('f-driver').value=j.driver||'';
+  document.getElementById('f-customer').value=j.customer||'';
+  document.getElementById('f-code').value=j.code||'';
+  document.getElementById('f-material').value=j.material||'Fill Sand';
+  document.getElementById('f-loads').value=j.loads||'';
+  document.getElementById('f-pickup').value=j.pickup||'VBT Yard';
+  document.getElementById('f-po').value=j.po||'';
+  document.getElementById('f-city').value=j.city||'';
+  document.getElementById('f-delivered').value=j.delivered||'';
+  document.getElementById('f-notes').value=j.notes||'';
+  // Lock fields for drivers
+  ['f-truck','f-day','f-super','f-driver','f-customer','f-code','f-material','f-loads','f-pickup','f-po','f-city'].forEach(fid=>{
+    document.getElementById(fid).disabled=(userRole!=='manager');
+  });
+  document.getElementById('modal').style.display='flex';
+  if(userRole==='driver') setTimeout(()=>document.getElementById('f-delivered').focus(),80);
+}
+function quickLog(id){ openEdit(id); }
+function clearForm(){
+  ['f-super','f-driver','f-customer','f-code','f-loads','f-po','f-city','f-delivered','f-notes']
+    .forEach(id=>{document.getElementById(id).value='';document.getElementById(id).disabled=false;});
+  document.getElementById('f-material').value='Fill Sand';
+  document.getElementById('f-pickup').value='VBT Yard';
+  document.getElementById('f-material').disabled=false;
+  document.getElementById('f-pickup').disabled=false;
+  document.getElementById('f-truck').disabled=false;
+  document.getElementById('f-day').disabled=false;
+}
+function saveJob(){
+  const g=id=>document.getElementById(id).value.trim();
+  if(editingId){
+    const orig=jobs.find(x=>x.id===editingId);
+    const job = userRole==='manager' ? {
+      truck:g('f-truck'),day:g('f-day'),supervisor:g('f-super'),driver:g('f-driver'),
+      customer:g('f-customer'),code:g('f-code'),material:g('f-material'),
+      loads:Number(g('f-loads'))||0,pickup:g('f-pickup'),po:g('f-po'),
+      city:g('f-city'),delivered:Number(g('f-delivered'))||0,notes:g('f-notes'),
+    } : { ...orig, delivered:Number(g('f-delivered'))||0, notes:g('f-notes') };
+    if(!job.customer){alert('Customer is required');return;}
+    const i=jobs.findIndex(x=>x.id===editingId);
+    jobs[i]={...job,id:editingId};
+  } else {
+    const job={
+      truck:g('f-truck'),day:g('f-day'),supervisor:g('f-super'),driver:g('f-driver'),
+      customer:g('f-customer'),code:g('f-code'),material:g('f-material'),
+      loads:Number(g('f-loads'))||0,pickup:g('f-pickup'),po:g('f-po'),
+      city:g('f-city'),delivered:Number(g('f-delivered'))||0,notes:g('f-notes'),
+    };
+    if(!job.customer){alert('Customer is required');return;}
+    jobs.push({...job,id:nextId++});
+  }
+  saveJobs(); closeModal(); render();
+  if(currentTab==='driver') renderDriverView();
+}
+function deleteJob(){
+  if(userRole!=='manager'){alert('Only managers can delete jobs.');return;}
+  if(!confirm('Delete this job?')) return;
+  jobs=jobs.filter(x=>x.id!==editingId);
+  saveJobs(); closeModal(); render();
+  if(currentTab==='driver') renderDriverView();
+}
+function closeModal(){
+  document.getElementById('modal').style.display='none';
+  editingId=null; clearForm();
+}
+
+// Sync to Google Sheets via backend
+async function syncToSheets(){
+  const btn=document.getElementById('sync-btn');
+  const st=document.getElementById('sync-status');
+  btn.disabled=true; btn.textContent='Syncing…';
+  st.className='sync-status'; st.textContent='';
+  try {
+    const res=await fetch('/api/sync',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({jobs,trucks})
+    });
+    const data=await res.json();
+    if(data.success){
+      st.className='sync-status ok';
+      st.textContent='Synced ✓ '+new Date().toLocaleTimeString()+' ('+data.rowsWritten+' rows)';
+    } else {
+      throw new Error(data.error||'Unknown error');
+    }
+  } catch(e){
+    st.className='sync-status err';
+    st.textContent='Sync failed: '+e.message;
+  } finally {
+    btn.disabled=false; btn.textContent='↑ Sync to Sheets';
+  }
+}
+
+// Init: get user role from server
+async function init(){
+  try {
+    const res=await fetch('/api/me');
+    const data=await res.json();
+    userRole=data.role;
+    document.getElementById('user-info').textContent=data.username;
+    if(userRole==='manager') document.body.classList.add('is-manager');
+  } catch(e){ userRole='driver'; }
+
+  // Populate truck select in modal
+  const fTruck=document.getElementById('f-truck');
+  fTruck.innerHTML=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
+
+  // Drivers default to driver tab on phones
+  if(userRole==='driver' && window.innerWidth<768){
+    switchTab('driver');
+  }
+  render();
+}
+
+init();
+</script>
+</body>
+</html>
