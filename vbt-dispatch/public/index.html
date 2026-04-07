@@ -17,128 +17,115 @@
   --B:#1a5fa8;--Bb:#eaf2fd;--Bd:#90bce8;
   --P:#6c3fc5;--Pb:#f3eeff;--Pd:#c4a8f0;
   --O:#b85c00;--Ob:#fff3e6;--Od:#f5c080;
+  --T:#0a7a7a;--Tb:#e6f7f7;--Td:#80c8c8;
 }
 @media(prefers-color-scheme:dark){:root{
   --bg:#1a1a18;--bg2:#242420;--bg3:#2e2e28;--txt:#f0efe9;--txt2:#aaa9a0;--txt3:#555550;--bdr:#38382f;--bdr2:#4a4a40;
   --G:#3dd68c;--Gb:#0d2e1e;--Gd:#1a5c3a;--A:#f0c040;--Ab:#2a2000;--Ad:#6a4e00;
   --R:#f07060;--Rb:#2e0e0a;--Rd:#6a2820;--B:#60a8f0;--Bb:#0a1e36;--Bd:#1a4a80;
   --P:#c4a8f0;--Pb:#1e1030;--Pd:#6c3fc5;--O:#f0a060;--Ob:#2a1500;--Od:#8a4a00;
+  --T:#40c8c8;--Tb:#0a2020;--Td:#0a7a7a;
 }}
-body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100vh;overflow-x:hidden}
+
+/* Material color coding */
+:root{
+  --mat-Fill-Sand:#8a5c00;--mat-Fill-Sand-bg:#fff8e6;
+  --mat-Gravel:#1a5fa8;--mat-Gravel-bg:#eaf2fd;
+  --mat-Rock:#6c3fc5;--mat-Rock-bg:#f3eeff;
+  --mat-Cold-Mix:#0a7a7a;--mat-Cold-Mix-bg:#e6f7f7;
+  --mat-34-Rock:#b85c00;--mat-34-Rock-bg:#fff3e6;
+  --mat-Recycle-Base:#1a7a4a;--mat-Recycle-Base-bg:#eaf7f0;
+  --mat-Dirt:#666;--mat-Dirt-bg:#f0efe9;
+  --mat-Base-Rock:#c0392b;--mat-Base-Rock-bg:#fdf0ee;
+  --mat-Other:#111;--mat-Other-bg:#f7f6f2;
+}
+
+body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100vh}
 
 /* ── TOPBAR ── */
-.topbar{display:flex;align-items:center;gap:7px;padding:9px 13px;background:var(--bg);border-bottom:0.5px solid var(--bdr2);flex-wrap:wrap;position:sticky;top:0;z-index:100}
-.topbar h1{font-family:var(--m);font-size:14px;font-weight:500;color:var(--txt);flex:1;min-width:90px}
+.topbar{display:flex;align-items:center;gap:7px;padding:8px 12px;background:var(--bg);border-bottom:0.5px solid var(--bdr2);flex-wrap:wrap;position:sticky;top:0;z-index:100}
+.topbar h1{font-family:var(--m);font-size:14px;font-weight:500;color:var(--txt);flex:1;min-width:80px}
 .tb{padding:5px 11px;font-size:12px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f);white-space:nowrap}
 .tb.active{background:var(--txt);color:var(--bg);border-color:transparent}
-.nb{border:0.5px solid var(--bdr2);background:transparent;cursor:pointer;color:var(--txt2);font-size:12px;padding:5px 9px;border-radius:var(--r);font-family:var(--f)}
-.nb:hover{background:var(--bg2)}
-.nl{font-family:var(--m);font-size:11px;color:var(--txt);min-width:130px;text-align:center}
+.nbtn{border:0.5px solid var(--bdr2);background:transparent;cursor:pointer;color:var(--txt2);font-size:12px;padding:5px 9px;border-radius:var(--r);font-family:var(--f)}
+.nbtn:hover{background:var(--bg2)}
+.nlbl{font-family:var(--m);font-size:12px;color:var(--txt);min-width:140px;text-align:center}
 .sync-btn{padding:5px 11px;font-size:12px;border:0.5px solid var(--Bd);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--B);font-family:var(--f)}
-.sync-btn:hover{background:var(--Bb)}.sync-btn:disabled{opacity:.5;pointer-events:none}
-.ss{font-size:11px;font-family:var(--m);color:var(--txt2)}.ss.ok{color:var(--G)}.ss.err{color:var(--R)}
-.ui-info{font-size:11px;color:var(--txt3);font-family:var(--m)}
-.lo{font-size:11px;color:var(--txt3);background:transparent;border:none;cursor:pointer;font-family:var(--f);text-decoration:underline}
-.mgr-only{display:none}.is-manager .mgr-only{display:block}
-.mgr-flex{display:none}.is-manager .mgr-flex{display:flex}
+.sync-btn:disabled{opacity:.5;pointer-events:none}
+.ss{font-size:11px;font-family:var(--m)}.ss.ok{color:var(--G)}.ss.err{color:var(--R)}
+.uinfo{font-size:11px;color:var(--txt3);font-family:var(--m)}
+.lobtn{font-size:11px;color:var(--txt3);background:transparent;border:none;cursor:pointer;font-family:var(--f);text-decoration:underline}
+.mgr{display:none}.is-manager .mgr{display:block}
+.mgrf{display:none}.is-manager .mgrf{display:flex}
 
 /* ── SUMMARY BAR ── */
-.sbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;padding:9px 13px;background:var(--bg);border-bottom:0.5px solid var(--bdr)}
-.met{background:var(--bg2);border-radius:var(--r);padding:8px 10px}
+.sbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(85px,1fr));gap:6px;padding:8px 12px;background:var(--bg);border-bottom:0.5px solid var(--bdr)}
+.met{background:var(--bg2);border-radius:var(--r);padding:7px 10px}
 .met .ml{font-size:10px;color:var(--txt2);margin-bottom:2px;text-transform:uppercase;letter-spacing:.05em}
-.met .mv{font-size:18px;font-weight:500;font-family:var(--m);color:var(--txt)}
+.met .mv{font-size:17px;font-weight:500;font-family:var(--m);color:var(--txt)}
 .met.w .mv{color:var(--R)}.met.g .mv{color:var(--G)}.met.b .mv{color:var(--B)}.met.o .mv{color:var(--O)}
 
-/* ── MAIN BOARD LAYOUT ── */
-.board-wrap{display:flex;height:calc(100vh - 110px);overflow:hidden}
+/* ── BOARD ── */
+.board-outer{overflow-y:auto;height:calc(100vh - 108px)}
+.board-inner{min-width:900px;padding:0 12px 24px}
 
-/* LEFT: Unassigned */
-.unassigned-panel{width:220px;min-width:180px;background:var(--bg2);border-right:0.5px solid var(--bdr2);display:flex;flex-direction:column;flex-shrink:0}
-.panel-head{padding:10px 12px;background:var(--bg);border-bottom:0.5px solid var(--bdr2);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);display:flex;align-items:center;justify-content:space-between}
-.panel-head .ph-count{font-family:var(--m);font-size:10px;background:var(--bg2);padding:2px 7px;border-radius:20px;color:var(--txt3)}
-.unassigned-body{flex:1;overflow-y:auto;padding:8px}
-.unassigned-drop{min-height:60px;border:1.5px dashed var(--bdr2);border-radius:var(--rl);padding:6px;transition:background .15s}
-.unassigned-drop.drag-over{background:var(--Bb);border-color:var(--Bd)}
+/* Day block */
+.day-block{margin-bottom:0;border-bottom:0.5px solid var(--bdr2)}
+.day-header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--txt);color:var(--bg);position:sticky;top:0;z-index:20}
+.day-header .dh-day{font-family:var(--m);font-size:13px;font-weight:500}
+.day-header .dh-date{font-size:11px;opacity:.6;font-family:var(--m)}
+.day-header .dh-today{font-size:10px;background:var(--G);color:#fff;padding:2px 8px;border-radius:20px}
+.day-header .dh-summary{font-size:11px;opacity:.7;margin-left:auto}
 
-/* CENTER: Driver columns */
-.board-center{flex:1;overflow-x:auto;overflow-y:hidden;display:flex;flex-direction:column}
-.board-date-header{padding:8px 13px;background:var(--bg);border-bottom:0.5px solid var(--bdr2);display:flex;align-items:center;gap:10px}
-.board-date-header .bdate{font-family:var(--m);font-size:13px;font-weight:500;color:var(--txt)}
-.board-date-header .bday{font-size:11px;color:var(--txt2)}
-.drivers-row{display:flex;flex:1;overflow-x:auto;overflow-y:hidden;min-width:0}
-.driver-col{min-width:200px;width:220px;flex-shrink:0;display:flex;flex-direction:column;border-right:0.5px solid var(--bdr)}
-.driver-col:last-child{border-right:none}
-.driver-col-head{padding:9px 10px;background:var(--bg);border-bottom:0.5px solid var(--bdr2);display:flex;flex-direction:column;gap:2px;flex-shrink:0}
-.driver-col-head .dname{font-size:12px;font-weight:500;color:var(--txt)}
-.driver-col-head .dtruck{font-family:var(--m);font-size:10px;color:var(--txt3)}
-.truck-num-edit{font-family:var(--m);font-size:10px;background:transparent;border:0.5px solid transparent;border-radius:3px;color:var(--txt3);width:100%;padding:1px 3px;cursor:pointer}
-.truck-num-edit:hover{border-color:var(--bdr2)}.truck-num-edit:focus{border-color:var(--bdr2);background:var(--bg);outline:none;color:var(--txt)}
-.driver-col-body{flex:1;overflow-y:auto;padding:6px;background:var(--bg3)}
-.driver-drop{min-height:80px;border-radius:var(--rl);padding:4px;transition:background .15s}
-.driver-drop.drag-over{background:var(--Gb);outline:2px dashed var(--Gd)}
-.add-job-btn{width:100%;margin-top:4px;padding:5px;border:0.5px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;font-size:11px;color:var(--txt3);font-family:var(--f);text-align:center}
-.add-job-btn:hover{background:var(--bg2);color:var(--txt2)}
+/* Driver columns grid */
+.drivers-grid{display:grid;border-bottom:0.5px solid var(--bdr)}
+.col-head-row{display:grid;background:var(--bg2);border-bottom:0.5px solid var(--bdr2)}
+.col-head{padding:7px 10px;border-right:0.5px solid var(--bdr);display:flex;flex-direction:column;gap:2px}
+.col-head:last-child{border-right:none}
+.ch-name{font-size:11px;font-weight:500;color:var(--txt)}
+.ch-truck{font-family:var(--m);font-size:10px;color:var(--txt3)}
+.truck-edit{font-family:var(--m);font-size:10px;background:transparent;border:0.5px solid transparent;border-radius:3px;color:var(--txt3);width:100%;padding:1px 3px;cursor:pointer}
+.truck-edit:hover{border-color:var(--bdr2)}.truck-edit:focus{border-color:var(--bdr2);background:var(--bg);outline:none;color:var(--txt)}
+.col-body-row{display:grid;align-items:start}
+.driver-cell{border-right:0.5px solid var(--bdr);padding:6px;min-height:80px;background:var(--bg3)}
+.driver-cell:last-child{border-right:none}
+.driver-drop{min-height:60px;border-radius:var(--r);padding:3px;transition:background .15s,outline .1s}
+.driver-drop.over{background:var(--Gb);outline:2px dashed var(--Gd)}
 
-/* RIGHT: Scheduled */
-.scheduled-panel{width:210px;min-width:170px;background:var(--bg2);border-left:0.5px solid var(--bdr2);display:flex;flex-direction:column;flex-shrink:0}
-.sched-body{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:6px}
-
-/* ── LOAD CARD ── */
-.lcard{background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--r);padding:8px 9px;cursor:grab;margin-bottom:5px;transition:box-shadow .15s;position:relative}
+/* Load card */
+.lcard{background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--r);padding:7px 9px;cursor:grab;margin-bottom:4px;position:relative;transition:box-shadow .1s}
 .lcard:hover{border-color:var(--bdr2)}
-.lcard.dragging{opacity:.5;cursor:grabbing}
-.lcard.missing{border-left:3px solid var(--R)}
-.lcard.done{border-left:3px solid var(--G);opacity:.8}
-.lcard.scheduled{border-left:3px solid var(--P)}
-.lcard .lc-po{font-family:var(--m);font-size:10px;color:var(--B);margin-bottom:2px}
-.lcard .lc-cust{font-size:12px;font-weight:500;color:var(--txt);line-height:1.3}
-.lcard .lc-mat{font-size:10px;color:var(--txt2);margin-top:2px}
-.lcard .lc-pills{display:flex;gap:3px;margin-top:4px;flex-wrap:wrap}
+.lcard.dragging{opacity:.45;cursor:grabbing}
+.lcard.unassigned-card{border-style:dashed;background:var(--bg2)}
+.lcard .lc-po{font-family:var(--m);font-size:10px;color:var(--B);margin-bottom:2px;display:flex;align-items:center;gap:5px}
+.lcard .lc-cust{font-size:12px;font-weight:500;color:var(--txt);line-height:1.3;margin-bottom:2px}
+.lcard .lc-mat{display:flex;align-items:center;gap:4px;font-size:10px;margin-bottom:4px}
+.mat-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.lcard .lc-pills{display:flex;gap:3px;flex-wrap:wrap;margin-top:3px}
 .pill{font-size:10px;padding:1px 6px;border-radius:20px;border:0.5px solid var(--bdr);background:var(--bg2);color:var(--txt2);white-space:nowrap}
 .pill.g{background:var(--Gb);color:var(--G);border-color:var(--Gd)}
 .pill.a{background:var(--Ab);color:var(--A);border-color:var(--Ad)}
 .pill.r{background:var(--Rb);color:var(--R);border-color:var(--Rd)}
 .pill.p{background:var(--Pb);color:var(--P);border-color:var(--Pd)}
 .pill.b{background:var(--Bb);color:var(--B);border-color:var(--Bd)}
-.lcard .lc-prog{height:3px;background:var(--bdr);border-radius:2px;margin-top:5px;overflow:hidden}
-.lcard .lc-prog-fill{height:100%;border-radius:2px;transition:width .3s}
+.lc-prog{height:3px;background:var(--bdr);border-radius:2px;margin-top:5px;overflow:hidden}
+.lc-prog-fill{height:100%;border-radius:2px;transition:width .3s}
 
-/* SCHEDULED QUEUE MINI CARD */
-.sq-card{background:var(--bg);border:0.5px solid var(--Pd);border-radius:var(--r);padding:8px 9px;cursor:pointer}
-.sq-card:hover{background:var(--Pb)}
-.sq-card .sq-po{font-family:var(--m);font-size:10px;color:var(--B);margin-bottom:2px}
-.sq-card .sq-cust{font-size:11px;font-weight:500;color:var(--txt)}
-.sq-card .sq-date{font-size:10px;font-family:var(--m);color:var(--txt3);margin-top:3px}
-.sq-card .sq-days{font-size:10px;color:var(--P);margin-top:1px}
+/* Unassigned row */
+.unassigned-row{padding:8px 12px;background:var(--bg2);border-top:0.5px solid var(--bdr2);display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}
+.unassigned-label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);font-weight:500;white-space:nowrap;padding-top:3px}
+.unassigned-drop-zone{flex:1;min-height:40px;display:flex;flex-wrap:wrap;gap:4px;padding:3px;border-radius:var(--r);transition:background .15s,outline .1s}
+.unassigned-drop-zone.over{background:var(--Ab);outline:2px dashed var(--Ad)}
+.add-job-btn{padding:5px 10px;border:0.5px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;font-size:11px;color:var(--txt3);font-family:var(--f)}
+.add-job-btn:hover{background:var(--bg);color:var(--txt2)}
 
-/* ── DRIVER VIEW (mobile) ── */
-.drv-mobile{padding:13px;display:flex;flex-direction:column;gap:10px}
-.dlc{background:var(--bg);border:0.5px solid var(--bdr2);border-radius:var(--rl);overflow:hidden}
-.dlch{padding:9px 12px;background:var(--bg2);border-bottom:0.5px solid var(--bdr)}
-.dlch-po{font-family:var(--m);font-size:10px;color:var(--B);margin-bottom:2px}
-.dlch-c{font-size:13px;font-weight:500;color:var(--txt)}
-.dlcb{padding:11px 12px}
-.dlc-grid{display:grid;grid-template-columns:1fr auto;gap:11px;align-items:start}
-.dlc-info .meta{font-size:12px;color:var(--txt2);line-height:1.8}
-.dlc-right{text-align:right}
-.dlc-big{font-size:26px;font-weight:500;font-family:var(--m);color:var(--txt)}
-.dlc-lbl{font-size:10px;color:var(--txt3)}
-.drv-btns{display:flex;flex-direction:column;gap:5px;margin-top:10px}
-.drv-btn{padding:10px 0;font-size:13px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg2);cursor:pointer;color:var(--txt2);font-family:var(--f);text-align:center;font-weight:500}
-.drv-btn.start{border-color:var(--Bd);background:var(--Bb);color:var(--B)}
-.drv-btn.arrived{border-color:var(--Ad);background:var(--Ab);color:var(--A)}
-.drv-btn.complete{border-color:var(--Gd);background:var(--Gb);color:var(--G)}
-.drv-btn.sig{border-color:var(--Pd);background:var(--Pb);color:var(--P)}
-.drv-btn.done-btn{background:var(--Gb);border-color:var(--Gd);color:var(--G);opacity:.7}
-.drv-ts{font-size:10px;font-family:var(--m);color:var(--txt3);margin-top:6px;line-height:1.9}
-.pod-ok{margin-top:7px;padding:7px 9px;background:var(--Gb);border-radius:var(--r);font-size:11px;color:var(--G)}
-.no-loads-msg{padding:28px;text-align:center;font-size:13px;color:var(--txt3)}
+/* PO progress bar (inside day header) */
+.po-progress-chip{font-size:10px;font-family:var(--m);background:rgba(255,255,255,.15);padding:2px 7px;border-radius:20px;white-space:nowrap}
 
-/* ── PO / HISTORY VIEWS ── */
-.list-view{padding:12px 13px 24px;overflow-y:auto;height:calc(100vh - 110px)}
-.po-list{display:flex;flex-direction:column;gap:8px}
-.poc{background:var(--bg);border:0.5px solid var(--bdr2);border-radius:var(--rl);overflow:hidden}
-.poc.completed{border-color:var(--Gd);opacity:.8}
+/* ── LIST VIEWS ── */
+.list-view{padding:12px;overflow-y:auto;height:calc(100vh - 108px)}
+.poc{background:var(--bg);border:0.5px solid var(--bdr2);border-radius:var(--rl);overflow:hidden;margin-bottom:8px}
+.poc.completed{opacity:.75;border-color:var(--Gd)}
 .poh{padding:10px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;user-select:none}
 .poh:hover{background:var(--bg2)}
 .poc-chev{font-size:10px;color:var(--txt3);transition:transform .15s;flex-shrink:0}
@@ -147,22 +134,22 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .poc-cust{font-size:12px;font-weight:500;color:var(--txt);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .poc-date{font-size:11px;font-family:var(--m);color:var(--txt2);white-space:nowrap}
 .poc-prog{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
-.poc-bar{width:60px;height:4px;background:var(--bdr);border-radius:2px;overflow:hidden}
+.poc-bar{width:56px;height:4px;background:var(--bdr);border-radius:2px;overflow:hidden}
 .poc-fill{height:100%;border-radius:2px}
 .poc-fill.z{background:var(--bdr2)}.poc-fill.p{background:var(--A)}.poc-fill.f{background:var(--G)}
-.poc-pt{font-size:10px;font-family:var(--m);color:var(--txt2)}
-.sp{font-size:10px;padding:2px 6px;border-radius:20px;border:0.5px solid;white-space:nowrap}
+.sp{font-size:10px;padding:2px 6px;border-radius:20px;border:0.5px solid;white-space:nowrap;flex-shrink:0}
 .sp-active{background:var(--Bb);color:var(--B);border-color:var(--Bd)}
 .sp-completed{background:var(--Gb);color:var(--G);border-color:var(--Gd)}
 .sp-scheduled{background:var(--Pb);color:var(--P);border-color:var(--Pd)}
+.sp-unassigned{background:var(--bg2);color:var(--txt2);border-color:var(--bdr)}
 .sp-unpaid{background:var(--Rb);color:var(--R);border-color:var(--Rd)}
 .sp-partial{background:var(--Ab);color:var(--A);border-color:var(--Ad)}
 .sp-paid{background:var(--Gb);color:var(--G);border-color:var(--Gd)}
 .pob{border-top:0.5px solid var(--bdr);display:none}
 .pob.o{display:block}
-.po-meta-row{padding:8px 12px;background:var(--bg2);display:flex;flex-wrap:wrap;gap:9px;border-bottom:0.5px solid var(--bdr);font-size:12px;color:var(--txt2)}
-.po-meta-row span b{color:var(--txt)}
-.po-actions{padding:6px 12px;display:flex;gap:6px;flex-wrap:wrap;border-bottom:0.5px solid var(--bdr);background:var(--bg2)}
+.po-meta{padding:8px 12px;background:var(--bg2);display:flex;flex-wrap:wrap;gap:8px;border-bottom:0.5px solid var(--bdr);font-size:12px;color:var(--txt2)}
+.po-meta b{color:var(--txt)}
+.po-acts{padding:6px 12px;display:flex;gap:6px;flex-wrap:wrap;border-bottom:0.5px solid var(--bdr);background:var(--bg2)}
 .ab{padding:4px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
 .ab:hover{background:var(--txt);color:var(--bg)}
 .ab.g{border-color:var(--Gd);color:var(--G)}.ab.g:hover{background:var(--G);color:#fff}
@@ -170,39 +157,61 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .ab.b{border-color:var(--Bd);color:var(--B)}.ab.b:hover{background:var(--B);color:#fff}
 .ab.o{border-color:var(--Od);color:var(--O)}.ab.o:hover{background:var(--O);color:#fff}
 
-/* Invoice (manager only) */
-.inv-section{padding:10px 12px;border-bottom:0.5px solid var(--bdr)}
-.inv-title{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);margin-bottom:8px;font-weight:500}
-.inv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:7px;margin-bottom:8px}
-.inv-card{background:var(--bg2);border-radius:var(--r);padding:8px 10px}
-.inv-card .il{font-size:10px;color:var(--txt2);margin-bottom:2px}
-.inv-card .iv{font-size:15px;font-weight:500;font-family:var(--m);color:var(--txt)}
-.inv-card.money .iv{color:var(--G)}.inv-card.owed .iv{color:var(--R)}
-.pay-row{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:var(--bg2);border-radius:var(--r);margin-bottom:3px;font-size:11px}
-.pay-row .pa{font-weight:500;color:var(--G);font-family:var(--m)}
+/* Multi-material table */
+.mat-table{width:100%;border-collapse:collapse;font-size:12px}
+.mat-table th{padding:5px 10px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:500;text-align:left;border-bottom:0.5px solid var(--bdr);background:var(--bg2)}
+.mat-table td{padding:7px 10px;border-bottom:0.5px solid var(--bdr);color:var(--txt)}
+.mat-table tr:last-child td{border-bottom:none}
+.mat-table tr:hover td{background:var(--bg2)}
+.mat-chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:20px;font-weight:500}
 
-/* Loads table */
-.lt{width:100%;border-collapse:collapse}
-.lt th{padding:6px 10px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:500;text-align:left;border-bottom:0.5px solid var(--bdr);background:var(--bg2)}
-.lt td{padding:7px 10px;font-size:12px;color:var(--txt);border-bottom:0.5px solid var(--bdr)}
-.lt tr:last-child td{border-bottom:none}
-.lt tr:hover td{background:var(--bg2)}
+/* Invoice section */
+.inv-sec{padding:10px 12px;border-bottom:0.5px solid var(--bdr)}
+.inv-title{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);margin-bottom:8px;font-weight:500}
+.inv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:6px;margin-bottom:8px}
+.icard{background:var(--bg2);border-radius:var(--r);padding:8px 10px}
+.icard .il{font-size:10px;color:var(--txt2);margin-bottom:2px}
+.icard .iv{font-size:15px;font-weight:500;font-family:var(--m);color:var(--txt)}
+.icard.money .iv{color:var(--G)}.icard.owed .iv{color:var(--R)}
+.pay-row{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:var(--bg2);border-radius:var(--r);margin-bottom:3px;font-size:11px}
+.pay-amt{font-weight:500;color:var(--G);font-family:var(--m)}
 .pod-badge{font-size:10px;padding:2px 6px;border-radius:20px;background:var(--Gb);color:var(--G);border:0.5px solid var(--Gd)}
-.no-loads{padding:12px;text-align:center;font-size:12px;color:var(--txt3)}
+.no-items{padding:16px;text-align:center;font-size:12px;color:var(--txt3)}
 
 /* History */
-.hist-wrap{padding:12px 13px 24px;overflow-y:auto;height:calc(100vh - 110px)}
 .hm{margin-bottom:14px}
 .hml{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--txt2);font-weight:500;margin-bottom:6px;padding-bottom:3px;border-bottom:0.5px solid var(--bdr)}
 .hi{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--r);margin-bottom:4px}
 
+/* ── DRIVER VIEW ── */
+.drv-view{padding:12px;display:flex;flex-direction:column;gap:9px;overflow-y:auto;height:calc(100vh - 108px)}
+.dlc{background:var(--bg);border:0.5px solid var(--bdr2);border-radius:var(--rl);overflow:hidden}
+.dlch{padding:9px 12px;background:var(--bg2);border-bottom:0.5px solid var(--bdr)}
+.dlch-po{font-family:var(--m);font-size:10px;color:var(--B);margin-bottom:1px}
+.dlch-c{font-size:13px;font-weight:500;color:var(--txt)}
+.dlcb{padding:11px 12px}
+.dlc-grid{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:start}
+.dlc-meta{font-size:12px;color:var(--txt2);line-height:1.8}
+.dlc-big{font-size:26px;font-weight:500;font-family:var(--m);color:var(--txt);text-align:right}
+.dlc-lbl{font-size:10px;color:var(--txt3);text-align:right}
+.drv-btns{display:flex;flex-direction:column;gap:5px;margin-top:10px}
+.dbtn{padding:11px 0;font-size:13px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg2);cursor:pointer;color:var(--txt2);font-family:var(--f);text-align:center;font-weight:500}
+.dbtn.start{border-color:var(--Bd);background:var(--Bb);color:var(--B)}
+.dbtn.arr{border-color:var(--Ad);background:var(--Ab);color:var(--A)}
+.dbtn.comp{border-color:var(--Gd);background:var(--Gb);color:var(--G)}
+.dbtn.sig{border-color:var(--Pd);background:var(--Pb);color:var(--P)}
+.dbtn.stamped{opacity:.7;cursor:default}
+.drv-ts{font-size:10px;font-family:var(--m);color:var(--txt3);margin-top:6px;line-height:2}
+.pod-ok{margin-top:7px;padding:6px 9px;background:var(--Gb);border-radius:var(--r);font-size:11px;color:var(--G)}
+.no-loads{padding:28px;text-align:center;font-size:13px;color:var(--txt3)}
+
 /* ── MODAL ── */
-.mbg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-start;justify-content:center;padding:14px 10px;z-index:300;overflow-y:auto}
-.mod{background:var(--bg);border-radius:var(--rl);border:0.5px solid var(--bdr2);width:100%;max-width:540px;margin:auto}
+.mbg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-start;justify-content:center;padding:12px;z-index:300;overflow-y:auto}
+.mod{background:var(--bg);border-radius:var(--rl);border:0.5px solid var(--bdr2);width:100%;max-width:560px;margin:auto}
 .mh{padding:11px 14px;border-bottom:0.5px solid var(--bdr);display:flex;justify-content:space-between;align-items:center}
 .mh h2{font-size:13px;font-weight:500;font-family:var(--m);color:var(--txt)}
 .mc{background:transparent;border:none;cursor:pointer;font-size:20px;color:var(--txt2);line-height:1}
-.mb{padding:12px 14px;display:flex;flex-direction:column;gap:10px;max-height:75vh;overflow-y:auto}
+.mb{padding:12px 14px;display:flex;flex-direction:column;gap:10px;max-height:78vh;overflow-y:auto}
 .fl{display:flex;flex-direction:column;gap:3px}
 .fl label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em}
 .fl input,.fl select,.fl textarea{width:100%;padding:7px 9px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-size:13px;font-family:var(--f)}
@@ -210,36 +219,36 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .fl input:disabled,.fl select:disabled{opacity:.5;cursor:default}
 .fl textarea{resize:vertical;min-height:48px}
 .fr{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-.sdiv{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);padding:6px 0 3px;border-bottom:0.5px solid var(--bdr);margin-top:3px}
-.splits{display:flex;flex-direction:column;gap:6px}
-.srow{display:grid;grid-template-columns:1fr 70px 95px auto;gap:6px;align-items:end;padding:7px 8px;background:var(--bg2);border-radius:var(--r);border:0.5px solid var(--bdr)}
+.sdiv{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);padding:6px 0 3px;border-bottom:0.5px solid var(--bdr);margin-top:2px}
+.srow{display:grid;grid-template-columns:1fr 1fr 80px 90px auto;gap:5px;align-items:end;padding:7px 8px;background:var(--bg2);border-radius:var(--r);border:0.5px solid var(--bdr);margin-bottom:5px}
 .srow select,.srow input{padding:5px 7px;font-size:12px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-family:var(--f);width:100%}
+.srow-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:2px}
 .sr{padding:5px 8px;font-size:11px;border:0.5px solid var(--Rd);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--R);font-family:var(--f)}
 .rem{font-size:12px;font-family:var(--m);padding:5px 9px;background:var(--bg2);border-radius:var(--r);border:0.5px solid var(--bdr)}
 .rem.w{color:var(--R);border-color:var(--Rd);background:var(--Rb)}.rem.ok{color:var(--G);border-color:var(--Gd);background:var(--Gb)}
-.as{padding:5px 10px;font-size:12px;border:0.5px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
-.as:hover{background:var(--bg2)}
+.asBtn{padding:5px 10px;font-size:12px;border:0.5px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
+.asBtn:hover{background:var(--bg2)}
 .mf{padding:9px 14px;border-top:0.5px solid var(--bdr);display:flex;gap:7px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
 .bp{padding:7px 16px;background:var(--txt);color:var(--bg);border:none;border-radius:var(--r);cursor:pointer;font-size:13px;font-family:var(--f)}
 .bp:hover{opacity:.85}
 .bs{padding:7px 16px;background:transparent;color:var(--txt2);border:0.5px solid var(--bdr2);border-radius:var(--r);cursor:pointer;font-size:13px;font-family:var(--f)}
 .bd{padding:6px 12px;background:transparent;color:var(--R);border:0.5px solid var(--Rd);border-radius:var(--r);cursor:pointer;font-size:12px;font-family:var(--f);margin-right:auto}
-
-/* Signature canvas */
-.sig-wrap{border:0.5px solid var(--bdr2);border-radius:var(--r);overflow:hidden;background:#fff}
-.sig-canvas{display:block;width:100%;height:150px;touch-action:none;cursor:crosshair}
-.sig-tools{display:flex;gap:6px;padding:5px 7px;background:var(--bg2);border-top:0.5px solid var(--bdr)}
-.sig-clear{padding:3px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
-
-/* Timestamp row */
 .ts-row{display:flex;align-items:center;gap:7px;margin-bottom:5px}
 .ts-btn{padding:4px 9px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:var(--f);white-space:nowrap}
 .ts-btn:hover{background:var(--txt);color:var(--bg)}
 .ts-val{flex:1;padding:4px 7px;font-size:11px;font-family:var(--m);border:0.5px solid var(--bdr);border-radius:var(--r);background:var(--bg2);color:var(--txt2)}
+.sig-wrap{border:0.5px solid var(--bdr2);border-radius:var(--r);overflow:hidden;background:#fff}
+.sig-canvas{display:block;width:100%;height:140px;touch-action:none;cursor:crosshair}
+.sig-tools{display:flex;gap:6px;padding:5px 7px;background:var(--bg2);border-top:0.5px solid var(--bdr)}
+.sig-clear{padding:3px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
 
-@media(max-width:680px){
-  .unassigned-panel,.scheduled-panel{display:none}
-  .driver-col{min-width:160px;width:160px}
+/* Price table modal */
+.price-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.price-row{display:flex;align-items:center;gap:8px;padding:6px 9px;background:var(--bg2);border-radius:var(--r)}
+.price-mat{font-size:12px;color:var(--txt);flex:1}
+.price-inp{width:80px;padding:5px 7px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-family:var(--m);font-size:13px;text-align:right}
+
+@media(max-width:700px){
   .fr{grid-template-columns:1fr}
   .srow{grid-template-columns:1fr 1fr}
   .sr{grid-column:1/-1}
@@ -248,89 +257,50 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 </head>
 <body>
 
-<!-- TOPBAR -->
 <div class="topbar">
   <h1>VBT Dispatch</h1>
   <div style="display:flex;align-items:center;gap:5px" id="nav-wrap">
-    <button class="nb" onclick="changeDay(-1)">&#8592;</button>
-    <span class="nl" id="nav-lbl"></span>
-    <button class="nb" onclick="changeDay(1)">&#8594;</button>
+    <button class="nbtn" onclick="changeDay(-1)">&#8592;</button>
+    <span class="nlbl" id="nav-lbl"></span>
+    <button class="nbtn" onclick="changeDay(1)">&#8594;</button>
   </div>
-  <button class="tb active" id="tab-board" onclick="swTab('board')">Dispatch Board</button>
-  <button class="tb" id="tab-pos" onclick="swTab('pos')">All POs</button>
-  <button class="tb" id="tab-hist" onclick="swTab('hist')">History</button>
-  <button class="tb" id="tab-drv" onclick="swTab('drv')">My Loads</button>
-  <button class="bp mgr-only" style="font-size:12px;padding:5px 11px" onclick="openNewPO()">+ New PO</button>
-  <button class="sync-btn mgr-flex" id="sync-btn" onclick="doSync()">&#8593; Sheets</button>
+  <button class="tb active" id="tab-board"  onclick="swTab('board')">Board</button>
+  <button class="tb"        id="tab-pos"    onclick="swTab('pos')">All POs</button>
+  <button class="tb"        id="tab-hist"   onclick="swTab('hist')">History</button>
+  <button class="tb"        id="tab-drv"    onclick="swTab('drv')">My Loads</button>
+  <button class="bp mgr" style="font-size:12px;padding:5px 11px" onclick="openNewPO()">+ New PO</button>
+  <button class="ab b mgr" onclick="openPriceTable()">&#9998; Prices</button>
+  <button class="sync-btn mgrf" id="sync-btn" onclick="doSync()">&#8593; Sheets</button>
   <span class="ss" id="ss"></span>
-  <span class="ui-info" id="ui-info"></span>
-  <button class="lo" onclick="location='/logout'">Logout</button>
+  <span class="uinfo" id="uinfo"></span>
+  <button class="lobtn" onclick="location='/logout'">Logout</button>
 </div>
 
-<!-- SUMMARY BAR (manager only) -->
-<div class="sbar is-manager" id="sbar" style="display:none"></div>
+<div class="sbar mgr" id="sbar" style="display:none"></div>
 
-<!-- ════════════════════════════════════════════
-     BOARD TAB
-════════════════════════════════════════════ -->
+<!-- BOARD -->
 <div id="sec-board">
-  <div class="board-wrap">
-
-    <!-- LEFT: Unassigned loads -->
-    <div class="unassigned-panel">
-      <div class="panel-head">
-        Unassigned
-        <span class="ph-count" id="unassigned-count">0</span>
-      </div>
-      <div class="unassigned-body">
-        <div class="unassigned-drop" id="unassigned-drop"
-          ondragover="onDragOver(event,'unassigned')"
-          ondragleave="onDragLeave(event)"
-          ondrop="onDrop(event,'unassigned',null)">
-        </div>
-      </div>
-    </div>
-
-    <!-- CENTER: Driver columns -->
-    <div class="board-center">
-      <div class="board-date-header">
-        <span class="bdate" id="board-date-label"></span>
-        <span class="bday" id="board-day-label"></span>
-        <span style="margin-left:auto;font-size:11px;color:var(--txt3)">Drag loads between drivers</span>
-      </div>
-      <div class="drivers-row" id="drivers-row"></div>
-    </div>
-
-    <!-- RIGHT: Scheduled queue -->
-    <div class="scheduled-panel">
-      <div class="panel-head">
-        Scheduled
-        <span class="ph-count" id="scheduled-count">0</span>
-      </div>
-      <div class="sched-body" id="sched-body"></div>
-    </div>
-
+  <div class="board-outer">
+    <div class="board-inner" id="board-inner"></div>
   </div>
 </div>
 
-<!-- ALL POs TAB -->
+<!-- ALL POs -->
 <div id="sec-pos" style="display:none">
-  <div class="list-view">
-    <div class="po-list" id="pos-list"></div>
-  </div>
+  <div class="list-view" id="pos-list-wrap"></div>
 </div>
 
-<!-- HISTORY TAB -->
+<!-- HISTORY -->
 <div id="sec-hist" style="display:none">
-  <div class="hist-wrap" id="hist-wrap"></div>
+  <div class="list-view" id="hist-wrap"></div>
 </div>
 
-<!-- DRIVER TAB -->
+<!-- DRIVER -->
 <div id="sec-drv" style="display:none">
-  <div class="drv-mobile" id="drv-mobile"></div>
+  <div class="drv-view" id="drv-view"></div>
 </div>
 
-<!-- ════════ MODALS ════════ -->
+<!-- ════ MODALS ════ -->
 
 <!-- PO MODAL -->
 <div class="mbg" id="po-m" style="display:none"><div class="mod">
@@ -342,27 +312,25 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
     </div>
     <div class="fr">
       <div class="fl"><label>Customer / Project</label><input id="pm-cust" placeholder="Wilson Homes"></div>
-      <div class="fl"><label>Job code</label><input id="pm-code" placeholder="WHAT-01"></div>
+      <div class="fl"><label>Job code / ref</label><input id="pm-code" placeholder="WHAT-01"></div>
     </div>
     <div class="fr">
-      <div class="fl"><label>Material</label><select id="pm-mat"><option>Fill Sand</option><option>3/4 Rock</option><option>Recycle Base</option><option>Cold Mix</option><option>Dirt</option><option>Base Rock</option><option>Other</option></select></div>
-      <div class="fl"><label>Total loads</label><input id="pm-loads" type="number" min="1" step="1" placeholder="8" oninput="updRem()"></div>
+      <div class="fl"><label>Pickup location</label><select id="pm-pick"><option>VBT Yard</option><option>Keith Farms</option><option>CEMEX</option><option>Vulcan Sanger</option><option>Precision Bakersfield</option><option>Other</option></select></div>
+      <div class="fl"><label>Supervisor on site</label><input id="pm-sup" placeholder="Billy"></div>
     </div>
     <div class="fr">
-      <div class="fl"><label>Pickup</label><select id="pm-pick"><option>VBT Yard</option><option>Keith Farms</option><option>CEMEX</option><option>Vulcan Sanger</option><option>Precision Bakersfield</option><option>Other</option></select></div>
-      <div class="fl"><label>Supervisor</label><input id="pm-sup" placeholder="Billy"></div>
+      <div class="fl"><label>Delivery address / city</label><input id="pm-addr" placeholder="2007 N Cobbler Dr, Fresno"></div>
+      <div class="fl"><label>Job type</label><select id="pm-type" onchange="onTypeChg()"><option value="one-time">One-time</option><option value="scheduled">Scheduled (future)</option><option value="recurring">Recurring</option></select></div>
     </div>
-    <div class="fl"><label>Delivery address / city</label><input id="pm-addr" placeholder="2007 N Cobbler Dr, Fresno"></div>
-    <div class="fr">
-      <div class="fl"><label>Price per load ($)</label><input id="pm-ppl" type="number" min="0" step="0.01" placeholder="0.00"></div>
-      <div class="fl"><label>Job type</label><select id="pm-type" onchange="onTypeChg()"><option value="one-time">One-time</option><option value="scheduled">Scheduled</option><option value="recurring">Recurring</option></select></div>
-    </div>
-    <div class="fl" id="pm-recur-w" style="display:none"><label>Repeats every</label><select id="pm-recur"><option value="weekly">Week</option><option value="biweekly">2 Weeks</option><option value="monthly">Month</option></select></div>
+    <div class="fl" id="pm-rw" style="display:none"><label>Repeats every</label><select id="pm-recur"><option value="weekly">Week</option><option value="biweekly">2 Weeks</option><option value="monthly">Month</option></select></div>
     <div class="fl"><label>Notes</label><textarea id="pm-notes" placeholder="Special instructions..."></textarea></div>
-    <div class="sdiv">Assign loads to drivers</div>
-    <div class="rem" id="pm-rem">Assign 0 of 0 loads</div>
-    <div class="splits" id="pm-splits"></div>
-    <button class="as" onclick="addSplit()">+ Add driver</button>
+
+    <div class="sdiv">Load assignments — add one row per driver / material combination</div>
+    <div id="pm-splits"></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+      <button class="asBtn" onclick="addSplit()">+ Add row</button>
+      <div class="rem" id="pm-rem" style="flex:1">No loads entered yet</div>
+    </div>
   </div>
   <div class="mf">
     <button class="bd" id="pm-del" style="display:none" onclick="delPO()">Delete PO</button>
@@ -371,14 +339,14 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
   </div>
 </div></div>
 
-<!-- LOAD DETAIL / LOG MODAL -->
+<!-- LOAD DETAIL MODAL -->
 <div class="mbg" id="ll-m" style="display:none"><div class="mod">
   <div class="mh"><h2 id="ll-title">Load detail</h2><button class="mc" onclick="closeLL()">&#215;</button></div>
   <div class="mb">
     <div id="ll-info" style="font-size:12px;color:var(--txt2);line-height:1.8;padding:8px;background:var(--bg2);border-radius:var(--r)"></div>
     <div class="fr">
       <div class="fl"><label>Loads delivered</label><input id="ll-del" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>
-      <div class="fl"><label>Notes</label><input id="ll-notes" placeholder="Any issues..."></div>
+      <div class="fl"><label>Notes</label><input id="ll-notes" placeholder="Issues, lot #s..."></div>
     </div>
     <div class="fl"><label>Timestamps</label>
       <div style="margin-top:5px;display:flex;flex-direction:column;gap:5px">
@@ -387,20 +355,19 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
         <div class="ts-row"><button class="ts-btn" type="button" onclick="stmp('ll-ts-c')">&#9632; Complete</button><input id="ll-ts-c" class="ts-val" readonly placeholder="not stamped"></div>
       </div>
     </div>
-    <!-- MOVE/REASSIGN (manager) -->
-    <div id="ll-move-wrap" class="mgr-only" style="display:none">
+    <div id="ll-move-wrap" class="mgr" style="display:none">
       <div class="sdiv">Move or reassign</div>
       <div class="fr">
-        <div class="fl"><label>Move to date</label><input type="date" id="ll-move-date"></div>
-        <div class="fl"><label>Reassign to driver</label><select id="ll-reassign"></select></div>
+        <div class="fl"><label>Move to date</label><input type="date" id="ll-mv-date"></div>
+        <div class="fl"><label>Reassign driver</label><select id="ll-reassign"><option value="">— same driver —</option></select></div>
       </div>
-      <button class="bs" style="font-size:12px;padding:5px 12px;margin-top:6px" onclick="applyMoveReassign()">Apply</button>
+      <button class="bs" style="font-size:12px;padding:5px 11px;margin-top:5px" onclick="applyMoveReassign()">Apply move / reassign</button>
     </div>
   </div>
   <div class="mf">
-    <button class="bd" id="ll-del-btn" style="display:none" onclick="delLoad()">Remove load</button>
-    <button class="ab g" id="ll-complete-btn" onclick="complLoad()">&#10003; Mark done</button>
-    <button class="ab" id="ll-sig-btn" onclick="openSigFromLL()">&#9997; Signature</button>
+    <button class="bd" id="ll-delbtn" style="display:none" onclick="delLoad()">Remove</button>
+    <button class="ab g" id="ll-compbtn" onclick="complLoad()">&#10003; Done</button>
+    <button class="ab" onclick="openSigFromLL()">&#9997; Signature</button>
     <button class="bs" onclick="closeLL()">Cancel</button>
     <button class="bp" onclick="saveLL()">Save</button>
   </div>
@@ -410,7 +377,7 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 <div class="mbg" id="pay-m" style="display:none"><div class="mod">
   <div class="mh"><h2 id="pay-title">Add Payment</h2><button class="mc" onclick="closePayM()">&#215;</button></div>
   <div class="mb">
-    <div id="pay-info" style="font-size:13px;color:var(--txt2)"></div>
+    <div id="pay-info" style="font-size:13px;color:var(--txt2);line-height:1.6"></div>
     <div class="fr">
       <div class="fl"><label>Amount ($)</label><input id="pay-amt" type="number" min="0" step="0.01" placeholder="0.00"></div>
       <div class="fl"><label>Method</label><select id="pay-method"><option>Cash</option><option>Check</option><option>ACH</option><option>Zelle</option><option>Other</option></select></div>
@@ -427,18 +394,18 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
     <div id="sig-info" style="font-size:12px;color:var(--txt2)"></div>
     <div class="fl"><label>Signed by (print name)</label><input id="sig-name" placeholder="Customer / receiver name"></div>
     <div class="fl"><label>Signature</label>
-      <div class="sig-wrap"><canvas id="sig-canvas" class="sig-canvas" width="480" height="150"></canvas>
+      <div class="sig-wrap"><canvas id="sig-canvas" class="sig-canvas" width="480" height="140"></canvas>
         <div class="sig-tools"><button class="sig-clear" onclick="clearSig()">Clear</button><span style="font-size:11px;color:var(--txt3);margin-left:auto">Sign with finger or mouse</span></div>
       </div>
     </div>
-    <div class="fl"><label>POD Notes</label><input id="sig-notes" placeholder="Condition notes, lot #s..."></div>
+    <div class="fl"><label>POD Notes</label><input id="sig-notes" placeholder="Condition, lot #s..."></div>
   </div>
   <div class="mf"><button class="bs" onclick="closeSig()">Cancel</button><button class="bp" onclick="saveSig()">Save signature</button></div>
 </div></div>
 
 <!-- ROLLOVER MODAL -->
 <div class="mbg" id="ro-m" style="display:none"><div class="mod">
-  <div class="mh"><h2>Rollover remaining loads</h2><button class="mc" onclick="document.getElementById('ro-m').style.display='none'">&#215;</button></div>
+  <div class="mh"><h2>Rollover loads</h2><button class="mc" onclick="document.getElementById('ro-m').style.display='none'">&#215;</button></div>
   <div class="mb">
     <div id="ro-info" style="font-size:13px;color:var(--txt2)"></div>
     <div class="fl"><label>Move remaining loads to date</label><input type="date" id="ro-date"></div>
@@ -446,15 +413,24 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
   <div class="mf"><button class="bs" onclick="document.getElementById('ro-m').style.display='none'">Cancel</button><button class="bp" onclick="doRollover()">Roll over</button></div>
 </div></div>
 
+<!-- PRICE TABLE MODAL -->
+<div class="mbg" id="price-m" style="display:none"><div class="mod">
+  <div class="mh"><h2>Material Price Table</h2><button class="mc" onclick="document.getElementById('price-m').style.display='none'">&#215;</button></div>
+  <div class="mb">
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:8px">Set default price per load for each material. These apply automatically when creating new loads.</div>
+    <div class="price-grid" id="price-grid"></div>
+  </div>
+  <div class="mf"><button class="bs" onclick="document.getElementById('price-m').style.display='none'">Cancel</button><button class="bp" onclick="savePriceTable()">Save prices</button></div>
+</div></div>
+
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
-let trucks=[],pos=[],loads=[],payments=[];
+let trucks=[],pos=[],loads=[],payments=[],matPrices={};
 let role='driver',myTruckId=null;
 let curTab='board',dayOffset=0;
 let editPoId=null,editLoadId=null,sigLoadId=null,payPoId=null,roPoId=null;
 let splits=[],expanded=new Set();
-let sigCtx=null,sigDrawing=false,sigHasData=false;
-let dragLoadId=null;
+let sigCtx=null,sigDrawing=false,sigHasData=false,dragLoadId=null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const ymd=d=>d.toISOString().slice(0,10);
@@ -463,16 +439,37 @@ const fmtD=iso=>iso?new Date(iso+'T12:00:00').toLocaleDateString('en-US',{month:
 const fmtM=iso=>new Date(iso+'-01T12:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'});
 const money=n=>'$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const dUntil=iso=>{const t=new Date(iso+'T12:00:00'),n=new Date();n.setHours(0,0,0,0);return Math.round((t-n)/86400000);};
+const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-function getBoardDate(){
-  const d=new Date(); d.setDate(d.getDate()+dayOffset); d.setHours(0,0,0,0); return d;
+// Material color map
+const MAT_COLORS={
+  'Fill Sand':    {dot:'#8a5c00',bg:'#fff8e6'},
+  'Gravel':       {dot:'#1a5fa8',bg:'#eaf2fd'},
+  'Rock':         {dot:'#6c3fc5',bg:'#f3eeff'},
+  'Cold Mix':     {dot:'#0a7a7a',bg:'#e6f7f7'},
+  '3/4 Rock':     {dot:'#b85c00',bg:'#fff3e6'},
+  'Recycle Base': {dot:'#1a7a4a',bg:'#eaf7f0'},
+  'Dirt':         {dot:'#666',  bg:'#f0efe9'},
+  'Base Rock':    {dot:'#c0392b',bg:'#fdf0ee'},
+  'Other':        {dot:'#111',  bg:'#f7f6f2'},
+};
+function matColor(m){ return MAT_COLORS[m]||{dot:'#888',bg:'#f0efe9'}; }
+
+function getBoardDate(){ const d=new Date();d.setDate(d.getDate()+dayOffset);d.setHours(0,0,0,0);return d; }
+function changeDay(d){ dayOffset+=d; renderBoard(); }
+
+function pLoads(id){ return loads.filter(l=>l.poId===id); }
+function pActivL(id){ return loads.filter(l=>l.poId===id&&l.status!=='completed'); }
+function pDel(id){ return loads.filter(l=>l.poId===id).reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0); }
+function pOrd(id){ return loads.filter(l=>l.poId===id).reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0); }
+function pPay(id){ return payments.filter(p=>p.poId===id); }
+function pInvoice(id){
+  const ls=loads.filter(l=>l.poId===id);
+  const invoiced=ls.reduce((s,l)=>s+(Number(l.loadsAssigned)||0)*(Number(l.pricePerLoad)||0),0);
+  const earned=ls.reduce((s,l)=>s+(Number(l.loadsDelivered)||0)*(Number(l.pricePerLoad)||0),0);
+  const paid=pPay(id).reduce((s,p)=>s+p.amount,0);
+  return{invoiced,earned,paid,balance:invoiced-paid};
 }
-function changeDay(d){dayOffset+=d;renderBoard();}
-
-function pLoads(id){return loads.filter(l=>l.poId===id);}
-function pActivL(id){return loads.filter(l=>l.poId===id&&l.status!=='completed');}
-function pDel(id){return loads.filter(l=>l.poId===id).reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);}
-function pPay(id){return payments.filter(p=>p.poId===id);}
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
 function swTab(t){
@@ -483,295 +480,346 @@ function swTab(t){
   });
   document.getElementById('nav-wrap').style.display=t==='board'?'flex':'none';
   if(t==='board') renderBoard();
-  if(t==='pos') renderPOs();
-  if(t==='hist') renderHist();
-  if(t==='drv') renderDrv();
+  if(t==='pos')   renderPOs();
+  if(t==='hist')  renderHist();
+  if(t==='drv')   renderDrv();
 }
 
-// ── Summary bar (manager only) ────────────────────────────────────────────────
+// ── Summary bar ───────────────────────────────────────────────────────────────
 function renderSbar(){
-  if(role!=='manager') return;
+  if(role!=='manager'){return;}
   const act=pos.filter(p=>p.status==='active');
-  const tL=act.reduce((s,p)=>s+Number(p.totalLoads||0),0);
-  const tD=act.reduce((s,p)=>s+pDel(p.id),0);
-  const miss=tL-tD;
-  const tRev=pos.reduce((s,p)=>s+(p.invoice?.pricePerLoad||0)*(p.totalLoads||0),0);
+  const tOrd=loads.filter(l=>act.find(p=>p.id===l.poId)).reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+  const tDel=loads.filter(l=>act.find(p=>p.id===l.poId)).reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+  const miss=tOrd-tDel;
+  const tRev=pos.reduce((s,p)=>s+pInvoice(p.id).invoiced,0);
   const tPaid=payments.reduce((s,p)=>s+p.amount,0);
   document.getElementById('sbar').innerHTML=`
     <div class="met"><div class="ml">Active POs</div><div class="mv">${act.length}</div></div>
-    <div class="met g"><div class="ml">Delivered</div><div class="mv">${tD}</div></div>
+    <div class="met g"><div class="ml">Delivered</div><div class="mv">${tDel}</div></div>
     <div class="met ${miss>0?'w':''}"><div class="ml">Missing</div><div class="mv">${miss}</div></div>
     <div class="met b"><div class="ml">Scheduled</div><div class="mv">${pos.filter(p=>p.status==='scheduled').length}</div></div>
-    <div class="met o"><div class="ml">Revenue</div><div class="mv">${money(tRev)}</div></div>
+    <div class="met o"><div class="ml">Invoiced</div><div class="mv">${money(tRev)}</div></div>
     <div class="met g"><div class="ml">Collected</div><div class="mv">${money(tPaid)}</div></div>
     <div class="met ${tRev-tPaid>0?'w':'g'}"><div class="ml">Balance</div><div class="mv">${money(tRev-tPaid)}</div></div>
   `;
 }
 
-// ════════════════════════════════════════════
-// DISPATCH BOARD
-// ════════════════════════════════════════════
+// ════════════════════════════════════
+// DISPATCH BOARD (PRIMARY VIEW)
+// ════════════════════════════════════
 function renderBoard(){
+  renderSbar();
   const boardDate=getBoardDate();
   const dateStr=ymd(boardDate);
-  const dayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  document.getElementById('board-date-label').textContent=boardDate.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
-  document.getElementById('board-day-label').textContent=dayNames[boardDate.getDay()]+(dateStr===tod()?' — TODAY':'');
+  const todStr=tod();
+  const isToday=dateStr===todStr;
+  const dayName=DAYS[boardDate.getDay()];
+  const dateLabel=boardDate.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
+  document.getElementById('nav-lbl').textContent=`${dayName}, ${dateLabel}`;
 
-  renderSbar();
+  // Gather all active loads for this date
+  const dateLoads=loads.filter(l=>l.deliveryDate===dateStr&&l.status!=='completed');
+  const assignedLoads=dateLoads.filter(l=>l.truckId&&l.truckId!=='unassigned');
+  const unassignedLoads=dateLoads.filter(l=>!l.truckId||l.truckId==='unassigned');
 
-  // ── DRIVER COLUMNS ───────────────────────────────────────────────────────────
-  const driversRow=document.getElementById('drivers-row');
-  driversRow.innerHTML='';
-  trucks.forEach(t=>{
-    const truckLoads=loads.filter(l=>l.truckId===t.id&&l.deliveryDate===dateStr&&l.status!=='completed');
-    const col=document.createElement('div');
-    col.className='driver-col';
-    col.innerHTML=`
-      <div class="driver-col-head">
-        <div class="dname">${t.label}</div>
-        ${role==='manager'
-          ? `<input class="truck-num-edit" value="${t.truckNum}" title="Edit truck #" onchange="updateTruckNum('${t.id}',this.value)">`
-          : `<div class="dtruck">${t.truckNum}</div>`}
+  // PO progress summary for day header chips
+  const dayPoIds=[...new Set(dateLoads.map(l=>l.poId))];
+  const dayPoSummary=dayPoIds.map(pid=>{
+    const po=pos.find(p=>p.id===pid);
+    if(!po) return '';
+    const dayL=dateLoads.filter(l=>l.poId===pid);
+    const ord=dayL.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+    const del=dayL.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+    return `<span class="po-progress-chip">${po.poNumber}: ${del}/${ord}</span>`;
+  }).join('');
+
+  // Total day loads summary
+  const dayOrd=dateLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+  const dayDel=dateLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+
+  const numT=trucks.length;
+  const colPct=Math.floor(100/numT);
+  const gridCols=trucks.map(()=>colPct+'%').join(' ');
+
+  let h=`
+    <div class="day-block">
+      <div class="day-header">
+        <span class="dh-day">${dayName}</span>
+        <span class="dh-date">${dateLabel}</span>
+        ${isToday?'<span class="dh-today">TODAY</span>':''}
+        ${dayPoSummary}
+        <span class="dh-summary">${dayDel}/${dayOrd} loads</span>
       </div>
-      <div class="driver-col-body">
-        <div class="driver-drop" id="drop-${t.id}"
-          ondragover="onDragOver(event,'${t.id}')"
-          ondragleave="onDragLeave(event)"
-          ondrop="onDrop(event,'active',${JSON.stringify(t.id)},${JSON.stringify(dateStr)})">
-          ${truckLoads.map(l=>renderLoadCard(l)).join('')}
-        </div>
-        ${role==='manager'?`<button class="add-job-btn" onclick="openNewPO('${t.id}','${dateStr}')">+ Add job</button>`:''}
-      </div>`;
-    driversRow.appendChild(col);
+
+      <!-- Column headers -->
+      <div class="col-head-row" style="grid-template-columns:${gridCols}">`;
+  trucks.forEach(t=>{
+    const tLoads=assignedLoads.filter(l=>l.truckId===t.id);
+    const tOrd=tLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+    const tDel=tLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+    h+=`<div class="col-head">
+      <div class="ch-name">${t.label} ${tOrd>0?`<span style="font-size:10px;color:var(--txt3)">${tDel}/${tOrd}</span>`:''}</div>
+      ${role==='manager'
+        ?`<input class="truck-edit" value="${t.truckNum}" title="Edit truck #" onchange="updateTruckNum('${t.id}',this.value)">`
+        :`<div class="ch-truck">${t.truckNum}</div>`}
+    </div>`;
   });
+  h+=`</div>
 
-  // ── UNASSIGNED ───────────────────────────────────────────────────────────────
-  const unassigned=loads.filter(l=>(!l.truckId||l.truckId==='unassigned')&&l.status!=='completed');
-  document.getElementById('unassigned-count').textContent=unassigned.length;
-  document.getElementById('unassigned-drop').innerHTML=unassigned.map(l=>renderLoadCard(l)).join('')||'<div style="padding:12px;text-align:center;font-size:11px;color:var(--txt3)">Drag loads here to unassign</div>';
+      <!-- Driver job cells -->
+      <div class="col-body-row" style="grid-template-columns:${gridCols}">`;
+  trucks.forEach(t=>{
+    const tLoads=assignedLoads.filter(l=>l.truckId===t.id);
+    h+=`<div class="driver-cell">
+      <div class="driver-drop" id="drop-${t.id}-${dateStr}"
+        ondragover="onDragOver(event)"
+        ondragleave="onDragLeave(event)"
+        ondrop="onDrop(event,'${t.id}','${dateStr}')">
+        ${tLoads.map(l=>renderLoadCard(l)).join('')}
+      </div>
+      ${role==='manager'?`<button class="add-job-btn" onclick="openNewPO('${t.id}','${dateStr}')">+ add job</button>`:''}
+    </div>`;
+  });
+  h+=`</div>
 
-  // ── SCHEDULED QUEUE ──────────────────────────────────────────────────────────
-  const scheduled=pos.filter(p=>p.status==='scheduled').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
-  document.getElementById('scheduled-count').textContent=scheduled.length;
-  document.getElementById('sched-body').innerHTML=scheduled.length
-    ? scheduled.map(p=>{
-        const d=dUntil(p.deliveryDate);
-        const dLabel=d===0?'today':d===1?'tomorrow':`in ${d} days`;
-        return `<div class="sq-card" onclick="openEditPO('${p.id}')">
-          <div class="sq-po">${p.poNumber}</div>
-          <div class="sq-cust">${p.customer}</div>
-          <div class="sq-date">${fmtD(p.deliveryDate)}</div>
-          <div class="sq-days">${dLabel} · ${p.totalLoads} loads</div>
-        </div>`;
-      }).join('')
-    : '<div style="padding:16px;text-align:center;font-size:11px;color:var(--txt3)">No scheduled jobs</div>';
+      <!-- Unassigned row -->
+      <div class="unassigned-row">
+        <div class="unassigned-label">Unassigned${unassignedLoads.length?` (${unassignedLoads.length})`:''}</div>
+        <div class="unassigned-drop-zone" id="drop-unassigned-${dateStr}"
+          ondragover="onDragOver(event)"
+          ondragleave="onDragLeave(event)"
+          ondrop="onDrop(event,null,'${dateStr}')">
+          ${unassignedLoads.length
+            ? unassignedLoads.map(l=>renderLoadCard(l,true)).join('')
+            : `<span style="font-size:11px;color:var(--txt3);padding:4px 8px">Drop loads here to unassign</span>`}
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById('board-inner').innerHTML=h;
 }
 
-function renderLoadCard(l){
+function renderLoadCard(l,mini=false){
   const po=pos.find(p=>p.id===l.poId)||{};
   const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
   const pct=la>0?Math.round(ld/la*100):0;
-  const miss=la>0&&ld<la;
-  const done=l.status==='completed';
+  const miss=la>0&&ld<la&&l.status!=='completed';
+  const mc=matColor(l.material);
   const pod=l.pod||{};
   let pills='';
-  if(ld>0||la>0) pills+=`<span class="pill ${pct>=100?'g':pct>0?'a':''}">${ld}/${la}</span>`;
-  if(miss&&!done) pills+=`<span class="pill r">-${la-ld}</span>`;
+  if(la>0) pills+=`<span class="pill ${pct>=100?'g':pct>0?'a':''}">${ld}/${la}</span>`;
+  if(miss) pills+=`<span class="pill r">-${la-ld}</span>`;
   if(pod.signedBy) pills+=`<span class="pill g">✓ signed</span>`;
-  if(l.timestamps?.start) pills+=`<span class="pill b">▶ started</span>`;
-  return `<div class="lcard ${miss&&!done?'missing':''} ${done?'done':''} ${l.status==='scheduled'?'scheduled':''}"
+  const ts=l.timestamps||{};
+  if(ts.start&&!ts.completed) pills+=`<span class="pill b">▶ started</span>`;
+  return `<div class="lcard ${mini?'unassigned-card':''}"
     draggable="${role==='manager'?'true':'false'}"
     ondragstart="onDragStart(event,'${l.id}')"
     ondragend="onDragEnd(event)"
     onclick="openLL('${l.id}')">
-    <div class="lc-po">${po.poNumber||'—'}</div>
-    <div class="lc-cust">${po.customer||'Unassigned'}</div>
-    <div class="lc-mat">${po.material||''} · ${po.city||po.address||''}</div>
+    <div class="lc-po">${po.poNumber||'—'}<span style="font-size:9px;opacity:.7">${po.customer?'· '+po.customer:''}</span></div>
+    <div class="lc-mat">
+      <div class="mat-dot" style="background:${mc.dot}"></div>
+      <span style="color:${mc.dot};font-weight:500">${l.material}</span>
+      <span style="color:var(--txt2)">· ${po.city||po.address||''}</span>
+    </div>
     <div class="lc-pills">${pills}</div>
-    <div class="lc-prog"><div class="lc-prog-fill ${pct>=100?'':'partial'}" style="width:${pct}%;background:${pct>=100?'var(--G)':pct>0?'var(--A)':'var(--bdr2)'}"></div></div>
+    <div class="lc-prog"><div class="lc-prog-fill" style="width:${pct}%;background:${pct>=100?'var(--G)':pct>0?'var(--A)':'var(--bdr2)'}"></div></div>
   </div>`;
 }
 
 // ── DRAG & DROP ───────────────────────────────────────────────────────────────
-function onDragStart(e,loadId){
-  dragLoadId=loadId;
-  e.currentTarget.classList.add('dragging');
-  e.dataTransfer.effectAllowed='move';
-}
-function onDragEnd(e){ e.currentTarget.classList.remove('dragging'); dragLoadId=null; }
-function onDragOver(e,zone){ e.preventDefault(); e.dataTransfer.dropEffect='move'; e.currentTarget.classList.add('drag-over'); }
-function onDragLeave(e){ e.currentTarget.classList.remove('drag-over'); }
-async function onDrop(e,status,truckId,dateStr){
-  e.preventDefault(); e.currentTarget.classList.remove('drag-over');
-  if(!dragLoadId) return;
-  const l=loads.find(x=>x.id===dragLoadId); if(!l) return;
-  const newTruck=truckId==='unassigned'?null:truckId;
-  const t=newTruck?trucks.find(x=>x.id===newTruck):null;
-  const update={truckId:newTruck||'unassigned',driverName:t?.label||'',deliveryDate:dateStr||l.deliveryDate};
-  await fetch('/api/loads/'+dragLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(update)});
-  await loadAll(); renderBoard();
+function onDragStart(e,id){dragLoadId=id;e.currentTarget.classList.add('dragging');e.dataTransfer.effectAllowed='move';}
+function onDragEnd(e){e.currentTarget.classList.remove('dragging');dragLoadId=null;}
+function onDragOver(e){e.preventDefault();e.dataTransfer.dropEffect='move';e.currentTarget.classList.add('over');}
+function onDragLeave(e){e.currentTarget.classList.remove('over');}
+async function onDrop(e,truckId,dateStr){
+  e.preventDefault();e.currentTarget.classList.remove('over');
+  if(!dragLoadId)return;
+  const l=loads.find(x=>x.id===dragLoadId);if(!l)return;
+  const t=truckId?trucks.find(x=>x.id===truckId):null;
+  await fetch('/api/loads/'+dragLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId:truckId||null,driverName:t?.label||'',deliveryDate:dateStr||l.deliveryDate})});
+  await loadAll();renderBoard();
 }
 
 // ── LOAD DETAIL MODAL ─────────────────────────────────────────────────────────
 function openLL(id){
-  const l=loads.find(x=>x.id===id); if(!l) return;
+  const l=loads.find(x=>x.id===id);if(!l)return;
   const po=pos.find(p=>p.id===l.poId)||{};
-  editLoadId=id;
   const t=trucks.find(x=>x.id===l.truckId);
-  document.getElementById('ll-title').textContent=po.poNumber||'Load detail';
+  editLoadId=id;
+  const mc=matColor(l.material);
+  document.getElementById('ll-title').textContent=`${po.poNumber||'Load'} — ${l.material}`;
   document.getElementById('ll-info').innerHTML=
-    `<b>${po.customer||'—'}</b> · ${po.material||''}<br>`+
+    `<span style="display:inline-flex;align-items:center;gap:5px;margin-bottom:4px"><span style="width:10px;height:10px;border-radius:50%;background:${mc.dot};flex-shrink:0"></span><b>${l.material}</b> · ${po.customer||'—'}</span><br>`+
     `Pickup: ${po.pickup||'—'} · Deliver to: ${po.city||po.address||'—'}<br>`+
     `Driver: ${l.driverName||t?.label||'Unassigned'} (${t?.truckNum||'—'})<br>`+
     `Assigned: ${l.loadsAssigned} loads · Supervisor: ${po.supervisor||'—'}`+
-    (po.notes?`<br><em>${po.notes}</em>`:'');
+    (po.notes?`<br><em style="color:var(--txt3)">${po.notes}</em>`:'');
   document.getElementById('ll-del').value=l.loadsDelivered||0;
   document.getElementById('ll-notes').value=l.notes||'';
   const ts=l.timestamps||{};
   document.getElementById('ll-ts-s').value=ts.start||'';
   document.getElementById('ll-ts-a').value=ts.arrived||'';
   document.getElementById('ll-ts-c').value=ts.completed||'';
-  document.getElementById('ll-del-btn').style.display=role==='manager'?'block':'none';
-  document.getElementById('ll-complete-btn').style.display=l.status==='completed'?'none':'block';
-  // Move/reassign section (manager)
+  document.getElementById('ll-delbtn').style.display=role==='manager'?'block':'none';
+  document.getElementById('ll-compbtn').style.display=l.status==='completed'?'none':'block';
   const mw=document.getElementById('ll-move-wrap');
   if(role==='manager'){
     mw.style.display='block';
-    document.getElementById('ll-move-date').value=l.deliveryDate||tod();
+    document.getElementById('ll-mv-date').value=l.deliveryDate||tod();
     const rs=document.getElementById('ll-reassign');
-    rs.innerHTML='<option value="">— same driver —</option>'+trucks.map(x=>`<option value="${x.id}" ${x.id===l.truckId?'selected':''}>${x.label} (${x.truckNum})</option>`).join('');
-  } else { mw.style.display='none'; }
+    rs.innerHTML='<option value="">— same driver —</option>'+
+      trucks.map(x=>`<option value="${x.id}"${x.id===l.truckId?' selected':''}>${x.label} (${x.truckNum})</option>`).join('');
+  } else {mw.style.display='none';}
   document.getElementById('ll-m').style.display='flex';
   setTimeout(()=>document.getElementById('ll-del').focus(),80);
 }
-function closeLL(){ document.getElementById('ll-m').style.display='none'; editLoadId=null; }
+function closeLL(){document.getElementById('ll-m').style.display='none';editLoadId=null;}
 async function saveLL(){
   const del=Number(document.getElementById('ll-del').value)||0;
   const notes=document.getElementById('ll-notes').value.trim();
-  const ts={start:document.getElementById('ll-ts-s').value||'',arrived:document.getElementById('ll-ts-a').value||'',completed:document.getElementById('ll-ts-c').value||''};
+  const ts={start:document.getElementById('ll-ts-s').value,arrived:document.getElementById('ll-ts-a').value,completed:document.getElementById('ll-ts-c').value};
   await fetch('/api/loads/'+editLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({loadsDelivered:del,notes,timestamps:ts})});
-  await loadAll(); closeLL(); renderBoard();
-  if(curTab==='drv') renderDrv();
+  await loadAll();closeLL();renderBoard();if(curTab==='pos')renderPOs();if(curTab==='drv')renderDrv();
 }
 async function applyMoveReassign(){
-  const newDate=document.getElementById('ll-move-date').value;
-  const newTruck=document.getElementById('ll-reassign').value;
-  if(!newDate&&!newTruck){alert('Pick a new date or driver');return;}
-  const l=loads.find(x=>x.id===editLoadId); if(!l) return;
-  const t=newTruck?trucks.find(x=>x.id===newTruck):null;
-  const update={deliveryDate:newDate||l.deliveryDate,truckId:newTruck||l.truckId,driverName:t?.label||l.driverName};
-  await fetch('/api/loads/'+editLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(update)});
-  await loadAll(); closeLL(); renderBoard();
+  const nd=document.getElementById('ll-mv-date').value;
+  const nt=document.getElementById('ll-reassign').value;
+  if(!nd&&!nt){alert('Pick a new date or driver');return;}
+  const l=loads.find(x=>x.id===editLoadId);if(!l)return;
+  const t=nt?trucks.find(x=>x.id===nt):null;
+  await fetch('/api/loads/'+editLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({deliveryDate:nd||l.deliveryDate,truckId:nt||l.truckId,driverName:t?.label||l.driverName})});
+  await loadAll();closeLL();renderBoard();
 }
 async function complLoad(){
-  if(!confirm('Mark this load as completed?')) return;
+  if(!confirm('Mark this load as completed?'))return;
   await fetch('/api/loads/'+editLoadId+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
-  await loadAll(); closeLL(); renderBoard();
-  if(curTab==='pos') renderPOs();
+  await loadAll();closeLL();renderBoard();if(curTab==='pos')renderPOs();
 }
 async function delLoad(){
-  if(!confirm('Remove this load assignment?')) return;
+  if(!confirm('Remove this load assignment?'))return;
   await fetch('/api/loads/'+editLoadId,{method:'DELETE'});
-  await loadAll(); closeLL(); renderBoard();
+  await loadAll();closeLL();renderBoard();
 }
-function openSigFromLL(){ const id=editLoadId; closeLL(); openSig(id); }
+function openSigFromLL(){const id=editLoadId;closeLL();openSig(id);}
 
-// ── ALL POs VIEW ──────────────────────────────────────────────────────────────
+// ── ALL POs ───────────────────────────────────────────────────────────────────
 function renderPOs(){
   const active=pos.filter(p=>p.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
-  let h=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px" class="mgr-flex"><button class="bp" onclick="openNewPO()">+ New PO</button></div>`;
-  if(!active.length){document.getElementById('pos-list').innerHTML=h+'<div class="no-loads">No active POs.</div>';return;}
-  active.forEach(p=>{h+=renderPOCard(p);});
-  document.getElementById('pos-list').innerHTML=h;
+  let h=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px" class="mgrf"><button class="bp" onclick="openNewPO()">+ New PO</button></div>`;
+  if(!active.length){document.getElementById('pos-list-wrap').innerHTML=h+'<div class="no-items">No active POs.</div>';return;}
+  active.forEach(p=>{h+=buildPOCard(p);});
+  document.getElementById('pos-list-wrap').innerHTML=h;
 }
 
-function renderPOCard(p){
-  const del=pDel(p.id),tot=Number(p.totalLoads||0),pct=tot>0?Math.round(del/tot*100):0;
+function buildPOCard(p){
   const isOpen=expanded.has(p.id);
-  const inv=p.invoice||{};
-  const priceL=Number(inv.pricePerLoad)||0;
-  const totalDue=priceL*tot;
-  const totalPaid=pPay(p.id).reduce((s,x)=>s+x.amount,0);
-  const balance=totalDue-totalPaid;
-  const payStatus=inv.paymentStatus||'unpaid';
+  const del=pDel(p.id),ord=pOrd(p.id),pct=ord>0?Math.round(del/ord*100):0;
+  const inv=pInvoice(p.id);
+  const payStatus=p.invoice?.paymentStatus||'unpaid';
   const pLoadsArr=pLoads(p.id);
+  const miss=ord-del;
   const allDone=pLoadsArr.length>0&&pLoadsArr.every(l=>l.status==='completed');
-  const miss=tot-del;
 
-  // Invoice (manager only)
-  const invHtml=role==='manager'?`<div class="inv-section">
-    <div class="inv-title">Invoice & Payment</div>
+  // Multi-material summary
+  const matSummary=p.materials?.map(m=>{
+    const mc=matColor(m.material);
+    const mLoads=loads.filter(l=>l.poId===p.id&&l.material===m.material);
+    const mDel=mLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+    const mOrd=mLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+    return `<span class="mat-chip" style="background:${mc.bg};color:${mc.dot};border:0.5px solid ${mc.dot}40">
+      <span style="width:7px;height:7px;border-radius:50%;background:${mc.dot};flex-shrink:0"></span>
+      ${mDel}/${mOrd} ${m.material}
+    </span>`;
+  }).join(' ')||'';
+
+  // Invoice section (manager only)
+  const invHtml=role==='manager'?`<div class="inv-sec">
+    <div class="inv-title">Invoice & Payment — ${p.poNumber}</div>
     <div class="inv-grid">
-      <div class="inv-card"><div class="il">Price / load</div><div class="iv">${money(priceL)}</div></div>
-      <div class="inv-card"><div class="il">Loads</div><div class="iv">${del}/${tot}</div></div>
-      <div class="inv-card money"><div class="il">Total due</div><div class="iv">${money(totalDue)}</div></div>
-      <div class="inv-card money"><div class="il">Paid</div><div class="iv">${money(totalPaid)}</div></div>
-      <div class="inv-card ${balance>0?'owed':'money'}"><div class="il">Balance</div><div class="iv">${money(balance)}</div></div>
+      <div class="icard money"><div class="il">Total invoiced</div><div class="iv">${money(inv.invoiced)}</div></div>
+      <div class="icard money"><div class="il">Earned (delivered)</div><div class="iv">${money(inv.earned)}</div></div>
+      <div class="icard money"><div class="il">Paid</div><div class="iv">${money(inv.paid)}</div></div>
+      <div class="icard ${inv.balance>0?'owed':'money'}"><div class="il">Balance</div><div class="iv">${money(inv.balance)}</div></div>
     </div>
     <div style="display:flex;align-items:center;gap:7px;margin-bottom:7px">
       <span class="sp sp-${payStatus}">${payStatus.toUpperCase()}</span>
-      ${allDone?'<span style="font-size:11px;color:var(--G);background:var(--Gb);padding:2px 8px;border-radius:20px;border:0.5px solid var(--Gd)">✓ Ready for invoice</span>':''}
+      ${allDone?'<span style="font-size:11px;color:var(--G);background:var(--Gb);padding:2px 9px;border-radius:20px;border:0.5px solid var(--Gd)">✓ Ready for invoice</span>':''}
     </div>
-    ${pPay(p.id).length?pPay(p.id).map(pay=>`<div class="pay-row"><span>${pay.method||'Payment'}</span><span style="color:var(--txt3);font-size:11px">${pay.note||''}</span><span class="pa">${money(pay.amount)}</span></div>`).join(''):''}
-    <div style="display:flex;gap:6px;margin-top:6px">
+    ${pPay(p.id).map(pay=>`<div class="pay-row"><span>${pay.method} · ${pay.note||''}</span><span class="pay-amt">${money(pay.amount)}</span></div>`).join('')}
+    <div style="display:flex;gap:6px;margin-top:7px">
       <button class="ab g" onclick="openPayM('${p.id}')">+ Payment</button>
-      <button class="ab" onclick="promptEditPrice('${p.id}')">&#9998; Price</button>
     </div>
   </div>`:'';
 
-  // Loads table
+  // Materials + loads breakdown table
+  const matGroups={};
+  pLoads(p.id).forEach(l=>{ if(!matGroups[l.material]) matGroups[l.material]=[]; matGroups[l.material].push(l); });
   let loadsHtml='';
-  if(!pLoadsArr.length){loadsHtml=`<div class="no-loads">No load assignments.</div>`;}
-  else{
-    loadsHtml=`<table class="lt"><thead><tr><th>Driver</th><th>Truck</th><th>Date</th><th>Loads</th><th>Status</th><th>POD</th>${role==='manager'?'<th>Actions</th>':''}</tr></thead><tbody>`;
-    pLoadsArr.forEach(l=>{
+  Object.entries(matGroups).forEach(([mat,mls])=>{
+    const mc=matColor(mat);
+    loadsHtml+=`<div style="border-top:0.5px solid var(--bdr)">
+      <div style="display:flex;align-items:center;gap:7px;padding:7px 12px;background:${mc.bg}">
+        <div class="mat-dot" style="background:${mc.dot}"></div>
+        <span style="font-size:11px;font-weight:500;color:${mc.dot}">${mat}</span>
+        <span style="font-size:11px;color:${mc.dot};opacity:.7">${mls.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0)}/${mls.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0)} loads</span>
+        ${role==='manager'?`<span style="font-size:11px;color:${mc.dot};opacity:.7;margin-left:auto">${money((matPrices[mat]||0))} / load</span>`:''}
+      </div>
+      <table class="mat-table"><thead><tr>
+        <th>Driver</th><th>Truck</th><th>Date</th><th>Loads</th><th>Status</th><th>POD</th>
+        ${role==='manager'?'<th>Actions</th>':''}
+      </tr></thead><tbody>`;
+    mls.forEach(l=>{
       const t=trucks.find(x=>x.id===l.truckId);
       const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
       const lpct=la>0?Math.round(ld/la*100):0;
       const pod=l.pod||{};
       loadsHtml+=`<tr>
-        <td style="font-weight:500">${l.driverName||t?.label||l.truckId||'—'}</td>
-        <td style="font-family:var(--m);font-size:11px;color:var(--txt2)">${t?.truckNum||''}</td>
+        <td style="font-weight:500">${l.driverName||t?.label||'Unassigned'}</td>
+        <td style="font-family:var(--m);font-size:11px;color:var(--txt2)">${t?.truckNum||'—'}</td>
         <td style="font-family:var(--m);font-size:11px">${fmtD(l.deliveryDate)}</td>
-        <td style="font-family:var(--m);font-size:11px">${ld}/${la}</td>
+        <td style="font-family:var(--m);font-size:12px">${ld}/${la}</td>
         <td><span class="sp sp-${l.status}">${l.status}</span></td>
         <td>${pod.signedBy?`<span class="pod-badge">✓ ${pod.signedBy}</span>`:'—'}</td>
         ${role==='manager'?`<td><div style="display:flex;gap:4px">
           <button class="ab" onclick="openLL('${l.id}')">Log</button>
-          ${l.status!=='completed'?`<button class="ab g" onclick="quickCompletePO('${l.id}')">Done</button>`:''}
+          ${l.status!=='completed'?`<button class="ab g" onclick="qComplLoad('${l.id}')">Done</button>`:''}
           <button class="ab" onclick="openSig('${l.id}')">Sign</button>
+          <button class="ab r" onclick="qDelLoad('${l.id}')">&#215;</button>
         </div></td>`:''}
       </tr>`;
     });
-    loadsHtml+=`</tbody></table>`;
-  }
+    loadsHtml+=`</tbody></table></div>`;
+  });
+  if(!Object.keys(matGroups).length) loadsHtml=`<div class="no-items">No load assignments yet.</div>`;
 
   return `<div class="poc ${p.status}" id="poc-${p.id}">
     <div class="poh" onclick="togglePO('${p.id}')">
       <span class="poc-chev ${isOpen?'o':''}">&#9654;</span>
       <span class="poc-num">${p.poNumber}</span>
-      <span class="poc-cust">${p.customer}${p.code?' <span style="font-family:var(--m);font-size:11px;color:var(--txt2)">'+p.code+'</span>':''}</span>
+      <span class="poc-cust">${p.customer}</span>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;flex:1;min-width:0">${matSummary}</div>
       <span class="poc-date">${fmtD(p.deliveryDate)}</span>
       <div class="poc-prog">
         <div class="poc-bar"><div class="poc-fill ${pct===0?'z':pct<100?'p':'f'}" style="width:${pct}%"></div></div>
-        <span class="poc-pt">${del}/${tot}</span>
+        <span class="poc-pt">${del}/${ord}</span>
       </div>
       <span class="sp sp-${p.status}">${p.status}</span>
       <span class="sp sp-${payStatus}">${payStatus}</span>
     </div>
     <div class="pob ${isOpen?'o':''}" id="pob-${p.id}">
-      <div class="po-meta-row">
-        <span><b>Material:</b> ${p.material}</span>
+      <div class="po-meta">
         <span><b>Pickup:</b> ${p.pickup||'—'}</span>
         <span><b>Deliver to:</b> ${p.city||p.address||'—'}</span>
         <span><b>Supervisor:</b> ${p.supervisor||'—'}</span>
         ${p.notes?`<span><b>Notes:</b> ${p.notes}</span>`:''}
-        ${miss>0&&p.status==='active'?`<span style="color:var(--R)"><b>Missing:</b> ${miss}</span>`:''}
+        ${miss>0&&p.status==='active'?`<span style="color:var(--R)"><b>Missing:</b> ${miss} loads</span>`:''}
       </div>
-      ${role==='manager'?`<div class="po-actions">
-        <button class="ab" onclick="openEditPO('${p.id}')">&#9998; Edit</button>
-        <button class="ab" onclick="openAddSplit('${p.id}')">+ Driver</button>
+      ${role==='manager'?`<div class="po-acts">
+        <button class="ab" onclick="openEditPO('${p.id}')">&#9998; Edit PO</button>
+        <button class="ab" onclick="openAddLoads('${p.id}')">+ Add loads</button>
         ${miss>0?`<button class="ab o" onclick="openRO('${p.id}')">&#8634; Roll over</button>`:''}
         <button class="ab g" onclick="complAllLoads('${p.id}')">✓ All done</button>
         <button class="ab r" onclick="delPOById('${p.id}')">Delete</button>
@@ -782,44 +830,33 @@ function renderPOCard(p){
   </div>`;
 }
 
-async function quickCompletePO(id){
-  if(!confirm('Mark this load as completed?')) return;
-  await fetch('/api/loads/'+id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
-  await loadAll(); renderPOs(); renderBoard();
-}
-async function complAllLoads(id){
-  if(!confirm('Mark ALL loads for this PO as completed?')) return;
-  for(const l of pActivL(id)) await fetch('/api/loads/'+l.id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
-  await loadAll(); renderPOs(); renderBoard();
-}
-async function delPOById(id){
-  if(!confirm('Delete this PO and all its loads?')) return;
-  await fetch('/api/pos/'+id,{method:'DELETE'});
-  await loadAll(); renderPOs(); renderBoard();
-}
-function togglePO(id){ if(expanded.has(id)) expanded.delete(id); else expanded.add(id); renderPOs(); }
+function togglePO(id){if(expanded.has(id))expanded.delete(id);else expanded.add(id);renderPOs();}
+async function qComplLoad(id){if(!confirm('Mark done?'))return;await fetch('/api/loads/'+id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await loadAll();renderPOs();renderBoard();}
+async function qDelLoad(id){if(!confirm('Remove load?'))return;await fetch('/api/loads/'+id,{method:'DELETE'});await loadAll();renderPOs();renderBoard();}
+async function complAllLoads(id){if(!confirm('Mark ALL loads completed?'))return;for(const l of pActivL(id)) await fetch('/api/loads/'+l.id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await loadAll();renderPOs();renderBoard();}
+async function delPOById(id){if(!confirm('Delete this PO and all its loads?'))return;await fetch('/api/pos/'+id,{method:'DELETE'});await loadAll();renderPOs();renderBoard();}
 
 // ── HISTORY ───────────────────────────────────────────────────────────────────
 function renderHist(){
   const done=pos.filter(p=>p.status==='completed');
-  if(!done.length){document.getElementById('hist-wrap').innerHTML='<div class="no-loads" style="padding:32px">No completed POs yet.</div>';return;}
-  const byM={};
-  done.forEach(p=>{const m=(p.completedAt||p.deliveryDate||'').slice(0,7)||'unknown';if(!byM[m])byM[m]=[];byM[m].push(p);});
+  if(!done.length){document.getElementById('hist-wrap').innerHTML='<div class="no-items" style="padding:32px">No completed POs yet.</div>';return;}
+  const byM={};done.forEach(p=>{const m=(p.completedAt||p.deliveryDate||'').slice(0,7)||'x';if(!byM[m])byM[m]=[];byM[m].push(p);});
   let h='';
   Object.keys(byM).sort().reverse().forEach(m=>{
-    h+=`<div class="hm"><div class="hml">${m==='unknown'?'Unknown':fmtM(m)}</div>`;
+    h+=`<div class="hm"><div class="hml">${m==='x'?'Unknown':fmtM(m)}</div>`;
     byM[m].forEach(p=>{
-      const del=pDel(p.id),tot=Number(p.totalLoads||0);
-      const paid=pPay(p.id).reduce((s,x)=>s+x.amount,0);
-      const due=(p.invoice?.pricePerLoad||0)*tot;
+      const inv=pInvoice(p.id);
+      const matSummary=p.materials?.map(m=>{const mc=matColor(m.material);return `<span style="font-size:10px;color:${mc.dot};background:${mc.bg};padding:1px 6px;border-radius:20px;border:0.5px solid ${mc.dot}40">${m.totalLoads} ${m.material}</span>`;}).join(' ')||'';
       h+=`<div class="hi">
-        <div><div style="font-family:var(--m);font-size:11px;color:var(--B)">${p.poNumber}</div>
+        <div>
+          <div style="font-family:var(--m);font-size:11px;color:var(--B)">${p.poNumber}</div>
           <div style="font-size:13px;font-weight:500;color:var(--txt)">${p.customer}</div>
-          <div style="font-size:11px;color:var(--txt2)">${p.material} · ${p.city||'—'}</div></div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">${matSummary}</div>
+        </div>
         <div style="text-align:right">
           <div style="font-size:11px;font-family:var(--m);color:var(--G)">✓ ${fmtD(p.completedAt||p.deliveryDate)}</div>
-          <div style="font-size:11px;color:var(--txt2)">${del}/${tot} loads</div>
-          ${role==='manager'?`<div style="font-size:11px;color:var(--txt2)">${money(paid)} / ${money(due)}</div><span class="sp sp-${p.invoice?.paymentStatus||'unpaid'}">${p.invoice?.paymentStatus||'unpaid'}</span>`:''}
+          ${role==='manager'?`<div style="font-size:11px;color:var(--txt2)">${money(inv.paid)} / ${money(inv.invoiced)}</div>
+          <span class="sp sp-${p.invoice?.paymentStatus||'unpaid'}">${p.invoice?.paymentStatus||'unpaid'}</span>`:''}
         </div>
       </div>`;
     });
@@ -830,82 +867,77 @@ function renderHist(){
 
 // ── DRIVER VIEW ───────────────────────────────────────────────────────────────
 function renderDrv(){
-  const myLoads=loads.filter(l=>l.truckId===myTruckId&&l.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
-  if(!myLoads.length){document.getElementById('drv-mobile').innerHTML='<div class="no-loads-msg">No active loads assigned to you.</div>';return;}
+  const myL=loads.filter(l=>l.truckId===myTruckId&&l.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
+  if(!myL.length){document.getElementById('drv-view').innerHTML='<div class="no-loads">No active loads assigned to you.</div>';return;}
   const todStr=tod();
   let h='';
-  myLoads.forEach(l=>{
+  myL.forEach(l=>{
     const po=pos.find(p=>p.id===l.poId)||{};
     const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
     const isT=l.deliveryDate===todStr;
     const ts=l.timestamps||{};
     const pod=l.pod||{};
+    const mc=matColor(l.material);
     h+=`<div class="dlc">
       <div class="dlch">
         <div class="dlch-po">${po.poNumber||'—'} · ${fmtD(l.deliveryDate)}${isT?' <span style="color:var(--G);font-size:10px">TODAY</span>':''}</div>
-        <div class="dlch-c">${po.customer||''}</div>
+        <div class="dlch-c">${po.customer||''} <span style="font-size:11px;font-weight:400;color:${mc.dot}">· ${l.material}</span></div>
       </div>
       <div class="dlcb">
         <div class="dlc-grid">
-          <div class="dlc-info">
-            <div class="meta"><b>Material:</b> ${po.material||''}<br><b>Pickup:</b> ${po.pickup||''}<br>${po.city?`<b>Deliver to:</b> ${po.city}<br>`:''}`+
-            (po.supervisor?`<b>Supervisor:</b> ${po.supervisor}<br>`:'')+
-            (l.notes?`<em style="color:var(--txt3)">${l.notes}</em><br>`:'')+
-            `</div>`+
-            (ts.start||ts.arrived||ts.completed?`<div class="drv-ts">${ts.start?'▶ '+ts.start+' ':''} ${ts.arrived?'📍 '+ts.arrived+' ':''}${ts.completed?'■ '+ts.completed:''}</div>`:'') +
-            (pod.signedBy?`<div class="pod-ok">✓ Signed by ${pod.signedBy}</div>`:'') +
-          `</div>
-          <div class="dlc-right">
-            <div class="dlc-big">${ld}<span style="font-size:16px;color:var(--txt2)">/${la}</span></div>
+          <div>
+            <div class="dlc-meta">
+              <b>Pickup:</b> ${po.pickup||'—'}<br>
+              ${po.city?`<b>Deliver to:</b> ${po.city}<br>`:''}
+              ${po.supervisor?`<b>Supervisor:</b> ${po.supervisor}<br>`:''}
+              ${l.notes?`<em style="color:var(--txt3)">${l.notes}</em><br>`:''}
+            </div>
+            ${ts.start||ts.arrived||ts.completed?`<div class="drv-ts">${ts.start?'▶ '+ts.start+'<br>':''}${ts.arrived?'📍 '+ts.arrived+'<br>':''}${ts.completed?'■ '+ts.completed:''}</div>`:''}
+            ${pod.signedBy?`<div class="pod-ok">✓ Signed by ${pod.signedBy} at ${pod.signedAt}</div>`:''}
+          </div>
+          <div>
+            <div class="dlc-big">${ld}<span style="font-size:15px;color:var(--txt2)">/${la}</span></div>
             <div class="dlc-lbl">delivered</div>
           </div>
         </div>
         <div class="drv-btns">
-          <button class="drv-btn start ${ts.start?'done-btn':''}" onclick="${ts.start?'':("quickTs('"+l.id+"','start')")}">
+          <button class="dbtn start ${ts.start?'stamped':''}" onclick="${ts.start?'':(`quickTs('${l.id}','start')`)}">
             ${ts.start?'✓ Started: '+ts.start:'▶  Start load'}
           </button>
-          <button class="drv-btn arrived ${ts.arrived?'done-btn':''}" onclick="${ts.arrived?'':("quickTs('"+l.id+"','arrived')")}">
+          <button class="dbtn arr ${ts.arrived?'stamped':''}" onclick="${ts.arrived?'':(`quickTs('${l.id}','arrived')`)}">
             ${ts.arrived?'✓ Arrived: '+ts.arrived:'📍  Arrived at site'}
           </button>
-          <button class="drv-btn" onclick="openLL('${l.id}')">&#9998;  Log loads delivered</button>
-          <button class="drv-btn sig" onclick="openSig('${l.id}')">&#9997;  Capture signature</button>
-          <button class="drv-btn complete" onclick="quickComplDrv('${l.id}')">&#10003;  Mark complete</button>
+          <button class="dbtn" onclick="openLL('${l.id}')">&#9998;  Log loads delivered</button>
+          <button class="dbtn sig" onclick="openSig('${l.id}')">&#9997;  Capture signature</button>
+          <button class="dbtn comp" onclick="qComplDrv('${l.id}')">&#10003;  Mark complete</button>
         </div>
       </div>
     </div>`;
   });
-  document.getElementById('drv-mobile').innerHTML=h;
+  document.getElementById('drv-view').innerHTML=h;
 }
 
-async function quickTs(loadId,key){
+async function quickTs(id,key){
   const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});
-  const l=loads.find(x=>x.id===loadId);if(!l)return;
-  const ts={...l.timestamps,[key]:now};
-  await fetch('/api/loads/'+loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({timestamps:ts})});
+  const l=loads.find(x=>x.id===id);if(!l)return;
+  await fetch('/api/loads/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({timestamps:{...l.timestamps,[key]:now}})});
   await loadAll();renderDrv();
 }
-async function quickComplDrv(id){
-  if(!confirm('Mark this load as completed?'))return;
-  await fetch('/api/loads/'+id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
-  await loadAll();renderDrv();renderBoard();
-}
+async function qComplDrv(id){if(!confirm('Mark complete?'))return;await fetch('/api/loads/'+id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await loadAll();renderDrv();renderBoard();}
 
 // ── PO MODAL ──────────────────────────────────────────────────────────────────
-function openNewPO(defaultTruckId,defaultDate){
+function openNewPO(defaultTruck,defaultDate){
   editPoId=null;
   const dt=defaultDate||tod();
-  const dTruck=defaultTruckId||trucks[0]?.id||'';
-  splits=[{truckId:dTruck,driverName:trucks.find(t=>t.id===dTruck)?.label||'',loadsAssigned:'',deliveryDate:dt}];
+  const dTruck=defaultTruck||trucks[0]?.id||'';
+  splits=[{truckId:dTruck,driverName:trucks.find(t=>t.id===dTruck)?.label||'',material:'Fill Sand',loadsAssigned:'',deliveryDate:dt}];
   document.getElementById('po-m-title').textContent='New Purchase Order';
   document.getElementById('pm-del').style.display='none';
   ['pm-num','pm-cust','pm-code','pm-addr','pm-notes'].forEach(x=>document.getElementById(x).value='');
-  ['pm-num','pm-date','pm-cust','pm-code','pm-mat','pm-loads','pm-pick','pm-sup','pm-addr','pm-ppl','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=false;e.style.opacity='';}});
-  document.getElementById('pm-mat').value='Fill Sand';
+  ['pm-num','pm-date','pm-cust','pm-code','pm-pick','pm-sup','pm-addr','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=false;e.style.opacity='';}});
   document.getElementById('pm-pick').value='VBT Yard';
   document.getElementById('pm-type').value='one-time';
-  document.getElementById('pm-ppl').value='';
-  document.getElementById('pm-loads').value='';
-  document.getElementById('pm-recur-w').style.display='none';
+  document.getElementById('pm-rw').style.display='none';
   document.getElementById('pm-date').value=dt;
   renderSplits();updRem();
   document.getElementById('po-m').style.display='flex';
@@ -914,108 +946,116 @@ function openEditPO(id){
   const po=pos.find(p=>p.id===id);if(!po)return;
   editPoId=id;
   const pl=pLoads(id);
-  splits=pl.length?pl.map(l=>({truckId:l.truckId,driverName:l.driverName||'',loadsAssigned:l.loadsAssigned,deliveryDate:l.deliveryDate||po.deliveryDate,loadId:l.id})):[{truckId:trucks[0]?.id||'',driverName:'',loadsAssigned:'',deliveryDate:po.deliveryDate||tod()}];
+  splits=pl.length?pl.map(l=>({truckId:l.truckId||'',driverName:l.driverName||'',material:l.material,loadsAssigned:l.loadsAssigned,deliveryDate:l.deliveryDate||po.deliveryDate,loadId:l.id})):[{truckId:'',driverName:'',material:'Fill Sand',loadsAssigned:'',deliveryDate:po.deliveryDate||tod()}];
   document.getElementById('po-m-title').textContent='Edit PO — '+po.poNumber;
   document.getElementById('pm-del').style.display='block';
   document.getElementById('pm-num').value=po.poNumber;
   document.getElementById('pm-date').value=po.deliveryDate||tod();
   document.getElementById('pm-cust').value=po.customer||'';
   document.getElementById('pm-code').value=po.code||'';
-  document.getElementById('pm-mat').value=po.material||'Fill Sand';
-  document.getElementById('pm-loads').value=po.totalLoads||'';
   document.getElementById('pm-pick').value=po.pickup||'VBT Yard';
   document.getElementById('pm-sup').value=po.supervisor||'';
   document.getElementById('pm-addr').value=po.city||po.address||'';
-  document.getElementById('pm-ppl').value=po.invoice?.pricePerLoad||'';
   document.getElementById('pm-type').value=po.type||'one-time';
   document.getElementById('pm-recur').value=po.recurrenceRule||'weekly';
-  document.getElementById('pm-recur-w').style.display=po.type==='recurring'?'block':'none';
+  document.getElementById('pm-rw').style.display=po.type==='recurring'?'block':'none';
   document.getElementById('pm-notes').value=po.notes||'';
-  ['pm-num','pm-date','pm-cust','pm-code','pm-mat','pm-loads','pm-pick','pm-sup','pm-addr','pm-ppl','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=false;e.style.opacity='';}});
+  ['pm-num','pm-date','pm-cust','pm-code','pm-pick','pm-sup','pm-addr','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=false;e.style.opacity='';}});
   renderSplits();updRem();
   document.getElementById('po-m').style.display='flex';
 }
-function openAddSplit(id){
+function openAddLoads(id){
   const po=pos.find(p=>p.id===id);if(!po)return;
   editPoId=id;
-  splits=[{truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',loadsAssigned:'',deliveryDate:po.deliveryDate||tod()}];
-  document.getElementById('po-m-title').textContent='Add driver — '+po.poNumber;
+  splits=[{truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',material:'Fill Sand',loadsAssigned:'',deliveryDate:po.deliveryDate||tod()}];
+  document.getElementById('po-m-title').textContent='Add loads — '+po.poNumber;
   document.getElementById('pm-del').style.display='none';
   document.getElementById('pm-num').value=po.poNumber;
   document.getElementById('pm-cust').value=po.customer||'';
-  document.getElementById('pm-loads').value=po.totalLoads||'';
-  ['pm-num','pm-date','pm-cust','pm-code','pm-mat','pm-loads','pm-pick','pm-sup','pm-addr','pm-ppl','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=true;e.style.opacity='.5';}});
+  ['pm-num','pm-date','pm-cust','pm-code','pm-pick','pm-sup','pm-addr','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=true;e.style.opacity='.5';}});
   renderSplits();updRem();
   document.getElementById('po-m').style.display='flex';
 }
 function closePOM(){
   document.getElementById('po-m').style.display='none';editPoId=null;splits=[];
-  ['pm-num','pm-date','pm-cust','pm-code','pm-mat','pm-loads','pm-pick','pm-sup','pm-addr','pm-ppl','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=false;e.style.opacity='';}});
+  ['pm-num','pm-date','pm-cust','pm-code','pm-pick','pm-sup','pm-addr','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=false;e.style.opacity='';}});
 }
-function onTypeChg(){document.getElementById('pm-recur-w').style.display=document.getElementById('pm-type').value==='recurring'?'block':'none';}
+function onTypeChg(){document.getElementById('pm-rw').style.display=document.getElementById('pm-type').value==='recurring'?'block':'none';}
+
+const MATERIALS=['Fill Sand','Gravel','Rock','Cold Mix','3/4 Rock','Recycle Base','Dirt','Base Rock','Other'];
 function renderSplits(){
   const topts=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
-  document.getElementById('pm-splits').innerHTML=splits.map((s,i)=>`
-    <div class="srow">
-      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:2px">Driver</div>
+  const mopts=MATERIALS.map(m=>`<option>${m}</option>`).join('');
+  document.getElementById('pm-splits').innerHTML=splits.map((s,i)=>{
+    const mc=matColor(s.material);
+    return `<div class="srow" style="border-left:3px solid ${mc.dot}">
+      <div>
+        <div class="srow-label">Driver</div>
         <select onchange="splits[${i}].truckId=this.value;splits[${i}].driverName=trucks.find(t=>t.id===this.value)?.label||''">
-          ${topts.replace(`value="${s.truckId}"`,`value="${s.truckId}" selected`)}</select></div>
-      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:2px">Loads</div>
-        <input type="number" min="1" step="1" placeholder="0" value="${s.loadsAssigned||''}" oninput="splits[${i}].loadsAssigned=Number(this.value)||0;updRem()"></div>
-      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:2px">Date</div>
-        <input type="date" value="${s.deliveryDate||document.getElementById('pm-date').value||tod()}" oninput="splits[${i}].deliveryDate=this.value"></div>
+          <option value="">Unassigned</option>${topts.replace(`value="${s.truckId}"`,`value="${s.truckId}" selected`)}
+        </select>
+      </div>
+      <div>
+        <div class="srow-label">Material</div>
+        <select onchange="splits[${i}].material=this.value;renderSplits()">
+          ${MATERIALS.map(m=>`<option${m===s.material?' selected':''}>${m}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <div class="srow-label">Loads</div>
+        <input type="number" min="1" step="1" placeholder="0" value="${s.loadsAssigned||''}" oninput="splits[${i}].loadsAssigned=Number(this.value)||0;updRem()">
+      </div>
+      <div>
+        <div class="srow-label">Date</div>
+        <input type="date" value="${s.deliveryDate||document.getElementById('pm-date')?.value||tod()}" oninput="splits[${i}].deliveryDate=this.value">
+      </div>
       <button class="sr" onclick="splits.splice(${i},1);renderSplits()">&#215;</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+  updRem();
 }
-function addSplit(){splits.push({truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',loadsAssigned:'',deliveryDate:document.getElementById('pm-date').value||tod()});renderSplits();}
+function addSplit(){splits.push({truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',material:'Fill Sand',loadsAssigned:'',deliveryDate:document.getElementById('pm-date')?.value||tod()});renderSplits();}
 function updRem(){
-  const tot=Number(document.getElementById('pm-loads').value)||0;
-  const asgn=splits.reduce((s,r)=>s+(Number(r.loadsAssigned)||0),0);
-  const rem=tot-asgn;
+  // Group by material
+  const matMap={};
+  splits.forEach(s=>{const m=s.material||'?';if(!matMap[m])matMap[m]=0;matMap[m]+=(Number(s.loadsAssigned)||0);});
+  const total=Object.values(matMap).reduce((s,v)=>s+v,0);
+  const parts=Object.entries(matMap).map(([m,n])=>`${n} ${m}`).join(', ');
   const el=document.getElementById('pm-rem');
-  el.textContent=`Assigned ${asgn} of ${tot}${rem>0?' — '+rem+' unassigned':rem<0?' — '+Math.abs(rem)+' over-assigned':'  ✓ all assigned'}`;
-  el.className='rem'+(rem>0?' w':rem===0?' ok':'');
+  el.textContent=total?`${parts} — ${total} total loads`:'No loads entered yet';
+  el.className='rem '+(total>0?'ok':'');
 }
 async function savePO(){
   const g=id=>document.getElementById(id)?.value?.trim()||'';
-  const po={poNumber:g('pm-num')||null,customer:g('pm-cust'),code:g('pm-code'),material:g('pm-mat'),totalLoads:Number(g('pm-loads'))||0,deliveryDate:g('pm-date')||tod(),pickup:g('pm-pick'),supervisor:g('pm-sup'),city:g('pm-addr'),address:g('pm-addr'),type:g('pm-type'),recurrenceRule:g('pm-type')==='recurring'?g('pm-recur'):null,notes:g('pm-notes'),pricePerLoad:Number(g('pm-ppl'))||0};
-  if(!po.customer){alert('Customer required');return;}
-  const sp=splits.map(s=>({truckId:s.truckId,driverName:s.driverName||trucks.find(t=>t.id===s.truckId)?.label||'',loadsAssigned:Number(s.loadsAssigned)||0,deliveryDate:s.deliveryDate||po.deliveryDate}));
-  if(!sp.some(s=>s.loadsAssigned>0)){alert('Assign at least one load');return;}
+  const isAddMode=editPoId&&document.getElementById('pm-num').disabled;
+  const po={poNumber:g('pm-num')||null,customer:g('pm-cust'),code:g('pm-code'),pickup:g('pm-pick'),supervisor:g('pm-sup'),city:g('pm-addr'),address:g('pm-addr'),deliveryDate:g('pm-date')||tod(),type:g('pm-type'),recurrenceRule:g('pm-type')==='recurring'?g('pm-recur'):null,notes:g('pm-notes')};
+  if(!isAddMode&&!po.customer){alert('Customer required');return;}
+  const sp=splits.map(s=>({truckId:s.truckId||null,driverName:s.driverName||trucks.find(t=>t.id===s.truckId)?.label||'',material:s.material||'Fill Sand',loadsAssigned:Number(s.loadsAssigned)||0,deliveryDate:s.deliveryDate||po.deliveryDate}));
+  if(!sp.some(s=>s.loadsAssigned>0)){alert('Enter at least one load');return;}
   try{
-    if(editPoId&&document.getElementById('pm-num').disabled){
-      await fetch('/api/pos/'+editPoId+'/splits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sp)});
+    if(isAddMode){
+      await fetch('/api/pos/'+editPoId+'/loads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sp)});
     } else if(editPoId){
-      await fetch('/api/pos/'+editPoId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...po,invoice:{pricePerLoad:po.pricePerLoad}})});
+      await fetch('/api/pos/'+editPoId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(po)});
       for(const s of sp){
-        if(s.loadId) await fetch('/api/loads/'+s.loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId:s.truckId,driverName:s.driverName,loadsAssigned:s.loadsAssigned,deliveryDate:s.deliveryDate})});
-        else await fetch('/api/pos/'+editPoId+'/splits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify([s])});
+        if(s.loadId) await fetch('/api/loads/'+s.loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId:s.truckId,driverName:s.driverName,material:s.material,loadsAssigned:s.loadsAssigned,deliveryDate:s.deliveryDate})});
+        else await fetch('/api/pos/'+editPoId+'/loads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify([s])});
       }
     } else {
       await fetch('/api/pos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({po,splits:sp})});
     }
-    await loadAll();closePOM();renderBoard();
-    if(curTab==='pos') renderPOs();
+    await loadAll();closePOM();renderBoard();if(curTab==='pos')renderPOs();
   }catch(e){alert('Error: '+e.message);}
 }
-async function delPO(){if(!confirm('Delete this PO and all its loads?'))return;await fetch('/api/pos/'+editPoId,{method:'DELETE'});await loadAll();closePOM();renderBoard();if(curTab==='pos')renderPOs();}
-async function promptEditPrice(id){
-  const po=pos.find(p=>p.id===id);if(!po)return;
-  const v=prompt('Price per load ($):',po.invoice?.pricePerLoad||0);
-  if(v===null)return;
-  await fetch('/api/pos/'+id+'/invoice',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pricePerLoad:Number(v)||0})});
-  await loadAll();renderPOs();
-}
+async function delPO(){if(!confirm('Delete this PO and all loads?'))return;await fetch('/api/pos/'+editPoId,{method:'DELETE'});await loadAll();closePOM();renderBoard();if(curTab==='pos')renderPOs();}
 
 // ── PAYMENT ───────────────────────────────────────────────────────────────────
 function openPayM(id){
   const po=pos.find(p=>p.id===id);if(!po)return;
   payPoId=id;
-  const inv=po.invoice||{};
-  const due=(inv.pricePerLoad||0)*(po.totalLoads||0);
-  const paid=pPay(id).reduce((s,p)=>s+p.amount,0);
+  const inv=pInvoice(id);
   document.getElementById('pay-title').textContent='Add Payment — '+po.poNumber;
-  document.getElementById('pay-info').innerHTML=`<b>${po.customer}</b><br>Balance: ${money(due-paid)} of ${money(due)}`;
+  document.getElementById('pay-info').innerHTML=`<b>${po.customer}</b><br>Invoiced: ${money(inv.invoiced)} · Paid: ${money(inv.paid)} · <b style="color:var(--R)">Balance: ${money(inv.balance)}</b>`;
   document.getElementById('pay-amt').value='';
   document.getElementById('pay-note').value='';
   document.getElementById('pay-m').style.display='flex';
@@ -1050,7 +1090,7 @@ function openSig(id){
   const l=loads.find(x=>x.id===id);if(!l)return;
   const po=pos.find(p=>p.id===l.poId)||{};
   sigLoadId=id;
-  document.getElementById('sig-info').innerHTML=`<b>${po.poNumber} — ${po.customer}</b> · ${l.driverName||l.truckId}`;
+  document.getElementById('sig-info').innerHTML=`<b>${po.poNumber} — ${po.customer}</b> · ${l.material} · ${l.driverName||l.truckId}`;
   document.getElementById('sig-name').value=l.pod?.signedBy||'';
   document.getElementById('sig-notes').value=l.pod?.notes||'';
   document.getElementById('sig-m').style.display='flex';
@@ -1059,18 +1099,18 @@ function openSig(id){
 function closeSig(){document.getElementById('sig-m').style.display='none';sigLoadId=null;sigHasData=false;}
 function initSigCanvas(){
   const c=document.getElementById('sig-canvas');
-  const rect=c.getBoundingClientRect();
-  c.width=rect.width>0?rect.width:460;c.height=150;
+  const r=c.getBoundingClientRect();
+  c.width=r.width>0?r.width:460;c.height=140;
   sigCtx=c.getContext('2d');sigCtx.clearRect(0,0,c.width,c.height);
   sigCtx.fillStyle='#fff';sigCtx.fillRect(0,0,c.width,c.height);
   sigCtx.strokeStyle='#111';sigCtx.lineWidth=2;sigCtx.lineCap='round';sigCtx.lineJoin='round';
   sigHasData=false;
-  const getP=e=>{const r=c.getBoundingClientRect();if(e.touches)return{x:(e.touches[0].clientX-r.left)*(c.width/r.width),y:(e.touches[0].clientY-r.top)*(c.height/r.height)};return{x:(e.clientX-r.left)*(c.width/r.width),y:(e.clientY-r.top)*(c.height/r.height)};};
-  c.onmousedown=e=>{e.preventDefault();sigDrawing=true;sigCtx.beginPath();const p=getP(e);sigCtx.moveTo(p.x,p.y);};
-  c.onmousemove=e=>{e.preventDefault();if(!sigDrawing)return;const p=getP(e);sigCtx.lineTo(p.x,p.y);sigCtx.stroke();sigHasData=true;};
+  const gP=e=>{const r=c.getBoundingClientRect();if(e.touches)return{x:(e.touches[0].clientX-r.left)*(c.width/r.width),y:(e.touches[0].clientY-r.top)*(c.height/r.height)};return{x:(e.clientX-r.left)*(c.width/r.width),y:(e.clientY-r.top)*(c.height/r.height)};};
+  c.onmousedown=e=>{e.preventDefault();sigDrawing=true;sigCtx.beginPath();const p=gP(e);sigCtx.moveTo(p.x,p.y);};
+  c.onmousemove=e=>{e.preventDefault();if(!sigDrawing)return;const p=gP(e);sigCtx.lineTo(p.x,p.y);sigCtx.stroke();sigHasData=true;};
   c.onmouseup=c.onmouseleave=e=>{e.preventDefault();sigDrawing=false;};
-  c.ontouchstart=e=>{e.preventDefault();sigDrawing=true;sigCtx.beginPath();const p=getP(e);sigCtx.moveTo(p.x,p.y);};
-  c.ontouchmove=e=>{e.preventDefault();if(!sigDrawing)return;const p=getP(e);sigCtx.lineTo(p.x,p.y);sigCtx.stroke();sigHasData=true;};
+  c.ontouchstart=e=>{e.preventDefault();sigDrawing=true;sigCtx.beginPath();const p=gP(e);sigCtx.moveTo(p.x,p.y);};
+  c.ontouchmove=e=>{e.preventDefault();if(!sigDrawing)return;const p=gP(e);sigCtx.lineTo(p.x,p.y);sigCtx.stroke();sigHasData=true;};
   c.ontouchend=e=>{e.preventDefault();sigDrawing=false;};
 }
 function clearSig(){if(sigCtx){const c=document.getElementById('sig-canvas');sigCtx.clearRect(0,0,c.width,c.height);sigCtx.fillStyle='#fff';sigCtx.fillRect(0,0,c.width,c.height);sigHasData=false;}}
@@ -1078,10 +1118,36 @@ async function saveSig(){
   const name=document.getElementById('sig-name').value.trim();
   if(!name){alert('Enter signer name');return;}
   if(!sigHasData){alert('Please draw a signature');return;}
-  const c=document.getElementById('sig-canvas');
-  const pod={signedBy:name,signature:c.toDataURL('image/png'),signedAt:new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})+' '+new Date().toLocaleDateString('en-US'),notes:document.getElementById('sig-notes').value.trim()};
+  const pod={signedBy:name,signature:document.getElementById('sig-canvas').toDataURL('image/png'),signedAt:new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})+' '+new Date().toLocaleDateString('en-US'),notes:document.getElementById('sig-notes').value.trim()};
   await fetch('/api/loads/'+sigLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pod})});
   await loadAll();closeSig();renderBoard();if(curTab==='drv')renderDrv();
+}
+
+// ── PRICE TABLE ───────────────────────────────────────────────────────────────
+function openPriceTable(){
+  const g=document.getElementById('price-grid');
+  g.innerHTML=MATERIALS.map(m=>{
+    const mc=matColor(m);
+    return `<div class="price-row">
+      <span class="price-mat" style="display:flex;align-items:center;gap:7px">
+        <span style="width:10px;height:10px;border-radius:50%;background:${mc.dot};flex-shrink:0"></span>${m}
+      </span>
+      <div style="display:flex;align-items:center;gap:4px">
+        <span style="font-size:12px;color:var(--txt2)">$</span>
+        <input class="price-inp" id="price-${m.replace(/[^a-z0-9]/gi,'_')}" type="number" min="0" step="1" value="${matPrices[m]||0}">
+        <span style="font-size:11px;color:var(--txt3)">/load</span>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('price-m').style.display='flex';
+}
+async function savePriceTable(){
+  const prices={};
+  MATERIALS.forEach(m=>{const el=document.getElementById('price-'+m.replace(/[^a-z0-9]/gi,'_'));if(el)prices[m]=Number(el.value)||0;});
+  await fetch('/api/material-prices',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(prices)});
+  matPrices=prices;
+  document.getElementById('price-m').style.display='none';
+  if(curTab==='pos')renderPOs();
 }
 
 // ── TIMESTAMPS ────────────────────────────────────────────────────────────────
@@ -1108,7 +1174,7 @@ async function doSync(){
 // ── DATA ──────────────────────────────────────────────────────────────────────
 async function loadAll(){
   const r=await fetch('/api/data');const d=await r.json();
-  trucks=d.trucks||[];pos=d.pos||[];loads=d.loads||[];payments=d.payments||[];
+  trucks=d.trucks||[];pos=d.pos||[];loads=d.loads||[];payments=d.payments||[];matPrices=d.materialPrices||{};
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
@@ -1116,19 +1182,12 @@ async function init(){
   try{
     const r=await fetch('/api/me');const me=await r.json();
     role=me.role;myTruckId=me.truckId||null;
-    document.getElementById('ui-info').textContent=me.username;
-    if(role==='manager'){
-      document.body.classList.add('is-manager');
-      document.getElementById('sbar').style.display='grid';
-    }
+    document.getElementById('uinfo').textContent=me.username;
+    if(role==='manager'){document.body.classList.add('is-manager');document.getElementById('sbar').style.display='grid';}
     await loadAll();
   }catch(e){console.error(e);}
-
   if(role==='driver'){
-    // Drivers: hide board, POs, history — show only My Loads
-    ['tab-board','tab-pos','tab-hist','nav-wrap'].forEach(id=>{
-      const el=document.getElementById(id);if(el)el.style.display='none';
-    });
+    ['tab-board','tab-pos','tab-hist','nav-wrap'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
     swTab('drv');
   } else {
     swTab('board');
