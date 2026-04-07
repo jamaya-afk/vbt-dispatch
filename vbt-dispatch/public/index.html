@@ -421,7 +421,9 @@ function updateTruckNum(id,val){
 }
 
 function renderDriverView(){
-  const tid=document.getElementById('driver-select').value;
+  const ds=document.getElementById('driver-select');
+  const tid=ds.value||userTruckId;
+  if(!tid) return;
   const dates=weekDates();
   let html='';
   dates.forEach((date,di)=>{
@@ -657,13 +659,17 @@ async function init(){
   if(userRole==='driver'){
     document.getElementById('tab-mgr').style.display='none';
     document.getElementById('driver-bar').style.display='none';
+    // Populate driver select first, THEN set value, THEN switch tab
+    const ds=document.getElementById('driver-select');
+    ds.innerHTML=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
     if(userTruckId){
-      const ds=document.getElementById('driver-select');
       ds.value=userTruckId;
     }
+    // Switch tab last so renderDriverView() reads the correct truckId
     switchTab('driver');
+  } else {
+    render();
   }
-  render();
 }
 
 init();
