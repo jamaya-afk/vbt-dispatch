@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use(session({
@@ -16,7 +16,6 @@ app.use(session({
 }));
 
 const SHEET_ID  = '1T5pOeXmLmZyKKfq4YRl9aymXn9MQnNrqmcuyJluMhQs';
-const SHEET_TAB = 'Dispatch';
 const DATA_FILE = path.join(__dirname, 'data.json');
 
 const USERS = {
@@ -36,7 +35,7 @@ const DEFAULT_TRUCKS = [
   { id: 'carlos',   label: 'Carlos',   truckNum: 'Truck #2B', driver: 'Carlos'   },
 ];
 
-// ── Postgres or file storage ──────────────────────────────────────────────────
+// ── Postgres ──────────────────────────────────────────────────────────────────
 let pg = null;
 if (process.env.DATABASE_URL) {
   try {
@@ -48,28 +47,54 @@ if (process.env.DATABASE_URL) {
   } catch(e) { pg = null; }
 }
 
-// store.jobs schema:
-// { id, title, type: 'one-time'|'scheduled'|'recurring',
-//   status: 'active'|'scheduled'|'completed',
-//   dueDate: 'YYYY-MM-DD', recurrenceRule: 'weekly'|'biweekly'|'monthly'|null,
-//   completedAt: ISO string|null,
-//   truck, supervisor, driver, customer, code, material, loads,
-//   pickup, po, city, delivered, notes, timestamps }
+// ── Store ─────────────────────────────────────────────────────────────────────
+// pos[]:  { id, poNumber, customer, code, material, totalLoads, deliveryDate,
+//           pickup, supervisor, city, address, notes, type, recurrenceRule,
+//           status: active|completed|scheduled,
+//           invoice: { pricePerLoad, paymentStatus: unpaid|partial|paid,
+//                      amountPaid, notes },
+//           createdAt, completedAt }
+//
+// loads[]: { id, poId, truckId, driverName, loadsAssigned, loadsDelivered,
+//            status: active|completed|scheduled, deliveryDate,
+//            timestamps: { start, arrived, completed },
+//            pod: { signedBy, signature, signedAt, notes },
+//            notes, completedAt }
+//
+// payments[]: { id, poId, amount, method, note, paidAt }
 
-let store = { trucks: DEFAULT_TRUCKS, jobs: [], completedJobs: [], nextId: 1 };
+let store = {
+  trucks: DEFAULT_TRUCKS,
+  pos: [], loads: [], payments: [],
+  nextPoNum: 1001, nextLoadId: 1, nextPaymentId: 1
+};
 
 async function loadData() {
   try {
     if (pg) {
       const r = await pg.query("SELECT value FROM dispatch_data WHERE key='store'");
-      if (r.rows.length) { store = JSON.parse(r.rows[0].value); console.log(`Loaded ${store.jobs.length} jobs from Postgres`); return; }
+      if (r.rows.length) { store = JSON.parse(r.rows[0].value); ensureDefaults(); console.log(`Loaded ${store.pos.length} POs`); return; }
     }
     if (fs.existsSync(DATA_FILE)) {
       store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      if (!store.completedJobs) store.completedJobs = [];
-      console.log(`Loaded ${store.jobs.length} jobs from file`);
+      ensureDefaults();
+      console.log(`Loaded ${store.pos.length} POs from file`);
     }
   } catch(e) { console.warn('loadData error:', e.message); }
+}
+
+function ensureDefaults() {
+  if (!store.payments) store.payments = [];
+  if (!store.nextPaymentId) store.nextPaymentId = 1;
+  if (!store.nextPoNum) store.nextPoNum = 1001;
+  if (!store.nextLoadId) store.nextLoadId = 1;
+  store.pos.forEach(p => {
+    if (!p.invoice) p.invoice = { pricePerLoad: 0, paymentStatus: 'unpaid', amountPaid: 0, notes: '' };
+  });
+  store.loads.forEach(l => {
+    if (!l.pod) l.pod = { signedBy: '', signature: '', signedAt: '', notes: '' };
+    if (!l.timestamps) l.timestamps = {};
+  });
 }
 
 async function saveData() {
@@ -83,66 +108,90 @@ async function saveData() {
   } catch(e) { console.warn('saveData error:', e.message); }
 }
 
-// ── Promote scheduled jobs whose dueDate has arrived ─────────────────────────
-function promoteScheduledJobs() {
-  const today = new Date().toISOString().slice(0, 10);
-  store.jobs.forEach(j => {
-    if (j.status === 'scheduled' && j.dueDate && j.dueDate <= today) {
-      j.status = 'active';
+function promoteScheduled() {
+  const today = new Date().toISOString().slice(0,10);
+  store.pos.forEach(po => {
+    if (po.status === 'scheduled' && po.deliveryDate <= today) {
+      po.status = 'active';
+      store.loads.filter(l => l.poId === po.id && l.status === 'scheduled').forEach(l => l.status = 'active');
     }
   });
 }
 
-// ── Next recurrence date ──────────────────────────────────────────────────────
-function nextRecurrenceDate(fromDate, rule) {
+function nextRecurrence(fromDate, rule) {
   const d = new Date(fromDate + 'T12:00:00');
-  if (rule === 'weekly')    d.setDate(d.getDate() + 7);
-  if (rule === 'biweekly')  d.setDate(d.getDate() + 14);
-  if (rule === 'monthly')   d.setMonth(d.getMonth() + 1);
-  return d.toISOString().slice(0, 10);
+  if (rule === 'weekly')   d.setDate(d.getDate() + 7);
+  if (rule === 'biweekly') d.setDate(d.getDate() + 14);
+  if (rule === 'monthly')  d.setMonth(d.getMonth() + 1);
+  return d.toISOString().slice(0,10);
+}
+
+function poStats(poId) {
+  const ls = store.loads.filter(l => l.poId === poId);
+  const totalAssigned = ls.reduce((s,l) => s + (Number(l.loadsAssigned)||0), 0);
+  const totalDelivered = ls.reduce((s,l) => s + (Number(l.loadsDelivered)||0), 0);
+  const completedLoads = ls.filter(l => l.status === 'completed').length;
+  return { totalAssigned, totalDelivered, completedLoads, loadCount: ls.length };
 }
 
 // Google Auth
 let serviceAccount;
-if (process.env.SERVICE_ACCOUNT_JSON) {
-  serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
-} else {
-  try { serviceAccount = require('./service-account.json'); }
-  catch(e) { console.warn('No service-account.json'); }
-}
+if (process.env.SERVICE_ACCOUNT_JSON) { serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON); }
+else { try { serviceAccount = require('./service-account.json'); } catch(e) {} }
 const auth = new google.auth.GoogleAuth({ credentials: serviceAccount, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
 const sheets = google.sheets({ version: 'v4', auth });
 
-function requireAuth(req, res, next) {
-  if (req.session?.user) return next();
-  res.redirect('/login');
+// ── Sheets helpers ────────────────────────────────────────────────────────────
+async function ensureSheet(name) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const exists = meta.data.sheets.some(s => s.properties.title === name);
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: name } } }] }
+    });
+  }
 }
-function requireManager(req, res, next) {
-  if (req.session?.user?.role === 'manager') return next();
-  res.status(403).json({ error: 'Manager only' });
+
+async function getSheetData(tab) {
+  try {
+    const r = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${tab}!A:Z` });
+    return r.data.values || [];
+  } catch(e) { return []; }
 }
+
+async function appendRows(tab, rows) {
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID, range: `${tab}!A1`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: rows }
+  });
+}
+
+async function updateRow(tab, rowIndex, values) {
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: `${tab}!A${rowIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [values] }
+  });
+}
+
+function requireAuth(req, res, next) { if (req.session?.user) return next(); res.redirect('/login'); }
+function requireManager(req, res, next) { if (req.session?.user?.role === 'manager') return next(); res.status(403).json({ error: 'Manager only' }); }
 
 app.use('/app', requireAuth, express.static(path.join(__dirname, 'public')));
-
-app.get('/', (req, res) => {
-  if (req.session?.user) return res.redirect('/app');
-  res.redirect('/login');
-});
+app.get('/', (req, res) => { if (req.session?.user) return res.redirect('/app'); res.redirect('/login'); });
 
 app.get('/login', (req, res) => {
-  const error = req.query.error ? '<p class="err">Invalid username or password</p>' : '';
-  res.send(`<!DOCTYPE html><html><head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>VBT Dispatch</title>
+  const err = req.query.error ? '<p class="err">Invalid username or password</p>' : '';
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VBT Dispatch</title>
   <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'IBM Plex Sans',system-ui,sans-serif;background:#f4f3ef;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}.card{background:#fff;border-radius:16px;border:0.5px solid #ddd;padding:36px 32px;width:100%;max-width:360px}h1{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:500;margin-bottom:6px;color:#111}.sub{font-size:13px;color:#888;margin-bottom:28px}label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#666;display:block;margin-bottom:5px}input{width:100%;padding:9px 12px;border:0.5px solid #ccc;border-radius:8px;font-size:14px;font-family:inherit;margin-bottom:14px;color:#111;background:#fff}input:focus{outline:none;border-color:#888}button{width:100%;padding:10px;background:#111;color:#fff;border:none;border-radius:8px;font-size:14px;font-family:inherit;cursor:pointer;margin-top:4px}button:hover{background:#333}.err{color:#c00;font-size:13px;margin-bottom:14px;background:#fff0f0;padding:8px 12px;border-radius:8px;border:0.5px solid #fcc}</style>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans&display=swap" rel="stylesheet">
-  </head><body><div class="card">
-  <h1>VBT Dispatch</h1><p class="sub">Sign in to access your schedule</p>${error}
-  <form method="POST" action="/login">
-    <label>Username</label><input name="username" placeholder="e.g. beryle" autocomplete="username">
-    <label>Password</label><input name="password" type="password" placeholder="••••••••" autocomplete="current-password">
-    <button type="submit">Sign in</button>
-  </form></div></body></html>`);
+  </head><body><div class="card"><h1>VBT Dispatch</h1><p class="sub">Sign in to access your schedule</p>${err}
+  <form method="POST" action="/login"><label>Username</label><input name="username" placeholder="e.g. beryle" autocomplete="username"><label>Password</label><input name="password" type="password" placeholder="••••••••" autocomplete="current-password"><button type="submit">Sign in</button></form>
+  </div></body></html>`);
 });
 
 app.post('/login', (req, res) => {
@@ -152,99 +201,186 @@ app.post('/login', (req, res) => {
   req.session.user = { username, role: user.role, truckId: user.truckId };
   res.redirect('/app');
 });
-
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
-
-app.get('/api/me', requireAuth, (req, res) => {
-  res.json({ username: req.session.user.username, role: req.session.user.role, truckId: req.session.user.truckId || null });
-});
+app.get('/api/me', requireAuth, (req, res) => res.json({ username: req.session.user.username, role: req.session.user.role, truckId: req.session.user.truckId||null }));
 
 app.get('/api/data', requireAuth, (req, res) => {
-  promoteScheduledJobs();
+  promoteScheduled();
   const user = req.session.user;
-  const isDriver = user.role === 'driver';
-  const activeJobs = isDriver
-    ? store.jobs.filter(j => j.truck === user.truckId && j.status === 'active')
-    : store.jobs.filter(j => j.status === 'active');
-  const scheduledJobs = isDriver
-    ? store.jobs.filter(j => j.truck === user.truckId && j.status === 'scheduled')
-    : store.jobs.filter(j => j.status === 'scheduled');
-  const completedJobs = isDriver
-    ? store.completedJobs.filter(j => j.truck === user.truckId)
-    : store.completedJobs;
-  res.json({ trucks: store.trucks, jobs: activeJobs, scheduledJobs, completedJobs });
-});
-
-// Create or update a job
-app.post('/api/jobs', requireAuth, async (req, res) => {
-  const user = req.session.user;
-  const job = req.body;
-
-  if (job.id) {
-    const idx = store.jobs.findIndex(j => j.id === Number(job.id));
-    if (idx === -1) return res.status(404).json({ error: 'Job not found' });
-    if (user.role === 'driver') {
-      if (store.jobs[idx].truck !== user.truckId) return res.status(403).json({ error: 'Not your job' });
-      store.jobs[idx] = { ...store.jobs[idx], delivered: Number(job.delivered)||0, notes: job.notes||'', timestamps: job.timestamps||{} };
-    } else {
-      store.jobs[idx] = { ...store.jobs[idx], ...job, id: Number(job.id) };
-    }
-  } else {
-    if (user.role !== 'manager') return res.status(403).json({ error: 'Manager only' });
-    if (!job.customer) return res.status(400).json({ error: 'Customer required' });
-    const today = new Date().toISOString().slice(0, 10);
-    const dueDate = job.dueDate || today;
-    const type = job.type || 'one-time';
-    const status = (type === 'scheduled' && dueDate > today) ? 'scheduled' : 'active';
-    store.jobs.push({ ...job, id: store.nextId++, type, status, dueDate, completedAt: null });
+  if (user.role === 'driver') {
+    const myLoads = store.loads.filter(l => l.truckId === user.truckId);
+    const myPoIds = new Set(myLoads.map(l => l.poId));
+    const myPos = store.pos.filter(p => myPoIds.has(p.id)).map(p => ({ ...p, invoice: undefined }));
+    return res.json({ trucks: store.trucks, pos: myPos, loads: myLoads, payments: [] });
   }
-  await saveData();
-  promoteScheduledJobs();
-  const returnJobs = user.role === 'driver' ? store.jobs.filter(j => j.truck === user.truckId && j.status === 'active') : store.jobs.filter(j => j.status === 'active');
-  res.json({ success: true, jobs: returnJobs });
+  res.json({ trucks: store.trucks, pos: store.pos, loads: store.loads, payments: store.payments });
 });
 
-// Complete a job
-app.post('/api/jobs/:id/complete', requireAuth, async (req, res) => {
-  const user = req.session.user;
-  const id = Number(req.params.id);
-  const idx = store.jobs.findIndex(j => j.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'Job not found' });
-  const job = store.jobs[idx];
-  if (user.role === 'driver' && job.truck !== user.truckId) return res.status(403).json({ error: 'Not your job' });
-
-  const completed = { ...job, status: 'completed', completedAt: new Date().toISOString() };
-  store.completedJobs.unshift(completed); // newest first
-  store.jobs.splice(idx, 1);
-
-  // If recurring, generate next instance
-  if (job.type === 'recurring' && job.recurrenceRule) {
-    const nextDate = nextRecurrenceDate(job.dueDate || new Date().toISOString().slice(0,10), job.recurrenceRule);
-    const today = new Date().toISOString().slice(0, 10);
-    store.jobs.push({
-      ...job,
-      id: store.nextId++,
-      status: nextDate > today ? 'scheduled' : 'active',
-      dueDate: nextDate,
-      delivered: 0,
-      timestamps: {},
-      completedAt: null,
+// ── PO CRUD ───────────────────────────────────────────────────────────────────
+app.post('/api/pos', requireManager, async (req, res) => {
+  const { po, splits } = req.body;
+  if (!po.customer) return res.status(400).json({ error: 'Customer required' });
+  if (!splits?.length) return res.status(400).json({ error: 'At least one split required' });
+  const today = new Date().toISOString().slice(0,10);
+  const deliveryDate = po.deliveryDate || today;
+  const type = po.type || 'one-time';
+  const status = type === 'scheduled' && deliveryDate > today ? 'scheduled' : 'active';
+  const poId = po.poNumber || ('PO-' + store.nextPoNum++);
+  store.pos.push({
+    id: poId, poNumber: poId, customer: po.customer, code: po.code||'',
+    material: po.material||'Fill Sand', totalLoads: Number(po.totalLoads)||0,
+    deliveryDate, pickup: po.pickup||'VBT Yard', supervisor: po.supervisor||'',
+    city: po.city||po.address||'', address: po.address||po.city||'',
+    notes: po.notes||'', type, recurrenceRule: type==='recurring'?po.recurrenceRule:null,
+    status, createdAt: new Date().toISOString(), completedAt: null,
+    invoice: { pricePerLoad: Number(po.pricePerLoad)||0, paymentStatus: 'unpaid', amountPaid: 0, notes: '' }
+  });
+  splits.forEach(s => {
+    store.loads.push({
+      id: 'LOAD-' + store.nextLoadId++, poId,
+      truckId: s.truckId, driverName: s.driverName||'',
+      loadsAssigned: Number(s.loadsAssigned)||0, loadsDelivered: 0,
+      status: status === 'scheduled' ? 'scheduled' : 'active',
+      deliveryDate: s.deliveryDate || deliveryDate,
+      timestamps: {}, pod: { signedBy:'', signature:'', signedAt:'', notes:'' },
+      notes: '', completedAt: null
     });
-  }
-
+  });
   await saveData();
-  const returnJobs = user.role === 'driver' ? store.jobs.filter(j => j.truck === user.truckId && j.status === 'active') : store.jobs.filter(j => j.status === 'active');
-  const scheduledJobs = user.role === 'driver' ? store.jobs.filter(j => j.truck === user.truckId && j.status === 'scheduled') : store.jobs.filter(j => j.status === 'scheduled');
-  const completedJobs = user.role === 'driver' ? store.completedJobs.filter(j => j.truck === user.truckId) : store.completedJobs;
-  res.json({ success: true, jobs: returnJobs, scheduledJobs, completedJobs });
+  res.json({ success: true, pos: store.pos, loads: store.loads });
 });
 
-app.delete('/api/jobs/:id', requireManager, async (req, res) => {
-  const id = Number(req.params.id);
-  store.jobs = store.jobs.filter(j => j.id !== id);
-  store.completedJobs = store.completedJobs.filter(j => j.id !== id);
+app.put('/api/pos/:id', requireManager, async (req, res) => {
+  const idx = store.pos.findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'PO not found' });
+  const existing = store.pos[idx];
+  store.pos[idx] = { ...existing, ...req.body, id: req.params.id, invoice: existing.invoice, createdAt: existing.createdAt };
+  if (req.body.invoice) store.pos[idx].invoice = { ...existing.invoice, ...req.body.invoice };
+  await saveData();
+  res.json({ success: true, po: store.pos[idx] });
+});
+
+app.delete('/api/pos/:id', requireManager, async (req, res) => {
+  store.loads = store.loads.filter(l => l.poId !== req.params.id);
+  store.payments = store.payments.filter(p => p.poId !== req.params.id);
+  store.pos = store.pos.filter(p => p.id !== req.params.id);
   await saveData();
   res.json({ success: true });
+});
+
+app.post('/api/pos/:id/splits', requireManager, async (req, res) => {
+  const po = store.pos.find(p => p.id === req.params.id);
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  const splits = Array.isArray(req.body) ? req.body : [req.body];
+  splits.forEach(s => {
+    store.loads.push({
+      id: 'LOAD-' + store.nextLoadId++, poId: po.id,
+      truckId: s.truckId, driverName: s.driverName||'',
+      loadsAssigned: Number(s.loadsAssigned)||0, loadsDelivered: 0,
+      status: po.status === 'scheduled' ? 'scheduled' : 'active',
+      deliveryDate: s.deliveryDate || po.deliveryDate,
+      timestamps: {}, pod: { signedBy:'', signature:'', signedAt:'', notes:'' },
+      notes: '', completedAt: null
+    });
+  });
+  await saveData();
+  res.json({ success: true, loads: store.loads.filter(l => l.poId === po.id) });
+});
+
+app.post('/api/pos/:id/rollover', requireManager, async (req, res) => {
+  const po = store.pos.find(p => p.id === req.params.id);
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  const { newDate } = req.body;
+  store.loads.filter(l => l.poId === po.id && l.status !== 'completed').forEach(l => l.deliveryDate = newDate);
+  po.deliveryDate = newDate;
+  await saveData();
+  res.json({ success: true });
+});
+
+// ── LOAD CRUD ─────────────────────────────────────────────────────────────────
+app.put('/api/loads/:id', requireAuth, async (req, res) => {
+  const user = req.session.user;
+  const idx = store.loads.findIndex(l => l.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Load not found' });
+  if (user.role === 'driver' && store.loads[idx].truckId !== user.truckId) return res.status(403).json({ error: 'Not your load' });
+  if (user.role === 'driver') {
+    const l = store.loads[idx];
+    store.loads[idx] = {
+      ...l,
+      loadsDelivered: req.body.loadsDelivered !== undefined ? Number(req.body.loadsDelivered) : l.loadsDelivered,
+      notes: req.body.notes !== undefined ? req.body.notes : l.notes,
+      timestamps: req.body.timestamps ? { ...l.timestamps, ...req.body.timestamps } : l.timestamps,
+      pod: req.body.pod ? { ...l.pod, ...req.body.pod } : l.pod
+    };
+  } else {
+    store.loads[idx] = { ...store.loads[idx], ...req.body, id: store.loads[idx].id, poId: store.loads[idx].poId };
+  }
+  await saveData();
+  res.json({ success: true, load: store.loads[idx] });
+});
+
+app.post('/api/loads/:id/complete', requireAuth, async (req, res) => {
+  const user = req.session.user;
+  const idx = store.loads.findIndex(l => l.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Load not found' });
+  if (user.role === 'driver' && store.loads[idx].truckId !== user.truckId) return res.status(403).json({ error: 'Not your load' });
+  store.loads[idx].status = 'completed';
+  store.loads[idx].completedAt = new Date().toISOString();
+  if (req.body.pod) store.loads[idx].pod = { ...store.loads[idx].pod, ...req.body.pod };
+  // Check if all PO loads done
+  const poId = store.loads[idx].poId;
+  const allDone = store.loads.filter(l => l.poId === poId).every(l => l.status === 'completed');
+  if (allDone) {
+    const poIdx = store.pos.findIndex(p => p.id === poId);
+    if (poIdx !== -1) {
+      store.pos[poIdx].status = 'completed';
+      store.pos[poIdx].completedAt = new Date().toISOString();
+      // Recurring next instance
+      const po = store.pos[poIdx];
+      if (po.type === 'recurring' && po.recurrenceRule) {
+        const nextDate = nextRecurrence(po.deliveryDate, po.recurrenceRule);
+        const today2 = new Date().toISOString().slice(0,10);
+        const nextPoId = 'PO-' + store.nextPoNum++;
+        store.pos.push({ ...po, id: nextPoId, poNumber: nextPoId, deliveryDate: nextDate, status: nextDate > today2 ? 'scheduled' : 'active', completedAt: null, createdAt: new Date().toISOString(), invoice: { ...po.invoice, paymentStatus: 'unpaid', amountPaid: 0 } });
+        store.loads.filter(l => l.poId === poId).forEach(l => {
+          store.loads.push({ ...l, id: 'LOAD-' + store.nextLoadId++, poId: nextPoId, loadsDelivered: 0, status: nextDate > today2 ? 'scheduled' : 'active', deliveryDate: nextDate, timestamps: {}, pod: { signedBy:'', signature:'', signedAt:'', notes:'' }, completedAt: null });
+        });
+      }
+    }
+  }
+  await saveData();
+  res.json({ success: true, pos: store.pos, loads: store.loads });
+});
+
+app.delete('/api/loads/:id', requireManager, async (req, res) => {
+  store.loads = store.loads.filter(l => l.id !== req.params.id);
+  await saveData();
+  res.json({ success: true });
+});
+
+// ── PAYMENTS ──────────────────────────────────────────────────────────────────
+app.post('/api/payments', requireManager, async (req, res) => {
+  const { poId, amount, method, note } = req.body;
+  if (!poId || !amount) return res.status(400).json({ error: 'poId and amount required' });
+  const po = store.pos.find(p => p.id === poId);
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  const payment = { id: 'PAY-' + store.nextPaymentId++, poId, amount: Number(amount), method: method||'', note: note||'', paidAt: new Date().toISOString() };
+  store.payments.push(payment);
+  // Update PO invoice
+  const totalPaid = store.payments.filter(p => p.poId === poId).reduce((s,p) => s + p.amount, 0);
+  const totalDue = (po.invoice?.pricePerLoad||0) * (po.totalLoads||0);
+  po.invoice.amountPaid = totalPaid;
+  po.invoice.paymentStatus = totalPaid <= 0 ? 'unpaid' : totalPaid >= totalDue ? 'paid' : 'partial';
+  await saveData();
+  res.json({ success: true, payment, po });
+});
+
+app.put('/api/pos/:id/invoice', requireManager, async (req, res) => {
+  const po = store.pos.find(p => p.id === req.params.id);
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  po.invoice = { ...po.invoice, ...req.body };
+  await saveData();
+  res.json({ success: true, po });
 });
 
 app.post('/api/trucks', requireManager, async (req, res) => {
@@ -253,26 +389,172 @@ app.post('/api/trucks', requireManager, async (req, res) => {
   res.json({ success: true });
 });
 
+// ── GOOGLE SHEETS SYNC (append-only per tab) ──────────────────────────────────
 app.post('/api/sync', requireManager, async (req, res) => {
   try {
-    const allJobs = [...store.jobs, ...store.completedJobs];
-    const headers = ['ID','Status','Type','Due Date','Truck','Truck #','Supervisor','Driver','Customer','Job Code','Material','Loads Ordered','Pickup','PO #','City','Loads Delivered','Missing','Notes','Start Time','First Load','Last Load','Completed At','Last Updated'];
-    const rows = allJobs.map(j => {
-      const t = store.trucks.find(x => x.id === j.truck);
-      const l = Number(j.loads)||0, d = Number(j.delivered)||0;
-      const ts = j.timestamps||{};
-      return [j.id, j.status, j.type||'one-time', j.dueDate||'', t?t.label:j.truck, t?t.truckNum:'', j.supervisor||'', j.driver||'', j.customer||'', j.code||'', j.material||'', l, j.pickup||'', j.po||'', j.city||'', d, Math.max(0,l-d), j.notes||'', ts.start||'', ts.first||'', ts.last||'', j.completedAt||'', new Date().toLocaleString('en-US',{timeZone:'America/Los_Angeles'})];
+    const tabs = ['POs', 'Loads', 'Payments', 'Signatures', 'Dashboard'];
+    for (const tab of tabs) await ensureSheet(tab);
+    const ts = new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' });
+
+    // ── POs tab ────────────────────────────────────────────────────────────────
+    const poHeaders = ['PO Number','Customer','Code','Material','Total Loads','Delivered','Delivery Date','Pickup','Address','Supervisor','Type','Status','Price/Load','Amount Paid','Balance','Payment Status','Notes','Created At','Completed At','Last Synced'];
+    const existingPos = await getSheetData('POs');
+    if (existingPos.length === 0) await appendRows('POs', [poHeaders]);
+    const existingPoNums = new Set((existingPos.slice(1)||[]).map(r => r[0]));
+    const newPoRows = [];
+    for (const po of store.pos) {
+      const stats = poStats(po.id);
+      const inv = po.invoice || {};
+      const totalDue = (inv.pricePerLoad||0) * (po.totalLoads||0);
+      const balance = totalDue - (inv.amountPaid||0);
+      if (!existingPoNums.has(po.poNumber)) {
+        newPoRows.push([po.poNumber, po.customer, po.code||'', po.material, po.totalLoads, stats.totalDelivered, po.deliveryDate, po.pickup||'', po.city||'', po.supervisor||'', po.type||'one-time', po.status, inv.pricePerLoad||0, inv.amountPaid||0, balance, inv.paymentStatus||'unpaid', po.notes||'', po.createdAt||'', po.completedAt||'', ts]);
+      }
+    }
+    if (newPoRows.length) await appendRows('POs', newPoRows);
+    // Update existing PO rows (status, delivered, payment)
+    const refreshedPos = await getSheetData('POs');
+    for (let i = 1; i < refreshedPos.length; i++) {
+      const poNum = refreshedPos[i][0];
+      const po = store.pos.find(p => p.poNumber === poNum);
+      if (po) {
+        const stats = poStats(po.id);
+        const inv = po.invoice || {};
+        const totalDue = (inv.pricePerLoad||0) * (po.totalLoads||0);
+        refreshedPos[i][5] = stats.totalDelivered;
+        refreshedPos[i][11] = po.status;
+        refreshedPos[i][13] = inv.amountPaid||0;
+        refreshedPos[i][14] = totalDue - (inv.amountPaid||0);
+        refreshedPos[i][15] = inv.paymentStatus||'unpaid';
+        refreshedPos[i][18] = po.completedAt||'';
+        refreshedPos[i][19] = ts;
+        await updateRow('POs', i+1, refreshedPos[i]);
+      }
+    }
+
+    // ── Loads tab ──────────────────────────────────────────────────────────────
+    const loadHeaders = ['Load ID','PO Number','Customer','Driver','Truck','Loads Assigned','Loads Delivered','Missing','Delivery Date','Status','Start Time','Arrived Time','Completed Time','Signed By','Signed At','POD Notes','Load Notes','Completed At','Last Synced'];
+    const existingLoads = await getSheetData('Loads');
+    if (existingLoads.length === 0) await appendRows('Loads', [loadHeaders]);
+    const existingLoadIds = new Set((existingLoads.slice(1)||[]).map(r => r[0]));
+    const newLoadRows = [];
+    for (const l of store.loads) {
+      const po = store.pos.find(p => p.id === l.poId);
+      const t = store.trucks.find(x => x.id === l.truckId);
+      const ts2 = l.timestamps||{};
+      const pod = l.pod||{};
+      const missing = Math.max(0,(Number(l.loadsAssigned)||0)-(Number(l.loadsDelivered)||0));
+      if (!existingLoadIds.has(l.id)) {
+        newLoadRows.push([l.id, po?.poNumber||l.poId, po?.customer||'', l.driverName||'', t?.truckNum||'', l.loadsAssigned, l.loadsDelivered, missing, l.deliveryDate, l.status, ts2.start||'', ts2.arrived||'', ts2.completed||'', pod.signedBy||'', pod.signedAt||'', pod.notes||'', l.notes||'', l.completedAt||'', ts]);
+      }
+    }
+    if (newLoadRows.length) await appendRows('Loads', newLoadRows);
+    // Update completed loads
+    const refreshedLoads = await getSheetData('Loads');
+    for (let i = 1; i < refreshedLoads.length; i++) {
+      const loadId = refreshedLoads[i][0];
+      const l = store.loads.find(x => x.id === loadId);
+      if (l && l.status === 'completed') {
+        const ts2 = l.timestamps||{};
+        const pod = l.pod||{};
+        refreshedLoads[i][6] = l.loadsDelivered;
+        refreshedLoads[i][7] = Math.max(0,(Number(l.loadsAssigned)||0)-(Number(l.loadsDelivered)||0));
+        refreshedLoads[i][9] = l.status;
+        refreshedLoads[i][10] = ts2.start||'';
+        refreshedLoads[i][11] = ts2.arrived||'';
+        refreshedLoads[i][12] = ts2.completed||'';
+        refreshedLoads[i][13] = pod.signedBy||'';
+        refreshedLoads[i][14] = pod.signedAt||'';
+        refreshedLoads[i][17] = l.completedAt||'';
+        refreshedLoads[i][18] = ts;
+        await updateRow('Loads', i+1, refreshedLoads[i]);
+      }
+    }
+
+    // ── Payments tab ───────────────────────────────────────────────────────────
+    const payHeaders = ['Payment ID','PO Number','Customer','Amount','Method','Note','Paid At'];
+    const existingPay = await getSheetData('Payments');
+    if (existingPay.length === 0) await appendRows('Payments', [payHeaders]);
+    const existingPayIds = new Set((existingPay.slice(1)||[]).map(r => r[0]));
+    const newPayRows = [];
+    for (const p of store.payments) {
+      const po = store.pos.find(x => x.id === p.poId);
+      if (!existingPayIds.has(p.id)) {
+        newPayRows.push([p.id, po?.poNumber||p.poId, po?.customer||'', p.amount, p.method||'', p.note||'', p.paidAt]);
+      }
+    }
+    if (newPayRows.length) await appendRows('Payments', newPayRows);
+
+    // ── Signatures tab ─────────────────────────────────────────────────────────
+    const sigHeaders = ['Load ID','PO Number','Customer','Driver','Signed By','Signed At','Notes'];
+    const existingSigs = await getSheetData('Signatures');
+    if (existingSigs.length === 0) await appendRows('Signatures', [sigHeaders]);
+    const existingSigIds = new Set((existingSigs.slice(1)||[]).map(r => r[0]));
+    const newSigRows = [];
+    for (const l of store.loads) {
+      const pod = l.pod||{};
+      if (pod.signedBy && pod.signedAt && !existingSigIds.has(l.id)) {
+        const po = store.pos.find(p => p.id === l.poId);
+        newSigRows.push([l.id, po?.poNumber||l.poId, po?.customer||'', l.driverName||'', pod.signedBy, pod.signedAt, pod.notes||'']);
+      }
+    }
+    if (newSigRows.length) await appendRows('Signatures', newSigRows);
+
+    // ── Dashboard tab (full rewrite) ────────────────────────────────────────────
+    await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: 'Dashboard!A:Z' });
+    const activePOs = store.pos.filter(p => p.status === 'active');
+    const completedPOs = store.pos.filter(p => p.status === 'completed');
+    const totalRevenue = store.pos.reduce((s,p) => s + (p.invoice?.pricePerLoad||0)*(p.totalLoads||0), 0);
+    const totalPaid = store.payments.reduce((s,p) => s + p.amount, 0);
+    const totalLoadsOrdered = store.pos.reduce((s,p) => s + (Number(p.totalLoads)||0), 0);
+    const totalDelivered = store.loads.reduce((s,l) => s + (Number(l.loadsDelivered)||0), 0);
+    const dashRows = [
+      ['VBT DISPATCH — BUSINESS DASHBOARD', '', '', `Last updated: ${ts}`],
+      [],
+      ['OVERVIEW', '', '', ''],
+      ['Total POs', store.pos.length, '', ''],
+      ['Active POs', activePOs.length, '', ''],
+      ['Completed POs', completedPOs.length, '', ''],
+      ['Scheduled POs', store.pos.filter(p=>p.status==='scheduled').length, '', ''],
+      [],
+      ['LOADS', '', '', ''],
+      ['Total Loads Ordered', totalLoadsOrdered, '', ''],
+      ['Total Loads Delivered', totalDelivered, '', ''],
+      ['Total Missing Loads', totalLoadsOrdered - totalDelivered, '', ''],
+      ['Delivery Rate', totalLoadsOrdered > 0 ? `=B11/B10` : '0%', '', ''],
+      [],
+      ['REVENUE', '', '', ''],
+      ['Total Revenue (invoiced)', totalRevenue, '', ''],
+      ['Total Collected', totalPaid, '', ''],
+      ['Outstanding Balance', totalRevenue - totalPaid, '', ''],
+      ['Collection Rate', totalRevenue > 0 ? `=B17/B16` : '0%', '', ''],
+      [],
+      ['PAYMENT BREAKDOWN', '', '', ''],
+      ['Unpaid POs', store.pos.filter(p=>p.invoice?.paymentStatus==='unpaid').length, '', ''],
+      ['Partial POs', store.pos.filter(p=>p.invoice?.paymentStatus==='partial').length, '', ''],
+      ['Paid POs', store.pos.filter(p=>p.invoice?.paymentStatus==='paid').length, '', ''],
+      [],
+      ['TOP CUSTOMERS (by loads)', '', '', ''],
+      ['Customer', 'POs', 'Loads Ordered', 'Loads Delivered'],
+    ];
+    const customerMap = {};
+    store.pos.forEach(p => {
+      if (!customerMap[p.customer]) customerMap[p.customer] = { pos:0, ordered:0, delivered:0 };
+      customerMap[p.customer].pos++;
+      customerMap[p.customer].ordered += Number(p.totalLoads)||0;
+      customerMap[p.customer].delivered += store.loads.filter(l=>l.poId===p.id).reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
     });
-    await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${SHEET_TAB}!A:W` });
-    await sheets.spreadsheets.values.update({ spreadsheetId: SHEET_ID, range: `${SHEET_TAB}!A1`, valueInputOption: 'RAW', requestBody: { values: [headers, ...rows] } });
-    res.json({ success: true, rowsWritten: rows.length });
+    Object.entries(customerMap).sort((a,b)=>b[1].ordered-a[1].ordered).slice(0,10).forEach(([cust,d]) => {
+      dashRows.push([cust, d.pos, d.ordered, d.delivered]);
+    });
+    await sheets.spreadsheets.values.update({ spreadsheetId: SHEET_ID, range: 'Dashboard!A1', valueInputOption: 'USER_ENTERED', requestBody: { values: dashRows } });
+
+    res.json({ success: true, message: `Synced: ${newPoRows.length} new POs, ${newLoadRows.length} new loads, ${newPayRows.length} new payments, ${newSigRows.length} new signatures` });
   } catch(err) {
-    console.error('Sheets sync error:', err.message);
+    console.error('Sync error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-loadData().then(() => {
-  app.listen(PORT, () => console.log(`VBT Dispatch running on port ${PORT}`));
-});
+loadData().then(() => app.listen(PORT, () => console.log(`VBT Dispatch on port ${PORT}`)));
