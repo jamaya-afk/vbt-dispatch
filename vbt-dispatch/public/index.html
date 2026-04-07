@@ -182,6 +182,36 @@ select{font-size:13px;padding:7px 10px;border:0.5px solid var(--bdr2);border-rad
 .move-reassign.show{display:flex}
 .move-reassign .mr-title{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2)}
 @media(max-width:600px){.frow{grid-template-columns:1fr}}
+
+/* MONTH VIEW */
+.view-toggle{display:flex;gap:4px;align-items:center}
+.view-btn{padding:4px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--font)}
+.view-btn.active{background:var(--txt);color:var(--bg);border-color:transparent}
+.month-view{padding:12px 14px 20px;overflow-x:auto}
+.month-title{font-family:var(--mono);font-size:16px;font-weight:500;color:var(--txt);margin-bottom:14px;display:flex;align-items:center;gap:10px}
+.month-title .mt-sub{font-size:11px;color:var(--txt2);font-weight:400}
+.month-week{margin-bottom:16px}
+.month-week-label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--txt3);font-weight:500;margin-bottom:6px;padding:4px 0;border-bottom:0.5px solid var(--bdr)}
+.month-day-row{display:grid;gap:6px;margin-bottom:6px}
+.month-day-card{background:var(--bg);border:0.5px solid var(--bdr2);border-radius:var(--radl);overflow:hidden}
+.month-day-card.today{border-color:var(--green);border-width:1.5px}
+.month-day-card.empty{opacity:.4;border-style:dashed}
+.mdc-head{padding:7px 12px;background:var(--bg2);display:flex;align-items:center;justify-content:space-between;border-bottom:0.5px solid var(--bdr)}
+.mdc-head.today{background:var(--green-bg)}
+.mdc-dayname{font-size:12px;font-weight:500;color:var(--txt);font-family:var(--mono)}
+.mdc-date{font-size:11px;color:var(--txt2);font-family:var(--mono)}
+.mdc-count{font-size:10px;color:var(--txt3)}
+.mdc-jobs{padding:6px 8px;display:flex;flex-direction:column;gap:4px}
+.mdc-job{padding:5px 8px;border-radius:var(--rad);border:0.5px solid var(--bdr);background:var(--bg2);cursor:pointer;font-size:11px}
+.mdc-job:hover{background:var(--bg3)}
+.mdc-job.missing{border-color:var(--red-bdr);background:var(--red-bg)}
+.mdc-job .mj-cust{font-weight:500;color:var(--txt)}
+.mdc-job .mj-meta{color:var(--txt2);margin-top:1px;font-size:10px}
+.mdc-job .mj-pills{display:flex;gap:3px;margin-top:3px;flex-wrap:wrap}
+.month-empty-day{padding:8px 12px;font-size:11px;color:var(--txt3);text-align:center}
+.month-summary{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.ms-chip{padding:5px 12px;border-radius:20px;font-size:12px;font-family:var(--mono);background:var(--bg2);color:var(--txt2);border:0.5px solid var(--bdr)}
+.ms-chip.active{background:var(--blue-bg);color:var(--blue);border-color:var(--blue-bdr)}
 </style>
 </head>
 <body>
@@ -192,6 +222,15 @@ select{font-size:13px;padding:7px 10px;border:0.5px solid var(--bdr2);border-rad
     <button class="wbtn" onclick="changeWeek(-1)">&#8592;</button>
     <span class="week-label" id="week-label"></span>
     <button class="wbtn" onclick="changeWeek(1)">&#8594;</button>
+  </div>
+  <div class="week-nav" id="month-nav-wrap" style="display:none">
+    <button class="wbtn" onclick="changeMonth(-1)">&#8592;</button>
+    <span class="week-label" id="month-label"></span>
+    <button class="wbtn" onclick="changeMonth(1)">&#8594;</button>
+  </div>
+  <div class="view-toggle" id="view-toggle-wrap" style="display:none">
+    <button class="view-btn active" id="view-btn-week" onclick="setView('week')">Week</button>
+    <button class="view-btn" id="view-btn-month" onclick="setView('month')">Month</button>
   </div>
   <button class="tab-btn active" id="tab-mgr" onclick="switchTab('manager')">Schedule</button>
   <button class="tab-btn" id="tab-queue" onclick="switchTab('queue')">Scheduled</button>
@@ -207,9 +246,10 @@ select{font-size:13px;padding:7px 10px;border:0.5px solid var(--bdr2);border-rad
 <div id="manager-section">
   <div class="summary-bar" id="summary-bar"></div>
   <div id="missing-panel-wrap" class="missing-wrap"></div>
-  <div class="manager-view">
+  <div class="manager-view" id="week-view-wrap">
     <div class="grid-wrap" id="grid-wrap"></div>
   </div>
+  <div class="month-view" id="month-view-wrap" style="display:none"></div>
 </div>
 
 <!-- SCHEDULED QUEUE -->
@@ -338,8 +378,9 @@ select{font-size:13px;padding:7px 10px;border:0.5px solid var(--bdr2);border-rad
 const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat'];
 
 let trucks = [], jobs = [], scheduledJobs = [], completedJobs = [];
-let weekOffset = 0, editingId = null, currentTab = 'manager';
+let weekOffset = 0, monthOffset = 0, editingId = null, currentTab = 'manager';
 let missingOpen = true, userRole = 'driver', userTruckId = null;
+let currentView = 'week'; // 'week' or 'month'
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 function getWeekStart(){
@@ -369,11 +410,28 @@ function switchTab(tab){
     document.getElementById('tab-'+({manager:'mgr',queue:'queue',history:'history',driver:'drv'}[t])).classList.toggle('active',tab===t);
     document.getElementById(t+'-section').style.display=tab===t?'block':'none';
   });
-  document.getElementById('week-nav-wrap').style.display=tab==='manager'?'flex':'none';
+  const isMgr=tab==='manager';
+  document.getElementById('view-toggle-wrap').style.display=isMgr?'flex':'none';
+  document.getElementById('week-nav-wrap').style.display=(isMgr&&currentView==='week')?'flex':'none';
+  document.getElementById('month-nav-wrap').style.display=(isMgr&&currentView==='month')?'flex':'none';
   if(tab==='driver') renderDriverView();
   if(tab==='queue')  renderQueue();
   if(tab==='history') renderHistory();
+  if(tab==='manager') render();
 }
+
+function setView(v){
+  currentView=v;
+  document.getElementById('view-btn-week').classList.toggle('active',v==='week');
+  document.getElementById('view-btn-month').classList.toggle('active',v==='month');
+  document.getElementById('week-nav-wrap').style.display=v==='week'?'flex':'none';
+  document.getElementById('month-nav-wrap').style.display=v==='month'?'flex':'none';
+  document.getElementById('week-view-wrap').style.display=v==='week'?'block':'none';
+  document.getElementById('month-view-wrap').style.display=v==='month'?'block':'none';
+  render();
+}
+
+function changeMonth(dir){ monthOffset+=dir; render(); }
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 function renderSummary(){
@@ -424,7 +482,10 @@ function renderMissing(){
 function render(){
   renderSummary();
   renderMissing();
-  if(currentTab==='manager') renderGrid();
+  if(currentTab==='manager'){
+    if(currentView==='week') renderGrid();
+    else renderMonth();
+  }
 }
 
 function renderGrid(){
@@ -480,6 +541,118 @@ function renderGrid(){
   const prev=ds.value;
   ds.innerHTML=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
   if(prev) ds.value=prev;
+}
+
+// ── Month view ────────────────────────────────────────────────────────────────
+function renderMonth(){
+  const now = new Date();
+  const targetMonth = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const year = targetMonth.getFullYear();
+  const month = targetMonth.getMonth();
+  const monthName = targetMonth.toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  document.getElementById('month-label').textContent = monthName;
+
+  const todayStr = toYMD(new Date());
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const allJobs = [...jobs, ...scheduledJobs];
+
+  // Build summary chips
+  const monthJobs = allJobs.filter(j=>j.dueDate&&j.dueDate.startsWith(year+'-'+String(month+1).padStart(2,'0')));
+  const totalLoads = monthJobs.reduce((s,j)=>s+(Number(j.loads)||0),0);
+  const totalDel   = monthJobs.reduce((s,j)=>s+(Number(j.delivered)||0),0);
+  const activeCnt  = monthJobs.filter(j=>j.status==='active').length;
+  const schedCnt   = monthJobs.filter(j=>j.status==='scheduled').length;
+
+  // Group days into weeks for display
+  const firstDow = new Date(year, month, 1).getDay(); // 0=Sun
+  const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+  let html = `<div class="month-title">${monthName}
+    <span class="mt-sub">${monthJobs.length} jobs · ${totalLoads} loads ordered · ${totalDel} delivered</span>
+  </div>
+  <div class="month-summary">
+    <div class="ms-chip active">${activeCnt} active</div>
+    <div class="ms-chip">${schedCnt} scheduled</div>
+    <div class="ms-chip">${totalLoads} loads</div>
+    ${totalLoads-totalDel>0?`<div class="ms-chip" style="background:var(--red-bg);color:var(--red);border-color:var(--red-bdr)">${totalLoads-totalDel} missing</div>`:''}
+  </div>`;
+
+  // Render days grouped by week rows
+  let dayNum = 1;
+  let weekNum = 1;
+  // Start of first week — pad empty days
+  let currentDow = firstDow;
+
+  while(dayNum <= daysInMonth){
+    const weekDaysHtml = [];
+    // Fill week Mon-Sun (start from Monday display)
+    for(let dow=0; dow<7; dow++){
+      const realDow = (dow+1)%7; // 0=Mon...6=Sun
+      if((weekNum===1 && realDow < firstDow && !(firstDow===0&&dow>=6)) || dayNum > daysInMonth){
+        // Empty cell
+        if(dayNum <= daysInMonth || weekDaysHtml.length < 7) weekDaysHtml.push('');
+        continue;
+      }
+      // Slight correction — build proper date
+      const d = new Date(year, month, dayNum);
+      const realDowCheck = d.getDay(); // actual day of week
+      if(realDowCheck !== realDow && weekNum===1 && dow < firstDow){
+        weekDaysHtml.push(''); continue;
+      }
+      const dateStr = toYMD(d);
+      const dayJobs = allJobs.filter(j=>j.dueDate===dateStr);
+      const isToday = dateStr===todayStr;
+      const tL=dayJobs.reduce((s,j)=>s+(Number(j.loads)||0),0);
+      const tD=dayJobs.reduce((s,j)=>s+(Number(j.delivered)||0),0);
+      const hasMissing=dayJobs.some(j=>(Number(j.loads)||0)>0&&(Number(j.delivered)||0)<(Number(j.loads)||0));
+
+      let cardHtml=`<div class="month-day-card ${isToday?'today':''} ${dayJobs.length===0?'empty':''}">
+        <div class="mdc-head ${isToday?'today':''}">
+          <span class="mdc-dayname">${DAY_NAMES[d.getDay()]} ${dayNum}</span>
+          ${isToday?'<span style="font-size:10px;color:var(--green);font-family:var(--mono)">TODAY</span>':''}
+          ${dayJobs.length>0?`<span class="mdc-count">${dayJobs.length} job${dayJobs.length>1?'s':''} · ${tL} loads</span>`:''}
+        </div>`;
+      if(dayJobs.length>0){
+        cardHtml+=`<div class="mdc-jobs">`;
+        dayJobs.forEach(j=>{
+          const t=trucks.find(x=>x.id===j.truck);
+          const l=Number(j.loads)||0,del=Number(j.delivered)||0;
+          const isMiss=l>0&&del<l;
+          const isRec=j.type==='recurring';
+          const isSched=j.status==='scheduled';
+          cardHtml+=`<div class="mdc-job ${isMiss?'missing':''}" onclick="openEdit(${j.id})">
+            <div class="mj-cust">${j.customer}${j.code?' · <span style=\"font-family:var(--mono);font-size:10px\">' +j.code+'</span>':''}</div>
+            <div class="mj-meta">${t?t.label+' ('+t.truckNum+')':j.truck||''}</div>
+            <div class="mj-pills">
+              ${l>0?(del>=l?'<span class="pill green">done</span>':(del>0?`<span class="pill amber">${del}/${l}</span><span class="pill red">−${l-del}</span>`:`<span class="pill">${l} loads</span>`)):''}
+              ${isSched?'<span class="pill purple">scheduled</span>':''}
+              ${isRec?'<span class="pill purple">recurring</span>':''}
+            </div>
+          </div>`;
+        });
+        if(userRole==='manager') cardHtml+=`<button class="add-btn" style="margin:2px 0 0;width:100%" onclick="openAdd('${trucks[0]?.id||''}','${dateStr}')">+ add</button>`;
+        cardHtml+=`</div>`;
+      } else {
+        if(userRole==='manager') cardHtml+=`<div class="month-empty-day"><button class="add-btn" style="width:100%;text-align:center" onclick="openAdd('${trucks[0]?.id||''}','${dateStr}')">+ add job</button></div>`;
+        else cardHtml+=`<div class="month-empty-day">—</div>`;
+      }
+      cardHtml+=`</div>`;
+      weekDaysHtml.push(cardHtml);
+      dayNum++;
+    }
+    if(weekDaysHtml.some(x=>x)){
+      const firstRealDay = new Date(year,month,dayNum-weekDaysHtml.filter(x=>x).length);
+      const lastRealDay  = new Date(year,month,dayNum-1);
+      html+=`<div class="month-week">
+        <div class="month-week-label">Week of ${fmt(firstRealDay)} – ${fmt(lastRealDay)}</div>
+        <div class="month-day-row" style="grid-template-columns:repeat(${Math.min(weekDaysHtml.filter(x=>x).length,7)},1fr)">
+          ${weekDaysHtml.filter(x=>x).join('')}
+        </div>
+      </div>`;
+    }
+    weekNum++;
+  }
+  document.getElementById('month-view-wrap').innerHTML=html;
 }
 
 // ── Scheduled queue ───────────────────────────────────────────────────────────
@@ -833,6 +1006,9 @@ async function init(){
     if(userTruckId) ds.value=userTruckId;
     switchTab('driver');
   } else {
+    // Show view toggle for manager
+    document.getElementById('view-toggle-wrap').style.display='flex';
+    document.getElementById('week-nav-wrap').style.display='flex';
     render();
   }
 }
