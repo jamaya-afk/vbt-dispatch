@@ -2,6 +2,7 @@ const express = require('express');
 const { google } = require('googleapis');
 const session = require('express-session');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json());
@@ -18,9 +19,9 @@ app.use(session({
 // Config
 const SHEET_ID  = '1T5pOeXmLmZyKKfq4YRl9aymXn9MQnNrqmcuyJluMhQs';
 const SHEET_TAB = 'Dispatch';
+const DATA_FILE = path.join(__dirname, 'data.json');
 
-// Users — each driver login is tied to their truck ID
-// Change any password here, then commit to GitHub to redeploy
+// Users
 const USERS = {
   manager:  { password: process.env.MANAGER_PASS  || 'vbt2025!',   role: 'manager', truckId: null       },
   beryle:   { password: process.env.BERYLE_PASS   || 'beryle123',  role: 'driver',  truckId: 'beryle'   },
@@ -29,6 +30,40 @@ const USERS = {
   leonardo: { password: process.env.LEONARDO_PASS || 'leo123',     role: 'driver',  truckId: 'leonardo' },
   carlos:   { password: process.env.CARLOS_PASS   || 'carlos123',  role: 'driver',  truckId: 'carlos'   },
 };
+
+// Default trucks
+const DEFAULT_TRUCKS = [
+  { id: 'beryle',   label: 'Beryle',   truckNum: 'Truck #2',  driver: 'Beryle'   },
+  { id: 'matthew',  label: 'Matthew',  truckNum: 'Truck #4',  driver: 'Matthew'  },
+  { id: 'rigo',     label: 'Rigo',     truckNum: 'Truck #14', driver: 'Rigo'     },
+  { id: 'leonardo', label: 'Leonardo', truckNum: 'Truck #12', driver: 'Leonardo' },
+  { id: 'carlos',   label: 'Carlos',   truckNum: 'Truck #2B', driver: 'Carlos'   },
+];
+
+// In-memory data store — loaded from file on startup
+let store = { trucks: DEFAULT_TRUCKS, jobs: [], nextId: 1 };
+
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = fs.readFileSync(DATA_FILE, 'utf8');
+      store = JSON.parse(raw);
+      console.log(`Loaded ${store.jobs.length} jobs from data.json`);
+    }
+  } catch(e) {
+    console.warn('Could not load data.json, starting fresh:', e.message);
+  }
+}
+
+function saveData() {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2));
+  } catch(e) {
+    console.warn('Could not save data.json:', e.message);
+  }
+}
+
+loadData();
 
 // Google Auth
 let serviceAccount;
@@ -49,11 +84,15 @@ function requireAuth(req, res, next) {
   if (req.session && req.session.user) return next();
   res.redirect('/login');
 }
+function requireManager(req, res, next) {
+  if (req.session && req.session.user && req.session.user.role === 'manager') return next();
+  res.status(403).json({ error: 'Manager access required' });
+}
 
-// Static files (serve app) — protected by login
+// Static files
 app.use('/app', requireAuth, express.static(path.join(__dirname, 'public')));
 
-// Root redirect
+// Root
 app.get('/', (req, res) => {
   if (req.session && req.session.user) return res.redirect('/app');
   res.redirect('/login');
@@ -103,9 +142,7 @@ app.get('/login', (req, res) => {
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
   const user = USERS[username ? username.toLowerCase().trim() : ''];
-  if (!user || user.password !== password) {
-    return res.redirect('/login?error=1');
-  }
+  if (!user || user.password !== password) return res.redirect('/login?error=1');
   req.session.user = { username, role: user.role, truckId: user.truckId };
   res.redirect('/app');
 });
@@ -115,71 +152,93 @@ app.get('/logout', (req, res) => {
   res.redirect('/login');
 });
 
-// API: current user info (includes truckId so app knows which truck to show)
+// ── API ───────────────────────────────────────────────────────────────────────
+
+// Who am I
 app.get('/api/me', requireAuth, (req, res) => {
-  res.json({
-    username: req.session.user.username,
-    role: req.session.user.role,
-    truckId: req.session.user.truckId || null,
-  });
+  res.json({ username: req.session.user.username, role: req.session.user.role, truckId: req.session.user.truckId || null });
 });
 
-// API: sync to Google Sheets (manager only)
-app.post('/api/sync', requireAuth, async (req, res) => {
-  if (req.session.user.role !== 'manager') {
-    return res.status(403).json({ error: 'Manager access required' });
+// Get all data (jobs + trucks)
+app.get('/api/data', requireAuth, (req, res) => {
+  const user = req.session.user;
+  if (user.role === 'driver') {
+    // Driver only gets their own jobs
+    const myJobs = store.jobs.filter(j => j.truck === user.truckId);
+    res.json({ trucks: store.trucks, jobs: myJobs });
+  } else {
+    res.json({ trucks: store.trucks, jobs: store.jobs });
   }
-  try {
-    const { jobs, trucks } = req.body;
-    if (!Array.isArray(jobs)) return res.status(400).json({ error: 'Invalid payload' });
+});
 
+// Save a job (add or update)
+app.post('/api/jobs', requireAuth, (req, res) => {
+  const user = req.session.user;
+  const job = req.body;
+  if (!job.customer) return res.status(400).json({ error: 'Customer required' });
+
+  if (job.id) {
+    // Update existing
+    const idx = store.jobs.findIndex(j => j.id === job.id);
+    if (idx === -1) return res.status(404).json({ error: 'Job not found' });
+    // Drivers can only update their own jobs and only certain fields
+    if (user.role === 'driver') {
+      if (store.jobs[idx].truck !== user.truckId) return res.status(403).json({ error: 'Not your job' });
+      store.jobs[idx] = { ...store.jobs[idx], delivered: job.delivered, notes: job.notes, timestamps: job.timestamps || {} };
+    } else {
+      store.jobs[idx] = { ...job, id: job.id };
+    }
+  } else {
+    // New job — manager only
+    if (user.role !== 'manager') return res.status(403).json({ error: 'Manager only' });
+    const newJob = { ...job, id: store.nextId++ };
+    store.jobs.push(newJob);
+  }
+  saveData();
+  res.json({ success: true, jobs: user.role === 'driver' ? store.jobs.filter(j => j.truck === user.truckId) : store.jobs });
+});
+
+// Delete a job (manager only)
+app.delete('/api/jobs/:id', requireManager, (req, res) => {
+  store.jobs = store.jobs.filter(j => j.id !== Number(req.params.id));
+  saveData();
+  res.json({ success: true });
+});
+
+// Update trucks (manager only)
+app.post('/api/trucks', requireManager, (req, res) => {
+  store.trucks = req.body;
+  saveData();
+  res.json({ success: true });
+});
+
+// Sync to Google Sheets (manager only)
+app.post('/api/sync', requireManager, async (req, res) => {
+  try {
     const headers = [
       'ID','Truck','Truck #','Day','Supervisor','Driver','Customer',
       'Job Code','Material','Loads Ordered','Pickup','PO #',
       'City / Address','Loads Delivered','Missing Loads','Notes',
       'Start Time','First Load Time','Last Load Time','Last Updated'
     ];
-
-    const rows = jobs.map(j => {
-      const t = (trucks || []).find(x => x.id === j.truck);
-      const l = Number(j.loads) || 0;
-      const d = Number(j.delivered) || 0;
+    const rows = store.jobs.map(j => {
+      const t = store.trucks.find(x => x.id === j.truck);
+      const l = Number(j.loads) || 0, d = Number(j.delivered) || 0;
       const ts = j.timestamps || {};
       return [
-        j.id,
-        t ? t.label : j.truck,
-        t ? t.truckNum : '',
-        j.day,
-        j.supervisor || '',
-        j.driver || '',
-        j.customer || '',
-        j.code || '',
-        j.material || '',
-        l,
-        j.pickup || '',
-        j.po || '',
-        j.city || '',
-        d,
-        Math.max(0, l - d),
-        j.notes || '',
-        ts.start || '',
-        ts.first || '',
-        ts.last  || '',
+        j.id, t ? t.label : j.truck, t ? t.truckNum : '', j.day,
+        j.supervisor||'', j.driver||'', j.customer||'', j.code||'',
+        j.material||'', l, j.pickup||'', j.po||'', j.city||'',
+        d, Math.max(0, l-d), j.notes||'',
+        ts.start||'', ts.first||'', ts.last||'',
         new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })
       ];
     });
-
-    await sheets.spreadsheets.values.clear({
-      spreadsheetId: SHEET_ID,
-      range: `${SHEET_TAB}!A:T`,
-    });
+    await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${SHEET_TAB}!A:T` });
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: `${SHEET_TAB}!A1`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [headers, ...rows] },
+      spreadsheetId: SHEET_ID, range: `${SHEET_TAB}!A1`,
+      valueInputOption: 'RAW', requestBody: { values: [headers, ...rows] },
     });
-
     res.json({ success: true, rowsWritten: rows.length });
   } catch (err) {
     console.error('Sheets sync error:', err.message);
@@ -187,8 +246,5 @@ app.post('/api/sync', requireAuth, async (req, res) => {
   }
 });
 
-// Start
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`VBT Dispatch running at http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`VBT Dispatch running at http://localhost:${PORT}`));
