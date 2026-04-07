@@ -922,10 +922,14 @@ async function init(){
     await loadAll();
   }catch(e){console.error(e);}
   if(role==='driver'){
-    document.getElementById('tab-sched').style.display='none';
-    document.getElementById('tab-all').style.display='none';
+    // Drivers: hide everything except My Loads
+    ['tab-sched','tab-all','tab-hist'].forEach(id=>{
+      const el=document.getElementById(id);
+      if(el) el.style.display='none';
+    });
     document.getElementById('nav-wrap').style.display='none';
     document.getElementById('view-tog').style.display='none';
+    document.getElementById('sbar').style.display='none';
     swTab('drv');
   } else {
     render();
