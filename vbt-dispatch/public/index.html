@@ -8,1011 +8,929 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --font:'IBM Plex Sans',system-ui,sans-serif;
-  --mono:'IBM Plex Mono',monospace;
-  --bg:#fff;--bg2:#f7f6f2;--bg3:#f0efe9;
-  --txt:#111;--txt2:#666;--txt3:#aaa;
-  --bdr:#e0dfd8;--bdr2:#c8c7bf;
-  --rad:8px;--radl:12px;
-  --green:#1a7a4a;--green-bg:#eaf7f0;--green-bdr:#a3d9bc;
-  --amber:#8a5c00;--amber-bg:#fff8e6;--amber-bdr:#f0d080;
-  --red:#c0392b;--red-bg:#fdf0ee;--red-bdr:#f0b0a8;
-  --blue:#1a5fa8;--blue-bg:#eaf2fd;--blue-bdr:#90bce8;
-  --purple:#6c3fc5;--purple-bg:#f3eeff;--purple-bdr:#c4a8f0;
+  --f:'IBM Plex Sans',system-ui,sans-serif;--m:'IBM Plex Mono',monospace;
+  --bg:#fff;--bg2:#f7f6f2;--bg3:#f0efe9;--txt:#111;--txt2:#666;--txt3:#aaa;
+  --bdr:#e0dfd8;--bdr2:#c8c7bf;--r:8px;--rl:12px;
+  --G:#1a7a4a;--Gb:#eaf7f0;--Gd:#a3d9bc;
+  --A:#8a5c00;--Ab:#fff8e6;--Ad:#f0d080;
+  --R:#c0392b;--Rb:#fdf0ee;--Rd:#f0b0a8;
+  --B:#1a5fa8;--Bb:#eaf2fd;--Bd:#90bce8;
+  --P:#6c3fc5;--Pb:#f3eeff;--Pd:#c4a8f0;
+  --O:#b85c00;--Ob:#fff3e6;--Od:#f5c080;
 }
 @media(prefers-color-scheme:dark){:root{
-  --bg:#1a1a18;--bg2:#242420;--bg3:#2e2e28;
-  --txt:#f0efe9;--txt2:#aaa9a0;--txt3:#555550;
-  --bdr:#38382f;--bdr2:#4a4a40;
-  --green:#3dd68c;--green-bg:#0d2e1e;--green-bdr:#1a5c3a;
-  --amber:#f0c040;--amber-bg:#2a2000;--amber-bdr:#6a4e00;
-  --red:#f07060;--red-bg:#2e0e0a;--red-bdr:#6a2820;
-  --blue:#60a8f0;--blue-bg:#0a1e36;--blue-bdr:#1a4a80;
-  --purple:#c4a8f0;--purple-bg:#1e1030;--purple-bdr:#6c3fc5;
+  --bg:#1a1a18;--bg2:#242420;--bg3:#2e2e28;--txt:#f0efe9;--txt2:#aaa9a0;--txt3:#555550;--bdr:#38382f;--bdr2:#4a4a40;
+  --G:#3dd68c;--Gb:#0d2e1e;--Gd:#1a5c3a;--A:#f0c040;--Ab:#2a2000;--Ad:#6a4e00;
+  --R:#f07060;--Rb:#2e0e0a;--Rd:#6a2820;--B:#60a8f0;--Bb:#0a1e36;--Bd:#1a4a80;
+  --P:#c4a8f0;--Pb:#1e1030;--Pd:#6c3fc5;--O:#f0a060;--Ob:#2a1500;--Od:#8a4a00;
 }}
-body{font-family:var(--font);background:var(--bg3);color:var(--txt);min-height:100vh}
+body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100vh}
 
 /* TOPBAR */
-.topbar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg);border-bottom:0.5px solid var(--bdr2);flex-wrap:wrap;position:sticky;top:0;z-index:50}
-.topbar h1{font-family:var(--mono);font-size:15px;font-weight:500;color:var(--txt);flex:1;min-width:120px}
-.tab-btn{padding:5px 12px;font-size:12px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--font);white-space:nowrap}
-.tab-btn.active{background:var(--txt);color:var(--bg);border-color:transparent}
-.week-nav{display:flex;align-items:center;gap:5px}
-.wbtn{border:0.5px solid var(--bdr2);background:transparent;cursor:pointer;color:var(--txt2);font-size:12px;padding:5px 10px;border-radius:var(--rad);font-family:var(--font)}
-.wbtn:hover{background:var(--bg2)}
-.week-label{font-family:var(--mono);font-size:11px;color:var(--txt);min-width:124px;text-align:center}
-.sync-btn{padding:5px 12px;font-size:12px;border:0.5px solid var(--blue-bdr);border-radius:var(--rad);background:transparent;cursor:pointer;color:var(--blue);font-family:var(--font)}
-.sync-btn:hover{background:var(--blue-bg)}
-.sync-btn:disabled{opacity:.5;cursor:not-allowed}
-.sync-status{font-size:11px;font-family:var(--mono);color:var(--txt2)}
-.sync-status.ok{color:var(--green)}.sync-status.err{color:var(--red)}
-.user-info{font-size:11px;color:var(--txt3);font-family:var(--mono)}
-.logout-btn{font-size:11px;color:var(--txt3);background:transparent;border:none;cursor:pointer;font-family:var(--font);text-decoration:underline}
-.manager-only{display:none}
-body.is-manager .manager-only{display:flex}
+.topbar{display:flex;align-items:center;gap:7px;padding:9px 13px;background:var(--bg);border-bottom:0.5px solid var(--bdr2);flex-wrap:wrap;position:sticky;top:0;z-index:50}
+.topbar h1{font-family:var(--m);font-size:14px;font-weight:500;color:var(--txt);flex:1;min-width:90px}
+.tb{padding:5px 11px;font-size:12px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f);white-space:nowrap}
+.tb.active{background:var(--txt);color:var(--bg);border-color:transparent}
+.nb{border:0.5px solid var(--bdr2);background:transparent;cursor:pointer;color:var(--txt2);font-size:12px;padding:5px 9px;border-radius:var(--r);font-family:var(--f)}
+.nb:hover{background:var(--bg2)}
+.nl{font-family:var(--m);font-size:11px;color:var(--txt);min-width:124px;text-align:center}
+.vt{display:flex;gap:4px}
+.vb{padding:4px 9px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
+.vb.active{background:var(--txt);color:var(--bg);border-color:transparent}
+.sync-btn{padding:5px 11px;font-size:12px;border:0.5px solid var(--Bd);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--B);font-family:var(--f)}
+.sync-btn:hover{background:var(--Bb)}.sync-btn:disabled{opacity:.5;pointer-events:none}
+.ss{font-size:11px;font-family:var(--m);color:var(--txt2)}.ss.ok{color:var(--G)}.ss.err{color:var(--R)}
+.ui{font-size:11px;color:var(--txt3);font-family:var(--m)}
+.lo{font-size:11px;color:var(--txt3);background:transparent;border:none;cursor:pointer;font-family:var(--f);text-decoration:underline}
+.mo{display:none}.is-manager .mo{display:flex}
 
 /* SUMMARY */
-.summary-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;padding:12px 14px;background:var(--bg);border-bottom:0.5px solid var(--bdr)}
-.metric{background:var(--bg2);border-radius:var(--rad);padding:10px 12px}
-.metric .ml{font-size:10px;color:var(--txt2);margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em}
-.metric .mv{font-size:22px;font-weight:500;font-family:var(--mono);color:var(--txt)}
-.metric.warn .mv{color:var(--red)}
-.metric.info .mv{color:var(--blue)}
-.metric.sched .mv{color:var(--purple)}
+.sbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:7px;padding:10px 13px;background:var(--bg);border-bottom:0.5px solid var(--bdr)}
+.met{background:var(--bg2);border-radius:var(--r);padding:9px 11px}
+.met .ml{font-size:10px;color:var(--txt2);margin-bottom:2px;text-transform:uppercase;letter-spacing:.05em}
+.met .mv{font-size:20px;font-weight:500;font-family:var(--m);color:var(--txt)}
+.met.w .mv{color:var(--R)}.met.g .mv{color:var(--G)}.met.b .mv{color:var(--B)}.met.o .mv{color:var(--O)}
 
-/* MISSING PANEL */
-.missing-wrap{padding:12px 14px 0}
-.missing-panel{border:0.5px solid var(--red-bdr);border-radius:var(--radl);background:var(--bg);overflow:hidden}
-.missing-head{padding:10px 14px;background:var(--red-bg);display:flex;align-items:center;justify-content:space-between;cursor:pointer}
-.missing-head .mh-title{font-size:13px;font-weight:500;color:var(--red)}
-.missing-head .mh-toggle{font-size:11px;color:var(--red);opacity:.7}
-.missing-list{padding:10px 14px;display:flex;flex-direction:column;gap:6px}
-.missing-item{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg2);border-radius:var(--rad);font-size:12px;cursor:pointer}
-.missing-item:hover{background:var(--bg3)}
-.mi-cust{font-weight:500;color:var(--txt)}
-.mi-meta{color:var(--txt2);font-size:11px;margin-top:1px}
-.mi-badge{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--red);white-space:nowrap}
+/* PO CARD */
+.po-list{padding:11px 13px 24px;display:flex;flex-direction:column;gap:9px}
+.poc{background:var(--bg);border:0.5px solid var(--bdr2);border-radius:var(--rl);overflow:hidden}
+.poc.completed{border-color:var(--Gd);opacity:.8}.poc.scheduled{border-color:var(--Pd)}
+.poh{padding:11px 13px;cursor:pointer;display:flex;align-items:center;gap:9px;user-select:none}
+.poh:hover{background:var(--bg2)}
+.poc-chev{font-size:10px;color:var(--txt3);transition:transform .15s;flex-shrink:0}
+.poc-chev.o{transform:rotate(90deg)}
+.poc-num{font-family:var(--m);font-size:12px;font-weight:500;color:var(--B);white-space:nowrap}
+.poc-cust{font-size:13px;font-weight:500;color:var(--txt);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.poc-date{font-size:11px;font-family:var(--m);color:var(--txt2);white-space:nowrap}
+.poc-prog{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
+.poc-bar{width:70px;height:5px;background:var(--bdr);border-radius:3px;overflow:hidden}
+.poc-fill{height:100%;border-radius:3px;transition:width .3s}
+.poc-fill.z{background:var(--bdr2)}.poc-fill.p{background:var(--A)}.poc-fill.f{background:var(--G)}
+.poc-pt{font-size:10px;font-family:var(--m);color:var(--txt2)}
+.sp{font-size:10px;padding:2px 6px;border-radius:20px;white-space:nowrap;border:0.5px solid}
+.sp-active{background:var(--Bb);color:var(--B);border-color:var(--Bd)}
+.sp-completed{background:var(--Gb);color:var(--G);border-color:var(--Gd)}
+.sp-scheduled{background:var(--Pb);color:var(--P);border-color:var(--Pd)}
+.sp-unpaid{background:var(--Rb);color:var(--R);border-color:var(--Rd)}
+.sp-partial{background:var(--Ab);color:var(--A);border-color:var(--Ad)}
+.sp-paid{background:var(--Gb);color:var(--G);border-color:var(--Gd)}
+.pob{border-top:0.5px solid var(--bdr);display:none}
+.pob.o{display:block}
+.po-meta-row{padding:9px 13px;background:var(--bg2);display:flex;flex-wrap:wrap;gap:10px;border-bottom:0.5px solid var(--bdr);font-size:12px;color:var(--txt2)}
+.po-meta-row span b{color:var(--txt)}
+.po-actions{padding:7px 13px;display:flex;gap:7px;flex-wrap:wrap;border-bottom:0.5px solid var(--bdr);background:var(--bg2)}
+.ab{padding:5px 11px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f);white-space:nowrap}
+.ab:hover{background:var(--txt);color:var(--bg)}
+.ab.g{border-color:var(--Gd);color:var(--G)}.ab.g:hover{background:var(--G);color:#fff}
+.ab.r{border-color:var(--Rd);color:var(--R)}.ab.r:hover{background:var(--R);color:#fff}
+.ab.b{border-color:var(--Bd);color:var(--B)}.ab.b:hover{background:var(--B);color:#fff}
+.ab.o{border-color:var(--Od);color:var(--O)}.ab.o:hover{background:var(--O);color:#fff}
 
-/* MANAGER GRID */
-.manager-view{overflow-x:auto;padding:12px 14px 20px}
-.grid-wrap{min-width:700px;border-radius:var(--radl);border:0.5px solid var(--bdr2);overflow:hidden;background:var(--bg)}
-.day-label-row{display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--txt);color:var(--bg)}
-.dlday{font-family:var(--mono);font-size:13px;font-weight:500}
-.dldate{font-size:11px;opacity:.55;font-family:var(--mono)}
-.col-header-row{display:grid;background:var(--bg2);border-bottom:0.5px solid var(--bdr2)}
-.col-hdr{padding:6px 8px;font-size:10px;font-weight:500;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;border-right:0.5px solid var(--bdr);display:flex;flex-direction:column;gap:3px}
-.col-hdr:last-child{border-right:none}
-.truck-label{font-size:11px;color:var(--txt);font-weight:500}
-.truck-num-input{font-family:var(--mono);font-size:10px;background:transparent;border:0.5px solid transparent;border-radius:4px;color:var(--txt2);width:100%;padding:2px 4px;cursor:pointer}
-.truck-num-input:hover{border-color:var(--bdr2)}
-.truck-num-input:focus{border-color:var(--bdr2);background:var(--bg);outline:none;color:var(--txt)}
-.jobs-cols{display:grid;border-bottom:0.5px solid var(--bdr)}
-.truck-col{border-right:0.5px solid var(--bdr);min-height:60px;padding:5px 0}
-.truck-col:last-child{border-right:none}
-.job-card{margin:3px 6px;padding:7px 9px;border-radius:var(--rad);border:0.5px solid var(--bdr);background:var(--bg);cursor:pointer;transition:background .1s}
-.job-card:hover{background:var(--bg2)}
-.job-card.missing{border-color:var(--red-bdr);background:var(--red-bg)}
-.job-card.is-recurring{border-left:3px solid var(--purple)}
-.jc-cust{font-size:11px;font-weight:500;color:var(--txt);line-height:1.3}
-.jc-sub{font-size:10px;color:var(--txt2);margin-top:2px;font-family:var(--mono)}
-.jc-pills{display:flex;gap:3px;margin-top:4px;flex-wrap:wrap}
-.pill{font-size:10px;padding:1px 6px;border-radius:20px;background:var(--bg2);color:var(--txt2);border:0.5px solid var(--bdr);white-space:nowrap}
-.pill.green{background:var(--green-bg);color:var(--green);border-color:var(--green-bdr)}
-.pill.amber{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-bdr)}
-.pill.red{background:var(--red-bg);color:var(--red);border-color:var(--red-bdr)}
-.pill.blue{background:var(--blue-bg);color:var(--blue);border-color:var(--blue-bdr)}
-.pill.purple{background:var(--purple-bg);color:var(--purple);border-color:var(--purple-bdr)}
-.add-btn{margin:3px 6px;padding:5px 7px;width:calc(100% - 12px);border:0.5px dashed var(--bdr2);border-radius:var(--rad);background:transparent;cursor:pointer;font-size:10px;color:var(--txt3);font-family:var(--font);text-align:left}
-.add-btn:hover{background:var(--bg2);color:var(--txt2)}
+/* INVOICE SECTION */
+.inv-section{padding:12px 13px;border-bottom:0.5px solid var(--bdr);background:var(--bg)}
+.inv-title{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);margin-bottom:10px;font-weight:500}
+.inv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px}
+.inv-card{background:var(--bg2);border-radius:var(--r);padding:9px 11px}
+.inv-card .il{font-size:10px;color:var(--txt2);margin-bottom:2px}
+.inv-card .iv{font-size:16px;font-weight:500;font-family:var(--m);color:var(--txt)}
+.inv-card.money .iv{color:var(--G)}
+.inv-card.owed .iv{color:var(--R)}
+.pay-history{margin-top:8px}
+.pay-row{display:flex;align-items:center;justify-content:space-between;padding:6px 9px;background:var(--bg2);border-radius:var(--r);margin-bottom:4px;font-size:12px}
+.pay-row .pa{font-weight:500;color:var(--G);font-family:var(--m)}
+.pay-row .pm{color:var(--txt2);font-size:11px}
 
-/* SCHEDULED QUEUE */
-.sched-section{padding:12px 14px}
-.sched-header{font-size:13px;font-weight:500;color:var(--txt);margin-bottom:10px;display:flex;align-items:center;gap:8px}
-.sched-count{font-size:11px;font-family:var(--mono);color:var(--purple);background:var(--purple-bg);padding:2px 8px;border-radius:20px}
-.sched-list{display:flex;flex-direction:column;gap:8px}
-.sched-card{background:var(--bg);border:0.5px solid var(--purple-bdr);border-radius:var(--radl);padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer}
-.sched-card:hover{background:var(--purple-bg)}
-.sc-left .sc-cust{font-size:13px;font-weight:500;color:var(--txt)}
-.sc-left .sc-meta{font-size:11px;color:var(--txt2);margin-top:3px}
-.sc-date{font-family:var(--mono);font-size:12px;color:var(--purple);text-align:right;white-space:nowrap}
-.sc-days{font-size:10px;color:var(--txt3);margin-top:2px;text-align:right}
-
-/* HISTORY */
-.history-section{padding:12px 14px 24px}
-.history-header{font-size:13px;font-weight:500;color:var(--txt);margin-bottom:10px;display:flex;align-items:center;gap:8px}
-.history-count{font-size:11px;font-family:var(--mono);color:var(--green);background:var(--green-bg);padding:2px 8px;border-radius:20px}
-.history-month{margin-bottom:16px}
-.history-month-label{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--txt2);font-weight:500;margin-bottom:6px;padding-bottom:4px;border-bottom:0.5px solid var(--bdr)}
-.history-item{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--rad);margin-bottom:5px}
-.hi-left .hi-cust{font-size:12px;font-weight:500;color:var(--txt)}
-.hi-left .hi-meta{font-size:11px;color:var(--txt2);margin-top:2px}
-.hi-right{text-align:right}
-.hi-date{font-size:11px;font-family:var(--mono);color:var(--green)}
-.hi-loads{font-size:11px;color:var(--txt2)}
-
-/* DRIVER VIEW */
-.driver-view{padding:14px}
-.driver-bar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
-.driver-bar label{font-size:13px;color:var(--txt2)}
-select{font-size:13px;padding:7px 10px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg);color:var(--txt);font-family:var(--font)}
-.drv-day{border:0.5px solid var(--bdr2);border-radius:var(--radl);background:var(--bg);overflow:hidden;margin-bottom:10px}
-.drv-day-head{padding:9px 14px;background:var(--bg2);display:flex;justify-content:space-between;align-items:center;border-bottom:0.5px solid var(--bdr)}
-.dday{font-size:13px;font-weight:500;color:var(--txt)}
-.dtot{font-size:12px;color:var(--txt2);font-family:var(--mono)}
-.dtot.warn{color:var(--red)}
-.drv-jobs{padding:10px 12px;display:flex;flex-direction:column;gap:8px}
-.drv-job{display:grid;grid-template-columns:1fr auto;gap:10px;padding:10px 12px;border:0.5px solid var(--bdr);border-radius:var(--rad);background:var(--bg2);align-items:start}
-.drv-job.missing{border-color:var(--red-bdr)}
-.djl .cust{font-size:13px;font-weight:500;color:var(--txt)}
-.djl .meta{font-size:11px;color:var(--txt2);margin-top:4px;line-height:1.7}
-.djr{text-align:right;min-width:70px}
-.djr .big{font-size:22px;font-weight:500;font-family:var(--mono);color:var(--txt)}
-.djr .lbl{font-size:10px;color:var(--txt3)}
-.log-btn{margin-top:8px;padding:5px 11px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg);cursor:pointer;color:var(--txt2);font-family:var(--font);display:block;width:100%}
-.log-btn:hover{background:var(--txt);color:var(--bg)}
-.complete-btn{margin-top:5px;padding:5px 11px;font-size:11px;border:0.5px solid var(--green-bdr);border-radius:var(--rad);background:var(--green-bg);cursor:pointer;color:var(--green);font-family:var(--font);display:block;width:100%}
-.complete-btn:hover{background:var(--green);color:#fff}
-.no-jobs{padding:24px;text-align:center;font-size:13px;color:var(--txt3)}
-
-/* MODAL */
-.modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;z-index:200;overflow-y:auto}
-.modal{background:var(--bg);border-radius:var(--radl);border:0.5px solid var(--bdr2);width:100%;max-width:520px;margin:auto}
-.modal-head{padding:13px 16px;border-bottom:0.5px solid var(--bdr);display:flex;justify-content:space-between;align-items:center}
-.modal-head h2{font-size:14px;font-weight:500;font-family:var(--mono);color:var(--txt)}
-.mclose{background:transparent;border:none;cursor:pointer;font-size:22px;color:var(--txt2);line-height:1}
-.mbody{padding:14px 16px;display:flex;flex-direction:column;gap:11px}
-.fld{display:flex;flex-direction:column;gap:4px}
-.fld label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em}
-.fld input,.fld select,.fld textarea{width:100%;padding:8px 10px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg);color:var(--txt);font-size:13px;font-family:var(--font)}
-.fld input:focus,.fld select:focus,.fld textarea:focus{outline:none;border-color:var(--txt2)}
-.fld textarea{resize:vertical;min-height:56px}
-.frow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.mfoot{padding:11px 16px;border-top:0.5px solid var(--bdr);display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
-.btn-p{padding:8px 18px;background:var(--txt);color:var(--bg);border:none;border-radius:var(--rad);cursor:pointer;font-size:13px;font-family:var(--font)}
-.btn-p:hover{opacity:.85}
-.btn-s{padding:8px 18px;background:transparent;color:var(--txt2);border:0.5px solid var(--bdr2);border-radius:var(--rad);cursor:pointer;font-size:13px;font-family:var(--font)}
-.btn-d{padding:7px 14px;background:transparent;color:var(--red);border:0.5px solid var(--red-bdr);border-radius:var(--rad);cursor:pointer;font-size:12px;font-family:var(--font);margin-right:auto}
-.recurrence-row{display:none}
-.recurrence-row.show{display:grid}
-.ts-row{display:flex;align-items:center;gap:8px}
-.ts-btn{padding:5px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:var(--font);white-space:nowrap}
-.ts-btn:hover{background:var(--txt);color:var(--bg)}
-.ts-input{flex:1;padding:5px 8px;font-size:11px;font-family:var(--mono);border:0.5px solid var(--bdr);border-radius:var(--rad);background:var(--bg2);color:var(--txt2)}
-.move-reassign{display:none;flex-direction:column;gap:8px;padding:12px 16px;border-top:0.5px solid var(--bdr);background:var(--bg2)}
-.move-reassign.show{display:flex}
-.move-reassign .mr-title{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2)}
-@media(max-width:600px){.frow{grid-template-columns:1fr}}
+/* LOADS TABLE */
+.lt{width:100%;border-collapse:collapse}
+.lt th{padding:7px 11px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:500;text-align:left;border-bottom:0.5px solid var(--bdr);background:var(--bg2)}
+.lt td{padding:8px 11px;font-size:12px;color:var(--txt);border-bottom:0.5px solid var(--bdr)}
+.lt tr:last-child td{border-bottom:none}
+.lt tr:hover td{background:var(--bg2)}
+.lpb{width:48px;height:4px;background:var(--bdr);border-radius:2px;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:5px}
+.lpf{height:100%;border-radius:2px}
+.lpf.p{background:var(--A)}.lpf.f{background:var(--G)}.lpf.z{background:var(--bdr2)}
+.pod-badge{font-size:10px;padding:2px 6px;border-radius:20px;background:var(--Gb);color:var(--G);border:0.5px solid var(--Gd);white-space:nowrap}
+.no-loads{padding:14px;text-align:center;font-size:12px;color:var(--txt3)}
 
 /* MONTH VIEW */
-.view-toggle{display:flex;gap:4px;align-items:center}
-.view-btn{padding:4px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--font)}
-.view-btn.active{background:var(--txt);color:var(--bg);border-color:transparent}
-.month-view{padding:12px 14px 20px;overflow-x:auto}
-.month-title{font-family:var(--mono);font-size:16px;font-weight:500;color:var(--txt);margin-bottom:14px;display:flex;align-items:center;gap:10px}
-.month-title .mt-sub{font-size:11px;color:var(--txt2);font-weight:400}
-.month-week{margin-bottom:16px}
-.month-week-label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--txt3);font-weight:500;margin-bottom:6px;padding:4px 0;border-bottom:0.5px solid var(--bdr)}
-.month-day-row{display:grid;gap:6px;margin-bottom:6px}
-.month-day-card{background:var(--bg);border:0.5px solid var(--bdr2);border-radius:var(--radl);overflow:hidden}
-.month-day-card.today{border-color:var(--green);border-width:1.5px}
-.month-day-card.empty{opacity:.4;border-style:dashed}
-.mdc-head{padding:7px 12px;background:var(--bg2);display:flex;align-items:center;justify-content:space-between;border-bottom:0.5px solid var(--bdr)}
-.mdc-head.today{background:var(--green-bg)}
-.mdc-dayname{font-size:12px;font-weight:500;color:var(--txt);font-family:var(--mono)}
-.mdc-date{font-size:11px;color:var(--txt2);font-family:var(--mono)}
-.mdc-count{font-size:10px;color:var(--txt3)}
-.mdc-jobs{padding:6px 8px;display:flex;flex-direction:column;gap:4px}
-.mdc-job{padding:5px 8px;border-radius:var(--rad);border:0.5px solid var(--bdr);background:var(--bg2);cursor:pointer;font-size:11px}
-.mdc-job:hover{background:var(--bg3)}
-.mdc-job.missing{border-color:var(--red-bdr);background:var(--red-bg)}
-.mdc-job .mj-cust{font-weight:500;color:var(--txt)}
-.mdc-job .mj-meta{color:var(--txt2);margin-top:1px;font-size:10px}
-.mdc-job .mj-pills{display:flex;gap:3px;margin-top:3px;flex-wrap:wrap}
-.month-empty-day{padding:8px 12px;font-size:11px;color:var(--txt3);text-align:center}
-.month-summary{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-.ms-chip{padding:5px 12px;border-radius:20px;font-size:12px;font-family:var(--mono);background:var(--bg2);color:var(--txt2);border:0.5px solid var(--bdr)}
-.ms-chip.active{background:var(--blue-bg);color:var(--blue);border-color:var(--blue-bdr)}
+.mv-wrap{padding:11px 13px 24px}
+.mv-title{font-family:var(--m);font-size:14px;font-weight:500;color:var(--txt);margin-bottom:10px}
+.mday{background:var(--bg);border:0.5px solid var(--bdr2);border-radius:var(--rl);overflow:hidden;margin-bottom:9px}
+.mday.td{border-color:var(--G);border-width:1.5px}
+.mdh{padding:8px 13px;background:var(--bg2);display:flex;align-items:center;justify-content:space-between;border-bottom:0.5px solid var(--bdr)}
+.mdhl{font-family:var(--m);font-size:12px;font-weight:500;color:var(--txt)}
+.mdhs{font-size:11px;color:var(--txt2)}
+.mday-rows{padding:7px 10px;display:flex;flex-direction:column;gap:5px}
+.mday-row{display:flex;align-items:center;gap:8px;padding:6px 9px;border:0.5px solid var(--bdr);border-radius:var(--r);cursor:pointer;background:var(--bg2)}
+.mday-row:hover{background:var(--bg3)}
+
+/* HISTORY */
+.hist-wrap{padding:11px 13px 24px}
+.hm{margin-bottom:16px}
+.hml{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--txt2);font-weight:500;margin-bottom:7px;padding-bottom:4px;border-bottom:0.5px solid var(--bdr)}
+.hi{display:flex;align-items:center;justify-content:space-between;padding:8px 11px;background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--r);margin-bottom:5px}
+.hi-l .hp{font-family:var(--m);font-size:11px;color:var(--B);margin-bottom:2px}
+.hi-l .hc{font-size:13px;font-weight:500;color:var(--txt)}
+.hi-l .hm2{font-size:11px;color:var(--txt2);margin-top:2px}
+.hi-r .hd{font-size:11px;font-family:var(--m);color:var(--G)}
+.hi-r .hl{font-size:11px;color:var(--txt2);margin-top:2px;text-align:right}
+
+/* DRIVER VIEW */
+.drv-wrap{padding:13px}
+.dlc{background:var(--bg);border:0.5px solid var(--bdr2);border-radius:var(--rl);overflow:hidden;margin-bottom:11px}
+.dlch{padding:10px 13px;background:var(--bg2);border-bottom:0.5px solid var(--bdr)}
+.dlch-po{font-family:var(--m);font-size:11px;color:var(--B);margin-bottom:2px}
+.dlch-c{font-size:14px;font-weight:500;color:var(--txt)}
+.dlcb{padding:12px 13px}
+.dlc-grid{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start}
+.dlc-info .meta{font-size:12px;color:var(--txt2);line-height:1.8}
+.dlc-right{text-align:right}
+.dlc-big{font-size:28px;font-weight:500;font-family:var(--m);color:var(--txt)}
+.dlc-lbl{font-size:10px;color:var(--txt3)}
+/* Driver action buttons — big for mobile */
+.drv-btns{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.drv-btn{padding:10px 0;font-size:13px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg2);cursor:pointer;color:var(--txt2);font-family:var(--f);text-align:center;font-weight:500}
+.drv-btn:active{transform:scale(.98)}
+.drv-btn.start{border-color:var(--Bd);background:var(--Bb);color:var(--B)}
+.drv-btn.arrived{border-color:var(--Ad);background:var(--Ab);color:var(--A)}
+.drv-btn.complete{border-color:var(--Gd);background:var(--Gb);color:var(--G)}
+.drv-btn.sig{border-color:var(--Pd);background:var(--Pb);color:var(--P)}
+.drv-btn.done{background:var(--Gb);border-color:var(--Gd);color:var(--G);opacity:.7}
+.drv-ts{font-size:10px;font-family:var(--m);color:var(--txt3);margin-top:7px;line-height:1.9}
+.pod-info{margin-top:8px;padding:8px 10px;background:var(--Gb);border-radius:var(--r);font-size:11px;color:var(--G);display:flex;align-items:center;gap:6px}
+.no-loads{padding:28px;text-align:center;font-size:13px;color:var(--txt3)}
+
+/* SIGNATURE CANVAS */
+.sig-wrap{border:0.5px solid var(--bdr2);border-radius:var(--r);overflow:hidden;background:#fff}
+.sig-canvas{display:block;width:100%;height:160px;touch-action:none;cursor:crosshair}
+.sig-tools{display:flex;gap:6px;padding:6px 8px;background:var(--bg2);border-top:0.5px solid var(--bdr)}
+.sig-clear{padding:4px 11px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
+
+/* MODAL */
+.mbg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-start;justify-content:center;padding:14px 10px;z-index:200;overflow-y:auto}
+.mod{background:var(--bg);border-radius:var(--rl);border:0.5px solid var(--bdr2);width:100%;max-width:540px;margin:auto}
+.mh{padding:12px 15px;border-bottom:0.5px solid var(--bdr);display:flex;justify-content:space-between;align-items:center}
+.mh h2{font-size:14px;font-weight:500;font-family:var(--m);color:var(--txt)}
+.mc{background:transparent;border:none;cursor:pointer;font-size:21px;color:var(--txt2);line-height:1}
+.mb{padding:13px 15px;display:flex;flex-direction:column;gap:10px}
+.fl{display:flex;flex-direction:column;gap:3px}
+.fl label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em}
+.fl input,.fl select,.fl textarea{width:100%;padding:7px 9px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-size:13px;font-family:var(--f)}
+.fl input:focus,.fl select:focus,.fl textarea:focus{outline:none;border-color:var(--txt2)}
+.fl input:disabled,.fl select:disabled{opacity:.5;cursor:default}
+.fl textarea{resize:vertical;min-height:50px}
+.fr{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.sdiv{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);padding:7px 0 3px;border-bottom:0.5px solid var(--bdr);margin-top:3px}
+.splits{display:flex;flex-direction:column;gap:7px}
+.srow{display:grid;grid-template-columns:1fr 80px 100px auto;gap:7px;align-items:end;padding:7px 9px;background:var(--bg2);border-radius:var(--r);border:0.5px solid var(--bdr)}
+.srow select,.srow input{padding:5px 7px;font-size:12px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-family:var(--f);width:100%}
+.sr{padding:5px 9px;font-size:11px;border:0.5px solid var(--Rd);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--R);font-family:var(--f)}
+.rem{font-size:12px;font-family:var(--m);padding:5px 9px;background:var(--bg2);border-radius:var(--r);border:0.5px solid var(--bdr)}
+.rem.w{color:var(--R);border-color:var(--Rd);background:var(--Rb)}.rem.ok{color:var(--G);border-color:var(--Gd);background:var(--Gb)}
+.as{padding:5px 11px;font-size:12px;border:0.5px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
+.as:hover{background:var(--bg2)}
+.mf{padding:10px 15px;border-top:0.5px solid var(--bdr);display:flex;gap:7px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
+.bp{padding:7px 17px;background:var(--txt);color:var(--bg);border:none;border-radius:var(--r);cursor:pointer;font-size:13px;font-family:var(--f)}
+.bp:hover{opacity:.85}
+.bs{padding:7px 17px;background:transparent;color:var(--txt2);border:0.5px solid var(--bdr2);border-radius:var(--r);cursor:pointer;font-size:13px;font-family:var(--f)}
+.bd{padding:6px 13px;background:transparent;color:var(--R);border:0.5px solid var(--Rd);border-radius:var(--r);cursor:pointer;font-size:12px;font-family:var(--f);margin-right:auto}
+@media(max-width:580px){.fr{grid-template-columns:1fr}.srow{grid-template-columns:1fr 1fr;}.sr{grid-column:1/-1}}
 </style>
 </head>
 <body>
-
 <div class="topbar">
   <h1>VBT Dispatch</h1>
-  <div class="week-nav" id="week-nav-wrap">
-    <button class="wbtn" onclick="changeWeek(-1)">&#8592;</button>
-    <span class="week-label" id="week-label"></span>
-    <button class="wbtn" onclick="changeWeek(1)">&#8594;</button>
+  <div style="display:flex;align-items:center;gap:5px" id="nav-wrap">
+    <button class="nb" onclick="nav(-1)">&#8592;</button>
+    <span class="nl" id="nav-lbl"></span>
+    <button class="nb" onclick="nav(1)">&#8594;</button>
   </div>
-  <div class="week-nav" id="month-nav-wrap" style="display:none">
-    <button class="wbtn" onclick="changeMonth(-1)">&#8592;</button>
-    <span class="week-label" id="month-label"></span>
-    <button class="wbtn" onclick="changeMonth(1)">&#8594;</button>
+  <div class="vt" id="view-tog">
+    <button class="vb active" id="vb-week" onclick="setView('week')">Week</button>
+    <button class="vb" id="vb-month" onclick="setView('month')">Month</button>
   </div>
-  <div class="view-toggle" id="view-toggle-wrap" style="display:none">
-    <button class="view-btn active" id="view-btn-week" onclick="setView('week')">Week</button>
-    <button class="view-btn" id="view-btn-month" onclick="setView('month')">Month</button>
-  </div>
-  <button class="tab-btn active" id="tab-mgr" onclick="switchTab('manager')">Schedule</button>
-  <button class="tab-btn" id="tab-queue" onclick="switchTab('queue')">Scheduled</button>
-  <button class="tab-btn" id="tab-history" onclick="switchTab('history')">History</button>
-  <button class="tab-btn" id="tab-drv" onclick="switchTab('driver')">My Jobs</button>
-  <button class="sync-btn manager-only" id="sync-btn" onclick="syncToSheets()">&#8593; Sheets</button>
-  <span class="sync-status" id="sync-status"></span>
-  <span class="user-info" id="user-info"></span>
-  <button class="logout-btn" onclick="window.location='/logout'">Logout</button>
+  <button class="tb active" id="tab-sched" onclick="swTab('sched')">Schedule</button>
+  <button class="tb" id="tab-all" onclick="swTab('all')">All POs</button>
+  <button class="tb" id="tab-hist" onclick="swTab('hist')">History</button>
+  <button class="tb" id="tab-drv" onclick="swTab('drv')">My Loads</button>
+  <button class="sync-btn mo" id="sync-btn" onclick="doSync()">&#8593; Sheets</button>
+  <span class="ss" id="ss"></span>
+  <span class="ui" id="ui"></span>
+  <button class="lo" onclick="location='/logout'">Logout</button>
 </div>
 
-<!-- MANAGER SCHEDULE VIEW -->
-<div id="manager-section">
-  <div class="summary-bar" id="summary-bar"></div>
-  <div id="missing-panel-wrap" class="missing-wrap"></div>
-  <div class="manager-view" id="week-view-wrap">
-    <div class="grid-wrap" id="grid-wrap"></div>
-  </div>
-  <div class="month-view" id="month-view-wrap" style="display:none"></div>
-</div>
+<div id="sec-sched"><div class="sbar" id="sbar"></div><div class="po-list" id="sched-list"></div></div>
+<div id="sec-all" style="display:none"><div class="po-list" id="all-list"></div></div>
+<div id="sec-hist" style="display:none"><div class="hist-wrap" id="hist-wrap"></div></div>
+<div id="sec-drv" style="display:none"><div class="drv-wrap" id="drv-wrap"></div></div>
 
-<!-- SCHEDULED QUEUE -->
-<div id="queue-section" style="display:none">
-  <div class="sched-section">
-    <div class="sched-header">Upcoming scheduled deliveries <span class="sched-count" id="sched-count">0</span></div>
-    <div class="sched-list" id="sched-list"></div>
+<!-- PO MODAL -->
+<div class="mbg" id="pm" style="display:none"><div class="mod">
+  <div class="mh"><h2 id="pm-title">New Purchase Order</h2><button class="mc" onclick="closePM()">&#215;</button></div>
+  <div class="mb">
+    <div class="fr">
+      <div class="fl"><label>PO Number</label><input id="pm-num" placeholder="Auto (PO-1001)"></div>
+      <div class="fl"><label>Delivery date</label><input type="date" id="pm-date"></div>
+    </div>
+    <div class="fr">
+      <div class="fl"><label>Customer / Project</label><input id="pm-cust" placeholder="e.g. Wilson Homes"></div>
+      <div class="fl"><label>Job code</label><input id="pm-code" placeholder="e.g. WHAT-01"></div>
+    </div>
+    <div class="fr">
+      <div class="fl"><label>Material</label><select id="pm-mat"><option>Fill Sand</option><option>3/4 Rock</option><option>Recycle Base</option><option>Cold Mix</option><option>Dirt</option><option>Base Rock</option><option>Other</option></select></div>
+      <div class="fl"><label>Total loads</label><input id="pm-loads" type="number" min="1" step="1" placeholder="8" oninput="updRem()"></div>
+    </div>
+    <div class="fr">
+      <div class="fl"><label>Pickup</label><select id="pm-pick"><option>VBT Yard</option><option>Keith Farms</option><option>CEMEX</option><option>Vulcan Sanger</option><option>Precision Bakersfield</option><option>Other</option></select></div>
+      <div class="fl"><label>Supervisor</label><input id="pm-sup" placeholder="e.g. Billy"></div>
+    </div>
+    <div class="fl"><label>Delivery address / city</label><input id="pm-addr" placeholder="e.g. 2007 N Cobbler Dr, Fresno"></div>
+    <div class="fr">
+      <div class="fl"><label>Price per load ($)</label><input id="pm-ppl" type="number" min="0" step="0.01" placeholder="0.00"></div>
+      <div class="fl"><label>Job type</label><select id="pm-type" onchange="onTypeChg()"><option value="one-time">One-time</option><option value="scheduled">Scheduled (future)</option><option value="recurring">Recurring</option></select></div>
+    </div>
+    <div class="fl" id="pm-recur-w" style="display:none"><label>Repeats every</label><select id="pm-recur"><option value="weekly">Week</option><option value="biweekly">2 Weeks</option><option value="monthly">Month</option></select></div>
+    <div class="fl"><label>Notes</label><textarea id="pm-notes" placeholder="Special instructions..."></textarea></div>
+    <div class="sdiv">Assign loads to drivers</div>
+    <div class="rem" id="pm-rem">Assign 0 of 0 loads</div>
+    <div class="splits" id="pm-splits"></div>
+    <button class="as" onclick="addSplit()">+ Add driver</button>
   </div>
-</div>
+  <div class="mf">
+    <button class="bd" id="pm-del" style="display:none" onclick="delPO()">Delete PO</button>
+    <button class="bs" onclick="closePM()">Cancel</button>
+    <button class="bp" onclick="savePO()">Save PO</button>
+  </div>
+</div></div>
 
-<!-- HISTORY -->
-<div id="history-section" style="display:none">
-  <div class="history-section">
-    <div class="history-header">Completed jobs <span class="history-count" id="history-count">0</span></div>
-    <div id="history-list"></div>
+<!-- PAYMENT MODAL -->
+<div class="mbg" id="pay-m" style="display:none"><div class="mod">
+  <div class="mh"><h2 id="pay-title">Add Payment</h2><button class="mc" onclick="closePayM()">&#215;</button></div>
+  <div class="mb">
+    <div id="pay-info" style="font-size:13px;color:var(--txt2)"></div>
+    <div class="fr">
+      <div class="fl"><label>Amount ($)</label><input id="pay-amt" type="number" min="0" step="0.01" placeholder="0.00"></div>
+      <div class="fl"><label>Payment method</label><select id="pay-method"><option>Cash</option><option>Check</option><option>ACH</option><option>Zelle</option><option>Other</option></select></div>
+    </div>
+    <div class="fl"><label>Note</label><input id="pay-note" placeholder="Check #, reference..."></div>
   </div>
-</div>
+  <div class="mf">
+    <button class="bs" onclick="closePayM()">Cancel</button>
+    <button class="bp" onclick="savePayment()">Save payment</button>
+  </div>
+</div></div>
 
-<!-- DRIVER VIEW -->
-<div id="driver-section" style="display:none">
-  <div class="driver-view">
-    <div class="driver-bar" id="driver-bar">
-      <label>My Truck:</label>
-      <select id="driver-select" onchange="renderDriverView()"></select>
+<!-- LOAD LOG MODAL -->
+<div class="mbg" id="ll-m" style="display:none"><div class="mod">
+  <div class="mh"><h2 id="ll-title">Log loads</h2><button class="mc" onclick="closeLL()">&#215;</button></div>
+  <div class="mb">
+    <div id="ll-info" style="font-size:12px;color:var(--txt2);line-height:1.8"></div>
+    <div class="fr">
+      <div class="fl"><label>Loads delivered</label><input id="ll-del" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>
+      <div class="fl"><label>Notes</label><input id="ll-notes" placeholder="Any issues..."></div>
     </div>
-    <div id="driver-day-list"></div>
+    <div class="fl"><label>Timestamps</label>
+      <div style="margin-top:5px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:7px"><button class="ab" type="button" onclick="stmp('ll-ts-s')">&#9654; Start</button><input id="ll-ts-s" style="flex:1;padding:5px 8px;font-size:11px;font-family:var(--m);border:0.5px solid var(--bdr);border-radius:var(--r);background:var(--bg2);color:var(--txt2)" readonly placeholder="not stamped"></div>
+        <div style="display:flex;align-items:center;gap:7px"><button class="ab" type="button" onclick="stmp('ll-ts-a')">&#128205; Arrived</button><input id="ll-ts-a" style="flex:1;padding:5px 8px;font-size:11px;font-family:var(--m);border:0.5px solid var(--bdr);border-radius:var(--r);background:var(--bg2);color:var(--txt2)" readonly placeholder="not stamped"></div>
+        <div style="display:flex;align-items:center;gap:7px"><button class="ab" type="button" onclick="stmp('ll-ts-c')">&#9632; Complete</button><input id="ll-ts-c" style="flex:1;padding:5px 8px;font-size:11px;font-family:var(--m);border:0.5px solid var(--bdr);border-radius:var(--r);background:var(--bg2);color:var(--txt2)" readonly placeholder="not stamped"></div>
+      </div>
+    </div>
   </div>
-</div>
+  <div class="mf"><button class="bs" onclick="closeLL()">Cancel</button><button class="bp" onclick="saveLL()">Save</button></div>
+</div></div>
 
-<!-- MODAL -->
-<div class="modal-bg" id="modal" style="display:none">
-  <div class="modal">
-    <div class="modal-head">
-      <h2 id="modal-title">Add job</h2>
-      <button class="mclose" onclick="closeModal()">&#215;</button>
-    </div>
-    <div class="mbody">
-      <div class="frow">
-        <div class="fld"><label>Truck / Driver</label><select id="f-truck"></select></div>
-        <div class="fld"><label>Job type</label>
-          <select id="f-type" onchange="onTypeChange()">
-            <option value="one-time">One-time</option>
-            <option value="scheduled">Scheduled (future date)</option>
-            <option value="recurring">Recurring</option>
-          </select>
-        </div>
-      </div>
-      <div class="frow">
-        <div class="fld"><label>Delivery date</label><input type="date" id="f-dueDate"></div>
-        <div class="fld recurrence-row" id="recurrence-row">
-          <label>Repeat every</label>
-          <select id="f-recurrence">
-            <option value="weekly">Week</option>
-            <option value="biweekly">2 Weeks</option>
-            <option value="monthly">Month</option>
-          </select>
-        </div>
-      </div>
-      <div class="frow">
-        <div class="fld"><label>Supervisor on site</label><input id="f-super" placeholder="e.g. Billy"></div>
-        <div class="fld"><label>Driver name</label><input id="f-driver" placeholder="e.g. Beryle"></div>
-      </div>
-      <div class="frow">
-        <div class="fld"><label>Customer / Project</label><input id="f-customer" placeholder="e.g. Wilson Homes"></div>
-        <div class="fld"><label>Job code</label><input id="f-code" placeholder="e.g. WHAT-01"></div>
-      </div>
-      <div class="frow">
-        <div class="fld"><label>Material</label>
-          <select id="f-material">
-            <option>Fill Sand</option><option>3/4 Rock</option>
-            <option>Recycle Base</option><option>Cold Mix</option>
-            <option>Dirt</option><option>Base Rock</option><option>Other</option>
-          </select>
-        </div>
-        <div class="fld"><label>Loads ordered</label><input id="f-loads" type="number" min="0" step="0.5" placeholder="0"></div>
-      </div>
-      <div class="frow">
-        <div class="fld"><label>Pickup location</label>
-          <select id="f-pickup">
-            <option>VBT Yard</option><option>Keith Farms</option>
-            <option>CEMEX</option><option>Vulcan Sanger</option>
-            <option>Precision Bakersfield</option><option>Other</option>
-          </select>
-        </div>
-        <div class="fld"><label>PO #</label><input id="f-po" placeholder="e.g. PO 3083"></div>
-      </div>
-      <div class="frow">
-        <div class="fld"><label>Delivery city / address</label><input id="f-city" placeholder="e.g. Fresno"></div>
-        <div class="fld"><label>Loads delivered</label><input id="f-delivered" type="number" min="0" step="0.5" placeholder="0"></div>
-      </div>
-      <div class="fld"><label>Notes</label><textarea id="f-notes" placeholder="Special instructions, lot #s, etc."></textarea></div>
-      <!-- Timestamps (driver only) -->
-      <div id="timestamp-section" style="display:none">
-        <div class="fld">
-          <label>Timestamps</label>
-          <div style="display:flex;flex-direction:column;gap:7px;margin-top:4px">
-            <div class="ts-row"><button type="button" class="ts-btn" onclick="stampNow('f-ts-start')">&#9654; Start</button><input id="f-ts-start" class="ts-input" readonly placeholder="not stamped"></div>
-            <div class="ts-row"><button type="button" class="ts-btn" onclick="stampNow('f-ts-first')">&#10003; First load</button><input id="f-ts-first" class="ts-input" readonly placeholder="not stamped"></div>
-            <div class="ts-row"><button type="button" class="ts-btn" onclick="stampNow('f-ts-last')">&#9632; Last load</button><input id="f-ts-last" class="ts-input" readonly placeholder="not stamped"></div>
-          </div>
-        </div>
+<!-- SIGNATURE MODAL -->
+<div class="mbg" id="sig-m" style="display:none"><div class="mod">
+  <div class="mh"><h2>Proof of Delivery — Signature</h2><button class="mc" onclick="closeSig()">&#215;</button></div>
+  <div class="mb">
+    <div id="sig-info" style="font-size:12px;color:var(--txt2);margin-bottom:4px"></div>
+    <div class="fl"><label>Signed by (print name)</label><input id="sig-name" placeholder="Customer / receiver name"></div>
+    <div class="fl" style="margin-top:4px"><label>Signature</label>
+      <div class="sig-wrap">
+        <canvas id="sig-canvas" class="sig-canvas" width="500" height="160"></canvas>
+        <div class="sig-tools"><button class="sig-clear" onclick="clearSig()">Clear</button><span style="font-size:11px;color:var(--txt3);margin-left:auto">Sign above with finger or mouse</span></div>
       </div>
     </div>
-    <!-- Move / Reassign (manager editing existing job) -->
-    <div class="move-reassign" id="move-reassign">
-      <div class="mr-title">Move or reassign</div>
-      <div class="frow">
-        <div class="fld"><label>Move to date</label><input type="date" id="move-date"></div>
-        <div class="fld"><label>Reassign to truck</label>
-          <select id="reassign-truck">
-            <option value="">-- same driver --</option>
-          </select>
-        </div>
-      </div>
-      <button class="btn-s" style="font-size:12px;padding:6px 14px" onclick="moveOrReassignJob()">Apply</button>
-    </div>
-    <div class="mfoot">
-      <button class="btn-d" id="delete-btn" style="display:none" onclick="deleteJob()">Delete</button>
-      <button class="btn-s" onclick="closeModal()">Cancel</button>
-      <button class="btn-p" onclick="saveJob()">Save job</button>
-    </div>
+    <div class="fl"><label>POD Notes</label><input id="sig-notes" placeholder="Condition notes, lot #s..."></div>
   </div>
-</div>
+  <div class="mf"><button class="bs" onclick="closeSig()">Cancel</button><button class="bp" onclick="saveSig()">Save signature</button></div>
+</div></div>
+
+<!-- ROLLOVER MODAL -->
+<div class="mbg" id="ro-m" style="display:none"><div class="mod">
+  <div class="mh"><h2>Rollover remaining loads</h2><button class="mc" onclick="document.getElementById('ro-m').style.display='none'">&#215;</button></div>
+  <div class="mb">
+    <div id="ro-info" style="font-size:13px;color:var(--txt2)"></div>
+    <div class="fl"><label>Move to date</label><input type="date" id="ro-date"></div>
+  </div>
+  <div class="mf"><button class="bs" onclick="document.getElementById('ro-m').style.display='none'">Cancel</button><button class="bp" onclick="doRollover()">Roll over</button></div>
+</div></div>
 
 <script>
-const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat'];
+// ── State ─────────────────────────────────────────────────────────────────────
+let trucks=[],pos=[],loads=[],payments=[];
+let curTab='sched',curView='week',navOff=0;
+let role='driver',myTruckId=null;
+let editPoId=null,editLoadId=null,roPoId=null,sigLoadId=null,payPoId=null;
+let splits=[],expanded=new Set();
+let sigCtx=null,sigDrawing=false,sigHasData=false;
 
-let trucks = [], jobs = [], scheduledJobs = [], completedJobs = [];
-let weekOffset = 0, monthOffset = 0, editingId = null, currentTab = 'manager';
-let missingOpen = true, userRole = 'driver', userTruckId = null;
-let currentView = 'week'; // 'week' or 'month'
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const ymd=d=>d.toISOString().slice(0,10);
+const tod=()=>ymd(new Date());
+const fmtD=iso=>iso?new Date(iso+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+const fmtT=iso=>iso?new Date(iso).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}):'';
+const fmtM=iso=>new Date(iso+'-01T12:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'});
+const money=n=>'$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const dUntil=iso=>{const t=new Date(iso+'T12:00:00'),n=new Date();n.setHours(0,0,0,0);return Math.round((t-n)/86400000);};
+const dayLbl=iso=>{const d=new Date(iso+'T12:00:00');return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+d.toLocaleDateString('en-US',{month:'short',day:'numeric'});};
 
-// ── Date helpers ──────────────────────────────────────────────────────────────
-function getWeekStart(){
-  const d=new Date(), day=d.getDay(), diff=(day===0?-6:1-day);
-  const m=new Date(d); m.setDate(d.getDate()+diff+weekOffset*7); m.setHours(0,0,0,0); return m;
+function wkRange(){
+  const d=new Date(),dow=d.getDay(),diff=(dow===0?-6:1-dow);
+  const m=new Date(d);m.setDate(d.getDate()+diff+navOff*7);m.setHours(0,0,0,0);
+  const s=ymd(m),e=new Date(m);e.setDate(m.getDate()+6);
+  return{start:s,end:ymd(e),label:m.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' – '+e.toLocaleDateString('en-US',{month:'short',day:'numeric'})};
 }
-function weekDates(){
-  const m=getWeekStart();
-  return DAYS.map((_,i)=>{const d=new Date(m);d.setDate(m.getDate()+i);return d;});
-}
-function toYMD(d){ return d.toISOString().slice(0,10); }
-function fmt(d){ return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
-function fmtFull(iso){ if(!iso) return ''; const d=new Date(iso+'T12:00:00'); return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
-function daysUntil(iso){ const t=new Date(iso+'T12:00:00'), n=new Date(); n.setHours(0,0,0,0); return Math.round((t-n)/(1000*60*60*24)); }
-function dayName(iso){ const d=new Date(iso+'T12:00:00'); return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]; }
-function changeWeek(dir){ weekOffset+=dir; render(); }
-
-function onTypeChange(){
-  const t=document.getElementById('f-type').value;
-  document.getElementById('recurrence-row').classList.toggle('show', t==='recurring');
+function moRange(){
+  const d=new Date(),t=new Date(d.getFullYear(),d.getMonth()+navOff,1);
+  const e=new Date(t.getFullYear(),t.getMonth()+1,0);
+  return{start:ymd(t),end:ymd(e),label:t.toLocaleDateString('en-US',{month:'long',year:'numeric'})};
 }
 
-// ── Tab switching ─────────────────────────────────────────────────────────────
-function switchTab(tab){
-  currentTab=tab;
-  ['manager','queue','history','driver'].forEach(t=>{
-    document.getElementById('tab-'+({manager:'mgr',queue:'queue',history:'history',driver:'drv'}[t])).classList.toggle('active',tab===t);
-    document.getElementById(t+'-section').style.display=tab===t?'block':'none';
+function pLoads(id){return loads.filter(l=>l.poId===id);}
+function pActivL(id){return loads.filter(l=>l.poId===id&&l.status!=='completed');}
+function pDel(id){return loads.filter(l=>l.poId===id).reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);}
+function pAssigned(id){return loads.filter(l=>l.poId===id).reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);}
+function pPayments(id){return payments.filter(p=>p.poId===id);}
+
+// ── Nav & View ────────────────────────────────────────────────────────────────
+function nav(d){navOff+=d;render();}
+function setView(v){curView=v;document.getElementById('vb-week').classList.toggle('active',v==='week');document.getElementById('vb-month').classList.toggle('active',v==='month');navOff=0;render();}
+
+// ── Tab ───────────────────────────────────────────────────────────────────────
+function swTab(t){
+  curTab=t;
+  ['sched','all','hist','drv'].forEach(x=>{
+    document.getElementById('tab-'+x).classList.toggle('active',t===x);
+    document.getElementById('sec-'+x).style.display=t===x?'block':'none';
   });
-  const isMgr=tab==='manager';
-  document.getElementById('view-toggle-wrap').style.display=isMgr?'flex':'none';
-  document.getElementById('week-nav-wrap').style.display=(isMgr&&currentView==='week')?'flex':'none';
-  document.getElementById('month-nav-wrap').style.display=(isMgr&&currentView==='month')?'flex':'none';
-  if(tab==='driver') renderDriverView();
-  if(tab==='queue')  renderQueue();
-  if(tab==='history') renderHistory();
-  if(tab==='manager') render();
-}
-
-function setView(v){
-  currentView=v;
-  document.getElementById('view-btn-week').classList.toggle('active',v==='week');
-  document.getElementById('view-btn-month').classList.toggle('active',v==='month');
-  document.getElementById('week-nav-wrap').style.display=v==='week'?'flex':'none';
-  document.getElementById('month-nav-wrap').style.display=v==='month'?'flex':'none';
-  document.getElementById('week-view-wrap').style.display=v==='week'?'block':'none';
-  document.getElementById('month-view-wrap').style.display=v==='month'?'block':'none';
+  const isSched=t==='sched';
+  document.getElementById('nav-wrap').style.display=isSched?'flex':'none';
+  document.getElementById('view-tog').style.display=isSched?'flex':'none';
   render();
 }
 
-function changeMonth(dir){ monthOffset+=dir; render(); }
+// ── Main render ───────────────────────────────────────────────────────────────
+function render(){
+  renderSbar();
+  if(curTab==='sched') renderSched();
+  if(curTab==='all') renderAll();
+  if(curTab==='hist') renderHist();
+  if(curTab==='drv') renderDrv();
+}
 
-// ── Summary ───────────────────────────────────────────────────────────────────
-function renderSummary(){
-  const totalL=jobs.reduce((s,j)=>s+(Number(j.loads)||0),0);
-  const totalD=jobs.reduce((s,j)=>s+(Number(j.delivered)||0),0);
-  const missing=getMissingJobs();
-  const totalM=missing.reduce((s,j)=>s+(Number(j.loads)||0)-(Number(j.delivered)||0),0);
-  document.getElementById('summary-bar').innerHTML=`
-    <div class="metric"><div class="ml">Active jobs</div><div class="mv">${jobs.length}</div></div>
-    <div class="metric"><div class="ml">Loads ordered</div><div class="mv">${totalL}</div></div>
-    <div class="metric"><div class="ml">Loads delivered</div><div class="mv">${totalD}</div></div>
-    <div class="metric ${totalM>0?'warn':''}"><div class="ml">Missing</div><div class="mv">${totalM}</div></div>
-    <div class="metric sched"><div class="ml">Scheduled</div><div class="mv">${scheduledJobs.length}</div></div>
-    <div class="metric info"><div class="ml">Completed</div><div class="mv">${completedJobs.length}</div></div>
+function renderSbar(){
+  const act=pos.filter(p=>p.status==='active');
+  const tL=act.reduce((s,p)=>s+Number(p.totalLoads||0),0);
+  const tD=act.reduce((s,p)=>s+pDel(p.id),0);
+  const miss=tL-tD;
+  const tRev=pos.reduce((s,p)=>s+(p.invoice?.pricePerLoad||0)*(p.totalLoads||0),0);
+  const tPaid=payments.reduce((s,p)=>s+p.amount,0);
+  document.getElementById('sbar').innerHTML=`
+    <div class="met"><div class="ml">Active POs</div><div class="mv">${act.length}</div></div>
+    <div class="met g"><div class="ml">Delivered</div><div class="mv">${tD}</div></div>
+    <div class="met ${miss>0?'w':''}"><div class="ml">Missing</div><div class="mv">${miss}</div></div>
+    <div class="met b"><div class="ml">Scheduled</div><div class="mv">${pos.filter(p=>p.status==='scheduled').length}</div></div>
+    <div class="met o"><div class="ml">Revenue</div><div class="mv">${money(tRev)}</div></div>
+    <div class="met g"><div class="ml">Collected</div><div class="mv">${money(tPaid)}</div></div>
+    <div class="met ${tRev-tPaid>0?'w':'g'}"><div class="ml">Outstanding</div><div class="mv">${money(tRev-tPaid)}</div></div>
   `;
 }
 
-// ── Missing panel ─────────────────────────────────────────────────────────────
-function getMissingJobs(){ return jobs.filter(j=>(Number(j.loads)||0)>0&&(Number(j.delivered)||0)<(Number(j.loads)||0)); }
-function toggleMissing(){ missingOpen=!missingOpen; render(); }
-function renderMissing(){
-  const missing=getMissingJobs();
-  const totalM=missing.reduce((s,j)=>s+(Number(j.loads)||0)-(Number(j.delivered)||0),0);
-  if(!missing.length){ document.getElementById('missing-panel-wrap').innerHTML=''; return; }
-  let h=`<div class="missing-panel">
-    <div class="missing-head" onclick="toggleMissing()">
-      <span class="mh-title">&#9888; ${missing.length} job${missing.length>1?'s':''} with missing loads — ${totalM} short</span>
-      <span class="mh-toggle">${missingOpen?'▲ hide':'▼ show'}</span>
-    </div>`;
-  if(missingOpen){
-    h+=`<div class="missing-list">`;
-    missing.forEach(j=>{
-      const short=(Number(j.loads)||0)-(Number(j.delivered)||0);
-      const t=trucks.find(t=>t.id===j.truck);
-      h+=`<div class="missing-item" onclick="openEdit(${j.id})">
-        <div><div class="mi-cust">${j.customer}${j.code?' · '+j.code:''}</div>
-        <div class="mi-meta">${fmtFull(j.dueDate)} · ${t?t.label+' ('+t.truckNum+')':j.truck} · ${j.city||''}</div></div>
-        <span class="mi-badge">−${short} load${short!==1?'s':''}</span>
-      </div>`;
+// ── Schedule ──────────────────────────────────────────────────────────────────
+function renderSched(){
+  const r=curView==='week'?wkRange():moRange();
+  document.getElementById('nav-lbl').textContent=r.label;
+  const filt=pos.filter(p=>p.deliveryDate>=r.start&&p.deliveryDate<=r.end);
+  const el=document.getElementById('sched-list');
+  let h='';
+  if(role==='manager') h+=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="bp" onclick="openNewPO()">+ New PO</button></div>`;
+  if(!filt.length){el.innerHTML=h+`<div class="no-loads">No jobs ${curView==='week'?'this week':'this month'}.</div>`;return;}
+  if(curView==='week'){
+    const byD={};filt.forEach(p=>{const k=p.deliveryDate;if(!byD[k])byD[k]=[];byD[k].push(p);});
+    Object.keys(byD).sort().forEach(dk=>{
+      const isT=dk===tod();
+      h+=`<div style="margin-bottom:14px"><div style="font-size:12px;font-family:var(--m);font-weight:500;color:var(--txt2);margin-bottom:7px;display:flex;align-items:center;gap:7px">${dayLbl(dk)}${isT?'<span style="font-size:10px;color:var(--G);background:var(--Gb);padding:2px 7px;border-radius:20px">TODAY</span>':''}</div>`;
+      byD[dk].forEach(p=>{h+=renderPOCard(p);});
+      h+=`</div>`;
+    });
+  } else {
+    const byD={};filt.forEach(p=>{const k=p.deliveryDate;if(!byD[k])byD[k]=[];byD[k].push(p);});
+    h+=`<div class="mv-wrap"><div class="mv-title">${r.label}</div>`;
+    Object.keys(byD).sort().forEach(dk=>{
+      const isT=dk===tod();
+      const dps=byD[dk];
+      const tL=dps.reduce((s,p)=>s+Number(p.totalLoads||0),0);
+      const tD=dps.reduce((s,p)=>s+pDel(p.id),0);
+      h+=`<div class="mday ${isT?'td':''}"><div class="mdh"><span class="mdhl">${dayLbl(dk)}${isT?' · TODAY':''}</span><span class="mdhs">${dps.length} PO${dps.length>1?'s':''} · ${tL} loads · ${tD} del</span></div><div class="mday-rows">`;
+      dps.forEach(p=>{
+        const d=pDel(p.id),a=Number(p.totalLoads||0);
+        h+=`<div class="mday-row" onclick="expand('${p.id}')"><span class="poc-num">${p.poNumber}</span><span style="flex:1;font-size:12px;font-weight:500;color:var(--txt)">${p.customer}</span><span style="font-size:11px;color:var(--txt2)">${d}/${a} loads</span><span class="sp sp-${p.status}">${p.status}</span></div>`;
+      });
+      h+=`</div></div>`;
     });
     h+=`</div>`;
   }
-  h+=`</div>`;
-  document.getElementById('missing-panel-wrap').innerHTML=h;
+  el.innerHTML=h;
 }
 
-// ── Manager grid ──────────────────────────────────────────────────────────────
-function render(){
-  renderSummary();
-  renderMissing();
-  if(currentTab==='manager'){
-    if(currentView==='week') renderGrid();
-    else renderMonth();
+// ── All POs ───────────────────────────────────────────────────────────────────
+function renderAll(){
+  const active=pos.filter(p=>p.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
+  let h='';
+  if(role==='manager') h+=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="bp" onclick="openNewPO()">+ New PO</button></div>`;
+  if(!active.length){document.getElementById('all-list').innerHTML=h+'<div class="no-loads">No active POs.</div>';return;}
+  active.forEach(p=>{h+=renderPOCard(p);});
+  document.getElementById('all-list').innerHTML=h;
+}
+
+// ── PO Card ───────────────────────────────────────────────────────────────────
+function renderPOCard(p){
+  const del=pDel(p.id),tot=Number(p.totalLoads||0),pct=tot>0?Math.round(del/tot*100):0;
+  const isOpen=expanded.has(p.id);
+  const inv=p.invoice||{};
+  const priceL=Number(inv.pricePerLoad)||0;
+  const totalDue=priceL*tot;
+  const totalPaid=pPayments(p.id).reduce((s,x)=>s+x.amount,0);
+  const balance=totalDue-totalPaid;
+  const pLoadsArr=pLoads(p.id);
+  const allDone=pLoadsArr.length>0&&pLoadsArr.every(l=>l.status==='completed');
+  const missing=tot-del;
+  const payStatus=inv.paymentStatus||'unpaid';
+
+  // Invoice section
+  const invHtml=role==='manager'?`<div class="inv-section">
+    <div class="inv-title">Invoice & Payment</div>
+    <div class="inv-grid">
+      <div class="inv-card"><div class="il">Price / load</div><div class="iv">${money(priceL)}</div></div>
+      <div class="inv-card"><div class="il">Total loads</div><div class="iv">${tot}</div></div>
+      <div class="inv-card"><div class="il">Completed loads</div><div class="iv">${del}</div></div>
+      <div class="inv-card money"><div class="il">Total due</div><div class="iv">${money(totalDue)}</div></div>
+      <div class="inv-card money"><div class="il">Amount paid</div><div class="iv">${money(totalPaid)}</div></div>
+      <div class="inv-card ${balance>0?'owed':'money'}"><div class="il">Balance</div><div class="iv">${money(balance)}</div></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span class="sp sp-${payStatus}" style="font-size:11px;padding:3px 9px">${payStatus.toUpperCase()}</span>
+      ${allDone?'<span style="font-size:11px;color:var(--G);background:var(--Gb);padding:3px 9px;border-radius:20px;border:0.5px solid var(--Gd)">&#10003; Ready for final invoice</span>':''}
+    </div>
+    ${pPayments(p.id).length?`<div class="pay-history">`+pPayments(p.id).map(pay=>`<div class="pay-row"><span>${pay.method||'Payment'} · ${fmtT(pay.paidAt)||fmtD(pay.paidAt)}</span><span>${pay.note||''}</span><span class="pa">${money(pay.amount)}</span></div>`).join('')+`</div>`:''}
+    <div style="display:flex;gap:7px;margin-top:7px">
+      <button class="ab g" onclick="openPayM('${p.id}')">+ Add payment</button>
+      <button class="ab" onclick="openEditInv('${p.id}')">&#9998; Edit price</button>
+    </div>
+  </div>`:'';
+
+  // Loads table
+  let loadsHtml='';
+  if(!pLoadsArr.length){loadsHtml=`<div class="no-loads">No load assignments yet.</div>`;}
+  else{
+    loadsHtml=`<table class="lt"><thead><tr>
+      <th>Driver</th><th>Truck</th><th>Date</th><th>Loads</th><th>Status</th><th>POD</th>
+      ${role==='manager'?'<th>Actions</th>':''}
+    </tr></thead><tbody>`;
+    pLoadsArr.forEach(l=>{
+      const t=trucks.find(x=>x.id===l.truckId);
+      const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
+      const lpct=la>0?Math.round(ld/la*100):0;
+      const ts=l.timestamps||{};
+      const pod=l.pod||{};
+      const hasPod=pod.signedBy&&pod.signedAt;
+      loadsHtml+=`<tr>
+        <td style="font-weight:500">${l.driverName||t?.label||l.truckId}</td>
+        <td style="font-family:var(--m);font-size:11px;color:var(--txt2)">${t?.truckNum||''}</td>
+        <td style="font-family:var(--m);font-size:11px">${fmtD(l.deliveryDate)}</td>
+        <td><div style="display:flex;align-items:center;gap:5px">
+          <div class="lpb"><div class="lpf ${lpct===0?'z':lpct<100?'p':'f'}" style="width:${lpct}%"></div></div>
+          <span style="font-family:var(--m);font-size:11px">${ld}/${la}</span>
+        </div></td>
+        <td><span class="sp sp-${l.status}">${l.status}</span></td>
+        <td>${hasPod?`<span class="pod-badge">&#10003; ${pod.signedBy}</span>`:'<span style="font-size:11px;color:var(--txt3)">—</span>'}</td>
+        ${role==='manager'?`<td><div style="display:flex;gap:4px;flex-wrap:wrap">
+          <button class="ab" onclick="openLL('${l.id}')">Log</button>
+          ${l.status!=='completed'?`<button class="ab g" onclick="complLoad('${l.id}')">Done</button>`:''}
+          <button class="ab" onclick="openSig('${l.id}')">Sign</button>
+          <button class="ab r" onclick="delLoad('${l.id}')">&#215;</button>
+        </div></td>`:''}
+      </tr>`;
+      if(ts.start||ts.arrived||ts.completed){
+        loadsHtml+=`<tr><td colspan="${role==='manager'?7:6}" style="padding:3px 11px 7px;font-size:10px;font-family:var(--m);color:var(--txt3)">
+          ${ts.start?'▶ Start: '+ts.start+' ':''} ${ts.arrived?'📍 Arrived: '+ts.arrived+' ':''}${ts.completed?'■ Done: '+ts.completed:''}
+        </td></tr>`;
+      }
+    });
+    loadsHtml+=`</tbody></table>`;
   }
-}
 
-function renderGrid(){
-  const dates=weekDates();
-  const mon=getWeekStart(), sun=new Date(mon); sun.setDate(mon.getDate()+5);
-  document.getElementById('week-label').textContent=fmt(mon)+' – '+fmt(sun);
-  const numT=trucks.length;
-  const colPct=Math.floor(100/numT);
-  const cols=trucks.map(()=>colPct+'%').join(' ');
-  let gh='';
-  dates.forEach((date,di)=>{
-    const dayName=DAYS[di];
-    const dateStr=toYMD(date);
-    gh+=`<div>
-      <div class="day-label-row"><span class="dlday">${dayName}</span><span class="dldate">${fmt(date)}</span></div>
-      <div class="col-header-row" style="grid-template-columns:${cols}">`;
-    trucks.forEach(t=>{
-      const isManager=userRole==='manager';
-      gh+=`<div class="col-hdr"><span class="truck-label">${t.label}</span>
-        ${isManager?`<input class="truck-num-input" value="${t.truckNum}" title="Edit truck #" onchange="updateTruckNum('${t.id}',this.value)" onclick="event.stopPropagation()">`:
-        `<span style="font-family:var(--mono);font-size:10px;color:var(--txt3)">${t.truckNum}</span>`}
-      </div>`;
-    });
-    gh+=`</div><div class="jobs-cols" style="grid-template-columns:${cols}">`;
-    trucks.forEach(t=>{
-      const tJobs=jobs.filter(j=>j.truck===t.id&&j.dueDate===dateStr);
-      gh+=`<div class="truck-col">`;
-      tJobs.forEach(j=>{
-        const l=Number(j.loads)||0,d=Number(j.delivered)||0,short=l-d;
-        const isMiss=l>0&&d<l;
-        const isRec=j.type==='recurring';
-        let pills='';
-        if(l>0){
-          if(d>=l) pills=`<span class="pill green">${d}/${l} done</span>`;
-          else if(d>0) pills=`<span class="pill amber">${d}/${l}</span><span class="pill red">−${short}</span>`;
-          else pills=`<span class="pill">${l} loads</span>`;
-        }
-        if(isRec) pills+=`<span class="pill purple">recurring</span>`;
-        gh+=`<div class="job-card ${isMiss?'missing':''} ${isRec?'is-recurring':''}" onclick="openEdit(${j.id})">
-          <div class="jc-cust">${j.customer}</div>
-          <div class="jc-sub">${j.code||''}${j.city?' · '+j.city:''}</div>
-          <div class="jc-pills">${pills}<span class="pill">${j.material||''}</span></div>
-        </div>`;
-      });
-      if(userRole==='manager') gh+=`<button class="add-btn" onclick="openAdd('${t.id}','${dateStr}')">+ add job</button>`;
-      gh+=`</div>`;
-    });
-    gh+=`</div></div>`;
-  });
-  document.getElementById('grid-wrap').innerHTML=gh;
-  // Repopulate driver select
-  const ds=document.getElementById('driver-select');
-  const prev=ds.value;
-  ds.innerHTML=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
-  if(prev) ds.value=prev;
-}
-
-// ── Month view ────────────────────────────────────────────────────────────────
-function renderMonth(){
-  const now = new Date();
-  const targetMonth = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-  const year = targetMonth.getFullYear();
-  const month = targetMonth.getMonth();
-  const monthName = targetMonth.toLocaleDateString('en-US',{month:'long',year:'numeric'});
-  document.getElementById('month-label').textContent = monthName;
-
-  const todayStr = toYMD(new Date());
-  const daysInMonth = new Date(year, month+1, 0).getDate();
-  const allJobs = [...jobs, ...scheduledJobs];
-
-  // Build summary chips
-  const monthJobs = allJobs.filter(j=>j.dueDate&&j.dueDate.startsWith(year+'-'+String(month+1).padStart(2,'0')));
-  const totalLoads = monthJobs.reduce((s,j)=>s+(Number(j.loads)||0),0);
-  const totalDel   = monthJobs.reduce((s,j)=>s+(Number(j.delivered)||0),0);
-  const activeCnt  = monthJobs.filter(j=>j.status==='active').length;
-  const schedCnt   = monthJobs.filter(j=>j.status==='scheduled').length;
-
-  // Group days into weeks for display
-  const firstDow = new Date(year, month, 1).getDay(); // 0=Sun
-  const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-
-  let html = `<div class="month-title">${monthName}
-    <span class="mt-sub">${monthJobs.length} jobs · ${totalLoads} loads ordered · ${totalDel} delivered</span>
-  </div>
-  <div class="month-summary">
-    <div class="ms-chip active">${activeCnt} active</div>
-    <div class="ms-chip">${schedCnt} scheduled</div>
-    <div class="ms-chip">${totalLoads} loads</div>
-    ${totalLoads-totalDel>0?`<div class="ms-chip" style="background:var(--red-bg);color:var(--red);border-color:var(--red-bdr)">${totalLoads-totalDel} missing</div>`:''}
+  return `<div class="poc ${p.status}" id="poc-${p.id}">
+    <div class="poh" onclick="togglePO('${p.id}')">
+      <span class="poc-chev ${isOpen?'o':''}">&#9654;</span>
+      <span class="poc-num">${p.poNumber}</span>
+      <span class="poc-cust">${p.customer}${p.code?' <span style="font-family:var(--m);font-size:11px;color:var(--txt2)">'+p.code+'</span>':''}</span>
+      <span class="poc-date">${fmtD(p.deliveryDate)}</span>
+      <div class="poc-prog">
+        <div class="poc-bar"><div class="poc-fill ${pct===0?'z':pct<100?'p':'f'}" style="width:${pct}%"></div></div>
+        <span class="poc-pt">${del}/${tot}</span>
+      </div>
+      <span class="sp sp-${p.status}">${p.status}</span>
+      <span class="sp sp-${payStatus}">${payStatus}</span>
+    </div>
+    <div class="pob ${isOpen?'o':''}" id="pob-${p.id}">
+      <div class="po-meta-row">
+        <span><b>Material:</b> ${p.material}</span>
+        <span><b>Pickup:</b> ${p.pickup||'—'}</span>
+        <span><b>Deliver to:</b> ${p.city||p.address||'—'}</span>
+        <span><b>Supervisor:</b> ${p.supervisor||'—'}</span>
+        ${p.notes?`<span><b>Notes:</b> ${p.notes}</span>`:''}
+        ${missing>0&&p.status==='active'?`<span style="color:var(--R)"><b>Missing:</b> ${missing} loads</span>`:''}
+      </div>
+      ${role==='manager'?`<div class="po-actions">
+        <button class="ab" onclick="openEditPO('${p.id}')">&#9998; Edit</button>
+        <button class="ab" onclick="openAddSplit('${p.id}')">+ Driver</button>
+        ${missing>0?`<button class="ab o" onclick="openRO('${p.id}')">&#8634; Roll over</button>`:''}
+        <button class="ab g" onclick="complAllLoads('${p.id}')">&#10003; All done</button>
+        <button class="ab r" onclick="delPOById('${p.id}')">Delete PO</button>
+      </div>`:''}
+      ${invHtml}
+      ${loadsHtml}
+    </div>
   </div>`;
-
-  // Render days grouped by week rows
-  let dayNum = 1;
-  let weekNum = 1;
-  // Start of first week — pad empty days
-  let currentDow = firstDow;
-
-  while(dayNum <= daysInMonth){
-    const weekDaysHtml = [];
-    // Fill week Mon-Sun (start from Monday display)
-    for(let dow=0; dow<7; dow++){
-      const realDow = (dow+1)%7; // 0=Mon...6=Sun
-      if((weekNum===1 && realDow < firstDow && !(firstDow===0&&dow>=6)) || dayNum > daysInMonth){
-        // Empty cell
-        if(dayNum <= daysInMonth || weekDaysHtml.length < 7) weekDaysHtml.push('');
-        continue;
-      }
-      // Slight correction — build proper date
-      const d = new Date(year, month, dayNum);
-      const realDowCheck = d.getDay(); // actual day of week
-      if(realDowCheck !== realDow && weekNum===1 && dow < firstDow){
-        weekDaysHtml.push(''); continue;
-      }
-      const dateStr = toYMD(d);
-      const dayJobs = allJobs.filter(j=>j.dueDate===dateStr);
-      const isToday = dateStr===todayStr;
-      const tL=dayJobs.reduce((s,j)=>s+(Number(j.loads)||0),0);
-      const tD=dayJobs.reduce((s,j)=>s+(Number(j.delivered)||0),0);
-      const hasMissing=dayJobs.some(j=>(Number(j.loads)||0)>0&&(Number(j.delivered)||0)<(Number(j.loads)||0));
-
-      let cardHtml=`<div class="month-day-card ${isToday?'today':''} ${dayJobs.length===0?'empty':''}">
-        <div class="mdc-head ${isToday?'today':''}">
-          <span class="mdc-dayname">${DAY_NAMES[d.getDay()]} ${dayNum}</span>
-          ${isToday?'<span style="font-size:10px;color:var(--green);font-family:var(--mono)">TODAY</span>':''}
-          ${dayJobs.length>0?`<span class="mdc-count">${dayJobs.length} job${dayJobs.length>1?'s':''} · ${tL} loads</span>`:''}
-        </div>`;
-      if(dayJobs.length>0){
-        cardHtml+=`<div class="mdc-jobs">`;
-        dayJobs.forEach(j=>{
-          const t=trucks.find(x=>x.id===j.truck);
-          const l=Number(j.loads)||0,del=Number(j.delivered)||0;
-          const isMiss=l>0&&del<l;
-          const isRec=j.type==='recurring';
-          const isSched=j.status==='scheduled';
-          cardHtml+=`<div class="mdc-job ${isMiss?'missing':''}" onclick="openEdit(${j.id})">
-            <div class="mj-cust">${j.customer}${j.code?' · <span style=\"font-family:var(--mono);font-size:10px\">' +j.code+'</span>':''}</div>
-            <div class="mj-meta">${t?t.label+' ('+t.truckNum+')':j.truck||''}</div>
-            <div class="mj-pills">
-              ${l>0?(del>=l?'<span class="pill green">done</span>':(del>0?`<span class="pill amber">${del}/${l}</span><span class="pill red">−${l-del}</span>`:`<span class="pill">${l} loads</span>`)):''}
-              ${isSched?'<span class="pill purple">scheduled</span>':''}
-              ${isRec?'<span class="pill purple">recurring</span>':''}
-            </div>
-          </div>`;
-        });
-        if(userRole==='manager') cardHtml+=`<button class="add-btn" style="margin:2px 0 0;width:100%" onclick="openAdd('${trucks[0]?.id||''}','${dateStr}')">+ add</button>`;
-        cardHtml+=`</div>`;
-      } else {
-        if(userRole==='manager') cardHtml+=`<div class="month-empty-day"><button class="add-btn" style="width:100%;text-align:center" onclick="openAdd('${trucks[0]?.id||''}','${dateStr}')">+ add job</button></div>`;
-        else cardHtml+=`<div class="month-empty-day">—</div>`;
-      }
-      cardHtml+=`</div>`;
-      weekDaysHtml.push(cardHtml);
-      dayNum++;
-    }
-    if(weekDaysHtml.some(x=>x)){
-      const firstRealDay = new Date(year,month,dayNum-weekDaysHtml.filter(x=>x).length);
-      const lastRealDay  = new Date(year,month,dayNum-1);
-      html+=`<div class="month-week">
-        <div class="month-week-label">Week of ${fmt(firstRealDay)} – ${fmt(lastRealDay)}</div>
-        <div class="month-day-row" style="grid-template-columns:repeat(${Math.min(weekDaysHtml.filter(x=>x).length,7)},1fr)">
-          ${weekDaysHtml.filter(x=>x).join('')}
-        </div>
-      </div>`;
-    }
-    weekNum++;
-  }
-  document.getElementById('month-view-wrap').innerHTML=html;
 }
 
-// ── Scheduled queue ───────────────────────────────────────────────────────────
-function renderQueue(){
-  const sorted=[...scheduledJobs].sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
-  document.getElementById('sched-count').textContent=sorted.length;
-  if(!sorted.length){
-    document.getElementById('sched-list').innerHTML=`<div class="no-jobs">No scheduled deliveries yet.</div>`;
-    return;
-  }
-  document.getElementById('sched-list').innerHTML=sorted.map(j=>{
-    const t=trucks.find(x=>x.id===j.truck);
-    const d=daysUntil(j.dueDate);
-    const dLabel=d===0?'today':d===1?'tomorrow':`in ${d} days`;
-    return `<div class="sched-card" onclick="openEdit(${j.id})">
-      <div class="sc-left">
-        <div class="sc-cust">${j.customer}${j.code?' · <span style="font-family:var(--mono);font-size:11px">'+j.code+'</span>':''}</div>
-        <div class="sc-meta">${t?t.label+' ('+t.truckNum+')':j.truck} · ${j.material||''} · ${j.loads||0} loads · ${j.city||''}</div>
-      </div>
-      <div>
-        <div class="sc-date">${fmtFull(j.dueDate)}</div>
-        <div class="sc-days">${dLabel}</div>
-        <span class="pill purple" style="margin-top:4px;display:inline-block">${j.type==='recurring'?'recurring':'scheduled'}</span>
-      </div>
-    </div>`;
-  }).join('');
-}
+function togglePO(id){ if(expanded.has(id)) expanded.delete(id); else expanded.add(id); render(); }
+function expand(id){ expanded.add(id); swTab('all'); setTimeout(()=>{ const el=document.getElementById('poc-'+id); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); },100); }
 
 // ── History ───────────────────────────────────────────────────────────────────
-function renderHistory(){
-  document.getElementById('history-count').textContent=completedJobs.length;
-  if(!completedJobs.length){
-    document.getElementById('history-list').innerHTML=`<div class="no-jobs">No completed jobs yet.</div>`;
-    return;
-  }
-  // Group by month
-  const byMonth={};
-  completedJobs.forEach(j=>{
-    const m=j.completedAt?j.completedAt.slice(0,7):(j.dueDate||'').slice(0,7)||'unknown';
-    if(!byMonth[m]) byMonth[m]=[];
-    byMonth[m].push(j);
-  });
+function renderHist(){
+  const done=pos.filter(p=>p.status==='completed');
+  if(!done.length){ document.getElementById('hist-wrap').innerHTML='<div class="no-loads">No completed POs yet.</div>'; return; }
+  const byM={};
+  done.forEach(p=>{ const m=(p.completedAt||p.deliveryDate||'').slice(0,7)||'unknown'; if(!byM[m]) byM[m]=[]; byM[m].push(p); });
   let h='';
-  Object.keys(byMonth).sort().reverse().forEach(month=>{
-    const label=month==='unknown'?'Unknown date':new Date(month+'-01T12:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'});
-    h+=`<div class="history-month"><div class="history-month-label">${label}</div>`;
-    byMonth[month].forEach(j=>{
-      const t=trucks.find(x=>x.id===j.truck);
-      const completedDate=j.completedAt?new Date(j.completedAt).toLocaleDateString('en-US',{month:'short',day:'numeric'}):fmtFull(j.dueDate);
-      h+=`<div class="history-item">
-        <div class="hi-left">
-          <div class="hi-cust">${j.customer}${j.code?' · '+j.code:''}</div>
-          <div class="hi-meta">${t?t.label+' ('+t.truckNum+')':j.truck} · ${j.material||''} · ${j.city||''}</div>
-        </div>
-        <div class="hi-right">
-          <div class="hi-date">&#10003; ${completedDate}</div>
-          <div class="hi-loads">${j.delivered||0}/${j.loads||0} loads</div>
-        </div>
-      </div>`;
+  Object.keys(byM).sort().reverse().forEach(m=>{
+    h+=`<div class="hm"><div class="hml">${m==='unknown'?'Unknown':fmtM(m)}</div>`;
+    byM[m].forEach(p=>{
+      const del=pDel(p.id),tot=Number(p.totalLoads||0);
+      const inv=p.invoice||{};
+      const paid=pPayments(p.id).reduce((s,x)=>s+x.amount,0);
+      const due=(inv.pricePerLoad||0)*tot;
+      h+=`<div class="hi"><div class="hi-l">
+        <div class="hp">${p.poNumber}</div>
+        <div class="hc">${p.customer}</div>
+        <div class="hm2">${p.material} · ${p.city||'—'} · ${[...new Set(loads.filter(l=>l.poId===p.id).map(l=>l.driverName||l.truckId))].join(', ')}</div>
+      </div><div class="hi-r">
+        <div class="hd">&#10003; ${p.completedAt?fmtD(p.completedAt):fmtD(p.deliveryDate)}</div>
+        <div class="hl">${del}/${tot} loads</div>
+        <div class="hl">${money(paid)} / ${money(due)}</div>
+        <span class="sp sp-${inv.paymentStatus||'unpaid'}" style="margin-top:3px;display:inline-block">${inv.paymentStatus||'unpaid'}</span>
+      </div></div>`;
     });
     h+=`</div>`;
   });
-  document.getElementById('history-list').innerHTML=h;
+  document.getElementById('hist-wrap').innerHTML=h;
 }
 
-// ── Driver view ───────────────────────────────────────────────────────────────
-function renderDriverView(){
-  const ds=document.getElementById('driver-select');
-  const tid=ds.value||userTruckId;
-  if(!tid) return;
-  const today=toYMD(new Date());
-  // Group jobs by date
-  const myJobs=jobs.filter(j=>j.truck===tid).sort((a,b)=>(a.dueDate||'').localeCompare(b.dueDate||''));
-  if(!myJobs.length){ document.getElementById('driver-day-list').innerHTML=`<div class="no-jobs">No active jobs assigned to you this week.</div>`; return; }
-  const byDate={};
-  myJobs.forEach(j=>{ const k=j.dueDate||'no-date'; if(!byDate[k]) byDate[k]=[]; byDate[k].push(j); });
-  let html='';
-  Object.keys(byDate).sort().forEach(dateKey=>{
-    const dayJobs=byDate[dateKey];
-    const tL=dayJobs.reduce((s,j)=>s+(Number(j.loads)||0),0);
-    const tD=dayJobs.reduce((s,j)=>s+(Number(j.delivered)||0),0);
-    const tM=tL-tD;
-    const label=dateKey==='no-date'?'No date set':`${dayName(dateKey)} ${fmtFull(dateKey)}`;
-    const isToday=dateKey===today;
-    html+=`<div class="drv-day">
-      <div class="drv-day-head" style="${isToday?'border-left:3px solid var(--green)':''}">
-        <span class="dday">${label}${isToday?' <span style="font-size:10px;color:var(--green);margin-left:4px">TODAY</span>':''}</span>
-        <span class="dtot ${tM>0?'warn':''}">${tD}/${tL}${tM>0?' · '+tM+' missing':''}</span>
-      </div><div class="drv-jobs">`;
-    dayJobs.forEach(j=>{
-      const l=Number(j.loads)||0,d=Number(j.delivered)||0,miss=l-d;
-      const isMiss=l>0&&d<l;
-      const ts=j.timestamps||{};
-      html+=`<div class="drv-job ${isMiss?'missing':''}">
-        <div class="djl">
-          <div class="cust">${j.customer}${j.code?` <span style="font-family:var(--mono);font-size:11px;color:var(--txt2)">· ${j.code}</span>`:''}</div>
-          <div class="meta">
-            <b>Material:</b> ${j.material||''}<br>
-            <b>Pickup:</b> ${j.pickup||''}${j.po?' · <b>PO:</b> '+j.po:''}<br>
-            ${j.city?`<b>Deliver to:</b> ${j.city}<br>`:''}
-            ${j.supervisor?`<b>Supervisor:</b> ${j.supervisor}<br>`:''}
-            ${j.notes?`<em style="color:var(--txt3)">${j.notes}</em><br>`:''}
-            ${ts.start||ts.first||ts.last?`<span style="font-family:var(--mono);font-size:10px;color:var(--txt3)">${ts.start?'▶ '+ts.start+' ':''} ${ts.first?'✓ '+ts.first+' ':''}${ts.last?'■ '+ts.last:''}</span>`:''}
+// ── Driver View ───────────────────────────────────────────────────────────────
+function renderDrv(){
+  const myLoads=loads.filter(l=>l.truckId===myTruckId&&l.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
+  if(!myLoads.length){ document.getElementById('drv-wrap').innerHTML='<div class="no-loads">No active loads assigned to you.</div>'; return; }
+  const todStr=tod();
+  let h='';
+  myLoads.forEach(l=>{
+    const po=pos.find(p=>p.id===l.poId)||{};
+    const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
+    const miss=la-ld;
+    const isT=l.deliveryDate===todStr;
+    const ts=l.timestamps||{};
+    const pod=l.pod||{};
+    const hasPod=pod.signedBy&&pod.signedAt;
+    h+=`<div class="dlc">
+      <div class="dlch">
+        <div class="dlch-po">${po.poNumber||l.poId} · ${fmtD(l.deliveryDate)}${isT?' <span style="color:var(--G);font-size:10px">TODAY</span>':''}</div>
+        <div class="dlch-c">${po.customer||''}</div>
+      </div>
+      <div class="dlcb">
+        <div class="dlc-grid">
+          <div class="dlc-info">
+            <div class="meta">
+              <b>Material:</b> ${po.material||''}<br>
+              <b>Pickup:</b> ${po.pickup||''}<br>
+              ${po.city||po.address?`<b>Deliver to:</b> ${po.city||po.address}<br>`:''}
+              ${po.supervisor?`<b>Supervisor:</b> ${po.supervisor}<br>`:''}
+              ${l.notes?`<em style="color:var(--txt3)">${l.notes}</em><br>`:''}
+            </div>
+            ${ts.start||ts.arrived||ts.completed?`<div class="drv-ts">${ts.start?'▶ Start: '+ts.start+'<br>':''}${ts.arrived?'📍 Arrived: '+ts.arrived+'<br>':''}${ts.completed?'■ Done: '+ts.completed:''}</div>`:''}
+            ${hasPod?`<div class="pod-info">&#10003; Signed by ${pod.signedBy} at ${pod.signedAt}</div>`:''}
           </div>
-          <div style="margin-top:6px">${isMiss?`<span class="pill red">${miss} missing</span>`:`<span class="pill green">Complete</span>`}</div>
+          <div class="dlc-right">
+            <div class="dlc-big">${ld}<span style="font-size:16px;color:var(--txt2)">/${la}</span></div>
+            <div class="dlc-lbl">delivered</div>
+          </div>
         </div>
-        <div class="djr">
-          <div class="big">${d}<span style="font-size:14px;color:var(--txt2)">/${l}</span></div>
-          <div class="lbl">delivered</div>
-          <button class="log-btn" onclick="quickLog(${j.id})">Log loads</button>
-          <button class="complete-btn" onclick="completeJob(${j.id})">Mark done</button>
+        <div class="drv-btns">
+          <button class="drv-btn start ${ts.start?'done':''}" onclick="${ts.start?'':("quickTs('"+l.id+"','start')")}">
+            ${ts.start?'✓ Started: '+ts.start:'▶  Start load'}
+          </button>
+          <button class="drv-btn arrived ${ts.arrived?'done':''}" onclick="${ts.arrived?'':("quickTs('"+l.id+"','arrived')")}">
+            ${ts.arrived?'✓ Arrived: '+ts.arrived:'📍  Arrived at site'}
+          </button>
+          <button class="drv-btn" onclick="openLL('${l.id}')">&#9998;  Log loads delivered</button>
+          <button class="drv-btn sig" onclick="openSig('${l.id}')">&#9997;  Capture signature</button>
+          <button class="drv-btn complete" onclick="complLoad('${l.id}')">&#10003;  Mark as complete</button>
         </div>
-      </div>`;
-    });
-    html+=`</div></div>`;
+      </div>
+    </div>`;
   });
-  document.getElementById('driver-day-list').innerHTML=html;
+  document.getElementById('drv-wrap').innerHTML=h;
 }
 
-// ── Complete a job ────────────────────────────────────────────────────────────
-async function completeJob(id){
-  if(!confirm('Mark this job as completed and move it to history?')) return;
-  try{
-    const res=await fetch('/api/jobs/'+id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
-    const data=await res.json();
-    if(data.jobs) jobs=data.jobs;
-    if(data.scheduledJobs) scheduledJobs=data.scheduledJobs;
-    if(data.completedJobs) completedJobs=data.completedJobs;
-    render();
-    renderDriverView();
-  } catch(e){ alert('Error: '+e.message); }
+// ── Quick timestamp (driver buttons) ─────────────────────────────────────────
+async function quickTs(loadId, key){
+  const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});
+  const l=loads.find(x=>x.id===loadId); if(!l) return;
+  const ts={...l.timestamps,[key]:now};
+  await fetch('/api/loads/'+loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({timestamps:ts})});
+  await loadAll(); render();
 }
 
-// ── Truck number edit ─────────────────────────────────────────────────────────
-function updateTruckNum(id,val){
-  const t=trucks.find(x=>x.id===id);
-  if(t){ t.truckNum=val; fetch('/api/trucks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(trucks)}); }
+// ── PO Modal ──────────────────────────────────────────────────────────────────
+function openNewPO(){
+  editPoId=null; splits=[{truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',loadsAssigned:'',deliveryDate:''}];
+  document.getElementById('pm-title').textContent='New Purchase Order';
+  document.getElementById('pm-del').style.display='none';
+  ['pm-num','pm-cust','pm-code','pm-addr','pm-notes'].forEach(x=>document.getElementById(x).value='');
+  ['pm-num','pm-date','pm-cust','pm-code','pm-mat','pm-loads','pm-pick','pm-sup','pm-addr','pm-ppl','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e)e.disabled=false;});
+  document.getElementById('pm-mat').value='Fill Sand';
+  document.getElementById('pm-pick').value='VBT Yard';
+  document.getElementById('pm-type').value='one-time';
+  document.getElementById('pm-ppl').value='';
+  document.getElementById('pm-loads').value='';
+  document.getElementById('pm-recur-w').style.display='none';
+  document.getElementById('pm-date').value=tod();
+  renderSplits(); updRem();
+  document.getElementById('pm').style.display='flex';
 }
-
-// ── Modal open/close ──────────────────────────────────────────────────────────
-function openAdd(truckId, dateStr){
-  if(userRole!=='manager'){ alert('Only managers can add jobs.'); return; }
-  editingId=null;
-  document.getElementById('modal-title').textContent='Add job';
-  document.getElementById('delete-btn').style.display='none';
-  document.getElementById('move-reassign').classList.remove('show');
-  clearForm();
-  document.getElementById('f-truck').value=truckId;
-  document.getElementById('f-dueDate').value=dateStr||toYMD(new Date());
-  document.getElementById('modal').style.display='flex';
+function openEditPO(id){
+  const po=pos.find(p=>p.id===id); if(!po) return;
+  editPoId=id;
+  const pl=pLoads(id);
+  splits=pl.length?pl.map(l=>({truckId:l.truckId,driverName:l.driverName||'',loadsAssigned:l.loadsAssigned,deliveryDate:l.deliveryDate||po.deliveryDate,loadId:l.id})):[{truckId:trucks[0]?.id||'',driverName:'',loadsAssigned:'',deliveryDate:po.deliveryDate||tod()}];
+  document.getElementById('pm-title').textContent='Edit PO — '+po.poNumber;
+  document.getElementById('pm-del').style.display='block';
+  document.getElementById('pm-num').value=po.poNumber;
+  document.getElementById('pm-date').value=po.deliveryDate||tod();
+  document.getElementById('pm-cust').value=po.customer||'';
+  document.getElementById('pm-code').value=po.code||'';
+  document.getElementById('pm-mat').value=po.material||'Fill Sand';
+  document.getElementById('pm-loads').value=po.totalLoads||'';
+  document.getElementById('pm-pick').value=po.pickup||'VBT Yard';
+  document.getElementById('pm-sup').value=po.supervisor||'';
+  document.getElementById('pm-addr').value=po.city||po.address||'';
+  document.getElementById('pm-ppl').value=po.invoice?.pricePerLoad||'';
+  document.getElementById('pm-type').value=po.type||'one-time';
+  document.getElementById('pm-recur').value=po.recurrenceRule||'weekly';
+  document.getElementById('pm-recur-w').style.display=po.type==='recurring'?'block':'none';
+  document.getElementById('pm-notes').value=po.notes||'';
+  ['pm-num','pm-date','pm-cust','pm-code','pm-mat','pm-loads','pm-pick','pm-sup','pm-addr','pm-ppl','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e)e.disabled=false;});
+  renderSplits(); updRem();
+  document.getElementById('pm').style.display='flex';
 }
-
-function openEdit(id){
-  // Check both active and scheduled jobs
-  const j=jobs.find(x=>x.id===id)||scheduledJobs.find(x=>x.id===id);
-  if(!j) return;
-  editingId=id;
-  document.getElementById('modal-title').textContent=userRole==='manager'?'Edit job':'Log loads';
-  document.getElementById('delete-btn').style.display=userRole==='manager'?'block':'none';
-  document.getElementById('f-truck').value=j.truck;
-  document.getElementById('f-type').value=j.type||'one-time';
-  document.getElementById('f-dueDate').value=j.dueDate||'';
-  document.getElementById('f-recurrence').value=j.recurrenceRule||'weekly';
-  document.getElementById('f-super').value=j.supervisor||'';
-  document.getElementById('f-driver').value=j.driver||'';
-  document.getElementById('f-customer').value=j.customer||'';
-  document.getElementById('f-code').value=j.code||'';
-  document.getElementById('f-material').value=j.material||'Fill Sand';
-  document.getElementById('f-loads').value=j.loads||'';
-  document.getElementById('f-pickup').value=j.pickup||'VBT Yard';
-  document.getElementById('f-po').value=j.po||'';
-  document.getElementById('f-city').value=j.city||'';
-  document.getElementById('f-delivered').value=j.delivered||'';
-  document.getElementById('f-notes').value=j.notes||'';
-  onTypeChange();
-  if(userRole==='driver'){
-    ['f-truck','f-type','f-dueDate','f-recurrence','f-super','f-driver','f-customer','f-code','f-material','f-loads','f-pickup','f-po','f-city'].forEach(fid=>{
-      const el=document.getElementById(fid); if(el){el.disabled=true;el.style.opacity='0.6';}
-    });
-    document.getElementById('timestamp-section').style.display='block';
-    const ts=j.timestamps||{};
-    document.getElementById('f-ts-start').value=ts.start||'';
-    document.getElementById('f-ts-first').value=ts.first||'';
-    document.getElementById('f-ts-last').value=ts.last||'';
-    document.getElementById('move-reassign').classList.remove('show');
-    setTimeout(()=>document.getElementById('f-delivered').focus(),80);
-  } else {
-    ['f-truck','f-type','f-dueDate','f-recurrence','f-super','f-driver','f-customer','f-code','f-material','f-loads','f-pickup','f-po','f-city'].forEach(fid=>{
-      const el=document.getElementById(fid); if(el){el.disabled=false;el.style.opacity='';}
-    });
-    document.getElementById('timestamp-section').style.display='none';
-    // Move/reassign section
-    document.getElementById('move-reassign').classList.add('show');
-    document.getElementById('move-date').value=j.dueDate||'';
-    const rSelect=document.getElementById('reassign-truck');
-    rSelect.innerHTML='<option value="">-- same driver --</option>'+trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
-    rSelect.value='';
-  }
-  document.getElementById('modal').style.display='flex';
+function openAddSplit(id){
+  const po=pos.find(p=>p.id===id); if(!po) return;
+  editPoId=id;
+  splits=[{truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',loadsAssigned:'',deliveryDate:po.deliveryDate||tod()}];
+  document.getElementById('pm-title').textContent='Add driver — '+po.poNumber;
+  document.getElementById('pm-del').style.display='none';
+  document.getElementById('pm-num').value=po.poNumber;
+  document.getElementById('pm-cust').value=po.customer||'';
+  document.getElementById('pm-loads').value=po.totalLoads||'';
+  ['pm-num','pm-date','pm-cust','pm-code','pm-mat','pm-loads','pm-pick','pm-sup','pm-addr','pm-ppl','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e)e.disabled=true;});
+  renderSplits(); updRem();
+  document.getElementById('pm').style.display='flex';
 }
-
-function quickLog(id){ openEdit(id); }
-
-function clearForm(){
-  ['f-super','f-driver','f-customer','f-code','f-loads','f-po','f-city','f-delivered','f-notes'].forEach(id=>{
-    const el=document.getElementById(id); if(el){el.value='';el.disabled=false;el.style.opacity='';}
-  });
-  ['f-material','f-pickup','f-truck','f-type','f-recurrence'].forEach(id=>{
-    const el=document.getElementById(id); if(el){el.disabled=false;el.style.opacity='';}
-  });
-  document.getElementById('f-material').value='Fill Sand';
-  document.getElementById('f-pickup').value='VBT Yard';
-  document.getElementById('f-type').value='one-time';
-  document.getElementById('f-dueDate').value=toYMD(new Date());
-  document.getElementById('timestamp-section').style.display='none';
-  document.getElementById('recurrence-row').classList.remove('show');
+function closePM(){
+  document.getElementById('pm').style.display='none'; editPoId=null; splits=[];
+  ['pm-num','pm-date','pm-cust','pm-code','pm-mat','pm-loads','pm-pick','pm-sup','pm-addr','pm-ppl','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e)e.disabled=false;});
 }
-
-function closeModal(){
-  document.getElementById('modal').style.display='none';
-  editingId=null; clearForm();
+function onTypeChg(){ document.getElementById('pm-recur-w').style.display=document.getElementById('pm-type').value==='recurring'?'block':'none'; }
+function renderSplits(){
+  const topts=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
+  document.getElementById('pm-splits').innerHTML=splits.map((s,i)=>`
+    <div class="srow">
+      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:3px">Driver</div>
+        <select onchange="splits[${i}].truckId=this.value;splits[${i}].driverName=trucks.find(t=>t.id===this.value)?.label||''">
+          ${topts.replace(`value="${s.truckId}"`,`value="${s.truckId}" selected`)}
+        </select></div>
+      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:3px">Loads</div>
+        <input type="number" min="1" step="1" placeholder="0" value="${s.loadsAssigned||''}" oninput="splits[${i}].loadsAssigned=Number(this.value)||0;updRem()"></div>
+      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:3px">Date</div>
+        <input type="date" value="${s.deliveryDate||document.getElementById('pm-date').value||tod()}" oninput="splits[${i}].deliveryDate=this.value"></div>
+      <button class="sr" onclick="splits.splice(${i},1);renderSplits()">&#215;</button>
+    </div>`).join('');
 }
-
-// ── Save job ──────────────────────────────────────────────────────────────────
-async function saveJob(){
+function addSplit(){ splits.push({truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',loadsAssigned:'',deliveryDate:document.getElementById('pm-date').value||tod()}); renderSplits(); }
+function updRem(){
+  const tot=Number(document.getElementById('pm-loads').value)||0;
+  const asgn=splits.reduce((s,r)=>s+(Number(r.loadsAssigned)||0),0);
+  const rem=tot-asgn;
+  const el=document.getElementById('pm-rem');
+  el.textContent=`Assigned ${asgn} of ${tot}${rem>0?' — '+rem+' unassigned':rem<0?' — '+Math.abs(rem)+' over-assigned':'  ✓ all assigned'}`;
+  el.className='rem'+(rem>0?' w':rem===0?' ok':'');
+}
+async function savePO(){
   const g=id=>document.getElementById(id)?.value?.trim()||'';
-  let job;
-  if(editingId){
-    const orig=jobs.find(x=>x.id===editingId)||scheduledJobs.find(x=>x.id===editingId);
-    job = userRole==='manager' ? {
-      id:editingId, truck:g('f-truck'), type:g('f-type'),
-      dueDate:g('f-dueDate'), recurrenceRule:g('f-type')==='recurring'?g('f-recurrence'):null,
-      supervisor:g('f-super'), driver:g('f-driver'), customer:g('f-customer'), code:g('f-code'),
-      material:g('f-material'), loads:Number(g('f-loads'))||0, pickup:g('f-pickup'),
-      po:g('f-po'), city:g('f-city'), delivered:Number(g('f-delivered'))||0, notes:g('f-notes'),
-    } : {
-      id:editingId, delivered:Number(g('f-delivered'))||0, notes:g('f-notes'),
-      timestamps:{
-        start: document.getElementById('f-ts-start').value||(orig?.timestamps?.start||''),
-        first: document.getElementById('f-ts-first').value||(orig?.timestamps?.first||''),
-        last:  document.getElementById('f-ts-last').value||(orig?.timestamps?.last||''),
+  const po={poNumber:g('pm-num')||null,customer:g('pm-cust'),code:g('pm-code'),material:g('pm-mat'),totalLoads:Number(g('pm-loads'))||0,deliveryDate:g('pm-date')||tod(),pickup:g('pm-pick'),supervisor:g('pm-sup'),city:g('pm-addr'),address:g('pm-addr'),type:g('pm-type'),recurrenceRule:g('pm-type')==='recurring'?g('pm-recur'):null,notes:g('pm-notes'),pricePerLoad:Number(g('pm-ppl'))||0};
+  if(!po.customer){alert('Customer required');return;}
+  const sp=splits.map(s=>({truckId:s.truckId,driverName:s.driverName||trucks.find(t=>t.id===s.truckId)?.label||'',loadsAssigned:Number(s.loadsAssigned)||0,deliveryDate:s.deliveryDate||po.deliveryDate}));
+  if(!sp.some(s=>s.loadsAssigned>0)){alert('Assign at least one load');return;}
+  try{
+    if(editPoId&&document.getElementById('pm-num').disabled){
+      await fetch('/api/pos/'+editPoId+'/splits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sp)});
+    } else if(editPoId){
+      await fetch('/api/pos/'+editPoId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...po,invoice:{pricePerLoad:po.pricePerLoad}})});
+      for(const s of sp){
+        if(s.loadId) await fetch('/api/loads/'+s.loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId:s.truckId,driverName:s.driverName,loadsAssigned:s.loadsAssigned,deliveryDate:s.deliveryDate})});
+        else await fetch('/api/pos/'+editPoId+'/splits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify([s])});
       }
-    };
-  } else {
-    job={
-      truck:g('f-truck'), type:g('f-type'),
-      dueDate:g('f-dueDate'), recurrenceRule:g('f-type')==='recurring'?g('f-recurrence'):null,
-      supervisor:g('f-super'), driver:g('f-driver'), customer:g('f-customer'), code:g('f-code'),
-      material:g('f-material'), loads:Number(g('f-loads'))||0, pickup:g('f-pickup'),
-      po:g('f-po'), city:g('f-city'), delivered:Number(g('f-delivered'))||0, notes:g('f-notes'),
-    };
-    if(!job.customer){ alert('Customer is required'); return; }
-  }
-  try{
-    const res=await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(job)});
-    const data=await res.json();
-    if(data.jobs) jobs=data.jobs;
-    // Reload full data to get updated scheduled jobs too
-    await loadAppData();
-  } catch(e){ alert('Error saving: '+e.message); return; }
-  closeModal(); render();
-  if(currentTab==='driver') renderDriverView();
-  if(currentTab==='queue') renderQueue();
+    } else {
+      await fetch('/api/pos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({po,splits:sp})});
+    }
+    await loadAll(); closePM(); render();
+  }catch(e){alert('Error: '+e.message);}
+}
+async function delPO(){ if(!confirm('Delete this PO and all its loads?')) return; await fetch('/api/pos/'+editPoId,{method:'DELETE'}); await loadAll(); closePM(); render(); }
+async function delPOById(id){ if(!confirm('Delete this PO and all its loads?')) return; await fetch('/api/pos/'+id,{method:'DELETE'}); await loadAll(); render(); }
+
+// ── Invoice price edit (inline) ───────────────────────────────────────────────
+async function openEditInv(id){
+  const po=pos.find(p=>p.id===id); if(!po) return;
+  const ppl=prompt('Price per load ($):',po.invoice?.pricePerLoad||0);
+  if(ppl===null) return;
+  await fetch('/api/pos/'+id+'/invoice',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pricePerLoad:Number(ppl)||0})});
+  await loadAll(); render();
 }
 
-async function deleteJob(){
-  if(!confirm('Delete this job permanently?')) return;
-  try{
-    await fetch('/api/jobs/'+editingId,{method:'DELETE'});
-    await loadAppData();
-  } catch(e){ alert('Error: '+e.message); return; }
-  closeModal(); render();
-  if(currentTab==='queue') renderQueue();
+// ── Payment Modal ─────────────────────────────────────────────────────────────
+function openPayM(id){
+  const po=pos.find(p=>p.id===id); if(!po) return;
+  payPoId=id;
+  const inv=po.invoice||{};
+  const totalDue=(inv.pricePerLoad||0)*(po.totalLoads||0);
+  const totalPaid=pPayments(id).reduce((s,p)=>s+p.amount,0);
+  document.getElementById('pay-title').textContent='Add Payment — '+po.poNumber;
+  document.getElementById('pay-info').innerHTML=`<b>${po.customer}</b><br>Balance: ${money(totalDue-totalPaid)} of ${money(totalDue)}`;
+  document.getElementById('pay-amt').value='';
+  document.getElementById('pay-note').value='';
+  document.getElementById('pay-m').style.display='flex';
+  setTimeout(()=>document.getElementById('pay-amt').focus(),80);
+}
+function closePayM(){ document.getElementById('pay-m').style.display='none'; payPoId=null; }
+async function savePayment(){
+  const amt=Number(document.getElementById('pay-amt').value)||0;
+  if(!amt){alert('Enter an amount');return;}
+  const method=document.getElementById('pay-method').value;
+  const note=document.getElementById('pay-note').value.trim();
+  await fetch('/api/payments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({poId:payPoId,amount:amt,method,note})});
+  await loadAll(); closePayM(); render();
 }
 
-// ── Move / Reassign ───────────────────────────────────────────────────────────
-async function moveOrReassignJob(){
-  if(!editingId) return;
-  const job=jobs.find(x=>x.id===editingId)||scheduledJobs.find(x=>x.id===editingId);
-  if(!job) return;
-  const newDate=document.getElementById('move-date').value;
-  const newTruck=document.getElementById('reassign-truck').value;
-  if(!newDate&&!newTruck){ alert('Pick a new date or a new driver.'); return; }
-  const updated={
-    ...job,
-    dueDate: newDate||job.dueDate,
-    truck: newTruck||job.truck,
-    driver: newTruck?(trucks.find(t=>t.id===newTruck)?.label||job.driver):job.driver,
-  };
-  try{
-    const res=await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updated)});
-    const data=await res.json();
-    if(data.jobs) jobs=data.jobs;
-    await loadAppData();
-  } catch(e){ alert('Error: '+e.message); return; }
-  closeModal(); render();
-  if(currentTab==='queue') renderQueue();
+// ── Load Log Modal ─────────────────────────────────────────────────────────────
+function openLL(id){
+  const l=loads.find(x=>x.id===id); if(!l) return;
+  const po=pos.find(p=>p.id===l.poId)||{};
+  editLoadId=id;
+  document.getElementById('ll-title').textContent='Log loads — '+po.poNumber;
+  document.getElementById('ll-info').innerHTML=`<b>${po.customer}</b> · ${po.material} · Deliver to: ${po.city||po.address||'—'}<br>Assigned: ${l.loadsAssigned} loads`;
+  document.getElementById('ll-del').value=l.loadsDelivered||0;
+  document.getElementById('ll-notes').value=l.notes||'';
+  const ts=l.timestamps||{};
+  ['s','a','c'].forEach((k,i)=>{const el=document.getElementById('ll-ts-'+k);el.value=[ts.start,ts.arrived,ts.completed][i]||'';el.style.color='';});
+  document.getElementById('ll-m').style.display='flex';
+  setTimeout(()=>document.getElementById('ll-del').focus(),80);
+}
+function closeLL(){ document.getElementById('ll-m').style.display='none'; editLoadId=null; }
+async function saveLL(){
+  const del=Number(document.getElementById('ll-del').value)||0;
+  const notes=document.getElementById('ll-notes').value.trim();
+  const ts={start:document.getElementById('ll-ts-s').value||'',arrived:document.getElementById('ll-ts-a').value||'',completed:document.getElementById('ll-ts-c').value||''};
+  await fetch('/api/loads/'+editLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({loadsDelivered:del,notes,timestamps:ts})});
+  await loadAll(); closeLL(); render();
+}
+
+// ── Complete load ─────────────────────────────────────────────────────────────
+async function complLoad(id){ if(!confirm('Mark this load as completed?')) return; await fetch('/api/loads/'+id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})}); await loadAll(); render(); }
+async function complAllLoads(id){ if(!confirm('Mark ALL load assignments for this PO as completed?')) return; const al=pActivL(id); for(const l of al) await fetch('/api/loads/'+l.id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})}); await loadAll(); render(); }
+async function delLoad(id){ if(!confirm('Remove this load assignment?')) return; await fetch('/api/loads/'+id,{method:'DELETE'}); await loadAll(); render(); }
+
+// ── Rollover ──────────────────────────────────────────────────────────────────
+function openRO(id){
+  const po=pos.find(p=>p.id===id); if(!po) return;
+  roPoId=id;
+  const al=pActivL(id);
+  const rem=al.reduce((s,l)=>s+(Number(l.loadsAssigned)||0)-(Number(l.loadsDelivered)||0),0);
+  document.getElementById('ro-info').innerHTML=`<b>${po.poNumber} — ${po.customer}</b><br>${rem} load${rem!==1?'s':''} remaining. Move to a new date.`;
+  const nd=new Date(); nd.setDate(nd.getDate()+1);
+  document.getElementById('ro-date').value=ymd(nd);
+  document.getElementById('ro-m').style.display='flex';
+}
+async function doRollover(){
+  const d=document.getElementById('ro-date').value; if(!d){alert('Pick a date');return;}
+  await fetch('/api/pos/'+roPoId+'/rollover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({newDate:d})});
+  await loadAll(); document.getElementById('ro-m').style.display='none'; roPoId=null; render();
+}
+
+// ── Signature ─────────────────────────────────────────────────────────────────
+function openSig(id){
+  const l=loads.find(x=>x.id===id); if(!l) return;
+  const po=pos.find(p=>p.id===l.poId)||{};
+  sigLoadId=id;
+  document.getElementById('sig-info').innerHTML=`<b>${po.poNumber} — ${po.customer}</b> · ${l.driverName||l.truckId}`;
+  document.getElementById('sig-name').value=l.pod?.signedBy||'';
+  document.getElementById('sig-notes').value=l.pod?.notes||'';
+  document.getElementById('sig-m').style.display='flex';
+  initSigCanvas();
+}
+function closeSig(){ document.getElementById('sig-m').style.display='none'; sigLoadId=null; sigHasData=false; }
+function initSigCanvas(){
+  const c=document.getElementById('sig-canvas');
+  const rect=c.getBoundingClientRect();
+  c.width=rect.width>0?rect.width:460;
+  c.height=160;
+  sigCtx=c.getContext('2d');
+  sigCtx.clearRect(0,0,c.width,c.height);
+  sigCtx.fillStyle='#fff'; sigCtx.fillRect(0,0,c.width,c.height);
+  sigCtx.strokeStyle='#111'; sigCtx.lineWidth=2; sigCtx.lineCap='round'; sigCtx.lineJoin='round';
+  sigHasData=false;
+  const getPos=e=>{const r=c.getBoundingClientRect();if(e.touches){return{x:(e.touches[0].clientX-r.left)*(c.width/r.width),y:(e.touches[0].clientY-r.top)*(c.height/r.height)};}return{x:(e.clientX-r.left)*(c.width/r.width),y:(e.clientY-r.top)*(c.height/r.height)};};
+  const down=e=>{e.preventDefault();sigDrawing=true;sigCtx.beginPath();const p=getPos(e);sigCtx.moveTo(p.x,p.y);};
+  const move=e=>{e.preventDefault();if(!sigDrawing)return;const p=getPos(e);sigCtx.lineTo(p.x,p.y);sigCtx.stroke();sigHasData=true;};
+  const up=e=>{e.preventDefault();sigDrawing=false;};
+  c.onmousedown=down; c.onmousemove=move; c.onmouseup=up; c.onmouseleave=up;
+  c.ontouchstart=down; c.ontouchmove=move; c.ontouchend=up;
+}
+function clearSig(){ if(sigCtx){const c=document.getElementById('sig-canvas');sigCtx.clearRect(0,0,c.width,c.height);sigCtx.fillStyle='#fff';sigCtx.fillRect(0,0,c.width,c.height);sigHasData=false;} }
+async function saveSig(){
+  const name=document.getElementById('sig-name').value.trim();
+  if(!name){alert('Please enter the name of the person signing');return;}
+  if(!sigHasData){alert('Please capture a signature');return;}
+  const c=document.getElementById('sig-canvas');
+  const sigData=c.toDataURL('image/png');
+  const pod={signedBy:name,signature:sigData,signedAt:new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})+' '+new Date().toLocaleDateString('en-US'),notes:document.getElementById('sig-notes').value.trim()};
+  await fetch('/api/loads/'+sigLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pod})});
+  await loadAll(); closeSig(); render();
 }
 
 // ── Timestamps ────────────────────────────────────────────────────────────────
-function stampNow(fieldId){
-  const el=document.getElementById(fieldId);
-  el.value=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});
-  el.style.color='var(--green)';
-}
+function stmp(id){ const el=document.getElementById(id); el.value=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true}); el.style.color='var(--G)'; }
 
 // ── Sheets sync ───────────────────────────────────────────────────────────────
-async function syncToSheets(){
-  const btn=document.getElementById('sync-btn');
-  const st=document.getElementById('sync-status');
-  btn.disabled=true; btn.textContent='Syncing…'; st.className='sync-status'; st.textContent='';
+async function doSync(){
+  const btn=document.getElementById('sync-btn'),st=document.getElementById('ss');
+  btn.disabled=true;btn.textContent='Syncing…';st.className='ss';st.textContent='';
   try{
-    const res=await fetch('/api/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
-    const data=await res.json();
-    if(data.success){ st.className='sync-status ok'; st.textContent='Synced ✓ '+new Date().toLocaleTimeString()+' ('+data.rowsWritten+' rows)'; }
-    else throw new Error(data.error||'Unknown error');
-  } catch(e){ st.className='sync-status err'; st.textContent='Sync failed: '+e.message; }
-  finally{ btn.disabled=false; btn.textContent='↑ Sheets'; }
+    const r=await fetch('/api/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();
+    if(d.success){st.className='ss ok';st.textContent='✓ '+d.message+' · '+new Date().toLocaleTimeString();}
+    else throw new Error(d.error);
+  }catch(e){st.className='ss err';st.textContent='Failed: '+e.message;}
+  finally{btn.disabled=false;btn.textContent='↑ Sheets';}
 }
 
-// ── Load data from server ─────────────────────────────────────────────────────
-async function loadAppData(){
-  const res=await fetch('/api/data');
-  const data=await res.json();
-  trucks=data.trucks||[];
-  jobs=data.jobs||[];
-  scheduledJobs=data.scheduledJobs||[];
-  completedJobs=data.completedJobs||[];
+// ── Load data ─────────────────────────────────────────────────────────────────
+async function loadAll(){
+  const r=await fetch('/api/data');const d=await r.json();
+  trucks=d.trucks||[];pos=d.pos||[];loads=d.loads||[];payments=d.payments||[];
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init(){
   try{
-    const meRes=await fetch('/api/me');
-    const me=await meRes.json();
-    userRole=me.role; userTruckId=me.truckId||null;
-    document.getElementById('user-info').textContent=me.username;
-    if(userRole==='manager') document.body.classList.add('is-manager');
-    await loadAppData();
-  } catch(e){ console.error('Init error:',e); }
-
-  // Populate truck select in modal
-  document.getElementById('f-truck').innerHTML=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
-
-  if(userRole==='driver'){
-    document.getElementById('tab-mgr').style.display='none';
-    document.getElementById('tab-queue').style.display='none';
-    document.getElementById('driver-bar').style.display='none';
-    const ds=document.getElementById('driver-select');
-    ds.innerHTML=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
-    if(userTruckId) ds.value=userTruckId;
-    switchTab('driver');
+    const r=await fetch('/api/me');const me=await r.json();
+    role=me.role;myTruckId=me.truckId||null;
+    document.getElementById('ui').textContent=me.username;
+    if(role==='manager') document.body.classList.add('is-manager');
+    await loadAll();
+  }catch(e){console.error(e);}
+  if(role==='driver'){
+    document.getElementById('tab-sched').style.display='none';
+    document.getElementById('tab-all').style.display='none';
+    document.getElementById('nav-wrap').style.display='none';
+    document.getElementById('view-tog').style.display='none';
+    swTab('drv');
   } else {
-    // Show view toggle for manager
-    document.getElementById('view-toggle-wrap').style.display='flex';
-    document.getElementById('week-nav-wrap').style.display='flex';
     render();
   }
 }
-
 init();
 </script>
 </body>
