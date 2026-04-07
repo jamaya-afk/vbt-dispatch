@@ -261,14 +261,22 @@ body.is-manager .manager-only{display:flex}
     </div>
     <div class="mfoot">
       <button class="btn-d" id="delete-btn" style="display:none" onclick="deleteJob()">Delete job</button>
-      <div id="move-day-wrap" style="display:none;align-items:center;gap:6px;margin-right:auto">
-        <label style="font-size:11px;color:var(--txt2);white-space:nowrap">Move to:</label>
-        <select id="move-day-select" style="font-size:12px;padding:5px 8px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg);color:var(--txt);font-family:var(--font)">
-          <option value="">-- pick day --</option>
-          <option>Mon</option><option>Tue</option><option>Wed</option>
-          <option>Thu</option><option>Fri</option><option>Sat</option>
-        </select>
-        <button class="btn-s" style="font-size:12px;padding:5px 12px;white-space:nowrap" onclick="moveJobDay()">Move</button>
+      <div id="move-day-wrap" style="display:none;flex-direction:column;gap:8px;margin-right:auto;width:100%">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <label style="font-size:11px;color:var(--txt2);white-space:nowrap;min-width:60px">Move to day:</label>
+          <select id="move-day-select" style="font-size:12px;padding:5px 8px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg);color:var(--txt);font-family:var(--font);flex:1">
+            <option value="">-- same day --</option>
+            <option>Mon</option><option>Tue</option><option>Wed</option>
+            <option>Thu</option><option>Fri</option><option>Sat</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <label style="font-size:11px;color:var(--txt2);white-space:nowrap;min-width:60px">Reassign to:</label>
+          <select id="reassign-truck-select" style="font-size:12px;padding:5px 8px;border:0.5px solid var(--bdr2);border-radius:var(--rad);background:var(--bg);color:var(--txt);font-family:var(--font);flex:1">
+            <option value="">-- same driver --</option>
+          </select>
+        </div>
+        <button class="btn-s" style="font-size:12px;padding:6px 12px;white-space:nowrap;width:100%" onclick="moveOrReassignJob()">Apply changes</button>
       </div>
       <button class="btn-s" onclick="closeModal()">Cancel</button>
       <button class="btn-p" onclick="saveJob()">Save job</button>
@@ -499,8 +507,14 @@ function openEdit(id){
   editingId=id;
   document.getElementById('modal-title').textContent=userRole==='manager'?'Edit job':'Log loads';
   document.getElementById('delete-btn').style.display=userRole==='manager'?'block':'none';
-  document.getElementById('move-day-wrap').style.display=(userRole==='manager'&&editingId)?'flex':'none';
+  const showMoveWrap = (userRole==='manager' && !!editingId);
+  document.getElementById('move-day-wrap').style.display = showMoveWrap ? 'flex' : 'none';
   document.getElementById('move-day-select').value='';
+  // Populate reassign dropdown with all trucks except current
+  const rSelect = document.getElementById('reassign-truck-select');
+  rSelect.innerHTML = '<option value="">-- same driver --</option>' +
+    trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
+  rSelect.value = '';
   document.getElementById('f-truck').value=j.truck;
   document.getElementById('f-day').value=j.day;
   document.getElementById('f-super').value=j.supervisor||'';
@@ -604,14 +618,23 @@ async function deleteJob(){
   closeModal(); render();
   if(currentTab==='driver') renderDriverView();
 }
-async function moveJobDay(){
-  const newDay = document.getElementById('move-day-select').value;
-  if(!newDay){ alert('Please pick a day to move to.'); return; }
-  if(!editingId){ return; }
+async function moveOrReassignJob(){
+  if(!editingId) return;
   const job = jobs.find(x=>x.id===editingId);
-  if(!job){ return; }
-  if(job.day === newDay){ alert('Job is already on '+newDay); return; }
-  const updated = {...job, day: newDay};
+  if(!job) return;
+  const newDay   = document.getElementById('move-day-select').value;
+  const newTruck = document.getElementById('reassign-truck-select').value;
+  if(!newDay && !newTruck){
+    alert('Pick a new day, a new driver, or both.');
+    return;
+  }
+  const updated = {
+    ...job,
+    day:   newDay   || job.day,
+    truck: newTruck || job.truck,
+    // Update driver name to match new truck label
+    driver: newTruck ? (trucks.find(t=>t.id===newTruck)?.label || job.driver) : job.driver,
+  };
   try{
     const res=await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updated)});
     const data=await res.json();
@@ -619,7 +642,7 @@ async function moveJobDay(){
     closeModal();
     render();
     if(currentTab==='driver') renderDriverView();
-  } catch(e){ alert('Error moving job: '+e.message); }
+  } catch(e){ alert('Error updating job: '+e.message); }
 }
 
 function closeModal(){
