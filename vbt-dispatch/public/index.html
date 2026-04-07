@@ -187,7 +187,7 @@ body.is-manager .manager-only{display:flex}
 
 <div id="driver-section" style="display:none">
   <div class="driver-view">
-    <div class="driver-bar">
+    <div class="driver-bar" id="driver-bar">
       <label>My Truck:</label>
       <select id="driver-select" onchange="renderDriverView()"></select>
     </div>
@@ -652,14 +652,12 @@ async function init(){
   if(userRole==='driver'){
     // Lock driver to their own truck — hide the manager tab
     document.getElementById('tab-mgr').style.display='none';
+    // Hide the truck selector bar entirely — drivers only see their own truck
+    document.getElementById('driver-bar').style.display='none';
     // Pre-select their truck in driver view
     if(userTruckId){
       const ds=document.getElementById('driver-select');
       ds.value=userTruckId;
-      // Hide other trucks from dropdown so they can't switch
-      Array.from(ds.options).forEach(opt=>{
-        if(opt.value!==userTruckId) opt.style.display='none';
-      });
     }
     switchTab('driver');
   }
