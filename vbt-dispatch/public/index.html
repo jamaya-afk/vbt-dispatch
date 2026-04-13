@@ -110,6 +110,8 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .pill.b{background:var(--Bb);color:var(--B);border-color:var(--Bd)}
 .lc-prog{height:3px;background:var(--bdr);border-radius:2px;margin-top:5px;overflow:hidden}
 .lc-prog-fill{height:100%;border-radius:2px;transition:width .3s}
+.lcard.missing-card{border-left:3px solid var(--R)}
+.lcard.unassigned-card{border-left:3px solid var(--A);border-style:solid}
 
 /* Unassigned row */
 .unassigned-row{padding:8px 12px;background:var(--bg2);border-top:0.5px solid var(--bdr2);display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}
@@ -264,12 +266,12 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
     <span class="nlbl" id="nav-lbl"></span>
     <button class="nbtn" onclick="changeDay(1)">&#8594;</button>
   </div>
-  <button class="tb active" id="tab-board"  onclick="swTab('board')">Board</button>
-  <button class="tb"        id="tab-pos"    onclick="swTab('pos')">All POs</button>
-  <button class="tb"        id="tab-hist"   onclick="swTab('hist')">History</button>
-  <button class="tb"        id="tab-drv"    onclick="swTab('drv')">My Loads</button>
+  <button class="tb active" id="tab-board"   onclick="swTab('board')">Board</button>
+  <button class="tb"        id="tab-pos"     onclick="swTab('pos')">POs</button>
+  <button class="tb"        id="tab-hist"    onclick="swTab('hist')">History</button>
+  <button class="tb mgr"    id="tab-finance" onclick="swTab('finance')">Finance</button>
+  <button class="tb"        id="tab-drv"     onclick="swTab('drv')">My Loads</button>
   <button class="bp mgr" style="font-size:12px;padding:5px 11px" onclick="openNewPO()">+ New PO</button>
-  <button class="ab b mgr" onclick="openPriceTable()">&#9998; Prices</button>
   <button class="sync-btn mgrf" id="sync-btn" onclick="doSync()">&#8593; Sheets</button>
   <span class="ss" id="ss"></span>
   <span class="uinfo" id="uinfo"></span>
@@ -293,6 +295,11 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 <!-- HISTORY -->
 <div id="sec-hist" style="display:none">
   <div class="list-view" id="hist-wrap"></div>
+</div>
+
+<!-- FINANCE (manager only) -->
+<div id="sec-finance" style="display:none">
+  <div class="list-view" id="finance-wrap"></div>
 </div>
 
 <!-- DRIVER -->
@@ -474,34 +481,37 @@ function pInvoice(id){
 // ── Tab ───────────────────────────────────────────────────────────────────────
 function swTab(t){
   curTab=t;
-  ['board','pos','hist','drv'].forEach(x=>{
-    document.getElementById('tab-'+x).classList.toggle('active',t===x);
-    document.getElementById('sec-'+x).style.display=t===x?'block':'none';
+  ['board','pos','hist','finance','drv'].forEach(x=>{
+    const tb=document.getElementById('tab-'+x);
+    const sc=document.getElementById('sec-'+x);
+    if(tb) tb.classList.toggle('active',t===x);
+    if(sc) sc.style.display=t===x?'block':'none';
   });
   document.getElementById('nav-wrap').style.display=t==='board'?'flex':'none';
-  if(t==='board') renderBoard();
-  if(t==='pos')   renderPOs();
-  if(t==='hist')  renderHist();
-  if(t==='drv')   renderDrv();
+  if(t==='board')   renderBoard();
+  if(t==='pos')     renderPOs();
+  if(t==='hist')    renderHist();
+  if(t==='finance') renderFinance();
+  if(t==='drv')     renderDrv();
 }
 
 // ── Summary bar ───────────────────────────────────────────────────────────────
 function renderSbar(){
   if(role!=='manager'){return;}
   const act=pos.filter(p=>p.status==='active');
+  const sched=pos.filter(p=>p.status==='scheduled');
   const tOrd=loads.filter(l=>act.find(p=>p.id===l.poId)).reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
   const tDel=loads.filter(l=>act.find(p=>p.id===l.poId)).reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
   const miss=tOrd-tDel;
-  const tRev=pos.reduce((s,p)=>s+pInvoice(p.id).invoiced,0);
-  const tPaid=payments.reduce((s,p)=>s+p.amount,0);
+  const unassigned=loads.filter(l=>(!l.truckId||l.truckId==='unassigned')&&l.status!=='completed').length;
+  const needsAttn=pos.filter(p=>p.status==='active'&&loads.some(l=>l.poId===p.id&&(Number(l.loadsAssigned)||0)>(Number(l.loadsDelivered)||0)&&l.status!=='completed'&&(!l.truckId||l.truckId==='unassigned'))).length;
   document.getElementById('sbar').innerHTML=`
-    <div class="met"><div class="ml">Active POs</div><div class="mv">${act.length}</div></div>
-    <div class="met g"><div class="ml">Delivered</div><div class="mv">${tDel}</div></div>
-    <div class="met ${miss>0?'w':''}"><div class="ml">Missing</div><div class="mv">${miss}</div></div>
-    <div class="met b"><div class="ml">Scheduled</div><div class="mv">${pos.filter(p=>p.status==='scheduled').length}</div></div>
-    <div class="met o"><div class="ml">Invoiced</div><div class="mv">${money(tRev)}</div></div>
-    <div class="met g"><div class="ml">Collected</div><div class="mv">${money(tPaid)}</div></div>
-    <div class="met ${tRev-tPaid>0?'w':'g'}"><div class="ml">Balance</div><div class="mv">${money(tRev-tPaid)}</div></div>
+    <div class="met"><div class="ml">Active jobs</div><div class="mv">${act.length}</div></div>
+    <div class="met b"><div class="ml">Upcoming</div><div class="mv">${sched.length}</div></div>
+    <div class="met g"><div class="ml">Loads delivered</div><div class="mv">${tDel}/${tOrd}</div></div>
+    <div class="met ${miss>0?'w':'g'}"><div class="ml">Missing loads</div><div class="mv">${miss}</div></div>
+    <div class="met ${unassigned>0?'w':''}"><div class="ml">Unassigned</div><div class="mv">${unassigned}</div></div>
+    ${needsAttn>0?`<div class="met w"><div class="ml">Needs attention</div><div class="mv">${needsAttn}</div></div>`:''}
   `;
 }
 
@@ -524,6 +534,8 @@ function renderBoard(){
   const unassignedLoads=dateLoads.filter(l=>!l.truckId||l.truckId==='unassigned');
 
   // PO progress summary for day header chips
+  // Flag any issues
+  const issueLoads=dateLoads.filter(l=>!l.truckId||l.truckId==='unassigned');
   const dayPoIds=[...new Set(dateLoads.map(l=>l.poId))];
   const dayPoSummary=dayPoIds.map(pid=>{
     const po=pos.find(p=>p.id===pid);
@@ -550,6 +562,7 @@ function renderBoard(){
         ${isToday?'<span class="dh-today">TODAY</span>':''}
         ${dayPoSummary}
         <span class="dh-summary">${dayDel}/${dayOrd} loads</span>
+        ${issueLoads.length>0?`<span style="font-size:10px;background:var(--R);color:#fff;padding:2px 8px;border-radius:20px">⚠ ${issueLoads.length} unassigned</span>`:''}
       </div>
 
       <!-- Column headers -->
@@ -607,26 +620,56 @@ function renderLoadCard(l,mini=false){
   const miss=la>0&&ld<la&&l.status!=='completed';
   const mc=matColor(l.material);
   const pod=l.pod||{};
-  let pills='';
-  if(la>0) pills+=`<span class="pill ${pct>=100?'g':pct>0?'a':''}">${ld}/${la}</span>`;
-  if(miss) pills+=`<span class="pill r">-${la-ld}</span>`;
-  if(pod.signedBy) pills+=`<span class="pill g">✓ signed</span>`;
   const ts=l.timestamps||{};
-  if(ts.start&&!ts.completed) pills+=`<span class="pill b">▶ started</span>`;
-  return `<div class="lcard ${mini?'unassigned-card':''}"
+  const isUnassigned=!l.truckId||l.truckId==='unassigned';
+
+  // Status badge
+  let statusBadge='';
+  if(l.status==='completed') statusBadge=`<span class="pill g">✓ done</span>`;
+  else if(pct>=100) statusBadge=`<span class="pill g">${ld}/${la} delivered</span>`;
+  else if(ld>0) statusBadge=`<span class="pill a">${ld}/${la} in progress</span>`;
+  else if(la>0) statusBadge=`<span class="pill">${la} loads</span>`;
+  if(miss&&ld>0) statusBadge+=`<span class="pill r">-${la-ld} missing</span>`;
+  if(pod.signedBy) statusBadge+=`<span class="pill g">✓ POD</span>`;
+  if(ts.start&&!ts.completed) statusBadge+=`<span class="pill b">▶ started</span>`;
+
+  // Quick-assign dropdown for unassigned loads (manager only, inline on card)
+  const quickAssign = (role==='manager'&&isUnassigned) ?
+    `<div style="margin-top:6px" onclick="event.stopPropagation()">
+      <select onchange="quickAssignLoad('${l.id}',this.value,this)" style="width:100%;padding:4px 7px;font-size:11px;border:0.5px solid var(--Ad);border-radius:var(--r);background:var(--Ab);color:var(--A);font-family:var(--f);cursor:pointer">
+        <option value="">⚠ Assign driver...</option>
+        ${trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('')}
+      </select>
+    </div>` : '';
+
+  return `<div class="lcard ${isUnassigned?'unassigned-card':''} ${miss&&!isUnassigned?'missing-card':''}"
     draggable="${role==='manager'?'true':'false'}"
     ondragstart="onDragStart(event,'${l.id}')"
     ondragend="onDragEnd(event)"
     onclick="openLL('${l.id}')">
-    <div class="lc-po">${po.poNumber||'—'}<span style="font-size:9px;opacity:.7">${po.customer?'· '+po.customer:''}</span></div>
-    <div class="lc-mat">
-      <div class="mat-dot" style="background:${mc.dot}"></div>
-      <span style="color:${mc.dot};font-weight:500">${l.material}</span>
-      <span style="color:var(--txt2)">· ${po.city||po.address||''}</span>
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:4px">
+      <div style="flex:1;min-width:0">
+        <div class="lc-po">${po.poNumber||'—'} <span style="font-size:9px;opacity:.6">${po.customer||''}</span></div>
+        <div class="lc-mat">
+          <div class="mat-dot" style="background:${mc.dot}"></div>
+          <span style="color:${mc.dot};font-weight:500">${l.material}</span>
+        </div>
+        ${po.city||po.address?`<div style="font-size:10px;color:var(--txt3);margin-top:1px">📍 ${po.city||po.address}</div>`:''}
+      </div>
+      ${isUnassigned?'<span style="font-size:16px;flex-shrink:0">⚠</span>':''}
     </div>
-    <div class="lc-pills">${pills}</div>
-    <div class="lc-prog"><div class="lc-prog-fill" style="width:${pct}%;background:${pct>=100?'var(--G)':pct>0?'var(--A)':'var(--bdr2)'}"></div></div>
+    <div class="lc-pills" style="margin-top:5px">${statusBadge}</div>
+    <div class="lc-prog" style="margin-top:5px"><div class="lc-prog-fill" style="width:${pct}%;background:${pct>=100?'var(--G)':pct>0?'var(--A)':'var(--bdr2)'}"></div></div>
+    ${quickAssign}
   </div>`;
+}
+
+async function quickAssignLoad(loadId, truckId, selectEl){
+  if(!truckId) return;
+  const t=trucks.find(x=>x.id===truckId);
+  selectEl.disabled=true;
+  await fetch('/api/loads/'+loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId,driverName:t?.label||''})});
+  await loadAll();renderBoard();
 }
 
 // ── DRAG & DROP ───────────────────────────────────────────────────────────────
@@ -735,24 +778,8 @@ function buildPOCard(p){
     </span>`;
   }).join(' ')||'';
 
-  // Invoice section (manager only)
-  const invHtml=role==='manager'?`<div class="inv-sec">
-    <div class="inv-title">Invoice & Payment — ${p.poNumber}</div>
-    <div class="inv-grid">
-      <div class="icard money"><div class="il">Total invoiced</div><div class="iv">${money(inv.invoiced)}</div></div>
-      <div class="icard money"><div class="il">Earned (delivered)</div><div class="iv">${money(inv.earned)}</div></div>
-      <div class="icard money"><div class="il">Paid</div><div class="iv">${money(inv.paid)}</div></div>
-      <div class="icard ${inv.balance>0?'owed':'money'}"><div class="il">Balance</div><div class="iv">${money(inv.balance)}</div></div>
-    </div>
-    <div style="display:flex;align-items:center;gap:7px;margin-bottom:7px">
-      <span class="sp sp-${payStatus}">${payStatus.toUpperCase()}</span>
-      ${allDone?'<span style="font-size:11px;color:var(--G);background:var(--Gb);padding:2px 9px;border-radius:20px;border:0.5px solid var(--Gd)">✓ Ready for invoice</span>':''}
-    </div>
-    ${pPay(p.id).map(pay=>`<div class="pay-row"><span>${pay.method} · ${pay.note||''}</span><span class="pay-amt">${money(pay.amount)}</span></div>`).join('')}
-    <div style="display:flex;gap:6px;margin-top:7px">
-      <button class="ab g" onclick="openPayM('${p.id}')">+ Payment</button>
-    </div>
-  </div>`:'';
+  // Invoice section removed from main PO card — lives in Finance tab
+  const invHtml='';
 
   // Materials + loads breakdown table
   const matGroups={};
@@ -765,7 +792,7 @@ function buildPOCard(p){
         <div class="mat-dot" style="background:${mc.dot}"></div>
         <span style="font-size:11px;font-weight:500;color:${mc.dot}">${mat}</span>
         <span style="font-size:11px;color:${mc.dot};opacity:.7">${mls.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0)}/${mls.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0)} loads</span>
-        ${role==='manager'?`<span style="font-size:11px;color:${mc.dot};opacity:.7;margin-left:auto">${money((matPrices[mat]||0))} / load</span>`:''}
+
       </div>
       <table class="mat-table"><thead><tr>
         <th>Driver</th><th>Truck</th><th>Date</th><th>Loads</th><th>Status</th><th>POD</th>
@@ -845,7 +872,6 @@ function renderHist(){
   Object.keys(byM).sort().reverse().forEach(m=>{
     h+=`<div class="hm"><div class="hml">${m==='x'?'Unknown':fmtM(m)}</div>`;
     byM[m].forEach(p=>{
-      const inv=pInvoice(p.id);
       const matSummary=p.materials?.map(m=>{const mc=matColor(m.material);return `<span style="font-size:10px;color:${mc.dot};background:${mc.bg};padding:1px 6px;border-radius:20px;border:0.5px solid ${mc.dot}40">${m.totalLoads} ${m.material}</span>`;}).join(' ')||'';
       h+=`<div class="hi">
         <div>
@@ -855,8 +881,7 @@ function renderHist(){
         </div>
         <div style="text-align:right">
           <div style="font-size:11px;font-family:var(--m);color:var(--G)">✓ ${fmtD(p.completedAt||p.deliveryDate)}</div>
-          ${role==='manager'?`<div style="font-size:11px;color:var(--txt2)">${money(inv.paid)} / ${money(inv.invoiced)}</div>
-          <span class="sp sp-${p.invoice?.paymentStatus||'unpaid'}">${p.invoice?.paymentStatus||'unpaid'}</span>`:''}
+
         </div>
       </div>`;
     });
@@ -1158,6 +1183,79 @@ function updateTruckNum(id,val){
   const t=trucks.find(x=>x.id===id);if(t){t.truckNum=val;fetch('/api/trucks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(trucks)});}
 }
 
+// ── FINANCE TAB ──────────────────────────────────────────────────────────────
+function renderFinance(){
+  const el=document.getElementById('finance-wrap');
+  if(!el) return;
+  const tRev=pos.reduce((s,p)=>s+pInvoice(p.id).invoiced,0);
+  const tPaid=payments.reduce((s,p)=>s+p.amount,0);
+  const tBal=tRev-tPaid;
+  const unpaid=pos.filter(p=>p.status!=='completed'&&(p.invoice?.paymentStatus||'unpaid')==='unpaid');
+  const partial=pos.filter(p=>(p.invoice?.paymentStatus||'unpaid')==='partial');
+  const paid=pos.filter(p=>(p.invoice?.paymentStatus||'unpaid')==='paid');
+
+  // Material revenue breakdown
+  const matMap={};
+  loads.forEach(l=>{
+    if(!matMap[l.material]) matMap[l.material]={ordered:0,delivered:0,revenue:0};
+    matMap[l.material].ordered+=(Number(l.loadsAssigned)||0);
+    matMap[l.material].delivered+=(Number(l.loadsDelivered)||0);
+    matMap[l.material].revenue+=(Number(l.loadsDelivered)||0)*(Number(l.pricePerLoad)||0);
+  });
+
+  let h=`
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:18px">
+    <div class="met o"><div class="ml">Total invoiced</div><div class="mv">${money(tRev)}</div></div>
+    <div class="met g"><div class="ml">Collected</div><div class="mv">${money(tPaid)}</div></div>
+    <div class="met ${tBal>0?'w':'g'}"><div class="ml">Outstanding</div><div class="mv">${money(tBal)}</div></div>
+    <div class="met w"><div class="ml">Unpaid POs</div><div class="mv">${unpaid.length}</div></div>
+    <div class="met"><div class="ml">Partial</div><div class="mv">${partial.length}</div></div>
+    <div class="met g"><div class="ml">Paid</div><div class="mv">${paid.length}</div></div>
+  </div>`;
+
+  // Material price table quick edit
+  h+=`<div style="margin-bottom:18px">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);font-weight:500;margin-bottom:8px">Material Prices</div>
+    <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+      ${Object.entries(matPrices).map(([m,p])=>{const mc=matColor(m);return `<span style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;background:${mc.bg};border-radius:var(--r);border:0.5px solid ${mc.dot}40;font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span><b style="color:${mc.dot}">${m}</b><span style="color:var(--txt2)">${money(p)}/load</span></span>`;}).join('')}
+      <button class="ab b" onclick="openPriceTable()">&#9998; Edit prices</button>
+    </div>
+  </div>`;
+
+  // Material revenue breakdown
+  h+=`<div style="margin-bottom:18px">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);font-weight:500;margin-bottom:8px">Revenue by Material</div>
+    <table class="mat-table"><thead><tr><th>Material</th><th>Loads Ordered</th><th>Loads Delivered</th><th>Revenue</th></tr></thead><tbody>`;
+  Object.entries(matMap).sort((a,b)=>b[1].revenue-a[1].revenue).forEach(([m,d])=>{
+    const mc=matColor(m);
+    h+=`<tr><td><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span>${m}</span></td><td style="font-family:var(--m)">${d.ordered}</td><td style="font-family:var(--m)">${d.delivered}</td><td style="font-family:var(--m);color:var(--G)">${money(d.revenue)}</td></tr>`;
+  });
+  h+=`</tbody></table></div>`;
+
+  // PO payment status list
+  const allActivePOs=pos.filter(p=>p.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
+  h+=`<div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);font-weight:500;margin-bottom:8px">PO Payment Status</div>`;
+  if(!allActivePOs.length){h+='<div class="no-items">No active POs.</div>';}
+  else{
+    allActivePOs.forEach(p=>{
+      const inv=pInvoice(p.id);
+      const ps=p.invoice?.paymentStatus||'unpaid';
+      h+=`<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--r);margin-bottom:5px;flex-wrap:wrap">
+        <span style="font-family:var(--m);font-size:11px;color:var(--B);white-space:nowrap">${p.poNumber}</span>
+        <span style="font-size:13px;font-weight:500;color:var(--txt);flex:1">${p.customer}</span>
+        <span style="font-size:11px;color:var(--txt2)">${fmtD(p.deliveryDate)}</span>
+        <span class="sp sp-${ps}">${ps}</span>
+        <span style="font-family:var(--m);font-size:12px;color:var(--G)">${money(inv.paid)}</span>
+        <span style="font-size:11px;color:var(--txt2)">/ ${money(inv.invoiced)}</span>
+        ${inv.balance>0?`<span style="font-family:var(--m);font-size:12px;color:var(--R)">-${money(inv.balance)}</span>`:''}
+        <button class="ab g" style="font-size:11px;padding:3px 9px" onclick="openPayM('${p.id}')">+ Pay</button>
+      </div>`;
+    });
+  }
+  h+=`</div>`;
+  el.innerHTML=h;
+}
+
 // ── SHEETS SYNC ───────────────────────────────────────────────────────────────
 async function doSync(){
   const btn=document.getElementById('sync-btn'),st=document.getElementById('ss');
@@ -1187,7 +1285,7 @@ async function init(){
     await loadAll();
   }catch(e){console.error(e);}
   if(role==='driver'){
-    ['tab-board','tab-pos','tab-hist','nav-wrap'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
+    ['tab-board','tab-pos','tab-hist','tab-finance','nav-wrap'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
     swTab('drv');
   } else {
     swTab('board');
