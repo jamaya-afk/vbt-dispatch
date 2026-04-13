@@ -27,12 +27,11 @@ const USERS = {
 };
 
 const DEFAULT_TRUCKS = [
-  { id: 'beryle',    label: 'Beryle',    truckNum: 'Truck #2'  },
-  { id: 'matthew',   label: 'Matthew',   truckNum: 'Truck #4'  },
-  { id: 'rigo',      label: 'Rigo',      truckNum: 'Truck #14' },
-  { id: 'leonardo',  label: 'Leonardo',  truckNum: 'Truck #12' },
-  { id: 'carlos',    label: 'Carlos',    truckNum: 'Truck #2B' },
-
+  { id: 'beryle',   label: 'Beryle',   truckNum: 'Truck #2',  baseLocation: 'Fowler, CA',       lat: 36.6327, lng: -119.6793 },
+  { id: 'matthew',  label: 'Matthew',  truckNum: 'Truck #4',  baseLocation: 'Fresno, CA',        lat: 36.7378, lng: -119.7871 },
+  { id: 'rigo',     label: 'Rigo',     truckNum: 'Truck #14', baseLocation: 'Fresno, CA',        lat: 36.7378, lng: -119.7871 },
+  { id: 'leonardo', label: 'Leonardo', truckNum: 'Truck #12', baseLocation: 'Bakersfield, CA',   lat: 35.3733, lng: -119.0187 },
+  { id: 'carlos',   label: 'Carlos',   truckNum: 'Truck #2B', baseLocation: 'Merced, CA',        lat: 37.3022, lng: -120.4830 },
 ];
 
 // Material price table — editable via API
@@ -64,15 +63,36 @@ const DEFAULT_MATERIAL_PRICES = {
 // payments[]: { id, poId, amount, method, note, paidAt }
 // materialPrices: { [material]: price }
 
+// ── Postgres setup — fully awaited before app starts ─────────────────────────
 let pg = null;
-if (process.env.DATABASE_URL) {
+
+async function initPg() {
+  if (!process.env.DATABASE_URL) {
+    console.log('No DATABASE_URL — using file storage (data will reset on redeploy!)');
+    return;
+  }
   try {
     const { Pool } = require('pg');
-    pg = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-    pg.query(`CREATE TABLE IF NOT EXISTS dispatch_data (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
-      .then(() => console.log('Postgres connected'))
-      .catch(e => { console.warn('PG error:', e.message); pg = null; });
-  } catch(e) { pg = null; }
+    pg = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 10000,
+    });
+    // Test the connection
+    await pg.query('SELECT 1');
+    // Create table if not exists (safe, never drops data)
+    await pg.query(`
+      CREATE TABLE IF NOT EXISTS dispatch_data (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+    console.log('✓ Postgres connected and ready');
+  } catch(e) {
+    console.error('✗ Postgres connection failed:', e.message);
+    console.log('  Falling back to file storage — SET DATABASE_URL to persist data across deploys');
+    pg = null;
+  }
 }
 
 let store = {
@@ -83,17 +103,41 @@ let store = {
 };
 
 async function loadData() {
-  try {
-    if (pg) {
+  // Always try Postgres first if available
+  if (pg) {
+    try {
       const r = await pg.query("SELECT value FROM dispatch_data WHERE key='store'");
-      if (r.rows.length) { store = JSON.parse(r.rows[0].value); fixStore(); console.log(`PG: ${store.pos.length} POs`); return; }
+      if (r.rows.length) {
+        store = JSON.parse(r.rows[0].value);
+        fixStore();
+        console.log(`✓ Loaded from Postgres: ${store.pos.length} POs, ${store.loads.length} loads`);
+        return;
+      } else {
+        console.log('Postgres table empty — checking file backup...');
+      }
+    } catch(e) {
+      console.error('Postgres read error:', e.message);
     }
-    if (fs.existsSync(DATA_FILE)) {
+  }
+
+  // File fallback (only used when Postgres is unavailable)
+  if (fs.existsSync(DATA_FILE)) {
+    try {
       store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
       fixStore();
-      console.log(`File: ${store.pos.length} POs`);
+      console.log(`✓ Loaded from file: ${store.pos.length} POs`);
+      // If Postgres just came online with empty table, seed it from file
+      if (pg && store.pos.length > 0) {
+        console.log('Migrating file data to Postgres...');
+        await saveData();
+        console.log('✓ Migration to Postgres complete');
+      }
+    } catch(e) {
+      console.warn('File read error:', e.message);
     }
-  } catch(e) { console.warn('loadData:', e.message); }
+  } else {
+    console.log('No existing data found — starting fresh');
+  }
 }
 
 function fixStore() {
@@ -118,11 +162,24 @@ function fixStore() {
 }
 
 async function saveData() {
-  try {
-    const j = JSON.stringify(store);
-    if (pg) await pg.query("INSERT INTO dispatch_data(key,value) VALUES('store',$1) ON CONFLICT(key) DO UPDATE SET value=$1", [j]);
-    else fs.writeFileSync(DATA_FILE, j);
-  } catch(e) { console.warn('saveData:', e.message); }
+  const j = JSON.stringify(store);
+  // Always write to Postgres if available
+  if (pg) {
+    try {
+      await pg.query(
+        "INSERT INTO dispatch_data(key,value) VALUES('store',$1) ON CONFLICT(key) DO UPDATE SET value=$1",
+        [j]
+      );
+    } catch(e) {
+      console.error('Postgres write error:', e.message);
+      // If Postgres fails, still write to file as emergency backup
+      try { fs.writeFileSync(DATA_FILE, j); } catch(fe) {}
+    }
+  } else {
+    // File-only mode
+    try { fs.writeFileSync(DATA_FILE, j); }
+    catch(e) { console.warn('File write error:', e.message); }
+  }
 }
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
@@ -617,5 +674,136 @@ app.post('/api/sync', reqMgr, async (req, res) => {
   }
 });
 
+// ── DRIVER LOCATIONS (live GPS from mobile, fallback to base) ────────────────
+app.post('/api/driver-location', reqAuth, async (req, res) => {
+  const user = req.session.user;
+  if (user.role !== 'driver') return res.status(403).json({ error: 'Drivers only' });
+  const { lat, lng, accuracy } = req.body;
+  if (!lat || !lng) return res.status(400).json({ error: 'lat/lng required' });
+  const truck = store.trucks.find(t => t.id === user.truckId);
+  if (truck) {
+    truck.currentLat = lat;
+    truck.currentLng = lng;
+    truck.locationAccuracy = accuracy;
+    truck.locationUpdatedAt = new Date().toISOString();
+    await saveData();
+  }
+  res.json({ success: true });
+});
+
+// ── DISTANCE MATRIX (server-side using Google Maps) ───────────────────────────
+// Uses straight-line (Haversine) math — no Maps API key needed, accurate enough for dispatch
+app.post('/api/distances', reqMgr, (req, res) => {
+  const { destination, trucks: truckIds } = req.body;
+  if (!destination) return res.status(400).json({ error: 'destination required' });
+
+  // Geocode the destination using a simple lookup for common CA cities,
+  // or use lat/lng if provided directly
+  let destLat = req.body.destLat;
+  let destLng = req.body.destLng;
+
+  // Common city geocode table for Central Valley / CA
+  const CITY_COORDS = {
+    'fresno':       [36.7378, -119.7871],
+    'bakersfield':  [35.3733, -119.0187],
+    'merced':       [37.3022, -120.4830],
+    'modesto':      [37.6391, -120.9969],
+    'visalia':      [36.3302, -119.2921],
+    'hanford':      [36.3274, -119.6457],
+    'lemoore':      [36.3002, -119.7829],
+    'clovis':       [36.8252, -119.7029],
+    'madera':       [36.9613, -120.0607],
+    'fowler':       [36.6327, -119.6793],
+    'sanger':       [36.7077, -119.5551],
+    'reedley':      [36.5960, -119.4502],
+    'selma':        [36.5710, -119.6121],
+    'kingsburg':    [36.5138, -119.5534],
+    'tulare':       [36.2077, -119.3473],
+    'porterville':  [36.0654, -119.0168],
+    'delano':       [35.7688, -119.2470],
+    'wasco':        [35.5938, -119.3412],
+    'santa maria':  [34.9530, -120.4357],
+    'los angeles':  [34.0522, -118.2437],
+    'san francisco':[37.7749, -122.4194],
+    'stockton':     [37.9577, -121.2908],
+    'chico':        [39.7285, -121.8375],
+    'sacramento':   [38.5816, -121.4944],
+  };
+
+  if (!destLat || !destLng) {
+    // Try to match city name from destination string
+    const lower = destination.toLowerCase();
+    for (const [city, coords] of Object.entries(CITY_COORDS)) {
+      if (lower.includes(city)) { destLat = coords[0]; destLng = coords[1]; break; }
+    }
+  }
+
+  const targetTrucks = truckIds
+    ? store.trucks.filter(t => truckIds.includes(t.id))
+    : store.trucks;
+
+  const results = targetTrucks.map(t => {
+    // Use live GPS if available and recent (< 2 hours old)
+    let fromLat = t.baseLocation ? t.lat : null;
+    let fromLng = t.baseLocation ? t.lng : null;
+    let locationSource = 'base';
+    if (t.currentLat && t.locationUpdatedAt) {
+      const age = (Date.now() - new Date(t.locationUpdatedAt).getTime()) / 60000; // minutes
+      if (age < 120) { fromLat = t.currentLat; fromLng = t.currentLng; locationSource = 'live'; }
+    }
+
+    let distanceMiles = null;
+    let estMinutes = null;
+    if (fromLat && fromLng && destLat && destLng) {
+      // Haversine formula
+      const R = 3958.8; // Earth radius in miles
+      const dLat = (destLat - fromLat) * Math.PI / 180;
+      const dLng = (destLng - fromLng) * Math.PI / 180;
+      const a = Math.sin(dLat/2)**2 + Math.cos(fromLat*Math.PI/180)*Math.cos(destLat*Math.PI/180)*Math.sin(dLng/2)**2;
+      distanceMiles = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      // Estimate drive time: avg 55 mph for highways + 10 min buffer
+      estMinutes = Math.round(distanceMiles / 55 * 60) + 10;
+    }
+
+    const activeLoads = store.loads.filter(l => l.truckId === t.id && l.status === 'active').length;
+
+    return {
+      truckId: t.id,
+      label: t.label,
+      truckNum: t.truckNum,
+      baseLocation: t.baseLocation || 'Unknown',
+      currentLocation: locationSource === 'live' ? 'Live GPS' : (t.baseLocation || 'Unknown'),
+      locationSource,
+      locationUpdatedAt: t.locationUpdatedAt || null,
+      distanceMiles: distanceMiles !== null ? Math.round(distanceMiles * 10) / 10 : null,
+      estMinutes,
+      activeLoads,
+      canCalculate: !!(fromLat && fromLng && destLat && destLng),
+    };
+  });
+
+  // Sort: drivers with calculable distance first, then by distance
+  results.sort((a, b) => {
+    if (a.distanceMiles === null && b.distanceMiles === null) return a.activeLoads - b.activeLoads;
+    if (a.distanceMiles === null) return 1;
+    if (b.distanceMiles === null) return -1;
+    return a.distanceMiles - b.distanceMiles;
+  });
+
+  res.json({ success: true, results, destFound: !!(destLat && destLng), destination });
+});
+
 const PORT = process.env.PORT || 3000;
-loadData().then(() => app.listen(PORT, () => console.log(`VBT Dispatch on port ${PORT}`)));
+
+// ── Safe startup: init DB → load data → start server ─────────────────────────
+(async () => {
+  await initPg();      // Wait for Postgres to be ready
+  await loadData();    // Load existing data (never resets)
+  app.listen(PORT, () => {
+    console.log(`VBT Dispatch running on port ${PORT}`);
+    if (!pg) {
+      console.warn('⚠ WARNING: Running without Postgres. Data will be lost on redeploy.');
+      console.warn('  Add a Postgres database in Railway to persist data permanently.');
+    }
+  });
+})();
