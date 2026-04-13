@@ -32,7 +32,7 @@ const DEFAULT_TRUCKS = [
   { id: 'rigo',      label: 'Rigo',      truckNum: 'Truck #14' },
   { id: 'leonardo',  label: 'Leonardo',  truckNum: 'Truck #12' },
   { id: 'carlos',    label: 'Carlos',    truckNum: 'Truck #2B' },
-  { id: 'precision', label: 'Precision', truckNum: 'Truck #P'  },
+
 ];
 
 // Material price table — editable via API
@@ -114,10 +114,7 @@ function fixStore() {
     if (!l.timestamps) l.timestamps = {};
     if (l.pricePerLoad === undefined) l.pricePerLoad = store.materialPrices[l.material] || 100;
   });
-  // Add Precision truck if missing
-  if (!store.trucks.find(t => t.id === 'precision')) {
-    store.trucks.push({ id: 'precision', label: 'Precision', truckNum: 'Truck #P' });
-  }
+
 }
 
 async function saveData() {
