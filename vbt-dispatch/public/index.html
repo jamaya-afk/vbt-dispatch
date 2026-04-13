@@ -255,6 +255,32 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .price-mat{font-size:12px;color:var(--txt);flex:1}
 .price-inp{width:80px;padding:5px 7px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-family:var(--m);font-size:13px;text-align:right}
 
+/* ── DRIVER PICKER ── */
+.dp-card{display:flex;align-items:center;gap:12px;padding:12px 14px;border:2px solid var(--bdr);border-radius:var(--rl);background:var(--bg);cursor:pointer;transition:all .15s;margin-bottom:8px;position:relative}
+.dp-card:hover{border-color:var(--B);background:var(--Bb);box-shadow:var(--shadow-md)}
+.dp-card.best{border-color:var(--G);background:var(--Gb)}
+.dp-card.best:hover{border-color:var(--G);background:var(--Gb);box-shadow:0 4px 16px rgba(22,160,102,.2)}
+.dp-card.selected{border-color:var(--B);background:var(--Bb);box-shadow:0 0 0 3px var(--Bd)}
+.dp-avatar{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;flex-shrink:0;color:#fff}
+.dp-info{flex:1;min-width:0}
+.dp-name{font-size:14px;font-weight:600;color:var(--txt)}
+.dp-loc{font-size:11px;color:var(--txt2);margin-top:2px}
+.dp-dist{text-align:right;flex-shrink:0}
+.dp-miles{font-size:18px;font-weight:700;color:var(--txt);font-family:var(--f)}
+.dp-miles.close{color:var(--G)}
+.dp-miles.mid{color:var(--A)}
+.dp-miles.far{color:var(--R)}
+.dp-time{font-size:11px;color:var(--txt2);margin-top:2px;text-align:right}
+.dp-badge{position:absolute;top:-8px;right:10px;font-size:10px;font-weight:700;background:var(--G);color:#fff;padding:2px 9px;border-radius:20px;letter-spacing:.04em}
+.dp-workload{display:flex;gap:3px;margin-top:4px}
+.dp-dot{width:7px;height:7px;border-radius:50%;background:var(--B);opacity:.8}
+.dp-loading{text-align:center;padding:24px;color:var(--txt2);font-size:13px}
+.dp-no-addr{padding:14px;background:var(--Ab);border-radius:var(--rl);font-size:12px;color:var(--A);border:1px solid var(--Ad);margin-bottom:12px}
+.dp-dest{font-size:12px;color:var(--txt2);margin-bottom:12px;padding:8px 12px;background:var(--bg2);border-radius:var(--r)}
+.dp-dest b{color:var(--txt)}
+.live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--G);margin-right:4px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
 @media(max-width:700px){
   .fr{grid-template-columns:1fr}
   .srow{grid-template-columns:1fr 1fr}
@@ -371,7 +397,7 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
       <div class="sdiv">Move or reassign</div>
       <div class="fr">
         <div class="fl"><label>Move to date</label><input type="date" id="ll-mv-date"></div>
-        <div class="fl"><label>Reassign driver</label><select id="ll-reassign"><option value="">— same driver —</option></select></div>
+        <div class="fl"><label>Reassign driver <button type="button" onclick="openPickerFromLL()" style="font-size:10px;color:var(--B);background:var(--Bb);border:1px solid var(--Bd);border-radius:20px;padding:1px 7px;cursor:pointer;font-family:var(--f);font-weight:500;margin-left:6px">&#x1F4CD; Find best</button></label><select id="ll-reassign"><option value="">— same driver —</option></select></div>
       </div>
       <button class="bs" style="font-size:12px;padding:5px 11px;margin-top:5px" onclick="applyMoveReassign()">Apply move / reassign</button>
     </div>
@@ -433,6 +459,25 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
     <div class="price-grid" id="price-grid"></div>
   </div>
   <div class="mf"><button class="bs" onclick="document.getElementById('price-m').style.display='none'">Cancel</button><button class="bp" onclick="savePriceTable()">Save prices</button></div>
+</div></div>
+
+<!-- DRIVER PICKER MODAL -->
+<div class="mbg" id="dp-m" style="display:none"><div class="mod" style="max-width:480px">
+  <div class="mh">
+    <h2>&#x1F4CD; Choose Best Driver</h2>
+    <button class="mc" onclick="closeDP()">&#215;</button>
+  </div>
+  <div class="mb" style="padding:16px 18px">
+    <div id="dp-dest-info" class="dp-dest"></div>
+    <div id="dp-no-addr" class="dp-no-addr" style="display:none">
+      ⚠ No delivery address on this job — distances can't be calculated. You can still pick a driver below.
+    </div>
+    <div id="dp-list"></div>
+  </div>
+  <div class="mf">
+    <button class="bs" onclick="closeDP()">Cancel</button>
+    <button class="bp" id="dp-confirm" onclick="confirmDP()" disabled>Select driver</button>
+  </div>
 </div></div>
 
 <script>
@@ -638,13 +683,13 @@ function renderLoadCard(l,mini=false){
   if(pod.signedBy) statusBadge+=`<span class="pill g">✓ POD</span>`;
   if(ts.start&&!ts.completed) statusBadge+=`<span class="pill b">▶ started</span>`;
 
-  // Quick-assign dropdown for unassigned loads (manager only, inline on card)
+  // Quick-assign button for unassigned loads — opens smart driver picker
+  const jobAddr=(po.city||po.address||'');
   const quickAssign = (role==='manager'&&isUnassigned) ?
-    `<div style="margin-top:6px" onclick="event.stopPropagation()">
-      <select onchange="quickAssignLoad('${l.id}',this.value,this)" style="width:100%;padding:4px 7px;font-size:11px;border:0.5px solid var(--Ad);border-radius:var(--r);background:var(--Ab);color:var(--A);font-family:var(--f);cursor:pointer">
-        <option value="">⚠ Assign driver...</option>
-        ${trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('')}
-      </select>
+    `<div style="margin-top:7px" onclick="event.stopPropagation()">
+      <button onclick="openDriverPickerForLoad('${l.id}','${jobAddr.replace(/'/g,"\'")}',event)" style="width:100%;padding:6px 10px;font-size:11px;border:1.5px solid var(--Ad);border-radius:20px;background:var(--Ab);color:var(--A);font-family:var(--f);cursor:pointer;font-weight:600;transition:all .15s" onmouseover="this.style.background='var(--A)';this.style.color='#fff'" onmouseout="this.style.background='var(--Ab)';this.style.color='var(--A)'">
+        &#x1F4CD; Assign driver
+      </button>
     </div>` : '';
 
   return `<div class="lcard ${isUnassigned?'unassigned-card':''} ${miss&&!isUnassigned?'missing-card':''}"
@@ -669,12 +714,19 @@ function renderLoadCard(l,mini=false){
   </div>`;
 }
 
-async function quickAssignLoad(loadId, truckId, selectEl){
+async function quickAssignLoad(loadId, truckId){
   if(!truckId) return;
   const t=trucks.find(x=>x.id===truckId);
-  selectEl.disabled=true;
   await fetch('/api/loads/'+loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId,driverName:t?.label||''})});
   await loadAll();renderBoard();
+}
+
+function openDriverPickerForLoad(loadId, destAddr, event){
+  event.stopPropagation();
+  const l=loads.find(x=>x.id===loadId);if(!l)return;
+  openDriverPicker(destAddr, async (truckId)=>{
+    await quickAssignLoad(loadId, truckId);
+  }, l.truckId);
 }
 
 // ── DRAG & DROP ───────────────────────────────────────────────────────────────
@@ -1020,8 +1072,11 @@ function renderSplits(){
     const mc=matColor(s.material);
     return `<div class="srow" style="border-left:3px solid ${mc.dot}">
       <div>
-        <div class="srow-label">Driver</div>
-        <select onchange="splits[${i}].truckId=this.value;splits[${i}].driverName=trucks.find(t=>t.id===this.value)?.label||''">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
+          <div class="srow-label">Driver</div>
+          <button type="button" onclick="openPickerForSplit(${i})" style="font-size:10px;color:var(--B);background:var(--Bb);border:1px solid var(--Bd);border-radius:20px;padding:1px 7px;cursor:pointer;font-family:var(--f);font-weight:500">&#x1F4CD; Find best</button>
+        </div>
+        <select id="split-drv-${i}" onchange="splits[${i}].truckId=this.value;splits[${i}].driverName=trucks.find(t=>t.id===this.value)?.label||''">
           <option value="">Unassigned</option>${topts.replace(`value="${s.truckId}"`,`value="${s.truckId}" selected`)}
         </select>
       </div>
@@ -1274,6 +1329,138 @@ async function doSync(){
   finally{btn.disabled=false;btn.textContent='↑ Sheets';}
 }
 
+function openPickerFromLL(){
+  const l=loads.find(x=>x.id===editLoadId);if(!l)return;
+  const po=pos.find(p=>p.id===l.poId)||{};
+  const addr=po.city||po.address||'';
+  openDriverPicker(addr, async(truckId)=>{
+    const rs=document.getElementById('ll-reassign');
+    if(rs) rs.value=truckId;
+    return Promise.resolve();
+  }, l.truckId);
+}
+
+function openPickerForSplit(idx){
+  const addr=document.getElementById('pm-addr')?.value||'';
+  openDriverPicker(addr, (truckId)=>{
+    splits[idx].truckId=truckId;
+    splits[idx].driverName=trucks.find(t=>t.id===truckId)?.label||'';
+    renderSplits();
+    return Promise.resolve();
+  }, splits[idx].truckId);
+}
+
+// ── DRIVER PICKER ────────────────────────────────────────────────────────────
+let dpCallback=null, dpSelectedTruckId=null, dpLoadingDest=null;
+
+// Avatar colors per driver
+const AVATAR_COLORS=['#3b82f6','#16a066','#d97706','#8b5cf6','#e05252','#0891b2'];
+function avatarColor(idx){ return AVATAR_COLORS[idx%AVATAR_COLORS.length]; }
+function initials(name){ return name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2); }
+
+async function openDriverPicker(destAddress, onSelect, currentTruckId){
+  dpCallback=onSelect;
+  dpSelectedTruckId=currentTruckId||null;
+  dpLoadingDest=destAddress||'';
+  document.getElementById('dp-confirm').disabled=!dpSelectedTruckId;
+  document.getElementById('dp-m').style.display='flex';
+
+  if(destAddress){
+    document.getElementById('dp-dest-info').innerHTML=`<b>Job location:</b> ${destAddress}`;
+    document.getElementById('dp-no-addr').style.display='none';
+  } else {
+    document.getElementById('dp-dest-info').style.display='none';
+    document.getElementById('dp-no-addr').style.display='block';
+  }
+
+  document.getElementById('dp-list').innerHTML=`<div class="dp-loading">&#x1F4CD; Calculating distances...</div>`;
+
+  try{
+    const r=await fetch('/api/distances',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({destination:destAddress||'',trucks:trucks.map(t=>t.id)})});
+    const d=await r.json();
+    renderDriverPicker(d.results, d.destFound);
+  } catch(e){
+    // Fallback: show drivers without distances
+    renderDriverPicker(trucks.map((t,i)=>({truckId:t.id,label:t.label,truckNum:t.truckNum,baseLocation:t.baseLocation||'Unknown',currentLocation:t.baseLocation||'Unknown',locationSource:'base',distanceMiles:null,estMinutes:null,activeLoads:loads.filter(l=>l.truckId===t.id&&l.status==='active').length})), false);
+  }
+}
+
+function renderDriverPicker(results, destFound){
+  if(!results||!results.length){document.getElementById('dp-list').innerHTML='<div class="dp-loading">No drivers available.</div>';return;}
+  const best=destFound?results[0]:null;
+  let h='';
+  results.forEach((d,i)=>{
+    const isBest=destFound&&i===0&&d.distanceMiles!==null;
+    const isSelected=d.truckId===dpSelectedTruckId;
+    const distClass=d.distanceMiles===null?'':d.distanceMiles<20?'close':d.distanceMiles<60?'mid':'far';
+    const workloadDots=Array.from({length:Math.min(d.activeLoads,5)},(_,j)=>`<div class="dp-dot" style="opacity:${0.4+j*0.12}"></div>`).join('');
+    h+=`<div class="dp-card ${isBest?'best':''} ${isSelected?'selected':''}" onclick="selectDP('${d.truckId}')">
+      ${isBest?'<div class="dp-badge">&#10003; Best match</div>':''}
+      <div class="dp-avatar" style="background:${avatarColor(i)}">${initials(d.label)}</div>
+      <div class="dp-info">
+        <div class="dp-name">${d.label} <span style="font-size:11px;font-weight:400;color:var(--txt2)">${d.truckNum}</span></div>
+        <div class="dp-loc">
+          ${d.locationSource==='live'?'<span class="live-dot"></span>':'📍 '}
+          ${d.currentLocation}
+          ${d.locationSource==='live'&&d.locationUpdatedAt?`<span style="color:var(--txt3)"> · ${minutesAgo(d.locationUpdatedAt)}</span>`:''}
+        </div>
+        ${d.activeLoads>0?`<div class="dp-workload" style="margin-top:4px">${workloadDots}<span style="font-size:10px;color:var(--txt3);margin-left:4px">${d.activeLoads} active load${d.activeLoads>1?'s':''}</span></div>`:'<div style="font-size:10px;color:var(--G);margin-top:4px">✓ Available</div>'}
+      </div>
+      <div class="dp-dist">
+        ${d.distanceMiles!==null
+          ?`<div class="dp-miles ${distClass}">${d.distanceMiles} mi</div>
+            <div class="dp-time">~${d.estMinutes<60?d.estMinutes+' min':Math.round(d.estMinutes/60*10)/10+' hr'}</div>`
+          :`<div style="font-size:11px;color:var(--txt3);text-align:right">no address<br>to compare</div>`}
+        ${isSelected?'<div style="font-size:10px;color:var(--B);margin-top:4px;text-align:right;font-weight:600">✓ Selected</div>':''}
+      </div>
+    </div>`;
+  });
+  document.getElementById('dp-list').innerHTML=h;
+}
+
+function selectDP(truckId){
+  dpSelectedTruckId=truckId;
+  document.getElementById('dp-confirm').disabled=false;
+  // Re-render to show selection
+  document.querySelectorAll('.dp-card').forEach(c=>c.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+  // Update selected indicator
+  document.querySelectorAll('.dp-card').forEach(c=>{
+    const existing=c.querySelector('.dp-sel-txt');
+    if(existing) existing.remove();
+  });
+  const cards=document.querySelectorAll('.dp-card');
+  cards.forEach(c=>{
+    if(c.onclick.toString().includes(`'${truckId}'`)) c.classList.add('selected');
+  });
+}
+
+function closeDP(){ document.getElementById('dp-m').style.display='none'; dpCallback=null; dpSelectedTruckId=null; }
+
+async function confirmDP(){
+  if(!dpSelectedTruckId||!dpCallback) return;
+  await dpCallback(dpSelectedTruckId);
+  closeDP();
+}
+
+function minutesAgo(iso){
+  const min=Math.round((Date.now()-new Date(iso).getTime())/60000);
+  if(min<1) return 'just now';
+  if(min<60) return `${min}m ago`;
+  return `${Math.round(min/60)}h ago`;
+}
+
+// Start GPS tracking for drivers (called after init if role=driver)
+function startGPSTracking(){
+  if(!navigator.geolocation) return;
+  navigator.geolocation.watchPosition(pos=>{
+    fetch('/api/driver-location',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy:pos.coords.accuracy})
+    }).catch(()=>{});
+  },{enableHighAccuracy:true,maximumAge:30000,timeout:10000});
+}
+
 // ── DATA ──────────────────────────────────────────────────────────────────────
 async function loadAll(){
   const r=await fetch('/api/data');const d=await r.json();
@@ -1291,6 +1478,7 @@ async function init(){
   }catch(e){console.error(e);}
   if(role==='driver'){
     ['tab-board','tab-pos','tab-hist','tab-finance','nav-wrap'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
+    startGPSTracking();
     swTab('drv');
   } else {
     swTab('board');
