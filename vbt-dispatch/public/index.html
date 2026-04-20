@@ -323,7 +323,7 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .mgh-col{flex:1;padding:8px 10px;border-right:1px solid var(--bdr);font-size:12px;font-weight:600;color:var(--txt);text-align:center}
 .mgh-col:last-child{border-right:none}
 .mgh-unas{width:78px;flex-shrink:0;padding:8px 8px;font-size:11px;font-weight:700;color:var(--A);text-align:center;border-left:1px solid var(--bdr)}
-.mrow{display:flex;border-bottom:1px solid var(--bdr);min-height:86px}
+.mrow{display:flex;border-bottom:1px solid var(--bdr);min-height:120px}
 .mrow.today-row{box-shadow:inset 3px 0 0 var(--B)}
 .mrow.past-row{opacity:.55}
 .mdaycell{width:82px;flex-shrink:0;padding:8px 10px;border-right:1px solid var(--bdr);background:var(--bg2);display:flex;flex-direction:column;gap:2px;cursor:pointer;transition:background .12s}
@@ -333,18 +333,27 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .mdaycell .mdc-tod{font-size:9px;background:var(--B);color:#fff;padding:1px 6px;border-radius:20px;font-weight:700;width:fit-content;margin-bottom:2px}
 .mdaycell .mdc-tot{font-size:10px;color:var(--txt2);margin-top:auto}
 .mdaycell .mdc-warn{font-size:9px;color:var(--R);font-weight:700}
-.mdrvcell{flex:1;padding:5px 5px;border-right:1px solid var(--bdr);background:var(--bg3);min-height:86px}
+.mdrvcell{flex:1;padding:6px 6px;border-right:1px solid var(--bdr);background:var(--bg3);min-height:120px}
 .mdrvcell.has-l{background:var(--bg)}
 .mdrvcell:last-child{border-right:none}
 .munas{width:78px;flex-shrink:0;padding:5px 5px;background:var(--Ab);border-left:1px solid var(--Ad)}
 .munas-lbl{font-size:9px;font-weight:700;color:var(--A);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
-.mlcard{background:var(--bg);border:1px solid var(--bdr);border-radius:var(--r);padding:5px 7px;margin-bottom:3px;cursor:pointer;font-size:11px;transition:box-shadow .1s}
+.mlcard{background:var(--bg);border:1px solid var(--bdr);border-radius:var(--rl);padding:8px 10px;margin-bottom:5px;cursor:pointer;transition:box-shadow .15s,border-color .15s;box-shadow:var(--shadow)}
 .mlcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd)}
-.mlcard.m-unas{border-color:var(--Ad);background:var(--Ab)}
-.mlcard.m-done{opacity:.55;border-color:var(--Gd)}
-.mlcard .ml-po{font-size:10px;font-weight:700;color:var(--B);margin-bottom:1px}
-.mlcard .ml-mat{display:flex;align-items:center;gap:4px;font-weight:600}
-.mlcard .ml-prog{font-size:10px;color:var(--txt2);margin-top:1px}
+.mlcard.m-unas{border-color:var(--Ad);background:var(--Ab);border-left:3px solid var(--A)}
+.mlcard.m-done{border-color:var(--Gd);border-left:3px solid var(--G)}
+.mlcard .ml-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.mlcard .ml-po{font-size:10px;font-weight:700;color:var(--B);letter-spacing:.03em}
+.mlcard .ml-status{font-size:9px;padding:1px 5px;border-radius:20px;font-weight:600}
+.mlcard .ml-customer{font-size:12px;font-weight:700;color:var(--txt);line-height:1.2;margin-bottom:3px}
+.mlcard .ml-address{font-size:10px;color:var(--txt3);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mlcard .ml-mat{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:600;margin-bottom:3px}
+.mlcard .ml-loads{display:flex;align-items:center;justify-content:space-between;margin-top:4px}
+.mlcard .ml-loads-text{font-size:11px;font-family:var(--m);color:var(--txt2)}
+.mlcard .ml-bar{flex:1;height:3px;background:var(--bdr);border-radius:3px;overflow:hidden;margin:0 7px}
+.mlcard .ml-bar-fill{height:100%;border-radius:3px;transition:width .3s}
+.mlcard .ml-supervisor{font-size:10px;color:var(--txt3);margin-top:3px}
+.mlcard .ml-pickup{font-size:10px;color:var(--txt3)}
 .mmore{font-size:10px;color:var(--B);padding:2px 5px;background:var(--Bb);border-radius:20px;cursor:pointer;text-align:center;margin-top:2px;border:1px solid var(--Bd)}
 .mmore:hover{background:var(--B);color:#fff}
 .madd{width:100%;padding:4px;border:1px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;font-size:10px;color:var(--txt3);font-family:var(--f);margin-top:2px}
@@ -842,14 +851,43 @@ function renderMiniCard(l, isUnas=false){
   const mc=matColor(l.material);
   const done=l.status==='completed';
   const pct=la>0?Math.round(ld/la*100):0;
+  const miss=la>0&&ld<la&&!done;
+  const ts=l.timestamps||{};
+
+  // Status pill
+  let statusTxt='', statusBg='var(--bg2)', statusColor='var(--txt3)';
+  if(done){ statusTxt='Done'; statusBg='var(--Gb)'; statusColor='var(--G)'; }
+  else if(ts.completed){ statusTxt='Done'; statusBg='var(--Gb)'; statusColor='var(--G)'; }
+  else if(ts.arrived){ statusTxt='On site'; statusBg='var(--Pb)'; statusColor='var(--P)'; }
+  else if(ts.start){ statusTxt='Started'; statusBg='var(--Bb)'; statusColor='var(--B)'; }
+  else if(ld>0){ statusTxt='In prog'; statusBg='var(--Ab)'; statusColor='var(--A)'; }
+  else if(isUnas){ statusTxt='⚠ Unassigned'; statusBg='var(--Ab)'; statusColor='var(--A)'; }
+  else { statusTxt='Pending'; statusBg='var(--bg2)'; statusColor='var(--txt3)'; }
+
+  const barColor = pct>=100?'var(--G)':pct>0?'var(--A)':'var(--bdr2)';
+
   return `<div class="mlcard ${isUnas?'m-unas':''} ${done?'m-done':''}"
     draggable="${role==='manager'?'true':'false'}"
     ondragstart="onDragStart(event,'${l.id}')"
     ondragend="onDragEnd(event)"
     onclick="openLL('${l.id}')">
-    <div class="ml-po">${po.poNumber||'—'}</div>
-    <div class="ml-mat"><div class="mat-dot" style="background:${mc.dot};width:7px;height:7px"></div><span style="color:${mc.dot}">${l.material}</span></div>
-    <div class="ml-prog">${ld}/${la}${pct>=100?' ✓':''}</div>
+    <div class="ml-header">
+      <span class="ml-po">${po.poNumber||'—'}</span>
+      <span class="ml-status" style="background:${statusBg};color:${statusColor}">${statusTxt}</span>
+    </div>
+    <div class="ml-customer">${po.customer||'Unassigned'}</div>
+    ${po.city||po.address?`<div class="ml-address">📍 ${po.city||po.address}</div>`:''}
+    <div class="ml-mat">
+      <div class="mat-dot" style="background:${mc.dot};width:8px;height:8px;flex-shrink:0"></div>
+      <span style="color:${mc.dot}">${l.material}</span>
+    </div>
+    <div class="ml-loads">
+      <span class="ml-loads-text">${ld}/${la} loads</span>
+      <div class="ml-bar"><div class="ml-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+      ${miss?`<span style="font-size:10px;color:var(--R);font-weight:600">-${la-ld}</span>`:(pct>=100?'<span style="font-size:10px;color:var(--G)">✓</span>':'')}
+    </div>
+    ${po.supervisor?`<div class="ml-supervisor">👤 ${po.supervisor}</div>`:''}
+    ${po.pickup?`<div class="ml-pickup">🏭 ${po.pickup}</div>`:''}
   </div>`;
 }
 
