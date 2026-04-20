@@ -98,6 +98,7 @@ async function initPg() {
 let store = {
   trucks: DEFAULT_TRUCKS,
   pos: [], loads: [], payments: [],
+  activity: [],          // activity feed events
   materialPrices: { ...DEFAULT_MATERIAL_PRICES },
   nextPoNum: 1001, nextLoadId: 1, nextPayId: 1
 };
@@ -142,6 +143,7 @@ async function loadData() {
 
 function fixStore() {
   if (!store.payments)       store.payments = [];
+  if (!store.activity)       store.activity = [];
   if (!store.materialPrices) store.materialPrices = { ...DEFAULT_MATERIAL_PRICES };
   if (!store.nextPayId)      store.nextPayId = 1;
   if (!store.nextPoNum)      store.nextPoNum = 1001;
@@ -183,6 +185,12 @@ async function saveData() {
 }
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
+
+function pushActivity(type, data) {
+  const event = { id: Date.now(), type, ...data, at: new Date().toISOString() };
+  store.activity.unshift(event);          // newest first
+  if (store.activity.length > 200) store.activity = store.activity.slice(0, 200); // cap at 200
+}
 
 function promoteScheduled() {
   const t = todayStr();
@@ -405,7 +413,9 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
   const l = store.loads[idx];
   if (user.role === 'driver' && l.truckId !== user.truckId) return res.status(403).json({ error: 'Not your load' });
 
+  const po = store.pos.find(p => p.id === l.poId) || {};
   if (user.role === 'driver') {
+    const prev = { ...l };
     store.loads[idx] = {
       ...l,
       loadsDelivered: req.body.loadsDelivered !== undefined ? Number(req.body.loadsDelivered) : l.loadsDelivered,
@@ -413,12 +423,31 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
       timestamps: req.body.timestamps ? { ...l.timestamps, ...req.body.timestamps } : l.timestamps,
       pod: req.body.pod ? { ...l.pod, ...req.body.pod } : l.pod
     };
+    const updated = store.loads[idx];
+    // Log activity events
+    if (req.body.loadsDelivered !== undefined && Number(req.body.loadsDelivered) !== Number(prev.loadsDelivered)) {
+      pushActivity('loads_logged', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, material: l.material, count: Number(req.body.loadsDelivered), assigned: l.loadsAssigned });
+    }
+    if (req.body.timestamps) {
+      const ts = req.body.timestamps;
+      if (ts.start && !prev.timestamps?.start)    pushActivity('ts_start',    { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, time: ts.start });
+      if (ts.arrived && !prev.timestamps?.arrived) pushActivity('ts_arrived',  { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, city: po.city || po.address, time: ts.arrived });
+      if (ts.completed && !prev.timestamps?.completed) pushActivity('ts_done', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, time: ts.completed });
+    }
+    if (req.body.pod?.signedBy && !prev.pod?.signedBy) {
+      pushActivity('pod_signed', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, signedBy: req.body.pod.signedBy });
+    }
+    if (req.body.notes && req.body.notes !== prev.notes) {
+      pushActivity('note_added', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, note: req.body.notes });
+    }
   } else {
     const updated = { ...l, ...req.body, id: l.id, poId: l.poId };
-    // If reassigning to a different truck, update status
     if (req.body.truckId !== undefined) {
       updated.status = req.body.truckId ? 'active' : 'unassigned';
       updated.driverName = req.body.truckId ? (req.body.driverName || store.trucks.find(t => t.id === req.body.truckId)?.label || '') : '';
+      if (req.body.truckId && req.body.truckId !== l.truckId) {
+        pushActivity('reassigned', { by: user.username, poNumber: po.poNumber, customer: po.customer, material: l.material, driver: updated.driverName });
+      }
     }
     store.loads[idx] = updated;
   }
@@ -437,6 +466,8 @@ app.post('/api/loads/:id/complete', reqAuth, async (req, res) => {
   store.loads[idx].status = 'completed';
   store.loads[idx].completedAt = new Date().toISOString();
   if (req.body.pod) store.loads[idx].pod = { ...l.pod, ...req.body.pod };
+  const cPo = store.pos.find(p => p.id === l.poId) || {};
+  pushActivity('load_completed', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: cPo.poNumber, customer: cPo.customer, material: l.material, delivered: l.loadsDelivered, assigned: l.loadsAssigned });
 
   // Check if entire PO is done
   const poId = l.poId;
@@ -794,6 +825,66 @@ app.post('/api/distances', reqMgr, (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// ── ACTIVITY FEED ─────────────────────────────────────────────────────────────
+app.get('/api/activity', reqMgr, (req, res) => {
+  const limit = Number(req.query.limit) || 50;
+  const since = req.query.since; // ISO string
+  let feed = store.activity;
+  if (since) feed = feed.filter(e => e.at > since);
+  res.json({ activity: feed.slice(0, limit), serverTime: new Date().toISOString() });
+});
+
+// ── REPORTS ────────────────────────────────────────────────────────────────────
+app.get('/api/reports', reqMgr, (req, res) => {
+  // Driver performance (all time)
+  const driverStats = {};
+  store.trucks.forEach(t => {
+    const tLoads = store.loads.filter(l => l.truckId === t.id);
+    driverStats[t.id] = {
+      label: t.label, truckNum: t.truckNum,
+      totalLoads: tLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0),
+      delivered:  tLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0),
+      completed:  tLoads.filter(l=>l.status==='completed').length,
+      active:     tLoads.filter(l=>l.status==='active').length,
+    };
+  });
+
+  // Customer volume
+  const custStats = {};
+  store.pos.forEach(p => {
+    if (!custStats[p.customer]) custStats[p.customer] = { pos: 0, loads: 0, delivered: 0 };
+    custStats[p.customer].pos++;
+    const pLoads = store.loads.filter(l=>l.poId===p.id);
+    custStats[p.customer].loads     += pLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+    custStats[p.customer].delivered += pLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+  });
+
+  // Material volume
+  const matStats = {};
+  store.loads.forEach(l => {
+    if (!matStats[l.material]) matStats[l.material] = { ordered: 0, delivered: 0 };
+    matStats[l.material].ordered   += Number(l.loadsAssigned)||0;
+    matStats[l.material].delivered += Number(l.loadsDelivered)||0;
+  });
+
+  // Weekly trend (last 8 weeks)
+  const weeks = [];
+  for (let w=7; w>=0; w--) {
+    const wStart = new Date(); wStart.setDate(wStart.getDate() - w*7 - wStart.getDay()+1); wStart.setHours(0,0,0,0);
+    const wEnd   = new Date(wStart); wEnd.setDate(wStart.getDate()+6);
+    const wStartStr = wStart.toISOString().slice(0,10);
+    const wEndStr   = wEnd.toISOString().slice(0,10);
+    const wLoads = store.loads.filter(l=>l.deliveryDate>=wStartStr&&l.deliveryDate<=wEndStr);
+    weeks.push({
+      label: wStart.toLocaleDateString('en-US',{month:'short',day:'numeric'}),
+      ordered:   wLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0),
+      delivered: wLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0),
+    });
+  }
+
+  res.json({ driverStats, custStats, matStats, weeks });
+});
 
 // ── Safe startup: init DB → load data → start server ─────────────────────────
 (async () => {
