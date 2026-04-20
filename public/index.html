@@ -281,84 +281,6 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--G);margin-right:4px;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
-/* ── ACTIVITY FEED ── */
-.feed-event{padding:8px 10px;border-radius:var(--r);margin-bottom:6px;font-size:12px;line-height:1.5;border-left:3px solid var(--bdr2)}
-.feed-event.ev-logs{border-color:var(--B);background:var(--Bb)}
-.feed-event.ev-start{border-color:var(--A);background:var(--Ab)}
-.feed-event.ev-arrived{border-color:var(--P);background:var(--Pb)}
-.feed-event.ev-done{border-color:var(--G);background:var(--Gb)}
-.feed-event.ev-signed{border-color:var(--G);background:var(--Gb)}
-.feed-event.ev-note{border-color:var(--T);background:var(--Tb)}
-.feed-event.ev-reassigned{border-color:var(--O);background:var(--Ob)}
-.feed-event.ev-completed{border-color:var(--G);background:var(--Gb)}
-.fe-driver{font-weight:700;color:var(--txt)}
-.fe-time{font-size:10px;color:var(--txt3);margin-top:2px}
-.fe-note{font-style:italic;color:var(--txt2);margin-top:2px;font-size:11px}
-.feed-empty{padding:20px;text-align:center;font-size:12px;color:var(--txt3)}
-
-/* ── PRINT STYLES ── */
-@media print{
-  body *{visibility:hidden}
-  #print-sheet,#print-sheet *{visibility:visible}
-  #print-sheet{position:fixed;top:0;left:0;width:100%;background:#fff;color:#000;font-family:Arial,sans-serif}
-  .no-print{display:none!important}
-}
-.print-page{padding:24px;background:#fff;color:#111;font-family:Arial,sans-serif;max-width:800px;margin:0 auto}
-.print-header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:10px;margin-bottom:16px}
-.print-title{font-size:20px;font-weight:700}
-.print-sub{font-size:12px;color:#666;margin-top:3px}
-.print-driver-section{margin-bottom:20px;break-inside:avoid}
-.print-driver-head{background:#1a2035;color:#fff;padding:8px 12px;border-radius:6px;font-size:13px;font-weight:700;margin-bottom:8px}
-.print-job-row{display:flex;gap:10px;padding:7px 10px;border:1px solid #ddd;border-radius:5px;margin-bottom:5px;align-items:flex-start;font-size:12px}
-.print-job-row .pj-po{font-weight:700;color:#1a5fa8;min-width:80px}
-.print-job-row .pj-cust{font-weight:600;flex:1}
-.print-job-row .pj-mat{color:#666;min-width:90px}
-.print-job-row .pj-loads{font-weight:600;min-width:70px;text-align:right}
-.print-sig-box{margin-top:4px;border:1px dashed #ccc;border-radius:4px;padding:5px 10px;font-size:11px;color:#aaa}
-
-/* ── MONTH VIEW ── */
-.month-board{padding:0 0 32px;min-width:900px}
-.mgh-row{display:flex;background:var(--bg2);border-bottom:1px solid var(--bdr);position:sticky;top:0;z-index:25}
-.mgh-day{width:82px;flex-shrink:0;padding:8px 10px;border-right:1px solid var(--bdr);font-size:11px;font-weight:700;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em}
-.mgh-col{flex:1;padding:8px 10px;border-right:1px solid var(--bdr);font-size:12px;font-weight:600;color:var(--txt);text-align:center}
-.mgh-col:last-child{border-right:none}
-.mgh-unas{width:78px;flex-shrink:0;padding:8px 8px;font-size:11px;font-weight:700;color:var(--A);text-align:center;border-left:1px solid var(--bdr)}
-.mrow{display:flex;border-bottom:1px solid var(--bdr);min-height:120px}
-.mrow.today-row{box-shadow:inset 3px 0 0 var(--B)}
-.mrow.past-row{opacity:.55}
-.mdaycell{width:82px;flex-shrink:0;padding:8px 10px;border-right:1px solid var(--bdr);background:var(--bg2);display:flex;flex-direction:column;gap:2px;cursor:pointer;transition:background .12s}
-.mdaycell:hover{background:var(--Bb)}
-.mdaycell .mdc-num{font-size:20px;font-weight:800;color:var(--txt);line-height:1}
-.mdaycell .mdc-name{font-size:10px;color:var(--txt3);text-transform:uppercase;letter-spacing:.04em}
-.mdaycell .mdc-tod{font-size:9px;background:var(--B);color:#fff;padding:1px 6px;border-radius:20px;font-weight:700;width:fit-content;margin-bottom:2px}
-.mdaycell .mdc-tot{font-size:10px;color:var(--txt2);margin-top:auto}
-.mdaycell .mdc-warn{font-size:9px;color:var(--R);font-weight:700}
-.mdrvcell{flex:1;padding:6px 6px;border-right:1px solid var(--bdr);background:var(--bg3);min-height:120px}
-.mdrvcell.has-l{background:var(--bg)}
-.mdrvcell:last-child{border-right:none}
-.munas{width:78px;flex-shrink:0;padding:5px 5px;background:var(--Ab);border-left:1px solid var(--Ad)}
-.munas-lbl{font-size:9px;font-weight:700;color:var(--A);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
-.mlcard{background:var(--bg);border:1px solid var(--bdr);border-radius:var(--rl);padding:8px 10px;margin-bottom:5px;cursor:pointer;transition:box-shadow .15s,border-color .15s;box-shadow:var(--shadow)}
-.mlcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd)}
-.mlcard.m-unas{border-color:var(--Ad);background:var(--Ab);border-left:3px solid var(--A)}
-.mlcard.m-done{border-color:var(--Gd);border-left:3px solid var(--G)}
-.mlcard .ml-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
-.mlcard .ml-po{font-size:10px;font-weight:700;color:var(--B);letter-spacing:.03em}
-.mlcard .ml-status{font-size:9px;padding:1px 5px;border-radius:20px;font-weight:600}
-.mlcard .ml-customer{font-size:12px;font-weight:700;color:var(--txt);line-height:1.2;margin-bottom:3px}
-.mlcard .ml-address{font-size:10px;color:var(--txt3);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mlcard .ml-mat{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:600;margin-bottom:3px}
-.mlcard .ml-loads{display:flex;align-items:center;justify-content:space-between;margin-top:4px}
-.mlcard .ml-loads-text{font-size:11px;font-family:var(--m);color:var(--txt2)}
-.mlcard .ml-bar{flex:1;height:3px;background:var(--bdr);border-radius:3px;overflow:hidden;margin:0 7px}
-.mlcard .ml-bar-fill{height:100%;border-radius:3px;transition:width .3s}
-.mlcard .ml-supervisor{font-size:10px;color:var(--txt3);margin-top:3px}
-.mlcard .ml-pickup{font-size:10px;color:var(--txt3)}
-.mmore{font-size:10px;color:var(--B);padding:2px 5px;background:var(--Bb);border-radius:20px;cursor:pointer;text-align:center;margin-top:2px;border:1px solid var(--Bd)}
-.mmore:hover{background:var(--B);color:#fff}
-.madd{width:100%;padding:4px;border:1px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;font-size:10px;color:var(--txt3);font-family:var(--f);margin-top:2px}
-.madd:hover{background:var(--Bb);color:var(--B);border-color:var(--Bd)}
-
 @media(max-width:700px){
   .fr{grid-template-columns:1fr}
   .srow{grid-template-columns:1fr 1fr}
@@ -371,13 +293,9 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 <div class="topbar">
   <h1>VBT Dispatch</h1>
   <div style="display:flex;align-items:center;gap:5px" id="nav-wrap">
-    <button class="nbtn" onclick="navBack()">&#8592;</button>
-    <span class="nlbl" id="nav-lbl" style="min-width:180px;text-align:center"></span>
-    <button class="nbtn" onclick="navFwd()">&#8594;</button>
-    <div style="display:flex;gap:3px;margin-left:4px">
-      <button class="nbtn" id="vbtn-day" onclick="setViewMode('day')" style="padding:4px 10px;font-size:11px">Day</button>
-      <button class="nbtn active" id="vbtn-month" onclick="setViewMode('month')" style="padding:4px 10px;font-size:11px;background:var(--B);color:#fff;border-color:var(--B)">Month</button>
-    </div>
+    <button class="nbtn" onclick="changeDay(-1)">&#8592;</button>
+    <span class="nlbl" id="nav-lbl"></span>
+    <button class="nbtn" onclick="changeDay(1)">&#8594;</button>
   </div>
   <button class="tb active" id="tab-board"   onclick="swTab('board')">Board</button>
   <button class="tb"        id="tab-pos"     onclick="swTab('pos')">POs</button>
@@ -386,7 +304,6 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
   <button class="tb"        id="tab-drv"     onclick="swTab('drv')">My Loads</button>
   <button class="bp mgr" style="font-size:12px;padding:5px 11px" onclick="openNewPO()">+ New PO</button>
   <button class="sync-btn mgrf" id="sync-btn" onclick="doSync()">&#8593; Sheets</button>
-  <button class="nbtn mgrf" onclick="openPrintSheet()" style="font-size:12px">&#128438; Print</button>
   <span class="ss" id="ss"></span>
   <span class="uinfo" id="uinfo"></span>
   <button class="lobtn" onclick="location='/logout'">Logout</button>
@@ -396,27 +313,9 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 
 <!-- BOARD -->
 <div id="sec-board">
-  <div style="display:flex;height:calc(100vh - 120px)">
-    <div class="board-outer" style="flex:1;overflow-y:auto;overflow-x:auto">
-      <div class="board-inner" id="board-inner"></div>
-    </div>
-    <!-- ACTIVITY FEED DRAWER (manager only) -->
-    <div id="activity-drawer" class="mgr" style="width:280px;flex-shrink:0;border-left:1px solid var(--bdr);background:var(--bg);flex-direction:column;display:none">
-      <div style="padding:10px 14px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;background:var(--bg2)">
-        <div style="display:flex;align-items:center;gap:7px">
-          <span style="font-size:13px;font-weight:600;color:var(--txt)">Live Feed</span>
-          <span id="feed-live-dot" style="width:7px;height:7px;border-radius:50%;background:var(--G);display:inline-block;animation:pulse 2s infinite"></span>
-        </div>
-        <button onclick="toggleFeed()" style="font-size:11px;color:var(--txt3);background:transparent;border:none;cursor:pointer;font-family:var(--f);padding:3px 7px;border-radius:var(--r)" title="Hide feed">✕</button>
-      </div>
-      <div id="activity-list" style="flex:1;overflow-y:auto;padding:8px"></div>
-    </div>
+  <div class="board-outer">
+    <div class="board-inner" id="board-inner"></div>
   </div>
-  <!-- Feed toggle button (when drawer is hidden) -->
-  <button id="feed-toggle-btn" class="mgr" onclick="toggleFeed()" style="position:fixed;bottom:20px;right:20px;background:var(--B);color:#fff;border:none;border-radius:50px;padding:10px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--f);box-shadow:0 4px 16px rgba(59,130,246,.4);z-index:50;display:flex;align-items:center;gap:6px">
-    <span style="width:7px;height:7px;border-radius:50%;background:#fff;display:inline-block;animation:pulse 2s infinite"></span>
-    Live Feed
-  </button>
 </div>
 
 <!-- ALL POs -->
@@ -585,7 +484,7 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 // ── State ─────────────────────────────────────────────────────────────────────
 let trucks=[],pos=[],loads=[],payments=[],matPrices={};
 let role='driver',myTruckId=null;
-let curTab='board',dayOffset=0,monthOffset=0,viewMode='month';
+let curTab='board',dayOffset=0;
 let editPoId=null,editLoadId=null,sigLoadId=null,payPoId=null,roPoId=null;
 let splits=[],expanded=new Set();
 let sigCtx=null,sigDrawing=false,sigHasData=false,dragLoadId=null;
@@ -615,22 +514,6 @@ function matColor(m){ return MAT_COLORS[m]||{dot:'#888',bg:'#f0efe9'}; }
 
 function getBoardDate(){ const d=new Date();d.setDate(d.getDate()+dayOffset);d.setHours(0,0,0,0);return d; }
 function changeDay(d){ dayOffset+=d; renderBoard(); }
-function navBack(){ viewMode==='day'?dayOffset--:monthOffset--; renderBoard(); }
-function navFwd(){  viewMode==='day'?dayOffset++:monthOffset++; renderBoard(); }
-function setViewMode(v){
-  viewMode=v;
-  const db=document.getElementById('vbtn-day');
-  const mb=document.getElementById('vbtn-month');
-  if(db){ db.style.background=v==='day'?'var(--B)':''; db.style.color=v==='day'?'#fff':''; db.style.borderColor=v==='day'?'var(--B)':''; }
-  if(mb){ mb.style.background=v==='month'?'var(--B)':''; mb.style.color=v==='month'?'#fff':''; mb.style.borderColor=v==='month'?'var(--B)':''; }
-  renderBoard();
-}
-function jumpToDay(dateStr){
-  const today=new Date();today.setHours(0,0,0,0);
-  const target=new Date(dateStr+'T12:00:00');
-  dayOffset=Math.round((target-today)/86400000);
-  setViewMode('day');
-}
 
 function pLoads(id){ return loads.filter(l=>l.poId===id); }
 function pActivL(id){ return loads.filter(l=>l.poId===id&&l.status!=='completed'); }
@@ -687,7 +570,6 @@ function renderSbar(){
 // ════════════════════════════════════
 function renderBoard(){
   renderSbar();
-  if(viewMode==='month'){ renderMonthBoard(); return; }
   const boardDate=getBoardDate();
   const dateStr=ymd(boardDate);
   const todStr=tod();
@@ -779,116 +661,6 @@ function renderBoard(){
     </div>`;
 
   document.getElementById('board-inner').innerHTML=h;
-}
-
-function renderMonthBoard(){
-  const today=new Date();
-  const target=new Date(today.getFullYear(), today.getMonth()+monthOffset, 1);
-  const daysInMonth=new Date(target.getFullYear(), target.getMonth()+1, 0).getDate();
-  const todStr=tod();
-  const monthLabel=target.toLocaleDateString('en-US',{month:'long',year:'numeric'});
-  document.getElementById('nav-lbl').textContent=monthLabel;
-
-  let h='<div class="month-board">';
-
-  // Sticky header row
-  h+='<div class="mgh-row"><div class="mgh-day">Date</div>';
-  trucks.forEach(t=>{ h+=`<div class="mgh-col">${t.label}<div style="font-size:10px;font-weight:400;color:var(--txt3)">${t.truckNum}</div></div>`; });
-  h+='<div class="mgh-unas">⚠ Unassigned</div></div>';
-
-  for(let d=1;d<=daysInMonth;d++){
-    const dt=new Date(target.getFullYear(), target.getMonth(), d);
-    const dateStr=ymd(dt);
-    const dayName=DAYS[dt.getDay()];
-    const isToday=dateStr===todStr;
-    const isPast=dateStr<todStr;
-    const dayLoads=loads.filter(l=>l.deliveryDate===dateStr&&l.status!=='completed');
-    const dayOrd=dayLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
-    const dayDel=dayLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
-    const unasLoads=dayLoads.filter(l=>!l.truckId||l.truckId==='unassigned');
-
-    h+='<div class="mrow'+(isToday?' today-row':isPast?' past-row':'')+'">';
-
-    // Day label
-    h+=`<div class="mdaycell" onclick="jumpToDay('${dateStr}')" title="Open day view">`;
-    if(isToday) h+='<div class="mdc-tod">TODAY</div>';
-    h+=`<div class="mdc-num">${d}</div><div class="mdc-name">${dayName}</div>`;
-    if(dayLoads.length>0) h+=`<div class="mdc-tot">${dayDel}/${dayOrd}</div>`;
-    if(unasLoads.length>0) h+=`<div class="mdc-warn">⚠ ${unasLoads.length}</div>`;
-    h+='</div>';
-
-    // Driver cells
-    trucks.forEach(t=>{
-      const tLoads=dayLoads.filter(l=>l.truckId===t.id);
-      h+=`<div class="mdrvcell ${tLoads.length>0?'has-l':''}" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event,'${t.id}','${dateStr}')">`;
-      const show=tLoads.slice(0,3);
-      show.forEach(l=>{ h+=renderMiniCard(l); });
-      if(tLoads.length>3) h+=`<div class="mmore" onclick="jumpToDay('${dateStr}')">+${tLoads.length-3} more</div>`;
-      if(tLoads.length===0&&role==='manager'&&!isPast) h+=`<button class="madd" onclick="openNewPO('${t.id}','${dateStr}')">+ add</button>`;
-      h+='</div>';
-    });
-
-    // Unassigned cell
-    h+=`<div class="munas" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event,null,'${dateStr}')">`;
-    if(unasLoads.length>0){
-      h+='<div class="munas-lbl">Unassigned</div>';
-      unasLoads.slice(0,2).forEach(l=>{ h+=renderMiniCard(l,true); });
-      if(unasLoads.length>2) h+=`<div class="mmore">+${unasLoads.length-2}</div>`;
-    } else if(role==='manager'&&!isPast){
-      h+=`<button class="madd" onclick="openNewPO(null,'${dateStr}')">+ add</button>`;
-    }
-    h+='</div>';
-
-    h+='</div>'; // end mrow
-  }
-  h+='</div>'; // end month-board
-  document.getElementById('board-inner').innerHTML=h;
-}
-
-function renderMiniCard(l, isUnas=false){
-  const po=pos.find(p=>p.id===l.poId)||{};
-  const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
-  const mc=matColor(l.material);
-  const done=l.status==='completed';
-  const pct=la>0?Math.round(ld/la*100):0;
-  const miss=la>0&&ld<la&&!done;
-  const ts=l.timestamps||{};
-
-  // Status pill
-  let statusTxt='', statusBg='var(--bg2)', statusColor='var(--txt3)';
-  if(done){ statusTxt='Done'; statusBg='var(--Gb)'; statusColor='var(--G)'; }
-  else if(ts.completed){ statusTxt='Done'; statusBg='var(--Gb)'; statusColor='var(--G)'; }
-  else if(ts.arrived){ statusTxt='On site'; statusBg='var(--Pb)'; statusColor='var(--P)'; }
-  else if(ts.start){ statusTxt='Started'; statusBg='var(--Bb)'; statusColor='var(--B)'; }
-  else if(ld>0){ statusTxt='In prog'; statusBg='var(--Ab)'; statusColor='var(--A)'; }
-  else if(isUnas){ statusTxt='⚠ Unassigned'; statusBg='var(--Ab)'; statusColor='var(--A)'; }
-  else { statusTxt='Pending'; statusBg='var(--bg2)'; statusColor='var(--txt3)'; }
-
-  const barColor = pct>=100?'var(--G)':pct>0?'var(--A)':'var(--bdr2)';
-
-  return `<div class="mlcard ${isUnas?'m-unas':''} ${done?'m-done':''}"
-    draggable="${role==='manager'?'true':'false'}"
-    ondragstart="onDragStart(event,'${l.id}')"
-    ondragend="onDragEnd(event)"
-    onclick="openLL('${l.id}')">
-    <div class="ml-header">
-      <span class="ml-po">${po.poNumber||'—'}</span>
-      <span class="ml-status" style="background:${statusBg};color:${statusColor}">${statusTxt}</span>
-    </div>
-    <div class="ml-customer">${po.customer||'Unassigned'}</div>
-    ${po.city||po.address?`<div class="ml-address">📍 ${po.city||po.address}</div>`:''}
-    <div class="ml-mat">
-      <div class="mat-dot" style="background:${mc.dot};width:8px;height:8px;flex-shrink:0"></div>
-      <span style="color:${mc.dot}">${l.material}</span>
-    </div>
-    <div class="ml-loads">
-      <span class="ml-loads-text">${ld}/${la} loads</span>
-      <div class="ml-bar"><div class="ml-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
-      ${miss?`<span style="font-size:10px;color:var(--R);font-weight:600">-${la-ld}</span>`:(pct>=100?'<span style="font-size:10px;color:var(--G)">✓</span>':'')}
-    </div>
-    ${po.supervisor?`<div class="ml-supervisor">👤 ${po.supervisor}</div>`:''}
-    ${po.pickup?`<div class="ml-pickup">🏭 ${po.pickup}</div>`:''}
-  </div>`;
 }
 
 function renderLoadCard(l,mini=false){
@@ -1472,142 +1244,57 @@ function updateTruckNum(id,val){
 }
 
 // ── FINANCE TAB ──────────────────────────────────────────────────────────────
-async function renderFinance(){
+function renderFinance(){
   const el=document.getElementById('finance-wrap');
   if(!el) return;
-  el.innerHTML='<div style="padding:24px;text-align:center;color:var(--txt2)">Loading reports...</div>';
-
-  // Fetch reports from server
-  let rep={driverStats:{},custStats:{},matStats:{},weeks:[]};
-  try{ const r=await fetch('/api/reports'); rep=await r.json(); }catch(e){}
-
   const tRev=pos.reduce((s,p)=>s+pInvoice(p.id).invoiced,0);
   const tPaid=payments.reduce((s,p)=>s+p.amount,0);
   const tBal=tRev-tPaid;
   const unpaid=pos.filter(p=>p.status!=='completed'&&(p.invoice?.paymentStatus||'unpaid')==='unpaid');
   const partial=pos.filter(p=>(p.invoice?.paymentStatus||'unpaid')==='partial');
-  const paidPos=pos.filter(p=>(p.invoice?.paymentStatus||'unpaid')==='paid');
+  const paid=pos.filter(p=>(p.invoice?.paymentStatus||'unpaid')==='paid');
 
-  // ── Payment summary cards
-  let h=`<div style="margin-bottom:22px">
-    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Payment Overview</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px">
-      <div class="met o"><div class="ml">Total invoiced</div><div class="mv">${money(tRev)}</div></div>
-      <div class="met g"><div class="ml">Collected</div><div class="mv">${money(tPaid)}</div></div>
-      <div class="met ${tBal>0?'w':'g'}"><div class="ml">Outstanding</div><div class="mv">${money(tBal)}</div></div>
-      <div class="met w"><div class="ml">Unpaid POs</div><div class="mv">${unpaid.length}</div></div>
-      <div class="met"><div class="ml">Partial</div><div class="mv">${partial.length}</div></div>
-      <div class="met g"><div class="ml">Paid</div><div class="mv">${paidPos.length}</div></div>
-    </div>`;
+  // Material revenue breakdown
+  const matMap={};
+  loads.forEach(l=>{
+    if(!matMap[l.material]) matMap[l.material]={ordered:0,delivered:0,revenue:0};
+    matMap[l.material].ordered+=(Number(l.loadsAssigned)||0);
+    matMap[l.material].delivered+=(Number(l.loadsDelivered)||0);
+    matMap[l.material].revenue+=(Number(l.loadsDelivered)||0)*(Number(l.pricePerLoad)||0);
+  });
 
-  // Material prices
-  h+=`<div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:4px">
-    ${Object.entries(matPrices).map(([m,p])=>{const mc=matColor(m);return `<span style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;background:${mc.bg};border-radius:var(--r);border:0.5px solid ${mc.dot}40;font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span><b style="color:${mc.dot}">${m}</b><span style="color:var(--txt2)">${money(p)}/load</span></span>`;}).join('')}
-    <button class="ab b" onclick="openPriceTable()">&#9998; Edit prices</button>
+  let h=`
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:18px">
+    <div class="met o"><div class="ml">Total invoiced</div><div class="mv">${money(tRev)}</div></div>
+    <div class="met g"><div class="ml">Collected</div><div class="mv">${money(tPaid)}</div></div>
+    <div class="met ${tBal>0?'w':'g'}"><div class="ml">Outstanding</div><div class="mv">${money(tBal)}</div></div>
+    <div class="met w"><div class="ml">Unpaid POs</div><div class="mv">${unpaid.length}</div></div>
+    <div class="met"><div class="ml">Partial</div><div class="mv">${partial.length}</div></div>
+    <div class="met g"><div class="ml">Paid</div><div class="mv">${paid.length}</div></div>
   </div>`;
-  h+=`</div>`;
 
-  // ── Weekly trend chart (simple bar chart using divs)
-  if(rep.weeks&&rep.weeks.length){
-    const maxLoads=Math.max(...rep.weeks.map(w=>w.ordered),1);
-    h+=`<div style="margin-bottom:22px">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Weekly Load Volume (last 8 weeks)</div>
-      <div style="display:flex;gap:6px;align-items:flex-end;height:100px;padding:0 4px">
-        ${rep.weeks.map(w=>{
-          const pct=Math.round(w.ordered/maxLoads*100);
-          const dpct=w.ordered>0?Math.round(w.delivered/w.ordered*100):0;
-          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px" title="${w.label}: ${w.delivered}/${w.ordered} loads">
-            <div style="font-size:9px;color:var(--txt3)">${w.ordered||''}</div>
-            <div style="width:100%;background:var(--bdr);border-radius:4px 4px 0 0;height:${Math.max(pct,2)}px;position:relative;overflow:hidden">
-              <div style="position:absolute;bottom:0;width:100%;background:var(--G);height:${dpct}%;border-radius:4px 4px 0 0;transition:height .3s"></div>
-              <div style="position:absolute;bottom:0;width:100%;background:var(--Bd);height:100%;border-radius:4px 4px 0 0;z-index:-1"></div>
-            </div>
-            <div style="font-size:9px;color:var(--txt3);writing-mode:vertical-rl;transform:rotate(180deg);height:36px;white-space:nowrap">${w.label}</div>
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="display:flex;gap:10px;margin-top:6px;font-size:11px;color:var(--txt2)">
-        <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:var(--G);display:inline-block"></span>Delivered</span>
-        <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:var(--Bd);display:inline-block"></span>Ordered</span>
-      </div>
-    </div>`;
-  }
+  // Material price table quick edit
+  h+=`<div style="margin-bottom:18px">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);font-weight:500;margin-bottom:8px">Material Prices</div>
+    <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+      ${Object.entries(matPrices).map(([m,p])=>{const mc=matColor(m);return `<span style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;background:${mc.bg};border-radius:var(--r);border:0.5px solid ${mc.dot}40;font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span><b style="color:${mc.dot}">${m}</b><span style="color:var(--txt2)">${money(p)}/load</span></span>`;}).join('')}
+      <button class="ab b" onclick="openPriceTable()">&#9998; Edit prices</button>
+    </div>
+  </div>`;
 
-  // ── Driver performance table
-  const dStats=Object.values(rep.driverStats||{});
-  if(dStats.length){
-    h+=`<div style="margin-bottom:22px">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Driver Performance</div>
-      <table class="mat-table"><thead><tr>
-        <th>Driver</th><th>Truck</th><th>Total Loads</th><th>Delivered</th><th>Completion %</th><th>Active Now</th>
-      </tr></thead><tbody>`;
-    dStats.sort((a,b)=>b.delivered-a.delivered).forEach(d=>{
-      const pct=d.totalLoads>0?Math.round(d.delivered/d.totalLoads*100):0;
-      h+=`<tr>
-        <td style="font-weight:600">${d.label}</td>
-        <td style="font-family:var(--m);font-size:11px;color:var(--txt2)">${d.truckNum}</td>
-        <td style="font-family:var(--m)">${d.totalLoads}</td>
-        <td style="font-family:var(--m)">${d.delivered}</td>
-        <td>
-          <div style="display:flex;align-items:center;gap:7px">
-            <div style="flex:1;height:6px;background:var(--bdr);border-radius:3px;overflow:hidden;min-width:60px">
-              <div style="height:100%;width:${pct}%;background:${pct>=80?'var(--G)':pct>=50?'var(--A)':'var(--R)'};border-radius:3px"></div>
-            </div>
-            <span style="font-size:11px;font-family:var(--m);min-width:32px">${pct}%</span>
-          </div>
-        </td>
-        <td><span class="pill ${d.active>0?'b':''}">${d.active} load${d.active!==1?'s':''}</span></td>
-      </tr>`;
-    });
-    h+=`</tbody></table></div>`;
-  }
+  // Material revenue breakdown
+  h+=`<div style="margin-bottom:18px">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);font-weight:500;margin-bottom:8px">Revenue by Material</div>
+    <table class="mat-table"><thead><tr><th>Material</th><th>Loads Ordered</th><th>Loads Delivered</th><th>Revenue</th></tr></thead><tbody>`;
+  Object.entries(matMap).sort((a,b)=>b[1].revenue-a[1].revenue).forEach(([m,d])=>{
+    const mc=matColor(m);
+    h+=`<tr><td><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span>${m}</span></td><td style="font-family:var(--m)">${d.ordered}</td><td style="font-family:var(--m)">${d.delivered}</td><td style="font-family:var(--m);color:var(--G)">${money(d.revenue)}</td></tr>`;
+  });
+  h+=`</tbody></table></div>`;
 
-  // ── Top customers
-  const cStats=Object.entries(rep.custStats||{}).sort((a,b)=>b[1].loads-a[1].loads).slice(0,10);
-  if(cStats.length){
-    h+=`<div style="margin-bottom:22px">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Top Customers by Volume</div>
-      <table class="mat-table"><thead><tr><th>Customer</th><th>POs</th><th>Loads Ordered</th><th>Delivered</th><th>Rate</th></tr></thead><tbody>`;
-    cStats.forEach(([name,d])=>{
-      const pct=d.loads>0?Math.round(d.delivered/d.loads*100):0;
-      h+=`<tr>
-        <td style="font-weight:600">${name}</td>
-        <td style="font-family:var(--m)">${d.pos}</td>
-        <td style="font-family:var(--m)">${d.loads}</td>
-        <td style="font-family:var(--m)">${d.delivered}</td>
-        <td><span style="font-family:var(--m);font-size:12px;color:${pct>=80?'var(--G)':pct>=50?'var(--A)':'var(--R)'}">${pct}%</span></td>
-      </tr>`;
-    });
-    h+=`</tbody></table></div>`;
-  }
-
-  // ── Material breakdown
-  const mStats=Object.entries(rep.matStats||{}).sort((a,b)=>b[1].ordered-a[1].ordered);
-  if(mStats.length){
-    h+=`<div style="margin-bottom:22px">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Material Volume</div>
-      <table class="mat-table"><thead><tr><th>Material</th><th>Loads Ordered</th><th>Loads Delivered</th><th>Delivery Rate</th></tr></thead><tbody>`;
-    mStats.forEach(([m,d])=>{
-      const mc=matColor(m);
-      const pct=d.ordered>0?Math.round(d.delivered/d.ordered*100):0;
-      h+=`<tr>
-        <td><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:9px;height:9px;border-radius:50%;background:${mc.dot}"></span>${m}</span></td>
-        <td style="font-family:var(--m)">${d.ordered}</td>
-        <td style="font-family:var(--m)">${d.delivered}</td>
-        <td><div style="display:flex;align-items:center;gap:7px">
-          <div style="flex:1;height:5px;background:var(--bdr);border-radius:3px;overflow:hidden;min-width:60px">
-            <div style="height:100%;width:${pct}%;background:${mc.dot};border-radius:3px"></div>
-          </div>
-          <span style="font-size:11px;font-family:var(--m)">${pct}%</span>
-        </div></td>
-      </tr>`;
-    });
-    h+=`</tbody></table></div>`;
-  }
-
-  // ── PO payment status
+  // PO payment status list
   const allActivePOs=pos.filter(p=>p.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
-  h+=`<div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:8px">PO Payment Status</div>`;
+  h+=`<div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);font-weight:500;margin-bottom:8px">PO Payment Status</div>`;
   if(!allActivePOs.length){h+='<div class="no-items">No active POs.</div>';}
   else{
     allActivePOs.forEach(p=>{
@@ -1629,6 +1316,39 @@ async function renderFinance(){
   el.innerHTML=h;
 }
 
+// ── SHEETS SYNC ───────────────────────────────────────────────────────────────
+async function doSync(){
+  const btn=document.getElementById('sync-btn'),st=document.getElementById('ss');
+  btn.disabled=true;btn.textContent='Syncing…';st.className='ss';st.textContent='';
+  try{
+    const r=await fetch('/api/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();
+    if(d.success){st.className='ss ok';st.textContent='✓ '+d.message;}
+    else throw new Error(d.error);
+  }catch(e){st.className='ss err';st.textContent='Failed: '+e.message;}
+  finally{btn.disabled=false;btn.textContent='↑ Sheets';}
+}
+
+function openPickerFromLL(){
+  const l=loads.find(x=>x.id===editLoadId);if(!l)return;
+  const po=pos.find(p=>p.id===l.poId)||{};
+  const addr=po.city||po.address||'';
+  openDriverPicker(addr, async(truckId)=>{
+    const rs=document.getElementById('ll-reassign');
+    if(rs) rs.value=truckId;
+    return Promise.resolve();
+  }, l.truckId);
+}
+
+function openPickerForSplit(idx){
+  const addr=document.getElementById('pm-addr')?.value||'';
+  openDriverPicker(addr, (truckId)=>{
+    splits[idx].truckId=truckId;
+    splits[idx].driverName=trucks.find(t=>t.id===truckId)?.label||'';
+    renderSplits();
+    return Promise.resolve();
+  }, splits[idx].truckId);
+}
 
 // ── DRIVER PICKER ────────────────────────────────────────────────────────────
 let dpCallback=null, dpSelectedTruckId=null, dpLoadingDest=null;
@@ -1762,8 +1482,6 @@ async function init(){
     swTab('drv');
   } else {
     swTab('board');
-    // Auto-open feed for managers
-    setTimeout(initFeed, 500);
   }
 }
 init();
