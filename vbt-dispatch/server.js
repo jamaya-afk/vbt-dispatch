@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'vbt-2025-secret',
@@ -33,6 +33,30 @@ const DEFAULT_TRUCKS = [
   { id: 'leonardo', label: 'Leonardo', truckNum: 'Truck #12', baseLocation: 'Bakersfield, CA',   lat: 35.3733, lng: -119.0187 },
   { id: 'carlos',   label: 'Carlos',   truckNum: 'Truck #2B', baseLocation: 'Merced, CA',        lat: 37.3022, lng: -120.4830 },
 ];
+
+// Vendor table — real suppliers with per-material pricing
+const DEFAULT_VENDORS = [
+  { id: 'cemex',               name: 'CEMEX',               location: 'Clovis, CA',        active: true },
+  { id: 'vulcan-sanger',       name: 'Vulcan Sanger',       location: 'Sanger, CA',        active: true },
+  { id: 'keith-farms',         name: 'Keith Farms',         location: 'Fresno, CA',        active: true },
+  { id: 'precision-bakersfield', name: 'Precision Bakersfield', location: 'Bakersfield, CA', active: true },
+  { id: 'vbt-yard',            name: 'VBT Yard',            location: 'Fresno, CA',        active: true },
+];
+
+// Default vendor prices: { vendorId: { material: pricePerUnit } }
+const DEFAULT_VENDOR_PRICES = {
+  'cemex':               { 'Fill Sand': 12.50, 'Gravel': 18.00, 'Rock': 22.00, '3/4 Rock': 20.00, 'Base Rock': 16.50 },
+  'vulcan-sanger':       { 'Gravel': 17.00, 'Rock': 21.50, '3/4 Rock': 19.00, 'Base Rock': 15.50 },
+  'keith-farms':         { 'Fill Sand': 11.00, 'Dirt': 7.50 },
+  'precision-bakersfield': { 'Cold Mix': 48.00, 'Base Rock': 17.00 },
+  'vbt-yard':            { 'Fill Sand': 10.00, 'Dirt': 6.00, 'Recycle Base': 9.00 },
+};
+
+// Material units (CY = cubic yard, TN = ton)
+const MATERIAL_UNITS = {
+  'Fill Sand': 'CY', 'Gravel': 'TN', 'Rock': 'TN', 'Cold Mix': 'TN',
+  '3/4 Rock': 'TN', 'Recycle Base': 'CY', 'Dirt': 'CY', 'Base Rock': 'TN', 'Other': 'CY'
+};
 
 // Material price table — editable via API
 const DEFAULT_MATERIAL_PRICES = {
@@ -100,7 +124,10 @@ let store = {
   pos: [], loads: [], payments: [],
   activity: [],          // activity feed events
   materialPrices: { ...DEFAULT_MATERIAL_PRICES },
-  nextPoNum: 1001, nextLoadId: 1, nextPayId: 1
+  vendors: [...DEFAULT_VENDORS],
+  vendorPrices: { ...DEFAULT_VENDOR_PRICES },
+  auditLog: [],          // immutable audit trail
+  nextPoNum: 1001, nextLoadId: 1, nextPayId: 1, nextAuditId: 1
 };
 
 async function loadData() {
@@ -145,22 +172,47 @@ function fixStore() {
   if (!store.payments)       store.payments = [];
   if (!store.activity)       store.activity = [];
   if (!store.materialPrices) store.materialPrices = { ...DEFAULT_MATERIAL_PRICES };
+  if (!store.vendors)        store.vendors = [...DEFAULT_VENDORS];
+  if (!store.vendorPrices)   store.vendorPrices = { ...DEFAULT_VENDOR_PRICES };
+  if (!store.auditLog)       store.auditLog = [];
   if (!store.nextPayId)      store.nextPayId = 1;
   if (!store.nextPoNum)      store.nextPoNum = 1001;
   if (!store.nextLoadId)     store.nextLoadId = 1;
+  if (!store.nextAuditId)    store.nextAuditId = 1;
+  // Ensure default vendors always exist (add any missing from DEFAULT_VENDORS — never remove)
+  DEFAULT_VENDORS.forEach(v => {
+    if (!store.vendors.find(x => x.id === v.id)) store.vendors.push(v);
+  });
   // Migrate old flat POs (no materials array) to new format
   store.pos.forEach(p => {
     if (!p.materials) {
       p.materials = [{ material: p.material || 'Fill Sand', totalLoads: Number(p.totalLoads) || 0, pricePerLoad: p.invoice?.pricePerLoad || store.materialPrices[p.material] || 100 }];
     }
     if (!p.invoice) p.invoice = { paymentStatus: 'unpaid', amountPaid: 0, notes: '' };
+    if (!p.job) p.job = p.customer || '';
+    if (!p.budget) p.budget = 0;
   });
   store.loads.forEach(l => {
     if (!l.pod)        l.pod = { signedBy: '', signature: '', signedAt: '', notes: '' };
     if (!l.timestamps) l.timestamps = {};
     if (l.pricePerLoad === undefined) l.pricePerLoad = store.materialPrices[l.material] || 100;
+    // Phase 1 additions — default existing loads to safe values
+    if (!l.approvalStatus) l.approvalStatus = l.status === 'completed' ? 'approved' : 'pending';
+    if (!l.ticketImage)    l.ticketImage = '';     // base64 ticket photo
+    if (!l.ticketImageAt)  l.ticketImageAt = '';
+    if (!l.vendorId)       l.vendorId = '';
+    if (!l.vendorCost)     l.vendorCost = 0;       // what VBT paid vendor
+    if (!l.unit)           l.unit = MATERIAL_UNITS[l.material] || 'CY';
+    if (!l.submittedAt)    l.submittedAt = '';
+    if (!l.submittedBy)    l.submittedBy = '';
+    if (!l.approvedAt)     l.approvedAt = '';
+    if (!l.approvedBy)     l.approvedBy = '';
+    if (!l.billStatus)     l.billStatus = 'not-ready';  // not-ready | ready | billed
+    if (!l.billedAt)       l.billedAt = '';
+    if (!l.gps)            l.gps = { start: null, arrived: null, completed: null };
+    if (!l.locked)         l.locked = false;
+    if (!l.voided)         l.voided = false;
   });
-
 }
 
 async function saveData() {
@@ -190,6 +242,21 @@ function pushActivity(type, data) {
   const event = { id: Date.now(), type, ...data, at: new Date().toISOString() };
   store.activity.unshift(event);          // newest first
   if (store.activity.length > 200) store.activity = store.activity.slice(0, 200); // cap at 200
+}
+
+// Immutable audit log — never edited, never deleted
+function audit(action, entityType, entityId, user, before, after, extra) {
+  store.auditLog.push({
+    id: store.nextAuditId++,
+    action,         // 'create'|'update'|'approve'|'submit'|'void'|'bill'|'correct'
+    entityType,     // 'load'|'po'|'payment'|'vendor'
+    entityId,
+    user: user || 'system',
+    at: new Date().toISOString(),
+    before: before || null,
+    after: after || null,
+    ...(extra || {})
+  });
 }
 
 function promoteScheduled() {
@@ -278,18 +345,21 @@ app.get('/api/data', reqAuth, (req, res) => {
   promoteScheduled();
   const user = req.session.user;
   if (user.role === 'driver') {
-    const myLoads = store.loads.filter(l => l.truckId === user.truckId);
+    const myLoads = store.loads.filter(l => l.truckId === user.truckId && !l.voided);
     const myPoIds = new Set(myLoads.map(l => l.poId));
-    // Strip invoice/pricing from POs for drivers
     const myPos = store.pos.filter(p => myPoIds.has(p.id)).map(p => ({
       id: p.id, poNumber: p.poNumber, customer: p.customer, city: p.city,
       address: p.address, deliveryDate: p.deliveryDate, pickup: p.pickup,
-      supervisor: p.supervisor, notes: p.notes, status: p.status,
+      supervisor: p.supervisor, notes: p.notes, status: p.status, job: p.job,
       materials: p.materials.map(m => ({ material: m.material, totalLoads: m.totalLoads }))
     }));
-    return res.json({ trucks: store.trucks, pos: myPos, loads: myLoads, payments: [], materialPrices: {} });
+    return res.json({ trucks: store.trucks, pos: myPos, loads: myLoads, payments: [], materialPrices: {}, vendors: store.vendors });
   }
-  res.json({ trucks: store.trucks, pos: store.pos, loads: store.loads, payments: store.payments, materialPrices: store.materialPrices });
+  res.json({
+    trucks: store.trucks, pos: store.pos, loads: store.loads,
+    payments: store.payments, materialPrices: store.materialPrices,
+    vendors: store.vendors, vendorPrices: store.vendorPrices
+  });
 });
 
 // ── MATERIAL PRICES ───────────────────────────────────────────────────────────
@@ -334,16 +404,27 @@ app.post('/api/pos', reqMgr, async (req, res) => {
 
   splits.forEach(s => {
     const price = po.prices?.[s.material] || store.materialPrices[s.material] || 100;
-    store.loads.push({
+    const vendorId = s.vendorId || '';
+    const vendorCost = vendorId && store.vendorPrices[vendorId]?.[s.material] || 0;
+    const newLoad = {
       id: 'LOAD-' + store.nextLoadId++, poId,
       material: s.material, pricePerLoad: price,
+      unit: MATERIAL_UNITS[s.material] || 'CY',
+      vendorId, vendorCost,
       loadsAssigned: Number(s.loadsAssigned) || 0, loadsDelivered: 0,
       truckId: s.truckId || null, driverName: s.driverName || '',
       deliveryDate: s.deliveryDate || deliveryDate,
       status: s.truckId ? (status === 'scheduled' ? 'scheduled' : 'active') : 'unassigned',
       timestamps: {}, pod: { signedBy: '', signature: '', signedAt: '', notes: '' },
-      notes: '', completedAt: null
-    });
+      notes: '', completedAt: null,
+      approvalStatus: 'pending', ticketImage: '', ticketImageAt: '',
+      submittedAt: '', submittedBy: '', approvedAt: '', approvedBy: '',
+      billStatus: 'not-ready', billedAt: '',
+      gps: { start: null, arrived: null, completed: null },
+      locked: false, voided: false
+    };
+    store.loads.push(newLoad);
+    audit('create', 'load', newLoad.id, req.session.user.username, null, newLoad);
   });
 
   await saveData();
@@ -825,6 +906,245 @@ app.post('/api/distances', reqMgr, (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// ── VENDORS ───────────────────────────────────────────────────────────────────
+app.get('/api/vendors', reqAuth, (req, res) => {
+  res.json({ vendors: store.vendors, vendorPrices: store.vendorPrices, materialUnits: MATERIAL_UNITS });
+});
+
+app.post('/api/vendors', reqMgr, async (req, res) => {
+  const v = req.body;
+  if (!v.name) return res.status(400).json({ error: 'Vendor name required' });
+  const id = v.id || v.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  if (store.vendors.find(x => x.id === id)) return res.status(400).json({ error: 'Vendor already exists' });
+  const vendor = { id, name: v.name, location: v.location || '', active: true };
+  store.vendors.push(vendor);
+  if (v.prices) store.vendorPrices[id] = v.prices;
+  audit('create', 'vendor', id, req.session.user.username, null, vendor);
+  await saveData();
+  res.json({ success: true, vendor });
+});
+
+app.put('/api/vendors/:id', reqMgr, async (req, res) => {
+  const idx = store.vendors.findIndex(v => v.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Vendor not found' });
+  const before = { ...store.vendors[idx] };
+  store.vendors[idx] = { ...store.vendors[idx], ...req.body, id: req.params.id };
+  audit('update', 'vendor', req.params.id, req.session.user.username, before, store.vendors[idx]);
+  await saveData();
+  res.json({ success: true, vendor: store.vendors[idx] });
+});
+
+app.put('/api/vendor-prices/:vendorId', reqMgr, async (req, res) => {
+  const vid = req.params.vendorId;
+  if (!store.vendors.find(v => v.id === vid)) return res.status(404).json({ error: 'Vendor not found' });
+  const before = { ...(store.vendorPrices[vid] || {}) };
+  store.vendorPrices[vid] = { ...(store.vendorPrices[vid] || {}), ...req.body };
+  audit('update', 'vendor-prices', vid, req.session.user.username, before, store.vendorPrices[vid]);
+  await saveData();
+  res.json({ success: true, prices: store.vendorPrices[vid] });
+});
+
+// ── DRIVER DISPATCH CARD — guided view ────────────────────────────────────────
+// Returns all info a driver needs with ZERO manual entry
+app.get('/api/my-dispatch', reqAuth, (req, res) => {
+  const user = req.session.user;
+  if (user.role !== 'driver') return res.status(403).json({ error: 'Driver only' });
+  const myLoads = store.loads.filter(l => l.truckId === user.truckId && !l.voided && l.status !== 'completed');
+  // Enrich each load with guide info — driver doesn't need to know anything beyond this
+  const enriched = myLoads.map(l => {
+    const po = store.pos.find(p => p.id === l.poId) || {};
+    const vendor = store.vendors.find(v => v.id === l.vendorId) || null;
+    return {
+      loadId: l.id,
+      poNumber: po.poNumber,
+      jobName: po.job || po.customer,
+      customer: po.customer,
+      pickupLocation: vendor ? `${vendor.name} — ${vendor.location}` : (po.pickup || 'VBT Yard'),
+      deliveryLocation: po.address || po.city || '',
+      city: po.city || '',
+      material: l.material,
+      unit: l.unit || MATERIAL_UNITS[l.material] || 'CY',
+      vendor: vendor ? vendor.name : null,
+      vendorId: l.vendorId || '',
+      loadsAssigned: l.loadsAssigned,
+      loadsDelivered: l.loadsDelivered,
+      supervisor: po.supervisor || '',
+      notes: po.notes || l.notes || '',
+      deliveryDate: l.deliveryDate,
+      timestamps: l.timestamps || {},
+      pod: l.pod || {},
+      ticketImage: l.ticketImage || '',
+      ticketImageAt: l.ticketImageAt || '',
+      approvalStatus: l.approvalStatus,
+      gps: l.gps || {},
+    };
+  });
+  res.json({ loads: enriched });
+});
+
+// ── DRIVER TRIP ACTIONS — guided step-by-step ────────────────────────────────
+// POST /api/loads/:id/trip-action  body: { action, gps: {lat,lng} }
+// action: 'start-trip' | 'arrived-pickup' | 'delivered'
+app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
+  const user = req.session.user;
+  const idx = store.loads.findIndex(l => l.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Load not found' });
+  const l = store.loads[idx];
+  if (user.role === 'driver' && l.truckId !== user.truckId) return res.status(403).json({ error: 'Not your load' });
+  if (l.locked || l.voided) return res.status(403).json({ error: 'This load is locked and cannot be changed' });
+
+  const { action, gps } = req.body;
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  const po = store.pos.find(p => p.id === l.poId) || {};
+  const before = { ...l };
+
+  if (action === 'start-trip') {
+    if (l.timestamps?.start) return res.status(400).json({ error: 'Trip already started' });
+    l.timestamps = { ...l.timestamps, start: timeStr };
+    l.gps = { ...l.gps, start: gps || null };
+    pushActivity('ts_start', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, time: timeStr });
+  } else if (action === 'arrived-pickup') {
+    if (!l.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
+    l.timestamps = { ...l.timestamps, arrivedPickup: timeStr };
+    l.gps = { ...l.gps, arrivedPickup: gps || null };
+    pushActivity('ts_arrived_pickup', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, pickup: po.pickup, time: timeStr });
+  } else if (action === 'delivered') {
+    if (!l.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
+    if (!l.ticketImage) return res.status(400).json({ error: 'Ticket image required before delivery' });
+    if (!l.pod?.signature) return res.status(400).json({ error: 'Customer signature required before delivery' });
+    l.timestamps = { ...l.timestamps, completed: timeStr, arrived: l.timestamps?.arrived || timeStr };
+    l.gps = { ...l.gps, completed: gps || null };
+    l.loadsDelivered = l.loadsAssigned;  // Assume full delivery on "Delivered" button
+    l.approvalStatus = 'submitted';
+    l.submittedAt = now.toISOString();
+    l.submittedBy = user.username;
+    pushActivity('load_submitted', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, material: l.material, loads: l.loadsDelivered });
+  } else {
+    return res.status(400).json({ error: 'Unknown action' });
+  }
+
+  audit(action, 'load', l.id, user.username, before, { ...l });
+  await saveData();
+  res.json({ success: true, load: l });
+});
+
+// ── UPLOAD TICKET IMAGE ──────────────────────────────────────────────────────
+app.post('/api/loads/:id/ticket-image', reqAuth, async (req, res) => {
+  const user = req.session.user;
+  const idx = store.loads.findIndex(l => l.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Load not found' });
+  const l = store.loads[idx];
+  if (user.role === 'driver' && l.truckId !== user.truckId) return res.status(403).json({ error: 'Not your load' });
+  if (l.locked || l.voided) return res.status(403).json({ error: 'Load is locked' });
+  if (!req.body.image) return res.status(400).json({ error: 'Image data required' });
+  const before = { ticketImage: l.ticketImage, ticketImageAt: l.ticketImageAt };
+  l.ticketImage = req.body.image;  // base64 data URL
+  l.ticketImageAt = new Date().toISOString();
+  audit('upload-ticket', 'load', l.id, user.username, before, { ticketImageAt: l.ticketImageAt });
+  await saveData();
+  res.json({ success: true });
+});
+
+// ── APPROVAL WORKFLOW (manager only) ──────────────────────────────────────────
+app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
+  const idx = store.loads.findIndex(l => l.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Load not found' });
+  const l = store.loads[idx];
+  if (l.voided) return res.status(400).json({ error: 'Voided load cannot be approved' });
+  if (l.approvalStatus === 'approved') return res.status(400).json({ error: 'Already approved' });
+  if (!l.ticketImage) return res.status(400).json({ error: 'Ticket image required before approval' });
+  if (!l.pod?.signature) return res.status(400).json({ error: 'Signature required before approval' });
+  const before = { ...l };
+  l.approvalStatus = 'approved';
+  l.approvedAt = new Date().toISOString();
+  l.approvedBy = req.session.user.username;
+  l.status = 'completed';
+  if (!l.completedAt) l.completedAt = l.approvedAt;
+  l.billStatus = 'ready';
+  l.locked = true;       // Approved loads are immutable
+  audit('approve', 'load', l.id, req.session.user.username, before, { ...l });
+  const po = store.pos.find(p => p.id === l.poId) || {};
+  pushActivity('load_approved', { by: req.session.user.username, driver: l.driverName, poNumber: po.poNumber, customer: po.customer, material: l.material });
+  await saveData();
+  res.json({ success: true, load: l });
+});
+
+app.post('/api/loads/:id/reject', reqMgr, async (req, res) => {
+  const idx = store.loads.findIndex(l => l.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Load not found' });
+  const l = store.loads[idx];
+  const before = { ...l };
+  l.approvalStatus = 'rejected';
+  l.rejectReason = req.body.reason || '';
+  l.rejectedAt = new Date().toISOString();
+  l.rejectedBy = req.session.user.username;
+  audit('reject', 'load', l.id, req.session.user.username, before, { ...l });
+  await saveData();
+  res.json({ success: true, load: l });
+});
+
+// Void (soft delete) — preserves record
+app.post('/api/loads/:id/void', reqMgr, async (req, res) => {
+  const idx = store.loads.findIndex(l => l.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Load not found' });
+  const l = store.loads[idx];
+  const before = { ...l };
+  l.voided = true;
+  l.voidedAt = new Date().toISOString();
+  l.voidedBy = req.session.user.username;
+  l.voidReason = req.body.reason || '';
+  audit('void', 'load', l.id, req.session.user.username, before, { ...l });
+  await saveData();
+  res.json({ success: true });
+});
+
+// Mark ready-to-bill loads as billed
+app.post('/api/loads/bill', reqMgr, async (req, res) => {
+  const { loadIds } = req.body;
+  if (!Array.isArray(loadIds)) return res.status(400).json({ error: 'loadIds required' });
+  const billed = [];
+  for (const id of loadIds) {
+    const l = store.loads.find(x => x.id === id);
+    if (!l || l.voided) continue;
+    if (l.billStatus === 'billed') continue;  // No duplicates
+    if (l.approvalStatus !== 'approved') continue;  // Must be approved
+    const before = { ...l };
+    l.billStatus = 'billed';
+    l.billedAt = new Date().toISOString();
+    l.billedBy = req.session.user.username;
+    audit('bill', 'load', l.id, req.session.user.username, before, { ...l });
+    billed.push(l.id);
+  }
+  await saveData();
+  res.json({ success: true, billedCount: billed.length, billedIds: billed });
+});
+
+// ── READY TO BILL view ────────────────────────────────────────────────────────
+app.get('/api/ready-to-bill', reqMgr, (req, res) => {
+  const { month, city, job, vendor, material, customer } = req.query;
+  let rtb = store.loads.filter(l =>
+    l.approvalStatus === 'approved' &&
+    l.billStatus === 'ready' &&
+    !l.voided
+  );
+
+  if (month) rtb = rtb.filter(l => (l.completedAt || l.deliveryDate || '').startsWith(month));
+  if (vendor) rtb = rtb.filter(l => l.vendorId === vendor);
+  if (material) rtb = rtb.filter(l => l.material === material);
+
+  // Need PO info for city/job/customer filters
+  rtb = rtb.map(l => {
+    const po = store.pos.find(p => p.id === l.poId) || {};
+    return { ...l, po };
+  });
+  if (city)     rtb = rtb.filter(l => (l.po.city || '').toLowerCase().includes(city.toLowerCase()));
+  if (job)      rtb = rtb.filter(l => (l.po.job || l.po.customer || '').toLowerCase().includes(job.toLowerCase()));
+  if (customer) rtb = rtb.filter(l => (l.po.customer || '').toLowerCase().includes(customer.toLowerCase()));
+
+  res.json({ loads: rtb });
+});
 
 // ── ACTIVITY FEED ─────────────────────────────────────────────────────────────
 app.get('/api/activity', reqMgr, (req, res) => {

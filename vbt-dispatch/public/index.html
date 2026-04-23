@@ -281,6 +281,68 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--G);margin-right:4px;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
+/* ── DRIVER GUIDED CARD (mobile-first) ── */
+.guided-card{background:var(--bg);border:2px solid var(--bdr);border-radius:var(--rl);overflow:hidden;box-shadow:var(--shadow);margin-bottom:14px}
+.guided-card.is-today{border-color:var(--B)}
+.gc-head{padding:14px 16px;background:linear-gradient(135deg,#1a2035 0%,#2d3a5e 100%);color:#fff}
+.gc-po{font-size:11px;font-weight:600;opacity:.7;letter-spacing:.05em;text-transform:uppercase}
+.gc-job{font-size:16px;font-weight:700;margin-top:3px}
+.gc-today-badge{font-size:10px;background:var(--G);padding:2px 9px;border-radius:20px;margin-left:6px;font-weight:700}
+.gc-body{padding:14px 16px}
+.gc-info-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:13px;margin-bottom:14px}
+.gc-info-grid dt{color:var(--txt2);font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:600;padding-top:2px}
+.gc-info-grid dd{color:var(--txt);font-weight:500}
+.gc-status-strip{display:flex;gap:0;margin:14px 0;border:1px solid var(--bdr);border-radius:var(--rl);overflow:hidden}
+.gc-step{flex:1;padding:9px 6px;text-align:center;font-size:11px;font-weight:600;background:var(--bg2);color:var(--txt3);border-right:1px solid var(--bdr);position:relative}
+.gc-step:last-child{border-right:none}
+.gc-step.done{background:var(--Gb);color:var(--G)}
+.gc-step.active{background:var(--B);color:#fff}
+.gc-step .gc-step-time{display:block;font-size:9px;font-weight:400;margin-top:1px;opacity:.7}
+.gc-action{width:100%;padding:14px;font-size:15px;font-weight:700;border:none;border-radius:var(--rl);cursor:pointer;font-family:var(--f);margin-bottom:8px;transition:transform .1s;box-shadow:var(--shadow)}
+.gc-action:active{transform:scale(.98)}
+.gc-action.primary{background:var(--B);color:#fff}
+.gc-action.warn{background:var(--A);color:#fff}
+.gc-action.success{background:var(--G);color:#fff}
+.gc-action.purple{background:var(--P);color:#fff}
+.gc-action.outline{background:var(--bg);color:var(--txt);border:2px solid var(--bdr2)}
+.gc-action:disabled{opacity:.4;cursor:not-allowed;background:var(--bg2);color:var(--txt3)}
+.gc-req{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg2);border:1.5px solid var(--bdr);border-radius:var(--r);margin-bottom:7px;font-size:12px}
+.gc-req.done{background:var(--Gb);border-color:var(--Gd);color:var(--G)}
+.gc-req.missing{background:var(--Ab);border-color:var(--Ad);color:var(--A)}
+.gc-req-label{font-weight:600}
+.gc-req-status{font-size:11px;font-weight:700}
+.ticket-preview{max-width:100%;max-height:200px;border-radius:var(--r);border:1px solid var(--bdr);margin:6px 0;display:block}
+.gc-approval-banner{padding:9px 12px;border-radius:var(--r);font-size:12px;font-weight:600;text-align:center;margin-bottom:10px}
+.gc-approval-banner.pending{background:var(--bg2);color:var(--txt2)}
+.gc-approval-banner.submitted{background:var(--Ab);color:var(--A);border:1px solid var(--Ad)}
+.gc-approval-banner.approved{background:var(--Gb);color:var(--G);border:1px solid var(--Gd)}
+.gc-approval-banner.rejected{background:var(--Rb);color:var(--R);border:1px solid var(--Rd)}
+
+/* ── APPROVAL CARDS ── */
+.appr-card{background:var(--bg);border:1.5px solid var(--Ad);border-radius:var(--rl);padding:14px 16px;margin-bottom:10px;box-shadow:var(--shadow)}
+.appr-head{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.appr-po{font-family:var(--f);font-weight:700;color:var(--B);font-size:13px}
+.appr-cust{font-size:14px;font-weight:600;color:var(--txt);flex:1}
+.appr-driver{font-size:12px;color:var(--txt2);padding:3px 9px;background:var(--bg2);border-radius:20px}
+.appr-submitted{font-size:11px;color:var(--txt3)}
+.appr-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px;font-size:12px;color:var(--txt2)}
+.appr-meta b{color:var(--txt)}
+.appr-proofs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.appr-proof{flex:1;min-width:140px;border:1px solid var(--bdr);border-radius:var(--r);padding:8px;background:var(--bg2)}
+.appr-proof-label{font-size:10px;text-transform:uppercase;color:var(--txt2);font-weight:600;margin-bottom:4px}
+.appr-proof img{max-width:100%;max-height:120px;border-radius:var(--r);display:block}
+.appr-proof.missing{background:var(--Rb);border-color:var(--Rd)}
+.appr-proof.missing .appr-proof-label{color:var(--R)}
+.appr-actions{display:flex;gap:7px;margin-top:8px}
+
+/* ── BILL TABLE ── */
+.bill-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:var(--bg2);border-radius:var(--rl)}
+.bill-filters input,.bill-filters select{padding:6px 10px;border:1px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-size:12px;font-family:var(--f)}
+.bill-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px}
+.bill-row{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bg);border:1px solid var(--bdr);border-radius:var(--r);margin-bottom:5px;font-size:12px;flex-wrap:wrap}
+.bill-row.selected{background:var(--Bb);border-color:var(--B)}
+.bill-row input[type=checkbox]{width:16px;height:16px;cursor:pointer}
+
 /* ── ACTIVITY FEED ── */
 .feed-event{padding:8px 10px;border-radius:var(--r);margin-bottom:6px;font-size:12px;line-height:1.5;border-left:3px solid var(--bdr2)}
 .feed-event.ev-logs{border-color:var(--B);background:var(--Bb)}
@@ -381,6 +443,8 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
   </div>
   <button class="tb active" id="tab-board"   onclick="swTab('board')">Board</button>
   <button class="tb"        id="tab-pos"     onclick="swTab('pos')">POs</button>
+  <button class="tb mgr"    id="tab-approve" onclick="swTab('approve')">Approvals <span id="approve-badge" style="background:var(--R);color:#fff;font-size:10px;padding:1px 6px;border-radius:20px;margin-left:4px;display:none"></span></button>
+  <button class="tb mgr"    id="tab-bill"    onclick="swTab('bill')">Ready to Bill</button>
   <button class="tb"        id="tab-hist"    onclick="swTab('hist')">History</button>
   <button class="tb mgr"    id="tab-finance" onclick="swTab('finance')">Finance</button>
   <button class="tb"        id="tab-drv"     onclick="swTab('drv')">My Loads</button>
@@ -432,6 +496,16 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 <!-- FINANCE (manager only) -->
 <div id="sec-finance" style="display:none">
   <div class="list-view" id="finance-wrap"></div>
+</div>
+
+<!-- APPROVALS TAB -->
+<div id="sec-approve" style="display:none">
+  <div class="list-view" id="approve-wrap"></div>
+</div>
+
+<!-- READY TO BILL TAB -->
+<div id="sec-bill" style="display:none">
+  <div class="list-view" id="bill-wrap"></div>
 </div>
 
 <!-- DRIVER -->
@@ -583,7 +657,7 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
-let trucks=[],pos=[],loads=[],payments=[],matPrices={};
+let trucks=[],pos=[],loads=[],payments=[],matPrices={},vendors=[],vendorPrices={};
 let role='driver',myTruckId=null;
 let curTab='board',dayOffset=0,monthOffset=0,viewMode='month';
 let editPoId=null,editLoadId=null,sigLoadId=null,payPoId=null,roPoId=null;
@@ -648,7 +722,7 @@ function pInvoice(id){
 // ── Tab ───────────────────────────────────────────────────────────────────────
 function swTab(t){
   curTab=t;
-  ['board','pos','hist','finance','drv'].forEach(x=>{
+  ['board','pos','approve','bill','hist','finance','drv'].forEach(x=>{
     const tb=document.getElementById('tab-'+x);
     const sc=document.getElementById('sec-'+x);
     if(tb) tb.classList.toggle('active',t===x);
@@ -657,6 +731,8 @@ function swTab(t){
   document.getElementById('nav-wrap').style.display=t==='board'?'flex':'none';
   if(t==='board')   renderBoard();
   if(t==='pos')     renderPOs();
+  if(t==='approve') renderApprove();
+  if(t==='bill')    renderBill();
   if(t==='hist')    renderHist();
   if(t==='finance') renderFinance();
   if(t==='drv')     renderDrv();
@@ -671,15 +747,20 @@ function renderSbar(){
   const tDel=loads.filter(l=>act.find(p=>p.id===l.poId)).reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
   const miss=tOrd-tDel;
   const unassigned=loads.filter(l=>(!l.truckId||l.truckId==='unassigned')&&l.status!=='completed').length;
-  const needsAttn=pos.filter(p=>p.status==='active'&&loads.some(l=>l.poId===p.id&&(Number(l.loadsAssigned)||0)>(Number(l.loadsDelivered)||0)&&l.status!=='completed'&&(!l.truckId||l.truckId==='unassigned'))).length;
+  const awaitingApproval=loads.filter(l=>l.approvalStatus==='submitted'&&!l.voided).length;
+  const readyToBill=loads.filter(l=>l.approvalStatus==='approved'&&l.billStatus==='ready'&&!l.voided).length;
   document.getElementById('sbar').innerHTML=`
     <div class="met"><div class="ml">Active jobs</div><div class="mv">${act.length}</div></div>
     <div class="met b"><div class="ml">Upcoming</div><div class="mv">${sched.length}</div></div>
-    <div class="met g"><div class="ml">Loads delivered</div><div class="mv">${tDel}/${tOrd}</div></div>
-    <div class="met ${miss>0?'w':'g'}"><div class="ml">Missing loads</div><div class="mv">${miss}</div></div>
+    <div class="met g"><div class="ml">Delivered</div><div class="mv">${tDel}/${tOrd}</div></div>
+    <div class="met ${miss>0?'w':'g'}"><div class="ml">Missing</div><div class="mv">${miss}</div></div>
     <div class="met ${unassigned>0?'w':''}"><div class="ml">Unassigned</div><div class="mv">${unassigned}</div></div>
-    ${needsAttn>0?`<div class="met w"><div class="ml">Needs attention</div><div class="mv">${needsAttn}</div></div>`:''}
+    <div class="met ${awaitingApproval>0?'o':''}"><div class="ml">To approve</div><div class="mv">${awaitingApproval}</div></div>
+    <div class="met ${readyToBill>0?'b':''}"><div class="ml">Ready to bill</div><div class="mv">${readyToBill}</div></div>
   `;
+  // Keep approve tab badge in sync
+  const badge=document.getElementById('approve-badge');
+  if(badge){ badge.textContent=awaitingApproval; badge.style.display=awaitingApproval?'inline-block':'none'; }
 }
 
 // ════════════════════════════════════
@@ -1175,56 +1256,196 @@ function renderHist(){
   document.getElementById('hist-wrap').innerHTML=h;
 }
 
-// ── DRIVER VIEW ───────────────────────────────────────────────────────────────
-function renderDrv(){
-  const myL=loads.filter(l=>l.truckId===myTruckId&&l.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
-  if(!myL.length){document.getElementById('drv-view').innerHTML='<div class="no-loads">No active loads assigned to you.</div>';return;}
+// ── DRIVER GUIDED VIEW ────────────────────────────────────────────────────────
+async function renderDrv(){
+  const el=document.getElementById('drv-view');
+  if(!el) return;
+  // Fetch dispatch cards (pre-enriched server-side — no client lookups)
+  let dispatch=[];
+  try{
+    const r=await fetch('/api/my-dispatch');
+    const d=await r.json();
+    dispatch=d.loads||[];
+  }catch(e){}
+
+  if(!dispatch.length){ el.innerHTML='<div class="no-loads">No active loads assigned to you.</div>'; return; }
+
   const todStr=tod();
   let h='';
-  myL.forEach(l=>{
-    const po=pos.find(p=>p.id===l.poId)||{};
-    const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
-    const isT=l.deliveryDate===todStr;
+  dispatch.forEach(l=>{
+    const isToday=l.deliveryDate===todStr;
     const ts=l.timestamps||{};
     const pod=l.pod||{};
-    const mc=matColor(l.material);
-    h+=`<div class="dlc">
-      <div class="dlch">
-        <div class="dlch-po">${po.poNumber||'—'} · ${fmtD(l.deliveryDate)}${isT?' <span style="color:var(--G);font-size:10px">TODAY</span>':''}</div>
-        <div class="dlch-c">${po.customer||''} <span style="font-size:11px;font-weight:400;color:${mc.dot}">· ${l.material}</span></div>
+    const hasImage=!!l.ticketImage;
+    const hasSig=!!(pod.signedBy&&pod.signature);
+
+    // Step state: pending -> start -> pickup -> ticket -> delivered -> submitted -> approved
+    const started=!!ts.start;
+    const atPickup=!!ts.arrivedPickup;
+    const delivered=!!ts.completed;
+    const submitted=l.approvalStatus==='submitted';
+    const approved=l.approvalStatus==='approved';
+    const rejected=l.approvalStatus==='rejected';
+
+    // Approval banner
+    let banner='';
+    if(rejected) banner='<div class="gc-approval-banner rejected">⚠ Rejected by manager — contact dispatch</div>';
+    else if(approved) banner='<div class="gc-approval-banner approved">✓ Approved — load closed</div>';
+    else if(submitted) banner='<div class="gc-approval-banner submitted">⏳ Submitted — awaiting manager approval</div>';
+
+    h+=`<div class="guided-card ${isToday?'is-today':''}">
+      <div class="gc-head">
+        <div class="gc-po">${l.poNumber}${isToday?'<span class="gc-today-badge">TODAY</span>':''}</div>
+        <div class="gc-job">${l.jobName||l.customer||''}</div>
       </div>
-      <div class="dlcb">
-        <div class="dlc-grid">
-          <div>
-            <div class="dlc-meta">
-              <b>Pickup:</b> ${po.pickup||'—'}<br>
-              ${po.city?`<b>Deliver to:</b> ${po.city}<br>`:''}
-              ${po.supervisor?`<b>Supervisor:</b> ${po.supervisor}<br>`:''}
-              ${l.notes?`<em style="color:var(--txt3)">${l.notes}</em><br>`:''}
-            </div>
-            ${ts.start||ts.arrived||ts.completed?`<div class="drv-ts">${ts.start?'▶ '+ts.start+'<br>':''}${ts.arrived?'📍 '+ts.arrived+'<br>':''}${ts.completed?'■ '+ts.completed:''}</div>`:''}
-            ${pod.signedBy?`<div class="pod-ok">✓ Signed by ${pod.signedBy} at ${pod.signedAt}</div>`:''}
+      <div class="gc-body">
+        ${banner}
+        <dl class="gc-info-grid">
+          <dt>Pickup</dt><dd>🏭 ${l.pickupLocation}</dd>
+          <dt>Deliver to</dt><dd>📍 ${l.deliveryLocation||l.city||'—'}</dd>
+          <dt>Material</dt><dd>${l.material} <span style="color:var(--txt3);font-size:11px">(${l.unit})</span></dd>
+          <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads assigned</dd>
+          ${l.supervisor?`<dt>Supervisor</dt><dd>👤 ${l.supervisor}</dd>`:''}
+          ${l.notes?`<dt>Notes</dt><dd style="color:var(--A)">${l.notes}</dd>`:''}
+        </dl>
+
+        <!-- Progress strip -->
+        <div class="gc-status-strip">
+          <div class="gc-step ${started?'done':(!submitted&&!approved?'active':'')}">
+            ▶ Start
+            ${ts.start?`<span class="gc-step-time">${ts.start}</span>`:''}
           </div>
-          <div>
-            <div class="dlc-big">${ld}<span style="font-size:15px;color:var(--txt2)">/${la}</span></div>
-            <div class="dlc-lbl">delivered</div>
+          <div class="gc-step ${atPickup?'done':(started&&!atPickup&&!submitted?'active':'')}">
+            🏭 Pickup
+            ${ts.arrivedPickup?`<span class="gc-step-time">${ts.arrivedPickup}</span>`:''}
+          </div>
+          <div class="gc-step ${hasImage?'done':(atPickup&&!hasImage?'active':'')}">
+            📷 Ticket
+            ${l.ticketImageAt?`<span class="gc-step-time">✓</span>`:''}
+          </div>
+          <div class="gc-step ${hasSig?'done':(hasImage&&!hasSig?'active':'')}">
+            ✍ Signature
+            ${hasSig?`<span class="gc-step-time">✓</span>`:''}
+          </div>
+          <div class="gc-step ${delivered?'done':(hasSig&&!delivered?'active':'')}">
+            ✅ Delivered
+            ${ts.completed?`<span class="gc-step-time">${ts.completed}</span>`:''}
           </div>
         </div>
-        <div class="drv-btns">
-          <button class="dbtn start ${ts.start?'stamped':''}" onclick="${ts.start?'':(`quickTs('${l.id}','start')`)}">
-            ${ts.start?'✓ Started: '+ts.start:'▶  Start load'}
+
+        ${!approved&&!rejected?`
+        <!-- Guided action buttons — shown based on step -->
+        ${!started?`
+          <button class="gc-action primary" onclick="tripAction('${l.loadId}','start-trip')">
+            ▶ Start Trip
           </button>
-          <button class="dbtn arr ${ts.arrived?'stamped':''}" onclick="${ts.arrived?'':(`quickTs('${l.id}','arrived')`)}">
-            ${ts.arrived?'✓ Arrived: '+ts.arrived:'📍  Arrived at site'}
+          <div style="text-align:center;font-size:11px;color:var(--txt3)">Tap to begin — GPS and time will be captured automatically</div>
+        `:!atPickup?`
+          <button class="gc-action warn" onclick="tripAction('${l.loadId}','arrived-pickup')">
+            🏭 Arrived at ${l.vendor||l.pickupLocation}
           </button>
-          <button class="dbtn" onclick="openLL('${l.id}')">&#9998;  Log loads delivered</button>
-          <button class="dbtn sig" onclick="openSig('${l.id}')">&#9997;  Capture signature</button>
-          <button class="dbtn comp" onclick="qComplDrv('${l.id}')">&#10003;  Mark complete</button>
-        </div>
+          <div style="text-align:center;font-size:11px;color:var(--txt3)">Tap when you arrive at the pickup location</div>
+        `:!hasImage?`
+          <button class="gc-action warn" onclick="openTicketUpload('${l.loadId}')">
+            📷 Upload Ticket Photo
+          </button>
+          <div style="text-align:center;font-size:11px;color:var(--R);font-weight:600">⚠ Required before delivery</div>
+        `:!hasSig?`
+          <button class="gc-action purple" onclick="openSig('${l.loadId}')">
+            ✍ Capture Customer Signature
+          </button>
+          <div style="text-align:center;font-size:11px;color:var(--R);font-weight:600">⚠ Required before delivery</div>
+        `:!submitted?`
+          <button class="gc-action success" onclick="tripAction('${l.loadId}','delivered')">
+            ✅ Complete Delivery
+          </button>
+          <div style="text-align:center;font-size:11px;color:var(--txt3)">All checks passed — tap to submit for approval</div>
+        `:''}
+
+        <!-- Requirements checklist -->
+        ${started&&!submitted?`<div style="margin-top:14px">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:7px">Required before completion</div>
+          <div class="gc-req ${hasImage?'done':'missing'}">
+            <span class="gc-req-label">📷 Ticket Image</span>
+            <span class="gc-req-status">${hasImage?'✓ Uploaded':'— Missing'}</span>
+          </div>
+          ${hasImage?`<img src="${l.ticketImage}" class="ticket-preview">`:''}
+          <div class="gc-req ${hasSig?'done':'missing'}">
+            <span class="gc-req-label">✍ Customer Signature</span>
+            <span class="gc-req-status">${hasSig?'✓ Signed by '+pod.signedBy:'— Missing'}</span>
+          </div>
+        </div>`:''}
+        `:''}
+
+        ${rejected&&l.rejectReason?`<div style="background:var(--Rb);padding:9px 12px;border-radius:var(--r);font-size:12px;color:var(--R);margin-top:10px">Reason: ${l.rejectReason}</div>`:''}
       </div>
     </div>`;
   });
-  document.getElementById('drv-view').innerHTML=h;
+  el.innerHTML=h;
+}
+
+// Trip action with GPS capture
+async function tripAction(loadId, action){
+  let gps=null;
+  try{
+    gps=await new Promise((resolve)=>{
+      if(!navigator.geolocation){ resolve(null); return; }
+      navigator.geolocation.getCurrentPosition(
+        p=>resolve({lat:p.coords.latitude, lng:p.coords.longitude, accuracy:p.coords.accuracy}),
+        ()=>resolve(null),
+        {enableHighAccuracy:true,timeout:5000}
+      );
+    });
+  }catch(e){}
+  try{
+    const r=await fetch('/api/loads/'+loadId+'/trip-action',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action,gps})
+    });
+    const d=await r.json();
+    if(!d.success){alert(d.error||'Action failed');return;}
+    await loadAll();renderDrv();
+  }catch(e){alert('Error: '+e.message);}
+}
+
+// Ticket image upload — opens camera on mobile
+function openTicketUpload(loadId){
+  const input=document.createElement('input');
+  input.type='file';
+  input.accept='image/*';
+  input.capture='environment';  // Prefer rear camera on mobile
+  input.onchange=async(e)=>{
+    const f=e.target.files[0];
+    if(!f) return;
+    // Compress to stay under 2MB
+    const img=new Image();
+    const reader=new FileReader();
+    reader.onload=async(ev)=>{
+      img.onload=async()=>{
+        // Resize to max 1200px wide
+        const canvas=document.createElement('canvas');
+        const scale=Math.min(1,1200/img.width);
+        canvas.width=img.width*scale;
+        canvas.height=img.height*scale;
+        canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+        const data=canvas.toDataURL('image/jpeg',0.75);
+        try{
+          const r=await fetch('/api/loads/'+loadId+'/ticket-image',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({image:data})
+          });
+          const d=await r.json();
+          if(!d.success){alert(d.error||'Upload failed');return;}
+          await loadAll();renderDrv();
+        }catch(err){alert('Upload error: '+err.message);}
+      };
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(f);
+  };
+  input.click();
 }
 
 async function quickTs(id,key){
@@ -1470,6 +1691,185 @@ function stmp(id){const el=document.getElementById(id);el.value=new Date().toLoc
 function updateTruckNum(id,val){
   const t=trucks.find(x=>x.id===id);if(t){t.truckNum=val;fetch('/api/trucks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(trucks)});}
 }
+
+// ── APPROVALS TAB (manager only) ──────────────────────────────────────────────
+function renderApprove(){
+  const pending=loads.filter(l=>l.approvalStatus==='submitted'&&!l.voided);
+  // Update badge on tab
+  const badge=document.getElementById('approve-badge');
+  if(badge){ badge.textContent=pending.length; badge.style.display=pending.length?'inline-block':'none'; }
+  const el=document.getElementById('approve-wrap');
+  if(!el) return;
+  if(!pending.length){ el.innerHTML='<div class="no-items" style="padding:32px">No loads awaiting approval.</div>'; return; }
+  let h=`<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Loads Awaiting Approval (${pending.length})</div>`;
+  pending.forEach(l=>{
+    const po=pos.find(p=>p.id===l.poId)||{};
+    const t=trucks.find(x=>x.id===l.truckId);
+    const pod=l.pod||{};
+    const ts=l.timestamps||{};
+    const mc=matColor(l.material);
+    h+=`<div class="appr-card">
+      <div class="appr-head">
+        <span class="appr-po">${po.poNumber}</span>
+        <span class="appr-cust">${po.customer||''}</span>
+        <span class="appr-driver">${l.driverName||t?.label||'—'} · ${t?.truckNum||''}</span>
+        <span class="appr-submitted">Submitted ${l.submittedAt?fmtAgo(l.submittedAt):''}</span>
+      </div>
+      <div class="appr-meta">
+        <div><b style="display:inline-flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span>${l.material}</b> · ${l.loadsAssigned} loads @ $${l.pricePerLoad}/load</div>
+        <div>📍 ${po.city||po.address||'—'}</div>
+        <div>🏭 ${po.pickup||'—'}</div>
+        <div>⏱ Start: ${ts.start||'—'} · Done: ${ts.completed||'—'}</div>
+      </div>
+      <div class="appr-proofs">
+        <div class="appr-proof ${l.ticketImage?'':'missing'}">
+          <div class="appr-proof-label">📷 Ticket Image</div>
+          ${l.ticketImage?`<img src="${l.ticketImage}" onclick="window.open('${l.ticketImage}','_blank')" style="cursor:zoom-in">`:'<span style="color:var(--R);font-size:11px">Missing</span>'}
+        </div>
+        <div class="appr-proof ${pod.signature?'':'missing'}">
+          <div class="appr-proof-label">✍ Signature (${pod.signedBy||'—'})</div>
+          ${pod.signature?`<img src="${pod.signature}" style="background:#fff">`:'<span style="color:var(--R);font-size:11px">Missing</span>'}
+        </div>
+      </div>
+      ${l.notes?`<div style="padding:7px 10px;background:var(--bg2);border-radius:var(--r);font-size:12px;font-style:italic;color:var(--txt2);margin-bottom:8px">"${l.notes}"</div>`:''}
+      <div class="appr-actions">
+        <button class="ab g" onclick="approveLoad('${l.id}')">✓ Approve & Lock</button>
+        <button class="ab r" onclick="rejectLoad('${l.id}')">⚠ Reject</button>
+        <button class="ab" onclick="openLL('${l.id}')">View detail</button>
+      </div>
+    </div>`;
+  });
+  el.innerHTML=h;
+}
+
+function fmtAgo(iso){
+  const m=Math.round((Date.now()-new Date(iso).getTime())/60000);
+  if(m<1) return 'just now';
+  if(m<60) return m+'m ago';
+  if(m<1440) return Math.round(m/60)+'h ago';
+  return Math.round(m/1440)+'d ago';
+}
+
+async function approveLoad(id){
+  if(!confirm('Approve this load? It will be locked and moved to Ready-to-Bill.')) return;
+  try{
+    const r=await fetch('/api/loads/'+id+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();
+    if(!d.success){alert(d.error||'Approval failed');return;}
+    await loadAll();renderApprove();renderBoard();
+  }catch(e){alert('Error: '+e.message);}
+}
+
+async function rejectLoad(id){
+  const reason=prompt('Reason for rejecting (optional):');
+  if(reason===null) return;
+  await fetch('/api/loads/'+id+'/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})});
+  await loadAll();renderApprove();renderBoard();
+}
+
+// ── READY TO BILL TAB (manager only) ──────────────────────────────────────────
+let billFilters={month:'',city:'',job:'',vendor:'',material:''};
+let billSelected=new Set();
+
+async function renderBill(){
+  const el=document.getElementById('bill-wrap');
+  if(!el) return;
+  // Fetch filtered data
+  const params=new URLSearchParams();
+  Object.entries(billFilters).forEach(([k,v])=>{if(v)params.append(k,v);});
+  let rtb=[];
+  try{
+    const r=await fetch('/api/ready-to-bill?'+params.toString());
+    const d=await r.json();
+    rtb=d.loads||[];
+  }catch(e){}
+
+  const totalLoads=rtb.reduce((s,l)=>s+(Number(l.loadsDelivered)||Number(l.loadsAssigned)||0),0);
+  const totalRev=rtb.reduce((s,l)=>s+(Number(l.loadsDelivered)||Number(l.loadsAssigned)||0)*(Number(l.pricePerLoad)||0),0);
+  const totalCost=rtb.reduce((s,l)=>s+(Number(l.loadsDelivered)||Number(l.loadsAssigned)||0)*(Number(l.vendorCost)||0),0);
+
+  // Collect unique filter options from full loads (not filtered)
+  const allRTB=loads.filter(l=>l.approvalStatus==='approved'&&l.billStatus==='ready'&&!l.voided);
+  const months=[...new Set(allRTB.map(l=>(l.completedAt||l.deliveryDate||'').slice(0,7)).filter(Boolean))].sort().reverse();
+  const cities=[...new Set(allRTB.map(l=>{const p=pos.find(x=>x.id===l.poId);return p?.city;}).filter(Boolean))].sort();
+  const materials=[...new Set(allRTB.map(l=>l.material))].sort();
+
+  let h=`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700">Ready to Bill</div>
+      <span style="font-size:11px;color:var(--txt2)">${rtb.length} approved loads</span>
+      <div style="margin-left:auto;display:flex;gap:7px">
+        <button class="ab b" onclick="billSelected.clear();document.querySelectorAll('.bill-cb').forEach(c=>c.checked=true);billSelected=new Set(Array.from(document.querySelectorAll('.bill-cb')).map(c=>c.dataset.id));renderBillSummary()">Select all</button>
+        <button class="bp" onclick="markSelectedBilled()" ${billSelected.size?'':'disabled'}>Mark ${billSelected.size} as billed</button>
+      </div>
+    </div>
+
+    <div class="bill-filters">
+      <select onchange="billFilters.month=this.value;renderBill()">
+        <option value="">All months</option>
+        ${months.map(m=>`<option value="${m}" ${billFilters.month===m?'selected':''}>${fmtM(m)}</option>`).join('')}
+      </select>
+      <select onchange="billFilters.city=this.value;renderBill()">
+        <option value="">All cities</option>
+        ${cities.map(c=>`<option value="${c}" ${billFilters.city===c?'selected':''}>${c}</option>`).join('')}
+      </select>
+      <select onchange="billFilters.material=this.value;renderBill()">
+        <option value="">All materials</option>
+        ${materials.map(m=>`<option value="${m}" ${billFilters.material===m?'selected':''}>${m}</option>`).join('')}
+      </select>
+      <input type="text" placeholder="Filter by job/customer..." value="${billFilters.job}" oninput="billFilters.job=this.value;debounceBillRender()">
+      ${Object.values(billFilters).some(v=>v)?`<button class="ab" onclick="billFilters={month:'',city:'',job:'',vendor:'',material:''};renderBill()">Clear filters</button>`:''}
+    </div>
+
+    <div class="bill-summary" id="bill-summary">
+      <div class="met"><div class="ml">Loads</div><div class="mv">${totalLoads}</div></div>
+      <div class="met g"><div class="ml">Billable revenue</div><div class="mv">${money(totalRev)}</div></div>
+      <div class="met o"><div class="ml">Vendor cost</div><div class="mv">${money(totalCost)}</div></div>
+      <div class="met b"><div class="ml">Gross profit</div><div class="mv">${money(totalRev-totalCost)}</div></div>
+    </div>`;
+
+  if(!rtb.length){h+='<div class="no-items" style="padding:32px">No loads ready to bill with current filters.</div>';el.innerHTML=h;return;}
+
+  h+='<div>';
+  rtb.forEach(l=>{
+    const po=l.po||{};
+    const selected=billSelected.has(l.id);
+    const mc=matColor(l.material);
+    const rev=(Number(l.loadsDelivered)||Number(l.loadsAssigned)||0)*(Number(l.pricePerLoad)||0);
+    h+=`<div class="bill-row ${selected?'selected':''}">
+      <input type="checkbox" class="bill-cb" data-id="${l.id}" ${selected?'checked':''} onchange="toggleBillRow('${l.id}',this.checked)">
+      <span style="font-family:var(--m);font-weight:700;color:var(--B);min-width:75px">${po.poNumber}</span>
+      <span style="flex:1;min-width:120px"><b>${po.customer||''}</b><div style="font-size:11px;color:var(--txt3)">${po.city||''}</div></span>
+      <span style="display:flex;align-items:center;gap:5px;min-width:90px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span>${l.material}</span>
+      <span style="font-family:var(--m);min-width:60px">${l.loadsDelivered||l.loadsAssigned} loads</span>
+      <span style="font-family:var(--m);color:var(--G);font-weight:600">${money(rev)}</span>
+      <span style="font-size:11px;color:var(--txt3)">${fmtD(l.completedAt||l.deliveryDate)}</span>
+      <button class="ab" onclick="openLL('${l.id}')">View</button>
+    </div>`;
+  });
+  h+='</div>';
+
+  el.innerHTML=h;
+}
+
+function toggleBillRow(id, checked){
+  if(checked) billSelected.add(id); else billSelected.delete(id);
+  renderBill();
+}
+
+async function markSelectedBilled(){
+  if(!billSelected.size) return;
+  if(!confirm(`Mark ${billSelected.size} load${billSelected.size>1?'s':''} as billed? This cannot be undone.`)) return;
+  const r=await fetch('/api/loads/bill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loadIds:Array.from(billSelected)})});
+  const d=await r.json();
+  if(!d.success){alert('Billing failed');return;}
+  billSelected.clear();
+  await loadAll();renderBill();
+}
+
+let billRenderTimer=null;
+function debounceBillRender(){clearTimeout(billRenderTimer);billRenderTimer=setTimeout(renderBill,400);}
+function renderBillSummary(){renderBill();}
 
 // ── FINANCE TAB ──────────────────────────────────────────────────────────────
 async function renderFinance(){
@@ -1745,6 +2145,8 @@ function startGPSTracking(){
 async function loadAll(){
   const r=await fetch('/api/data');const d=await r.json();
   trucks=d.trucks||[];pos=d.pos||[];loads=d.loads||[];payments=d.payments||[];matPrices=d.materialPrices||{};
+  vendors=d.vendors||[];vendorPrices=d.vendorPrices||{};
+  if(role==='manager') renderSbar();  // keep counters fresh
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
@@ -1757,7 +2159,7 @@ async function init(){
     await loadAll();
   }catch(e){console.error(e);}
   if(role==='driver'){
-    ['tab-board','tab-pos','tab-hist','tab-finance','nav-wrap'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
+    ['tab-board','tab-pos','tab-approve','tab-bill','tab-hist','tab-finance','nav-wrap'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
     startGPSTracking();
     swTab('drv');
   } else {
