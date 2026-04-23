@@ -1009,7 +1009,18 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     if (!l.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
     l.timestamps = { ...l.timestamps, arrivedPickup: timeStr };
     l.gps = { ...l.gps, arrivedPickup: gps || null };
-    pushActivity('ts_arrived_pickup', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, pickup: po.pickup, time: timeStr });
+    // Driver confirms which vendor/yard they arrived at
+    if (req.body.vendorId) {
+      l.vendorId = req.body.vendorId;
+      // Auto-update vendor cost based on their price table
+      const vPrice = store.vendorPrices?.[req.body.vendorId]?.[l.material];
+      if (vPrice) l.vendorCost = vPrice;
+    }
+    const vendor = l.vendorId ? (store.vendors.find(v => v.id === l.vendorId) || {}) : null;
+    pushActivity('ts_arrived_pickup', {
+      driver: l.driverName || user.username, truckId: l.truckId,
+      poNumber: po.poNumber, pickup: vendor?.name || po.pickup, time: timeStr
+    });
   } else if (action === 'delivered') {
     if (!l.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
     if (!l.ticketImage) return res.status(400).json({ error: 'Ticket image required before delivery' });

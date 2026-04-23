@@ -255,6 +255,18 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .price-mat{font-size:12px;color:var(--txt);flex:1}
 .price-inp{width:80px;padding:5px 7px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-family:var(--m);font-size:13px;text-align:right}
 
+/* ── YARD PICKER (driver) ── */
+.yard-card{display:flex;align-items:center;gap:12px;padding:14px 15px;border:2px solid var(--bdr);border-radius:var(--rl);background:var(--bg);cursor:pointer;transition:all .15s;margin-bottom:8px}
+.yard-card:hover{border-color:var(--B);background:var(--Bb);box-shadow:var(--shadow-md)}
+.yard-card.preset{border-color:var(--G);background:var(--Gb)}
+.yard-card.preset:hover{border-color:var(--G);background:var(--Gb)}
+.yard-icon{width:42px;height:42px;border-radius:var(--r);display:flex;align-items:center;justify-content:space-around;font-size:20px;flex-shrink:0;background:var(--bg2)}
+.yard-info{flex:1;min-width:0}
+.yard-name{font-size:14px;font-weight:600;color:var(--txt);line-height:1.3}
+.yard-loc{font-size:11px;color:var(--txt2);margin-top:2px}
+.yard-preset-tag{font-size:10px;color:var(--G);background:var(--Gb);padding:1px 8px;border-radius:20px;font-weight:700;display:inline-block;margin-top:4px;border:1px solid var(--Gd)}
+.yard-mat-price{font-size:11px;color:var(--txt3);margin-top:2px;font-family:var(--m)}
+
 /* ── DRIVER PICKER ── */
 .dp-card{display:flex;align-items:center;gap:12px;padding:12px 14px;border:2px solid var(--bdr);border-radius:var(--rl);background:var(--bg);cursor:pointer;transition:all .15s;margin-bottom:8px;position:relative}
 .dp-card:hover{border-color:var(--B);background:var(--Bb);box-shadow:var(--shadow-md)}
@@ -634,6 +646,21 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
     <div class="price-grid" id="price-grid"></div>
   </div>
   <div class="mf"><button class="bs" onclick="document.getElementById('price-m').style.display='none'">Cancel</button><button class="bp" onclick="savePriceTable()">Save prices</button></div>
+</div></div>
+
+<!-- YARD PICKER MODAL (driver) -->
+<div class="mbg" id="yard-m" style="display:none"><div class="mod" style="max-width:440px">
+  <div class="mh">
+    <h2>🏭 Which yard did you arrive at?</h2>
+    <button class="mc" onclick="closeYard()">&#215;</button>
+  </div>
+  <div class="mb" style="padding:16px 18px">
+    <div id="yard-info" style="font-size:13px;color:var(--txt2);margin-bottom:12px;padding:10px 12px;background:var(--bg2);border-radius:var(--r)"></div>
+    <div id="yard-list"></div>
+  </div>
+  <div class="mf">
+    <button class="bs" onclick="closeYard()">Cancel</button>
+  </div>
 </div></div>
 
 <!-- DRIVER PICKER MODAL -->
@@ -1341,10 +1368,10 @@ async function renderDrv(){
           </button>
           <div style="text-align:center;font-size:11px;color:var(--txt3)">Tap to begin — GPS and time will be captured automatically</div>
         `:!atPickup?`
-          <button class="gc-action warn" onclick="tripAction('${l.loadId}','arrived-pickup')">
-            🏭 Arrived at ${l.vendor||l.pickupLocation}
+          <button class="gc-action warn" onclick="openYardPicker('${l.loadId}')">
+            🏭 Arrived at Pickup
           </button>
-          <div style="text-align:center;font-size:11px;color:var(--txt3)">Tap when you arrive at the pickup location</div>
+          <div style="text-align:center;font-size:11px;color:var(--txt3)">Tap when you arrive — you'll pick which yard</div>
         `:!hasImage?`
           <button class="gc-action warn" onclick="openTicketUpload('${l.loadId}')">
             📷 Upload Ticket Photo
@@ -1382,6 +1409,82 @@ async function renderDrv(){
     </div>`;
   });
   el.innerHTML=h;
+}
+
+// ── Yard picker (driver) ──────────────────────────────────────────────────────
+let yardLoadId=null;
+
+function openYardPicker(loadId){
+  const l=loads.find(x=>x.id===loadId); if(!l) return;
+  if(!l.timestamps?.start){ alert('Start the trip first'); return; }
+  const po=pos.find(p=>p.id===l.poId)||{};
+  yardLoadId=loadId;
+
+  // Show job context
+  document.getElementById('yard-info').innerHTML=
+    `<b>${po.poNumber}</b> — ${po.customer}<br>`+
+    `<b>Material:</b> ${l.material}<br>`+
+    (po.pickup?`<b>Suggested pickup:</b> ${po.pickup}`:'');
+
+  // Build yard list — put the PO's designated pickup first if it matches a vendor
+  const suggestedVendor = vendors.find(v =>
+    po.pickup && (
+      v.name.toLowerCase() === po.pickup.toLowerCase() ||
+      v.name.toLowerCase().includes(po.pickup.toLowerCase()) ||
+      po.pickup.toLowerCase().includes(v.name.toLowerCase())
+    )
+  );
+  const activeVendors = (vendors||[]).filter(v => v.active !== false);
+  const ordered = suggestedVendor
+    ? [suggestedVendor, ...activeVendors.filter(v => v.id !== suggestedVendor.id)]
+    : activeVendors;
+
+  if(!ordered.length){
+    document.getElementById('yard-list').innerHTML=
+      '<div style="padding:16px;text-align:center;color:var(--txt3);font-size:12px">No yards configured. Ask the manager to add vendors.</div>';
+  } else {
+    document.getElementById('yard-list').innerHTML=ordered.map(v=>{
+      const isPreset = suggestedVendor && v.id === suggestedVendor.id;
+      const price = vendorPrices?.[v.id]?.[l.material];
+      return `<div class="yard-card ${isPreset?'preset':''}" onclick="confirmYard('${v.id}')">
+        <div class="yard-icon">🏭</div>
+        <div class="yard-info">
+          <div class="yard-name">${v.name}</div>
+          ${v.location?`<div class="yard-loc">📍 ${v.location}</div>`:''}
+          ${isPreset?'<span class="yard-preset-tag">✓ Assigned pickup</span>':''}
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  document.getElementById('yard-m').style.display='flex';
+}
+
+function closeYard(){ document.getElementById('yard-m').style.display='none'; yardLoadId=null; }
+
+async function confirmYard(vendorId){
+  if(!yardLoadId) return;
+  let gps=null;
+  try{
+    gps=await new Promise(resolve=>{
+      if(!navigator.geolocation){resolve(null);return;}
+      navigator.geolocation.getCurrentPosition(
+        p=>resolve({lat:p.coords.latitude,lng:p.coords.longitude,accuracy:p.coords.accuracy}),
+        ()=>resolve(null),
+        {enableHighAccuracy:true,timeout:5000}
+      );
+    });
+  }catch(e){}
+  try{
+    const r=await fetch('/api/loads/'+yardLoadId+'/trip-action',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'arrived-pickup',gps,vendorId})
+    });
+    const d=await r.json();
+    if(!d.success){alert(d.error||'Action failed');return;}
+    closeYard();
+    await loadAll();renderDrv();
+  }catch(e){alert('Error: '+e.message);}
 }
 
 // Trip action with GPS capture
