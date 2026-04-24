@@ -20,7 +20,7 @@ vbt-dispatch/
 | Role    | Username  | Default Password | Can do                          |
 |---------|-----------|------------------|---------------------------------|
 | Manager | `manager` | `vbt2025!`       | Add/edit/delete jobs, sync Sheets, edit truck #s |
-| Driver  | `driver`  | `driver123`      | View their schedule, log loads delivered |
+| Driver  | `beryle` / `matthew` / `rigo` / `leonardo` / `carlos` | see `server.js` defaults | View only their assigned schedule and log loads delivered |
 
 **Change passwords** by editing `server.js` lines 19-22:
 ```js
@@ -118,8 +118,8 @@ that works on any phone, anywhere, no WiFi required.
    - `SESSION_SECRET` → any random string like `vbt-abc-xyz-2025`
 
 ### Sharing with drivers
-Send drivers the URL (e.g. `https://vbt-dispatch.up.railway.app`) and the driver password.
-They log in as username `driver` and can see their schedule and log loads.
+Send drivers the URL (e.g. `https://vbt-dispatch.up.railway.app`) and their own driver login.
+Example: Beryle logs in as `beryle`, Carlos logs in as `carlos`. The driver screen automatically shows only the loads assigned to that driver’s truck.
 
 ---
 

@@ -43,8 +43,6 @@ const DATA_FILE = path.join(__dirname, 'data.json');
 
 const USERS = {
   manager:  { password: process.env.MANAGER_PASS  || 'vbt2025!',   role: 'manager', truckId: null       },
-  // Generic driver login: username driver / password driver123, then choose driver name.
-  driver:   { password: process.env.DRIVER_PASS   || 'driver123',  role: 'driver-picker', truckId: null },
   beryle:   { password: process.env.BERYLE_PASS   || 'beryle123',  role: 'driver',  truckId: 'beryle'   },
   matthew:  { password: process.env.MATTHEW_PASS  || 'matthew123', role: 'driver',  truckId: 'matthew'  },
   rigo:     { password: process.env.RIGO_PASS     || 'rigo123',    role: 'driver',  truckId: 'rigo'     },
@@ -399,12 +397,7 @@ app.get('/login', (req, res) => {
       <input name="username" placeholder="e.g. beryle" autocomplete="username" autocapitalize="none" autocorrect="off">
       <label>Password</label>
       <input name="password" type="password" placeholder="••••••••" autocomplete="current-password">
-      <label>Driver Name</label>
-      <select name="truckId">
-        <option value="">Only needed when username is driver</option>
-        ${DEFAULT_TRUCKS.map(t => `<option value="${t.id}">${t.label} — ${t.truckNum}</option>`).join('')}
-      </select>
-      <div class="hint">Drivers can use username <b>driver</b>, password <b>driver123</b>, then pick their name.</div>
+      <div class="hint">Drivers log in with their own username. Assigned loads appear automatically based on the driver&apos;s login.</div>
       <button type="submit">Sign in</button>
     </form>
     <div class="footer">Authorized access only</div>
@@ -417,21 +410,20 @@ app.post('/login', (req, res) => {
   const user = USERS[username];
   if (!user || user.password !== password) return res.redirect('/login?error=1');
 
-  // Generic driver login. This keeps one shared password but still filters
-  // the driver screen to the selected driver's assigned truck/loads.
-  if (user.role === 'driver-picker') {
-    const truckId = (req.body.truckId || '').trim();
-    const truck = (store.trucks || DEFAULT_TRUCKS).find(t => t.id === truckId) || DEFAULT_TRUCKS.find(t => t.id === truckId);
-    if (!truck) return res.redirect('/login?error=1');
-    req.session.user = { username: truck.label, role: 'driver', truckId: truck.id };
-    return res.redirect('/app');
-  }
 
   req.session.user = { username, role: user.role, truckId: user.truckId };
   res.redirect('/app');
 });
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
-app.get('/api/me', reqAuth, (req, res) => res.json({ username: req.session.user.username, role: req.session.user.role, truckId: req.session.user.truckId || null }));
+app.get('/api/me', reqAuth, (req, res) => {
+  const user = req.session.user;
+  let username = user.username;
+  if (user.role === 'driver') {
+    const truck = (store.trucks || DEFAULT_TRUCKS).find(t => t.id === user.truckId) || DEFAULT_TRUCKS.find(t => t.id === user.truckId);
+    if (truck?.label) username = truck.label;
+  }
+  res.json({ username, role: user.role, truckId: user.truckId || null });
+});
 
 // ── GET DATA ──────────────────────────────────────────────────────────────────
 app.get('/api/data', reqAuth, (req, res) => {
