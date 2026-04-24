@@ -317,16 +317,49 @@ async function updateRow(tab, rowIdx, vals) {
 function reqAuth(req, res, next) { if (req.session?.user) return next(); res.redirect('/login'); }
 function reqMgr(req, res, next)  { if (req.session?.user?.role === 'manager') return next(); res.status(403).json({ error: 'Manager only' }); }
 
+// Serve logo publicly (no auth required) so login page can display it
+app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
+
 app.use('/app', reqAuth, express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => { if (req.session?.user) return res.redirect('/app'); res.redirect('/login'); });
 
 app.get('/login', (req, res) => {
   const err = req.query.error ? '<p class="err">Invalid username or password</p>' : '';
-  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VBT Dispatch</title>
-  <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'IBM Plex Sans',system-ui,sans-serif;background:#f4f3ef;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}.card{background:#fff;border-radius:16px;border:0.5px solid #ddd;padding:36px 32px;width:100%;max-width:360px}h1{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:500;margin-bottom:6px;color:#111}.sub{font-size:13px;color:#888;margin-bottom:28px}label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#666;display:block;margin-bottom:5px}input{width:100%;padding:9px 12px;border:0.5px solid #ccc;border-radius:8px;font-size:14px;font-family:inherit;margin-bottom:14px;color:#111;background:#fff}input:focus{outline:none;border-color:#888}button{width:100%;padding:10px;background:#111;color:#fff;border:none;border-radius:8px;font-size:14px;font-family:inherit;cursor:pointer;margin-top:4px}button:hover{background:#333}.err{color:#c00;font-size:13px;margin-bottom:14px;background:#fff0f0;padding:8px 12px;border-radius:8px;border:0.5px solid #fcc}</style>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans&display=swap" rel="stylesheet">
-  </head><body><div class="card"><h1>VBT Dispatch</h1><p class="sub">Sign in to continue</p>${err}
-  <form method="POST" action="/login"><label>Username</label><input name="username" placeholder="e.g. beryle" autocomplete="username"><label>Password</label><input name="password" type="password" placeholder="••••••••" autocomplete="current-password"><button type="submit">Sign in</button></form>
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Valley Best Concrete — Dispatch</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Inter',system-ui,sans-serif;background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 50%,#0a0e1a 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;color:#fff}
+    .card{background:rgba(255,255,255,.04);backdrop-filter:blur(20px);border-radius:18px;border:1px solid rgba(255,255,255,.08);padding:40px 36px;width:100%;max-width:400px;box-shadow:0 8px 40px rgba(0,0,0,.4)}
+    .logo-wrap{text-align:center;margin-bottom:24px}
+    .logo-wrap img{max-width:220px;width:100%;height:auto}
+    .tagline{font-size:11px;color:rgba(255,255,255,.5);text-align:center;margin-top:10px;letter-spacing:.15em;text-transform:uppercase;font-weight:500}
+    h2{font-size:18px;font-weight:600;color:#fff;text-align:center;margin-bottom:6px;letter-spacing:-.01em}
+    .sub{font-size:13px;color:rgba(255,255,255,.55);margin-bottom:28px;text-align:center}
+    label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.55);display:block;margin-bottom:6px;font-weight:600}
+    input{width:100%;padding:11px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;font-size:14px;font-family:inherit;margin-bottom:14px;color:#fff;background:rgba(255,255,255,.05);transition:border-color .15s,background .15s}
+    input:focus{outline:none;border-color:#60a8f0;background:rgba(255,255,255,.08)}
+    input::placeholder{color:rgba(255,255,255,.3)}
+    button{width:100%;padding:12px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:8px;transition:transform .1s,box-shadow .15s;letter-spacing:.01em}
+    button:hover{box-shadow:0 8px 24px rgba(59,130,246,.4)}
+    button:active{transform:translateY(1px)}
+    .err{color:#fca5a5;font-size:12px;margin-bottom:16px;background:rgba(220,38,38,.12);padding:10px 14px;border-radius:8px;border:1px solid rgba(220,38,38,.3);text-align:center}
+    .footer{font-size:10px;color:rgba(255,255,255,.3);text-align:center;margin-top:24px;letter-spacing:.05em}
+  </style>
+  </head><body><div class="card">
+    <div class="logo-wrap">
+      <img src="/logo.png" alt="Valley Best Concrete">
+      <div class="tagline">Dispatch System</div>
+    </div>
+    ${err}
+    <form method="POST" action="/login">
+      <label>Username</label>
+      <input name="username" placeholder="e.g. beryle" autocomplete="username" autocapitalize="none" autocorrect="off">
+      <label>Password</label>
+      <input name="password" type="password" placeholder="••••••••" autocomplete="current-password">
+      <button type="submit">Sign in</button>
+    </form>
+    <div class="footer">Authorized access only</div>
   </div></body></html>`);
 });
 

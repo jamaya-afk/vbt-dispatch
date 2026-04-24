@@ -225,7 +225,7 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .fl textarea{resize:vertical;min-height:52px}
 .fr{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .sdiv{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);padding:8px 0 4px;border-bottom:1px solid var(--bdr);margin-top:4px;font-weight:600}
-.srow{display:grid;grid-template-columns:1fr 1fr 80px 90px auto;gap:5px;align-items:end;padding:7px 8px;background:var(--bg2);border-radius:var(--r);border:0.5px solid var(--bdr);margin-bottom:5px}
+.srow{display:grid;grid-template-columns:1fr 1fr 80px auto;gap:8px;align-items:end;padding:8px 10px;background:var(--bg2);border-radius:var(--r);border:0.5px solid var(--bdr);margin-bottom:5px}
 .srow select,.srow input{padding:5px 7px;font-size:12px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-family:var(--f);width:100%}
 .srow-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:2px}
 .sr{padding:5px 8px;font-size:11px;border:0.5px solid var(--Rd);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--R);font-family:var(--f)}
@@ -433,22 +433,61 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .madd{width:100%;padding:4px;border:1px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;font-size:10px;color:var(--txt3);font-family:var(--f);margin-top:2px}
 .madd:hover{background:var(--Bb);color:var(--B);border-color:var(--Bd)}
 
+/* ── DRIVER MODE: locked, mobile-first ────────────────────────────────────── */
+body.driver-mode .sidebar{display:none!important}
+body.driver-mode .main-area{width:100%}
+body.driver-mode #nav-wrap,
+body.driver-mode #sync-btn,
+body.driver-mode .mgr,
+body.driver-mode .mgrf,
+body.driver-mode [class*="vbtn"]{display:none!important}
+body.driver-mode .topbar-new{background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 100%);border-bottom:none}
+body.driver-mode .topbar-new .page-title{color:#fff;font-size:18px}
+body.driver-mode .topbar-new .sidebar-toggle{display:none}
+body.driver-mode .topbar-new::before{content:'';display:block;width:34px;height:34px;background-image:url(/app/logo.png);background-size:contain;background-repeat:no-repeat;background-position:center;margin-right:8px;filter:brightness(1.2)}
+body.driver-mode #sec-drv{background:var(--bg3)}
+
+/* Driver welcome header */
+.drv-welcome{background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);color:#fff;padding:18px 18px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px}
+.dw-greeting{display:flex;align-items:center;gap:12px}
+.dw-avatar{width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.15);color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;backdrop-filter:blur(10px)}
+.dw-hi{font-size:17px;font-weight:700;letter-spacing:-.01em}
+.dw-sub{font-size:12px;color:rgba(255,255,255,.7);margin-top:2px}
+.dw-sub b{color:#fff;font-weight:700}
+.dw-stats{display:flex;gap:20px}
+.dw-stat{text-align:center}
+.dw-stat-num{font-size:22px;font-weight:700;color:#fff;line-height:1}
+.dw-stat-lbl{font-size:10px;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.06em;margin-top:3px;font-weight:500}
+
+/* Action button icons inside driver actions */
+.gc-action svg{width:18px;height:18px;margin-right:8px;vertical-align:middle}
+.gc-hint{text-align:center;font-size:11px;color:var(--txt3);margin-top:6px;font-weight:500}
+.gc-hint.required{color:var(--R);font-weight:600}
+.gc-icon-lbl{display:inline-block;margin-right:4px;font-size:13px}
+
+/* Status strip SVG alignment */
+.gc-status-strip svg{flex-shrink:0}
+.gc-step{display:flex;align-items:center;gap:5px}
+
+/* Approval banner with SVG */
+.gc-approval-banner{display:flex;align-items:center;gap:7px}
+.gc-approval-banner svg{flex-shrink:0}
+
 /* ── APP SHELL (sidebar + main) ───────────────────────────────────────────── */
 body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:hidden}
 .app-shell{display:flex;height:100vh;overflow:hidden}
 
 /* Sidebar */
 .sidebar{width:220px;flex-shrink:0;background:var(--bg);border-right:1px solid var(--bdr);display:flex;flex-direction:column;box-shadow:1px 0 2px rgba(0,0,0,.03)}
-.sidebar-brand{padding:18px 18px 14px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;gap:10px}
-.brand-icon{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#1a2035 0%,#2d3a5e 100%);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
-.brand-text{min-width:0}
-.brand-name{font-size:15px;font-weight:700;color:var(--txt);letter-spacing:-.01em}
-.brand-sub{font-size:11px;color:var(--txt3)}
+.sidebar-brand{padding:18px 16px 14px;border-bottom:1px solid var(--bdr);background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 100%);display:flex;align-items:center;justify-content:center;min-height:82px}
+.brand-logo{max-width:170px;width:100%;height:auto;display:block}
 .sidebar-nav{flex:1;overflow-y:auto;padding:10px 8px;display:flex;flex-direction:column;gap:2px}
 .nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border:none;background:transparent;border-radius:var(--r);cursor:pointer;font-family:var(--f);font-size:13px;font-weight:500;color:var(--txt2);width:100%;text-align:left;transition:background .12s}
 .nav-item:hover{background:var(--bg2);color:var(--txt)}
 .nav-item.active{background:var(--Bb);color:var(--B);font-weight:600}
 .nav-icon{font-size:15px;width:20px;text-align:center;flex-shrink:0}
+.nav-icon-svg{width:18px;height:18px;flex-shrink:0;opacity:.85}
+.nav-item.active .nav-icon-svg{opacity:1}
 .nav-label{flex:1}
 .nav-badge{background:var(--R);color:#fff;font-size:10px;padding:1px 7px;border-radius:20px;font-weight:700;font-family:var(--f)}
 .sidebar-footer{border-top:1px solid var(--bdr);padding:12px;display:flex;flex-direction:column;gap:8px}
@@ -529,7 +568,7 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
 
 @media(max-width:700px){
   .fr{grid-template-columns:1fr}
-  .srow{grid-template-columns:1fr 1fr}
+  .srow{grid-template-columns:1fr 1fr 80px auto}
   .sr{grid-column:1/-1}
 }
 </style>
@@ -542,34 +581,37 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
   <!-- SIDEBAR NAVIGATION -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      <div class="brand-icon">🚛</div>
-      <div class="brand-text">
-        <div class="brand-name">VBT</div>
-        <div class="brand-sub">Dispatch</div>
-      </div>
+      <img src="/app/logo.png" alt="Valley Best Concrete" class="brand-logo">
     </div>
     <nav class="sidebar-nav">
       <button class="nav-item active" id="tab-board"   onclick="swTab('board')">
-        <span class="nav-icon">📋</span><span class="nav-label">Dispatch Board</span>
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9-4 9 4M3 7v10l9 4 9-4V7M3 7l9 4M21 7l-9 4M12 11v10"/></svg>
+        <span class="nav-label">Dispatch Board</span>
       </button>
       <button class="nav-item mgr" id="tab-approve" onclick="swTab('approve')">
-        <span class="nav-icon">✓</span><span class="nav-label">Approvals</span>
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <span class="nav-label">Approvals</span>
         <span id="approve-badge" class="nav-badge" style="display:none"></span>
       </button>
       <button class="nav-item" id="tab-pos"     onclick="swTab('pos')">
-        <span class="nav-icon">📄</span><span class="nav-label">Jobs / POs</span>
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        <span class="nav-label">Jobs / POs</span>
       </button>
       <button class="nav-item mgr" id="tab-bill"    onclick="swTab('bill')">
-        <span class="nav-icon">💰</span><span class="nav-label">Billing</span>
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        <span class="nav-label">Billing</span>
       </button>
       <button class="nav-item" id="tab-hist"    onclick="swTab('hist')">
-        <span class="nav-icon">🗂</span><span class="nav-label">History</span>
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
+        <span class="nav-label">History</span>
       </button>
       <button class="nav-item mgr" id="tab-finance" onclick="swTab('finance')">
-        <span class="nav-icon">📊</span><span class="nav-label">Reports</span>
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        <span class="nav-label">Reports</span>
       </button>
       <button class="nav-item" id="tab-drv"     onclick="swTab('drv')">
-        <span class="nav-icon">🚚</span><span class="nav-label">My Loads</span>
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+        <span class="nav-label">My Trips</span>
       </button>
     </nav>
     <div class="sidebar-footer">
@@ -677,7 +719,7 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
   <div class="mb">
     <div class="fr">
       <div class="fl"><label>PO Number</label><input id="pm-num" placeholder="Auto (PO-1001)"></div>
-      <div class="fl"><label>Delivery date</label><input type="date" id="pm-date"></div>
+      <div class="fl"><label>Delivery date <span style="font-size:10px;color:var(--txt3);text-transform:none;letter-spacing:0;font-weight:400">(applies to all drivers)</span></label><input type="date" id="pm-date" onchange="syncAllSplitDates(this.value)"></div>
     </div>
     <div class="fr">
       <div class="fl"><label>Customer / Project</label><input id="pm-cust" placeholder="Wilson Homes"></div>
@@ -829,7 +871,7 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
 let trucks=[],pos=[],loads=[],payments=[],matPrices={},vendors=[],vendorPrices={};
-let role='driver',myTruckId=null;
+let role='driver',myTruckId=null,myUsername='';
 let curTab='board',dayOffset=0,monthOffset=0,viewMode='kanban';
 let editPoId=null,editLoadId=null,sigLoadId=null,payPoId=null,roPoId=null;
 let splits=[],expanded=new Set();
@@ -902,7 +944,7 @@ function pInvoice(id){
 }
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
-const TAB_TITLES={board:'Dispatch Board',approve:'Approvals',pos:'Jobs / POs',bill:'Billing',hist:'History',finance:'Reports',drv:'My Loads'};
+const TAB_TITLES={board:'Dispatch Board',approve:'Approvals',pos:'Jobs / POs',bill:'Billing',hist:'History',finance:'Reports',drv:'My Trips'};
 function swTab(t){
   curTab=t;
   ['board','pos','approve','bill','hist','finance','drv'].forEach(x=>{
@@ -1460,10 +1502,29 @@ async function renderDrv(){
     dispatch=d.loads||[];
   }catch(e){}
 
-  if(!dispatch.length){ el.innerHTML='<div class="no-loads">No active loads assigned to you.</div>'; return; }
-
   const todStr=tod();
-  let h='';
+  const firstName=myUsername?myUsername.charAt(0).toUpperCase()+myUsername.slice(1):'Driver';
+  const todayCount=dispatch.filter(l=>l.deliveryDate===todStr).length;
+  const pendingCount=dispatch.filter(l=>!['approved','rejected'].includes(l.approvalStatus)).length;
+
+  // Driver welcome header
+  let header=`<div class="drv-welcome">
+    <div class="dw-greeting">
+      <div class="dw-avatar">${firstName.charAt(0)}</div>
+      <div>
+        <div class="dw-hi">Hi, ${firstName}</div>
+        <div class="dw-sub">${todayCount?`You have <b>${todayCount}</b> trip${todayCount>1?'s':''} today`:'No trips scheduled today'}</div>
+      </div>
+    </div>
+    <div class="dw-stats">
+      <div class="dw-stat"><div class="dw-stat-num">${pendingCount}</div><div class="dw-stat-lbl">Active</div></div>
+      <div class="dw-stat"><div class="dw-stat-num">${dispatch.filter(l=>l.approvalStatus==='submitted').length}</div><div class="dw-stat-lbl">Pending review</div></div>
+    </div>
+  </div>`;
+
+  if(!dispatch.length){ el.innerHTML=header+'<div class="no-loads" style="background:var(--bg);border-radius:var(--rl);margin:12px;padding:40px 20px;box-shadow:var(--shadow);text-align:center">No trips assigned right now.<br><br><span style="font-size:12px;color:var(--txt3)">Your dispatcher will assign loads as they come in.</span></div>'; return; }
+
+  let h=header;
   dispatch.forEach(l=>{
     const isToday=l.deliveryDate===todStr;
     const ts=l.timestamps||{};
@@ -1481,9 +1542,9 @@ async function renderDrv(){
 
     // Approval banner
     let banner='';
-    if(rejected) banner='<div class="gc-approval-banner rejected">⚠ Rejected by manager — contact dispatch</div>';
-    else if(approved) banner='<div class="gc-approval-banner approved">✓ Approved — load closed</div>';
-    else if(submitted) banner='<div class="gc-approval-banner submitted">⏳ Submitted — awaiting manager approval</div>';
+    if(rejected) banner='<div class="gc-approval-banner rejected"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Rejected by manager — contact dispatch</div>';
+    else if(approved) banner='<div class="gc-approval-banner approved"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><polyline points="20 6 9 17 4 12"/></svg> Approved — trip closed</div>';
+    else if(submitted) banner='<div class="gc-approval-banner submitted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Submitted — awaiting manager approval</div>';
 
     h+=`<div class="guided-card ${isToday?'is-today':''}">
       <div class="gc-head">
@@ -1493,34 +1554,39 @@ async function renderDrv(){
       <div class="gc-body">
         ${banner}
         <dl class="gc-info-grid">
-          <dt>Pickup</dt><dd>🏭 ${l.pickupLocation}</dd>
-          <dt>Deliver to</dt><dd>📍 ${l.deliveryLocation||l.city||'—'}</dd>
+          <dt>Pickup</dt><dd><span class="gc-icon-lbl">🏗</span> ${l.pickupLocation}</dd>
+          <dt>Deliver to</dt><dd><span class="gc-icon-lbl">📍</span> ${l.deliveryLocation||l.city||'—'}</dd>
           <dt>Material</dt><dd>${l.material} <span style="color:var(--txt3);font-size:11px">(${l.unit})</span></dd>
           <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads assigned</dd>
-          ${l.supervisor?`<dt>Supervisor</dt><dd>👤 ${l.supervisor}</dd>`:''}
-          ${l.notes?`<dt>Notes</dt><dd style="color:var(--A)">${l.notes}</dd>`:''}
+          ${l.supervisor?`<dt>Supervisor</dt><dd><span class="gc-icon-lbl">👤</span> ${l.supervisor}</dd>`:''}
+          ${l.notes?`<dt>Notes</dt><dd style="color:var(--A);font-weight:500">${l.notes}</dd>`:''}
         </dl>
 
         <!-- Progress strip -->
         <div class="gc-status-strip">
           <div class="gc-step ${started?'done':(!submitted&&!approved?'active':'')}">
-            ▶ Start
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Start
             ${ts.start?`<span class="gc-step-time">${ts.start}</span>`:''}
           </div>
           <div class="gc-step ${atPickup?'done':(started&&!atPickup&&!submitted?'active':'')}">
-            🏭 Pickup
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
+            Pickup
             ${ts.arrivedPickup?`<span class="gc-step-time">${ts.arrivedPickup}</span>`:''}
           </div>
           <div class="gc-step ${hasImage?'done':(atPickup&&!hasImage?'active':'')}">
-            📷 Ticket
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Ticket
             ${l.ticketImageAt?`<span class="gc-step-time">✓</span>`:''}
           </div>
           <div class="gc-step ${hasSig?'done':(hasImage&&!hasSig?'active':'')}">
-            ✍ Signature
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M20 14.66V20a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5.34"/><polygon points="18 2 22 6 12 16 8 16 8 12 18 2"/></svg>
+            Signed
             ${hasSig?`<span class="gc-step-time">✓</span>`:''}
           </div>
           <div class="gc-step ${delivered?'done':(hasSig&&!delivered?'active':'')}">
-            ✅ Delivered
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><polyline points="20 6 9 17 4 12"/></svg>
+            Delivered
             ${ts.completed?`<span class="gc-step-time">${ts.completed}</span>`:''}
           </div>
         </div>
@@ -1529,41 +1595,46 @@ async function renderDrv(){
         <!-- Guided action buttons — shown based on step -->
         ${!started?`
           <button class="gc-action primary" onclick="tripAction('${l.loadId}','start-trip')">
-            ▶ Start Trip
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Start Trip
           </button>
-          <div style="text-align:center;font-size:11px;color:var(--txt3)">Tap to begin — GPS and time will be captured automatically</div>
+          <div class="gc-hint">GPS and time will be captured automatically</div>
         `:!atPickup?`
           <button class="gc-action warn" onclick="openYardPicker('${l.loadId}')">
-            🏭 Arrived at Pickup
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
+            Arrived at Pickup
           </button>
-          <div style="text-align:center;font-size:11px;color:var(--txt3)">Tap when you arrive — you'll pick which yard</div>
+          <div class="gc-hint">Tap when you arrive — confirm which yard</div>
         `:!hasImage?`
           <button class="gc-action warn" onclick="openTicketUpload('${l.loadId}')">
-            📷 Upload Ticket Photo
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Upload Ticket Photo
           </button>
-          <div style="text-align:center;font-size:11px;color:var(--R);font-weight:600">⚠ Required before delivery</div>
+          <div class="gc-hint required">Required before delivery</div>
         `:!hasSig?`
           <button class="gc-action purple" onclick="openSig('${l.loadId}')">
-            ✍ Capture Customer Signature
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="18 2 22 6 12 16 8 16 8 12 18 2"/></svg>
+            Customer Signature
           </button>
-          <div style="text-align:center;font-size:11px;color:var(--R);font-weight:600">⚠ Required before delivery</div>
+          <div class="gc-hint required">Required before delivery</div>
         `:!submitted?`
           <button class="gc-action success" onclick="tripAction('${l.loadId}','delivered')">
-            ✅ Complete Delivery
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Complete Delivery
           </button>
-          <div style="text-align:center;font-size:11px;color:var(--txt3)">All checks passed — tap to submit for approval</div>
+          <div class="gc-hint">All checks passed — tap to submit</div>
         `:''}
 
         <!-- Requirements checklist -->
         ${started&&!submitted?`<div style="margin-top:14px">
           <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:7px">Required before completion</div>
           <div class="gc-req ${hasImage?'done':'missing'}">
-            <span class="gc-req-label">📷 Ticket Image</span>
+            <span class="gc-req-label">Ticket Image</span>
             <span class="gc-req-status">${hasImage?'✓ Uploaded':'— Missing'}</span>
           </div>
           ${hasImage?`<img src="${l.ticketImage}" class="ticket-preview">`:''}
           <div class="gc-req ${hasSig?'done':'missing'}">
-            <span class="gc-req-label">✍ Customer Signature</span>
+            <span class="gc-req-label">Customer Signature</span>
             <span class="gc-req-status">${hasSig?'✓ Signed by '+pod.signedBy:'— Missing'}</span>
           </div>
         </div>`:''}
@@ -1807,16 +1878,22 @@ function renderSplits(){
         <div class="srow-label">Loads</div>
         <input type="number" min="1" step="1" placeholder="0" value="${s.loadsAssigned||''}" oninput="splits[${i}].loadsAssigned=Number(this.value)||0;updRem()">
       </div>
-      <div>
-        <div class="srow-label">Date</div>
-        <input type="date" value="${s.deliveryDate||document.getElementById('pm-date')?.value||tod()}" oninput="splits[${i}].deliveryDate=this.value">
-      </div>
       <button class="sr" onclick="splits.splice(${i},1);renderSplits()">&#215;</button>
     </div>`;
   }).join('');
   updRem();
 }
-function addSplit(){splits.push({truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',material:'Fill Sand',loadsAssigned:'',deliveryDate:document.getElementById('pm-date')?.value||tod()});renderSplits();}
+function addSplit(){
+  const poDate=document.getElementById('pm-date')?.value||tod();
+  splits.push({truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',material:'Fill Sand',loadsAssigned:'',deliveryDate:poDate});
+  renderSplits();
+}
+
+// When PO delivery date changes, sync every split row to match
+function syncAllSplitDates(newDate){
+  if(!newDate) return;
+  splits.forEach(s=>{ s.deliveryDate=newDate; });
+}
 function updRem(){
   // Group by material
   const matMap={};
@@ -1832,7 +1909,8 @@ async function savePO(){
   const isAddMode=editPoId&&document.getElementById('pm-num').disabled;
   const po={poNumber:g('pm-num')||null,customer:g('pm-cust'),code:g('pm-code'),pickup:g('pm-pick'),supervisor:g('pm-sup'),city:g('pm-addr'),address:g('pm-addr'),deliveryDate:g('pm-date')||tod(),type:g('pm-type'),recurrenceRule:g('pm-type')==='recurring'?g('pm-recur'):null,notes:g('pm-notes')};
   if(!isAddMode&&!po.customer){alert('Customer required');return;}
-  const sp=splits.map(s=>({truckId:s.truckId||null,driverName:s.driverName||trucks.find(t=>t.id===s.truckId)?.label||'',material:s.material||'Fill Sand',loadsAssigned:Number(s.loadsAssigned)||0,deliveryDate:s.deliveryDate||po.deliveryDate}));
+  // Always use the PO's delivery date for all splits — single source of truth
+  const sp=splits.map(s=>({truckId:s.truckId||null,driverName:s.driverName||trucks.find(t=>t.id===s.truckId)?.label||'',material:s.material||'Fill Sand',loadsAssigned:Number(s.loadsAssigned)||0,deliveryDate:po.deliveryDate}));
   if(!sp.some(s=>s.loadsAssigned>0)){alert('Enter at least one load');return;}
   try{
     if(isAddMode){
@@ -1840,8 +1918,10 @@ async function savePO(){
     } else if(editPoId){
       await fetch('/api/pos/'+editPoId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(po)});
       for(const s of sp){
-        if(s.loadId) await fetch('/api/loads/'+s.loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId:s.truckId,driverName:s.driverName,material:s.material,loadsAssigned:s.loadsAssigned,deliveryDate:s.deliveryDate})});
-        else await fetch('/api/pos/'+editPoId+'/loads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify([s])});
+        // Force PO's deliveryDate onto every split (prevents drift between PO and loads)
+        const splitData={truckId:s.truckId,driverName:s.driverName,material:s.material,loadsAssigned:s.loadsAssigned,deliveryDate:po.deliveryDate};
+        if(s.loadId) await fetch('/api/loads/'+s.loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(splitData)});
+        else await fetch('/api/pos/'+editPoId+'/loads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify([splitData])});
       }
     } else {
       await fetch('/api/pos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({po,splits:sp})});
@@ -2421,7 +2501,7 @@ async function loadAll(){
 async function init(){
   try{
     const r=await fetch('/api/me');const me=await r.json();
-    role=me.role;myTruckId=me.truckId||null;
+    role=me.role;myTruckId=me.truckId||null;myUsername=me.username||'';
     document.getElementById('uinfo').textContent=me.username;
     const urole=document.getElementById('urole'); if(urole) urole.textContent=me.role;
     const avatar=document.getElementById('user-avatar'); if(avatar){ avatar.textContent=me.username.slice(0,2).toUpperCase(); }
@@ -2429,7 +2509,8 @@ async function init(){
     await loadAll();
   }catch(e){console.error(e);}
   if(role==='driver'){
-    ['tab-board','tab-pos','tab-approve','tab-bill','tab-hist','tab-finance','nav-wrap'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
+    // Lock down — drivers ONLY see their trips. No sidebar nav, no tabs, no other views.
+    document.body.classList.add('driver-mode');
     startGPSTracking();
     swTab('drv');
   } else {
