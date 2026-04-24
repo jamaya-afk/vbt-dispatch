@@ -43,12 +43,8 @@ const DATA_FILE = path.join(__dirname, 'data.json');
 
 const USERS = {
   manager:  { password: process.env.MANAGER_PASS  || 'vbt2025!',   role: 'manager', truckId: null       },
-
-  // Generic driver login: username "driver", password DRIVER_PASS/driver123.
-  // Driver chooses their name on the login screen so the session gets the right truckId.
+  // Generic driver login: username driver / password driver123, then choose driver name.
   driver:   { password: process.env.DRIVER_PASS   || 'driver123',  role: 'driver-picker', truckId: null },
-
-  // Individual driver logins still work too.
   beryle:   { password: process.env.BERYLE_PASS   || 'beryle123',  role: 'driver',  truckId: 'beryle'   },
   matthew:  { password: process.env.MATTHEW_PASS  || 'matthew123', role: 'driver',  truckId: 'matthew'  },
   rigo:     { password: process.env.RIGO_PASS     || 'rigo123',    role: 'driver',  truckId: 'rigo'     },
@@ -65,6 +61,21 @@ const DEFAULT_TRUCKS = [
 ];
 
 // Vendor table — real suppliers with per-material pricing
+// Match a load to the logged-in driver safely. Older saved data may have truckId as
+// "Beryle" instead of "beryle", so compare id, label, driverName, and username.
+function normDriver(v) { return String(v || '').trim().toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function driverOwnsLoad(user, load) {
+  if (!user || user.role !== 'driver' || !load) return false;
+  const uTruck = normDriver(user.truckId);
+  const uName = normDriver(user.username);
+  const trucksList = store?.trucks?.length ? store.trucks : DEFAULT_TRUCKS;
+  const truck = trucksList.find(t => normDriver(t.id) === uTruck || normDriver(t.label) === uName)
+             || DEFAULT_TRUCKS.find(t => normDriver(t.id) === uTruck || normDriver(t.label) === uName);
+  const mine = new Set([uTruck, uName]);
+  if (truck) { mine.add(normDriver(truck.id)); mine.add(normDriver(truck.label)); }
+  return mine.has(normDriver(load.truckId)) || mine.has(normDriver(load.driverName));
+}
+
 const DEFAULT_VENDORS = [
   { id: 'cemex',               name: 'CEMEX',               location: 'Clovis, CA',        active: true },
   { id: 'vulcan-sanger',       name: 'Vulcan Sanger',       location: 'Sanger, CA',        active: true },
@@ -347,15 +358,10 @@ async function updateRow(tab, rowIdx, vals) {
 function reqAuth(req, res, next) { if (req.session?.user) return next(); res.redirect('/login'); }
 function reqMgr(req, res, next)  { if (req.session?.user?.role === 'manager') return next(); res.status(403).json({ error: 'Manager only' }); }
 
-// Serve app assets. Works whether files are in /public or project root.
-const PUBLIC_DIR = fs.existsSync(path.join(__dirname, 'public', 'index.html'))
-  ? path.join(__dirname, 'public')
-  : __dirname;
-
 // Serve logo publicly (no auth required) so login page can display it
-app.get('/logo.png', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'logo.png')));
+app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
 
-app.use('/app', reqAuth, express.static(PUBLIC_DIR));
+app.use('/app', reqAuth, express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => { if (req.session?.user) return res.redirect('/app'); res.redirect('/login'); });
 
 app.get('/login', (req, res) => {
@@ -376,7 +382,6 @@ app.get('/login', (req, res) => {
     input:focus,select:focus{outline:none;border-color:#60a8f0;background:rgba(255,255,255,.08)}
     input::placeholder{color:rgba(255,255,255,.3)}
     select option{background:#111827;color:#fff}
-    .hint{font-size:11px;color:rgba(255,255,255,.45);margin:-8px 0 14px;line-height:1.4}
     button{width:100%;padding:12px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:8px;transition:transform .1s,box-shadow .15s;letter-spacing:.01em}
     button:hover{box-shadow:0 8px 24px rgba(59,130,246,.4)}
     button:active{transform:translateY(1px)}
@@ -399,7 +404,7 @@ app.get('/login', (req, res) => {
         <option value="">Only needed when username is driver</option>
         ${DEFAULT_TRUCKS.map(t => `<option value="${t.id}">${t.label} — ${t.truckNum}</option>`).join('')}
       </select>
-      <div class="hint">Managers can ignore this. Drivers can use username <b>driver</b>, password <b>driver123</b>, then pick their name.</div>
+      <div class="hint">Drivers can use username <b>driver</b>, password <b>driver123</b>, then pick their name.</div>
       <button type="submit">Sign in</button>
     </form>
     <div class="footer">Authorized access only</div>
@@ -412,11 +417,11 @@ app.post('/login', (req, res) => {
   const user = USERS[username];
   if (!user || user.password !== password) return res.redirect('/login?error=1');
 
-  // Generic driver login. This keeps one shared driver password, but still filters
+  // Generic driver login. This keeps one shared password but still filters
   // the driver screen to the selected driver's assigned truck/loads.
   if (user.role === 'driver-picker') {
     const truckId = (req.body.truckId || '').trim();
-    const truck = DEFAULT_TRUCKS.find(t => t.id === truckId);
+    const truck = (store.trucks || DEFAULT_TRUCKS).find(t => t.id === truckId) || DEFAULT_TRUCKS.find(t => t.id === truckId);
     if (!truck) return res.redirect('/login?error=1');
     req.session.user = { username: truck.label, role: 'driver', truckId: truck.id };
     return res.redirect('/app');
@@ -433,7 +438,7 @@ app.get('/api/data', reqAuth, (req, res) => {
   promoteScheduled();
   const user = req.session.user;
   if (user.role === 'driver') {
-    const myLoads = store.loads.filter(l => l.truckId === user.truckId && !l.voided);
+    const myLoads = store.loads.filter(l => driverOwnsLoad(user, l) && !l.voided);
     const myPoIds = new Set(myLoads.map(l => l.poId));
     const myPos = store.pos.filter(p => myPoIds.has(p.id)).map(p => ({
       id: p.id, poNumber: p.poNumber, customer: p.customer, city: p.city,
@@ -580,7 +585,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Load not found' });
   const l = store.loads[idx];
-  if (user.role === 'driver' && l.truckId !== user.truckId) return res.status(403).json({ error: 'Not your load' });
+  if (user.role === 'driver' && !driverOwnsLoad(user, l)) return res.status(403).json({ error: 'Not your load' });
 
   const po = store.pos.find(p => p.id === l.poId) || {};
   if (user.role === 'driver') {
@@ -630,7 +635,7 @@ app.post('/api/loads/:id/complete', reqAuth, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Load not found' });
   const l = store.loads[idx];
-  if (user.role === 'driver' && l.truckId !== user.truckId) return res.status(403).json({ error: 'Not your load' });
+  if (user.role === 'driver' && !driverOwnsLoad(user, l)) return res.status(403).json({ error: 'Not your load' });
 
   store.loads[idx].status = 'completed';
   store.loads[idx].completedAt = new Date().toISOString();
@@ -1038,7 +1043,7 @@ app.put('/api/vendor-prices/:vendorId', reqMgr, async (req, res) => {
 app.get('/api/my-dispatch', reqAuth, (req, res) => {
   const user = req.session.user;
   if (user.role !== 'driver') return res.status(403).json({ error: 'Driver only' });
-  const myLoads = store.loads.filter(l => l.truckId === user.truckId && !l.voided && l.status !== 'completed');
+  const myLoads = store.loads.filter(l => driverOwnsLoad(user, l) && !l.voided && l.status !== 'completed');
   // Enrich each load with guide info — driver doesn't need to know anything beyond this
   const enriched = myLoads.map(l => {
     const po = store.pos.find(p => p.id === l.poId) || {};
@@ -1079,7 +1084,7 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Load not found' });
   const l = store.loads[idx];
-  if (user.role === 'driver' && l.truckId !== user.truckId) return res.status(403).json({ error: 'Not your load' });
+  if (user.role === 'driver' && !driverOwnsLoad(user, l)) return res.status(403).json({ error: 'Not your load' });
   if (l.locked || l.voided) return res.status(403).json({ error: 'This load is locked and cannot be changed' });
 
   const { action, gps } = req.body;
@@ -1135,7 +1140,7 @@ app.post('/api/loads/:id/ticket-image', reqAuth, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Load not found' });
   const l = store.loads[idx];
-  if (user.role === 'driver' && l.truckId !== user.truckId) return res.status(403).json({ error: 'Not your load' });
+  if (user.role === 'driver' && !driverOwnsLoad(user, l)) return res.status(403).json({ error: 'Not your load' });
   if (l.locked || l.voided) return res.status(403).json({ error: 'Load is locked' });
   if (!req.body.image) return res.status(400).json({ error: 'Image data required' });
   const before = { ticketImage: l.ticketImage, ticketImageAt: l.ticketImageAt };
