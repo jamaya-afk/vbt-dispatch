@@ -7,11 +7,10 @@ const fs = require('fs');
 const app = express();
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'vbt-2025-secret',
-  resave: false, saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
-}));
+
+// Session middleware is mounted AFTER Postgres connects (see bottom of file).
+// Using Postgres-backed sessions eliminates the MemoryStore warning and allows
+// multiple app instances to share the same session state.
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const SHEET_ID  = '1T5pOeXmLmZyKKfq4YRl9aymXn9MQnNrqmcuyJluMhQs';
@@ -1250,9 +1249,35 @@ app.get('/api/reports', reqMgr, (req, res) => {
   res.json({ driverStats, custStats, matStats, weeks });
 });
 
-// ── Safe startup: init DB → load data → start server ─────────────────────────
+// ── Safe startup: init DB → mount session → load data → start server ────────
 (async () => {
   await initPg();      // Wait for Postgres to be ready
+
+  // Mount session middleware — Postgres-backed when available, in-memory fallback otherwise
+  const sessionOpts = {
+    secret: process.env.SESSION_SECRET || 'vbt-2025-secret',
+    resave: false, saveUninitialized: false,
+    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, sameSite: 'lax' }
+  };
+  if (pg) {
+    try {
+      const pgSession = require('connect-pg-simple')(session);
+      sessionOpts.store = new pgSession({
+        pool: pg,
+        tableName: 'user_sessions',
+        createTableIfMissing: true,
+        pruneSessionInterval: 60 * 15  // prune expired sessions every 15 min
+      });
+      console.log('✓ Session store: Postgres (scalable, persistent)');
+    } catch (e) {
+      console.warn('⚠ connect-pg-simple not available — using memory session store:', e.message);
+    }
+  } else {
+    console.warn('⚠ Using in-memory session store (not suitable for multi-instance deploys)');
+  }
+  app.use(session(sessionOpts));
+
+  // Now that session is mounted, register routes that depend on it
   await loadData();    // Load existing data (never resets)
   app.listen(PORT, () => {
     console.log(`VBT Dispatch running on port ${PORT}`);
