@@ -185,7 +185,16 @@ body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100v
 .hi{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--r);margin-bottom:4px}
 
 /* ── DRIVER VIEW ── */
-.drv-view{padding:12px;display:flex;flex-direction:column;gap:9px;overflow-y:auto;height:calc(100vh - 108px)}
+.drv-view{padding:0;display:flex;flex-direction:column;gap:0}
+body.driver-mode #sec-drv{background:var(--bg3);display:block!important}
+body.driver-mode .drv-view{padding:0}
+/* Make sure the driver's cards area has breathing room below welcome header */
+.drv-welcome + .guided-card,
+.drv-welcome + .no-loads{margin-top:14px}
+.drv-view > .guided-card,
+.drv-view > .no-loads{margin:0 14px 14px}
+.drv-view > .guided-card:first-of-type,
+.drv-view > .no-loads:first-of-type{margin-top:14px}
 .dlc{background:var(--bg);border:1.5px solid var(--bdr);border-radius:var(--rl);overflow:hidden;box-shadow:var(--shadow)}
 .dlch{padding:12px 16px;background:linear-gradient(135deg,#1a2035 0%,#2d3a5e 100%);border-bottom:none}
 .dlch-po{color:rgba(255,255,255,.6)!important}
@@ -639,8 +648,7 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
         <button class="nbtn" onclick="navFwd()">&#8594;</button>
         <div style="display:flex;gap:3px;margin-left:6px;background:var(--bg2);padding:3px;border-radius:20px">
           <button class="vbtn" id="vbtn-day" onclick="setViewMode('day')">Day</button>
-          <button class="vbtn" id="vbtn-month" onclick="setViewMode('month')">Month</button>
-          <button class="vbtn active" id="vbtn-kanban" onclick="setViewMode('kanban')">Kanban</button>
+          <button class="vbtn active" id="vbtn-month" onclick="setViewMode('month')">Month</button>
         </div>
       </div>
       <div style="margin-left:auto;display:flex;align-items:center;gap:6px">
@@ -872,7 +880,7 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
 // ── State ─────────────────────────────────────────────────────────────────────
 let trucks=[],pos=[],loads=[],payments=[],matPrices={},vendors=[],vendorPrices={};
 let role='driver',myTruckId=null,myUsername='';
-let curTab='board',dayOffset=0,monthOffset=0,viewMode='kanban';
+let curTab='board',dayOffset=0,monthOffset=0,viewMode='month';
 let editPoId=null,editLoadId=null,sigLoadId=null,payPoId=null,roPoId=null;
 let splits=[],expanded=new Set();
 let sigCtx=null,sigDrawing=false,sigHasData=false,dragLoadId=null;
@@ -1493,14 +1501,27 @@ function renderHist(){
 // ── DRIVER GUIDED VIEW ────────────────────────────────────────────────────────
 async function renderDrv(){
   const el=document.getElementById('drv-view');
-  if(!el) return;
+  if(!el){ console.error('drv-view element missing'); return; }
   // Fetch dispatch cards (pre-enriched server-side — no client lookups)
   let dispatch=[];
+  let fetchError=null;
   try{
     const r=await fetch('/api/my-dispatch');
-    const d=await r.json();
-    dispatch=d.loads||[];
-  }catch(e){}
+    if(!r.ok){ fetchError='Server returned '+r.status; }
+    else{
+      const d=await r.json();
+      dispatch=d.loads||[];
+    }
+  }catch(e){ fetchError=e.message||'Network error'; console.error('my-dispatch fetch:', e); }
+
+  if(fetchError){
+    el.innerHTML=`<div style="padding:40px 20px;text-align:center;color:var(--R);background:var(--Rb);margin:14px;border-radius:var(--rl);border:1px solid var(--Rd)">
+      <div style="font-weight:700;margin-bottom:6px">Could not load your trips</div>
+      <div style="font-size:12px;color:var(--txt2)">${fetchError}</div>
+      <button onclick="renderDrv()" style="margin-top:12px;padding:8px 16px;background:var(--B);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-family:var(--f);font-weight:600">Retry</button>
+    </div>`;
+    return;
+  }
 
   const todStr=tod();
   const firstName=myUsername?myUsername.charAt(0).toUpperCase()+myUsername.slice(1):'Driver';
@@ -2511,11 +2532,18 @@ async function init(){
   if(role==='driver'){
     // Lock down — drivers ONLY see their trips. No sidebar nav, no tabs, no other views.
     document.body.classList.add('driver-mode');
+    // Force the driver section visible before anything else
+    document.getElementById('sec-drv').style.display='block';
+    document.getElementById('sec-board').style.display='none';
+    const pageTitle=document.getElementById('page-title');
+    if(pageTitle) pageTitle.textContent='My Trips';
     startGPSTracking();
     swTab('drv');
+    // Belt-and-suspenders: render driver view directly, don't trust swTab
+    setTimeout(()=>renderDrv(), 100);
   } else {
     swTab('board');
-    setViewMode('kanban');
+    setViewMode('month');
     setTimeout(initFeed, 500);
   }
 }
