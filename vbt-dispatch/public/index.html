@@ -674,23 +674,7 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
     <div class="board-outer" style="flex:1;overflow-y:auto;overflow-x:auto">
       <div class="board-inner" id="board-inner"></div>
     </div>
-    <!-- ACTIVITY FEED DRAWER (manager only) -->
-    <div id="activity-drawer" class="mgr" style="width:280px;flex-shrink:0;border-left:1px solid var(--bdr);background:var(--bg);flex-direction:column;display:none">
-      <div style="padding:10px 14px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;background:var(--bg2)">
-        <div style="display:flex;align-items:center;gap:7px">
-          <span style="font-size:13px;font-weight:600;color:var(--txt)">Live Feed</span>
-          <span id="feed-live-dot" style="width:7px;height:7px;border-radius:50%;background:var(--G);display:inline-block;animation:pulse 2s infinite"></span>
-        </div>
-        <button onclick="toggleFeed()" style="font-size:11px;color:var(--txt3);background:transparent;border:none;cursor:pointer;font-family:var(--f);padding:3px 7px;border-radius:var(--r)" title="Hide feed">✕</button>
-      </div>
-      <div id="activity-list" style="flex:1;overflow-y:auto;padding:8px"></div>
-    </div>
   </div>
-  <!-- Feed toggle button (when drawer is hidden) -->
-  <button id="feed-toggle-btn" class="mgr" onclick="toggleFeed()" style="position:fixed;bottom:20px;right:20px;background:var(--B);color:#fff;border:none;border-radius:50px;padding:10px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--f);box-shadow:0 4px 16px rgba(59,130,246,.4);z-index:50;display:flex;align-items:center;gap:6px">
-    <span style="width:7px;height:7px;border-radius:50%;background:#fff;display:inline-block;animation:pulse 2s infinite"></span>
-    Live Feed
-  </button>
 </div>
 
 <!-- ALL POs -->
@@ -785,7 +769,7 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
       <div class="sdiv">Move or reassign</div>
       <div class="fr">
         <div class="fl"><label>Move to date</label><input type="date" id="ll-mv-date"></div>
-        <div class="fl"><label>Reassign driver <button type="button" onclick="openPickerFromLL()" style="font-size:10px;color:var(--B);background:var(--Bb);border:1px solid var(--Bd);border-radius:20px;padding:1px 7px;cursor:pointer;font-family:var(--f);font-weight:500;margin-left:6px">&#x1F4CD; Find best</button></label><select id="ll-reassign"><option value="">— same driver —</option></select></div>
+        <div class="fl"><label>Reassign driver</label><select id="ll-reassign"><option value="">— same driver —</option></select></div>
       </div>
       <button class="bs" style="font-size:12px;padding:5px 11px;margin-top:5px" onclick="applyMoveReassign()">Apply move / reassign</button>
     </div>
@@ -861,25 +845,6 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
   </div>
   <div class="mf">
     <button class="bs" onclick="closeYard()">Cancel</button>
-  </div>
-</div></div>
-
-<!-- DRIVER PICKER MODAL -->
-<div class="mbg" id="dp-m" style="display:none"><div class="mod" style="max-width:480px">
-  <div class="mh">
-    <h2>&#x1F4CD; Choose Best Driver</h2>
-    <button class="mc" onclick="closeDP()">&#215;</button>
-  </div>
-  <div class="mb" style="padding:16px 18px">
-    <div id="dp-dest-info" class="dp-dest"></div>
-    <div id="dp-no-addr" class="dp-no-addr" style="display:none">
-      ⚠ No delivery address on this job — distances can't be calculated. You can still pick a driver below.
-    </div>
-    <div id="dp-list"></div>
-  </div>
-  <div class="mf">
-    <button class="bs" onclick="closeDP()">Cancel</button>
-    <button class="bp" id="dp-confirm" onclick="confirmDP()" disabled>Select driver</button>
   </div>
 </div></div>
 
@@ -1243,15 +1208,6 @@ function renderLoadCard(l,mini=false){
   if(pod.signedBy) statusBadge+=`<span class="pill g">✓ POD</span>`;
   if(ts.start&&!ts.completed) statusBadge+=`<span class="pill b">▶ started</span>`;
 
-  // Quick-assign button for unassigned loads — opens smart driver picker
-  const jobAddr=(po.city||po.address||'');
-  const quickAssign = (role==='manager'&&isUnassigned) ?
-    `<div style="margin-top:7px" onclick="event.stopPropagation()">
-      <button onclick="openDriverPickerForLoad('${l.id}','${jobAddr.replace(/'/g,"\'")}',event)" style="width:100%;padding:6px 10px;font-size:11px;border:1.5px solid var(--Ad);border-radius:20px;background:var(--Ab);color:var(--A);font-family:var(--f);cursor:pointer;font-weight:600;transition:all .15s" onmouseover="this.style.background='var(--A)';this.style.color='#fff'" onmouseout="this.style.background='var(--Ab)';this.style.color='var(--A)'">
-        &#x1F4CD; Assign driver
-      </button>
-    </div>` : '';
-
   return `<div class="lcard ${isUnassigned?'unassigned-card':''} ${miss&&!isUnassigned?'missing-card':''}"
     draggable="${role==='manager'?'true':'false'}"
     ondragstart="onDragStart(event,'${l.id}')"
@@ -1270,23 +1226,7 @@ function renderLoadCard(l,mini=false){
     </div>
     <div class="lc-pills" style="margin-top:5px">${statusBadge}</div>
     <div class="lc-prog" style="margin-top:5px"><div class="lc-prog-fill" style="width:${pct}%;background:${pct>=100?'var(--G)':pct>0?'var(--A)':'var(--bdr2)'}"></div></div>
-    ${quickAssign}
   </div>`;
-}
-
-async function quickAssignLoad(loadId, truckId){
-  if(!truckId) return;
-  const t=trucks.find(x=>x.id===truckId);
-  await fetch('/api/loads/'+loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId,driverName:t?.label||''})});
-  await loadAll();renderBoard();
-}
-
-function openDriverPickerForLoad(loadId, destAddr, event){
-  event.stopPropagation();
-  const l=loads.find(x=>x.id===loadId);if(!l)return;
-  openDriverPicker(destAddr, async (truckId)=>{
-    await quickAssignLoad(loadId, truckId);
-  }, l.truckId);
 }
 
 // ── DRAG & DROP ───────────────────────────────────────────────────────────────
@@ -1563,8 +1503,8 @@ async function renderDrvInner(el){
       <div class="dw-stat"><div class="dw-stat-num">${dispatch.filter(l=>l.approvalStatus==='submitted').length}</div><div class="dw-stat-lbl">Pending review</div></div>
     </div>
   </div>
-  <div style="margin:12px;padding:10px 12px;border:1px solid var(--bdr);background:var(--bg2);border-radius:var(--r);font-size:12px;color:var(--txt2);font-family:var(--m)">
-    Debug: userId=<b>${myUserId||'unknown'}</b> · user=<b>${myUsername||'unknown'}</b> · assignedTrips=<b>${dispatch.length}</b>
+  <div style="margin:12px;padding:10px 12px;border:2px solid var(--G);background:var(--Gb);border-radius:var(--r);font-size:13px;color:var(--txt);font-weight:700;font-family:var(--f)">
+    DRIVER DASHBOARD FIX ACTIVE
   </div>`;
 
   if(!dispatch.length){ el.innerHTML=header+'<div class="no-loads" style="background:var(--bg);border-radius:var(--rl);margin:12px;padding:40px 20px;box-shadow:var(--shadow);text-align:center">No loads assigned to you yet. Please contact the manager.</div>'; return; }
@@ -1599,13 +1539,15 @@ async function renderDrvInner(el){
       <div class="gc-body">
         ${banner}
         <dl class="gc-info-grid">
-          <dt>Pickup</dt><dd><span class="gc-icon-lbl">🏗</span> ${l.pickupLocation}<div style="margin-top:6px"><button type="button" class="ab" onclick="openYardPicker('${l.loadId}')">Find closest yard</button></div></dd>
-          <dt>Deliver to</dt><dd><span class="gc-icon-lbl">📍</span> ${l.deliveryLocation||l.city||'—'}</dd>
+          <dt>Customer</dt><dd>${l.customer||l.jobName||'—'}</dd>
+          <dt>Pickup yard</dt><dd><span class="gc-icon-lbl">🏗</span> ${l.pickupLocation}</dd>
+          <dt>Job site / delivery address</dt><dd><span class="gc-icon-lbl">📍</span> ${l.deliveryLocation||l.city||'—'}</dd>
+          <dt>Delivery date</dt><dd>${fmtD(l.deliveryDate)}</dd>
           <dt>Material</dt><dd>${l.material} <span style="color:var(--txt3);font-size:11px">(${l.unit})</span></dd>
-          <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads assigned</dd>
-          <dt>Status</dt><dd>${approved?'Approved':submitted?'Submitted':delivered?'Delivered':hasSig?'Signature captured':hasImage?'Ticket uploaded':atPickup?'Arrived at yard':started?'Started':'Not started'}</dd>
+          <dt>Number of loads</dt><dd><b>${l.loadsAssigned}</b> loads assigned</dd>
+          <dt>Current status</dt><dd>${approved?'Approved':submitted?'Submitted':delivered?'Delivered':hasSig?'Signature captured':hasImage?'Ticket uploaded':atPickup?'Arrived at yard':started?'Started':'Not started'}</dd>
           ${l.supervisor?`<dt>Supervisor</dt><dd><span class="gc-icon-lbl">👤</span> ${l.supervisor}</dd>`:''}
-          ${l.notes?`<dt>Notes</dt><dd style="color:var(--A);font-weight:500">${l.notes}</dd>`:''}
+          ${l.notes?`<dt>Manager notes</dt><dd style="color:var(--A);font-weight:500">${l.notes}</dd>`:''}
         </dl>
 
         <!-- Progress strip -->
@@ -1638,44 +1580,16 @@ async function renderDrvInner(el){
         </div>
 
         ${!approved&&!rejected?`
-        <!-- Guided action buttons — shown based on step -->
-        ${!started?`
-          <button class="gc-action primary" onclick="tripAction('${l.loadId}','start-trip')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            Start Trip
-          </button>
-          <div class="gc-hint">GPS and time will be captured automatically</div>
-        `:!atPickup?`
-          <button class="gc-action warn" onclick="openYardPicker('${l.loadId}')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
-            Arrived at Pickup
-          </button>
-          <div class="gc-hint">Tap when you arrive — confirm which yard</div>
-        `:!hasImage?`
-          <button class="gc-action warn" onclick="openTicketUpload('${l.loadId}')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-            Upload Ticket Photo
-          </button>
-          <div class="gc-hint required">Required before delivery</div>
-        `:!hasSig?`
-          <button class="gc-action purple" onclick="openSig('${l.loadId}')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="18 2 22 6 12 16 8 16 8 12 18 2"/></svg>
-            Customer Signature
-          </button>
-          <div class="gc-hint required">Required before delivery</div>
-        `:!delivered?`
-          <button class="gc-action success" onclick="tripAction('${l.loadId}','delivered')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Delivered
-          </button>
-          <div class="gc-hint">Marks the load as delivered with GPS/time</div>
-        `:!submitted?`
-          <button class="gc-action primary" onclick="tripAction('${l.loadId}','submit-to-manager')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-            Submit to Manager
-          </button>
-          <div class="gc-hint">Sends this trip to Approvals</div>
-        `:''}
+        <!-- Driver actions -->
+        <div class="drv-btns">
+          <button class="gc-action primary" onclick="tripAction('${l.loadId}','start-trip')" ${started?'disabled':''}>Start Trip</button>
+          <button class="gc-action warn" onclick="openYardPicker('${l.loadId}')" ${!started||atPickup?'disabled':''}>Arrived at Yard</button>
+          <button class="gc-action warn" onclick="openTicketUpload('${l.loadId}')" ${!atPickup||hasImage?'disabled':''}>Upload Ticket Photo</button>
+          <button class="gc-action purple" onclick="openSig('${l.loadId}')" ${!hasImage||hasSig?'disabled':''}>Customer Signature</button>
+          <button class="gc-action success" onclick="tripAction('${l.loadId}','delivered')" ${!hasSig||delivered?'disabled':''}>Delivered</button>
+          <button class="gc-action primary" onclick="tripAction('${l.loadId}','submit-to-manager')" ${!delivered||submitted?'disabled':''}>Submit to Manager</button>
+        </div>
+        <div class="gc-hint">Each action saves timestamp and GPS location when available.</div>
 
         <!-- Requirements checklist -->
         ${started&&!submitted?`<div style="margin-top:14px">
@@ -1914,7 +1828,6 @@ function renderSplits(){
       <div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
           <div class="srow-label">Driver</div>
-          <button type="button" onclick="openPickerForSplit(${i})" style="font-size:10px;color:var(--B);background:var(--Bb);border:1px solid var(--Bd);border-radius:20px;padding:1px 7px;cursor:pointer;font-family:var(--f);font-weight:500">&#x1F4CD; Find best</button>
         </div>
         <select id="split-drv-${i}" onchange="splits[${i}].truckId=this.value;splits[${i}].driverName=trucks.find(t=>t.id===this.value)?.label||''">
           <option value="">Unassigned</option>${topts.replace(`value="${s.truckId}"`,`value="${s.truckId}" selected`)}
@@ -2429,100 +2342,6 @@ async function renderFinance(){
   el.innerHTML=h;
 }
 
-
-// ── DRIVER PICKER ────────────────────────────────────────────────────────────
-let dpCallback=null, dpSelectedTruckId=null, dpLoadingDest=null;
-
-// Avatar colors per driver
-const AVATAR_COLORS=['#3b82f6','#16a066','#d97706','#8b5cf6','#e05252','#0891b2'];
-function avatarColor(idx){ return AVATAR_COLORS[idx%AVATAR_COLORS.length]; }
-function initials(name){ return name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2); }
-
-async function openDriverPicker(destAddress, onSelect, currentTruckId){
-  dpCallback=onSelect;
-  dpSelectedTruckId=currentTruckId||null;
-  dpLoadingDest=destAddress||'';
-  document.getElementById('dp-confirm').disabled=!dpSelectedTruckId;
-  document.getElementById('dp-m').style.display='flex';
-
-  if(destAddress){
-    document.getElementById('dp-dest-info').innerHTML=`<b>Job location:</b> ${destAddress}`;
-    document.getElementById('dp-no-addr').style.display='none';
-  } else {
-    document.getElementById('dp-dest-info').style.display='none';
-    document.getElementById('dp-no-addr').style.display='block';
-  }
-
-  document.getElementById('dp-list').innerHTML=`<div class="dp-loading">&#x1F4CD; Calculating distances...</div>`;
-
-  try{
-    const r=await fetch('/api/distances',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({destination:destAddress||'',trucks:trucks.map(t=>t.id)})});
-    const d=await r.json();
-    renderDriverPicker(d.results, d.destFound);
-  } catch(e){
-    // Fallback: show drivers without distances
-    renderDriverPicker(trucks.map((t,i)=>({truckId:t.id,label:t.label,truckNum:t.truckNum,baseLocation:t.baseLocation||'Unknown',currentLocation:t.baseLocation||'Unknown',locationSource:'base',distanceMiles:null,estMinutes:null,activeLoads:loads.filter(l=>l.truckId===t.id&&l.status==='active').length})), false);
-  }
-}
-
-function renderDriverPicker(results, destFound){
-  if(!results||!results.length){document.getElementById('dp-list').innerHTML='<div class="dp-loading">No drivers available.</div>';return;}
-  const best=destFound?results[0]:null;
-  let h='';
-  results.forEach((d,i)=>{
-    const isBest=destFound&&i===0&&d.distanceMiles!==null;
-    const isSelected=d.truckId===dpSelectedTruckId;
-    const distClass=d.distanceMiles===null?'':d.distanceMiles<20?'close':d.distanceMiles<60?'mid':'far';
-    const workloadDots=Array.from({length:Math.min(d.activeLoads,5)},(_,j)=>`<div class="dp-dot" style="opacity:${0.4+j*0.12}"></div>`).join('');
-    h+=`<div class="dp-card ${isBest?'best':''} ${isSelected?'selected':''}" onclick="selectDP('${d.truckId}')">
-      ${isBest?'<div class="dp-badge">&#10003; Best match</div>':''}
-      <div class="dp-avatar" style="background:${avatarColor(i)}">${initials(d.label)}</div>
-      <div class="dp-info">
-        <div class="dp-name">${d.label} <span style="font-size:11px;font-weight:400;color:var(--txt2)">${d.truckNum}</span></div>
-        <div class="dp-loc">
-          ${d.locationSource==='live'?'<span class="live-dot"></span>':'📍 '}
-          ${d.currentLocation}
-          ${d.locationSource==='live'&&d.locationUpdatedAt?`<span style="color:var(--txt3)"> · ${minutesAgo(d.locationUpdatedAt)}</span>`:''}
-        </div>
-        ${d.activeLoads>0?`<div class="dp-workload" style="margin-top:4px">${workloadDots}<span style="font-size:10px;color:var(--txt3);margin-left:4px">${d.activeLoads} active load${d.activeLoads>1?'s':''}</span></div>`:'<div style="font-size:10px;color:var(--G);margin-top:4px">✓ Available</div>'}
-      </div>
-      <div class="dp-dist">
-        ${d.distanceMiles!==null
-          ?`<div class="dp-miles ${distClass}">${d.distanceMiles} mi</div>
-            <div class="dp-time">~${d.estMinutes<60?d.estMinutes+' min':Math.round(d.estMinutes/60*10)/10+' hr'}</div>`
-          :`<div style="font-size:11px;color:var(--txt3);text-align:right">no address<br>to compare</div>`}
-        ${isSelected?'<div style="font-size:10px;color:var(--B);margin-top:4px;text-align:right;font-weight:600">✓ Selected</div>':''}
-      </div>
-    </div>`;
-  });
-  document.getElementById('dp-list').innerHTML=h;
-}
-
-function selectDP(truckId){
-  dpSelectedTruckId=truckId;
-  document.getElementById('dp-confirm').disabled=false;
-  // Re-render to show selection
-  document.querySelectorAll('.dp-card').forEach(c=>c.classList.remove('selected'));
-  event.currentTarget.classList.add('selected');
-  // Update selected indicator
-  document.querySelectorAll('.dp-card').forEach(c=>{
-    const existing=c.querySelector('.dp-sel-txt');
-    if(existing) existing.remove();
-  });
-  const cards=document.querySelectorAll('.dp-card');
-  cards.forEach(c=>{
-    if(c.onclick.toString().includes(`'${truckId}'`)) c.classList.add('selected');
-  });
-}
-
-function closeDP(){ document.getElementById('dp-m').style.display='none'; dpCallback=null; dpSelectedTruckId=null; }
-
-async function confirmDP(){
-  if(!dpSelectedTruckId||!dpCallback) return;
-  await dpCallback(dpSelectedTruckId);
-  closeDP();
-}
 
 function minutesAgo(iso){
   const min=Math.round((Date.now()-new Date(iso).getTime())/60000);

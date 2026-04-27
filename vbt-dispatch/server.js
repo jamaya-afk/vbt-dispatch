@@ -175,7 +175,8 @@ function findUserByUsername(username) {
 
 function findDriverByTruckId(truckId) {
   if (!truckId) return null;
-  return (store.users || []).find(u => u.role === 'driver' && u.truckId === truckId) || null;
+  const normalized = String(truckId).toLowerCase().trim();
+  return (store.users || []).find(u => u.role === 'driver' && String(u.truckId || '').toLowerCase().trim() === normalized) || null;
 }
 
 function findDriverByName(name) {
@@ -317,6 +318,11 @@ function fixStore() {
     if (!l.voided)         l.voided = false;
     const resolvedDriverId = resolveAssignedDriverId(l);
     if (resolvedDriverId) l.assignedDriverId = resolvedDriverId;
+    const assignedDriver = findUserById(l.assignedDriverId);
+    if (assignedDriver?.role === 'driver') {
+      l.driverName = assignedDriver.driverName || assignedDriver.name || l.driverName || '';
+      l.truckId = assignedDriver.truckId || l.truckId || '';
+    }
   });
 }
 
