@@ -158,13 +158,13 @@ async function initPg() {
 let store = {
   users: [...DEFAULT_USERS],
   trucks: DEFAULT_TRUCKS,
-  pos: [], poMaterials: [], loads: [], payments: [],
+  pos: [], loads: [], payments: [],
   activity: [],          // activity feed events
   materialPrices: { ...DEFAULT_MATERIAL_PRICES },
   vendors: [...DEFAULT_VENDORS],
   vendorPrices: { ...DEFAULT_VENDOR_PRICES },
   auditLog: [],          // immutable audit trail
-  nextPoNum: 1001, nextLoadId: 1, nextPayId: 1, nextAuditId: 1, nextPoMaterialId: 1
+  nextPoNum: 1001, nextLoadId: 1, nextPayId: 1, nextAuditId: 1
 };
 
 function findUserByUsername(username) {
@@ -256,7 +256,6 @@ async function loadData() {
 
 function fixStore() {
   if (!store.users)          store.users = [];
-  if (!store.poMaterials)    store.poMaterials = [];
   if (!store.payments)       store.payments = [];
   if (!store.activity)       store.activity = [];
   if (!store.materialPrices) store.materialPrices = { ...DEFAULT_MATERIAL_PRICES };
@@ -267,7 +266,6 @@ function fixStore() {
   if (!store.nextPoNum)      store.nextPoNum = 1001;
   if (!store.nextLoadId)     store.nextLoadId = 1;
   if (!store.nextAuditId)    store.nextAuditId = 1;
-  if (!store.nextPoMaterialId) store.nextPoMaterialId = 1;
   // Seed built-in users if missing (idempotent)
   DEFAULT_USERS.forEach(u => {
     const existing = (store.users || []).find(x => x.username === u.username);
@@ -296,18 +294,6 @@ function fixStore() {
     if (!p.invoice) p.invoice = { paymentStatus: 'unpaid', amountPaid: 0, notes: '' };
     if (!p.job) p.job = p.customer || '';
     if (!p.budget) p.budget = 0;
-    (p.materials || []).forEach(m => {
-      let existing = store.poMaterials.find(pm => pm.purchaseOrderId === p.id && pm.materialName === m.material);
-      if (!existing) {
-        existing = {
-          id: 'POMAT-' + store.nextPoMaterialId++,
-          purchaseOrderId: p.id,
-          materialName: m.material,
-          loadCount: Number(m.totalLoads) || 0
-        };
-        store.poMaterials.push(existing);
-      }
-    });
   });
   store.loads.forEach(l => {
     if (!l.pod)        l.pod = { signedBy: '', signature: '', signedAt: '', notes: '' };
@@ -329,12 +315,6 @@ function fixStore() {
     if (!l.gps)            l.gps = { start: null, arrived: null, completed: null };
     if (!l.locked)         l.locked = false;
     if (!l.voided)         l.voided = false;
-    if (!l.purchaseOrderId) l.purchaseOrderId = l.poId;
-    if (!l.poId) l.poId = l.purchaseOrderId;
-    if (!l.poMaterialId) {
-      const pm = store.poMaterials.find(x => x.purchaseOrderId === l.purchaseOrderId && x.materialName === l.material);
-      if (pm) l.poMaterialId = pm.id;
-    }
     const resolvedDriverId = resolveAssignedDriverId(l);
     if (resolvedDriverId) l.assignedDriverId = resolvedDriverId;
   });
@@ -545,10 +525,10 @@ app.get('/api/data', reqAuth, (req, res) => {
       supervisor: p.supervisor, notes: p.notes, status: p.status, job: p.job,
       materials: p.materials.map(m => ({ material: m.material, totalLoads: m.totalLoads }))
     }));
-    return res.json({ trucks: store.trucks, pos: myPos, poMaterials: store.poMaterials.filter(pm => myPoIds.has(pm.purchaseOrderId)), loads: myLoads, payments: [], materialPrices: {}, vendors: store.vendors });
+    return res.json({ trucks: store.trucks, pos: myPos, loads: myLoads, payments: [], materialPrices: {}, vendors: store.vendors });
   }
   res.json({
-    trucks: store.trucks, pos: store.pos, poMaterials: store.poMaterials, loads: store.loads,
+    trucks: store.trucks, pos: store.pos, loads: store.loads,
     payments: store.payments, materialPrices: store.materialPrices,
     vendors: store.vendors, vendorPrices: store.vendorPrices
   });
@@ -584,17 +564,6 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   const materials = Object.entries(matMap).map(([material, totalLoads]) => ({
     material, totalLoads, pricePerLoad: po.prices?.[material] || store.materialPrices[material] || 100
   }));
-  const poMaterialsByMaterial = {};
-  materials.forEach(m => {
-    const poMaterial = {
-      id: 'POMAT-' + store.nextPoMaterialId++,
-      purchaseOrderId: poId,
-      materialName: m.material,
-      loadCount: Number(m.totalLoads) || 0
-    };
-    store.poMaterials.push(poMaterial);
-    poMaterialsByMaterial[m.material] = poMaterial;
-  });
 
   store.pos.push({
     id: poId, poNumber: poId, customer: po.customer, address: po.address || '', city: po.city || po.address || '',
@@ -612,8 +581,6 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     const assignedDriver = resolveAssignedDriver(s);
     const newLoad = {
       id: 'LOAD-' + store.nextLoadId++, poId,
-      purchaseOrderId: poId,
-      poMaterialId: poMaterialsByMaterial[s.material]?.id || null,
       material: s.material, pricePerLoad: price,
       unit: MATERIAL_UNITS[s.material] || 'CY',
       vendorId, vendorCost,
@@ -622,7 +589,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       assignedDriverId: assignedDriver ? assignedDriver.id : null,
       driverName: assignedDriver?.driverName || s.driverName || '',
       deliveryDate: s.deliveryDate || deliveryDate,
-      status: s.truckId ? (status === 'scheduled' ? 'scheduled' : 'assigned') : 'unassigned',
+      status: s.truckId ? (status === 'scheduled' ? 'scheduled' : 'active') : 'unassigned',
       timestamps: {}, pod: { signedBy: '', signature: '', signedAt: '', notes: '' },
       notes: '', completedAt: null,
       approvalStatus: 'pending', ticketImage: '', ticketImageAt: '',
@@ -684,20 +651,6 @@ app.post('/api/pos/:id/loads', reqMgr, async (req, res) => {
   splits.forEach(s => {
     const price = s.pricePerLoad || store.materialPrices[s.material] || 100;
     const assignedDriver = resolveAssignedDriver(s);
-    let poMaterial = store.poMaterials.find(pm => pm.purchaseOrderId === po.id && pm.materialName === (s.material || 'Fill Sand'));
-    if (!poMaterial) {
-      poMaterial = {
-        id: 'POMAT-' + store.nextPoMaterialId++,
-        purchaseOrderId: po.id,
-        materialName: s.material || 'Fill Sand',
-        loadCount: Number(s.loadsAssigned) || 0
-      };
-      store.poMaterials.push(poMaterial);
-    } else {
-      poMaterial.loadCount = Number(poMaterial.loadCount || 0) + (Number(s.loadsAssigned) || 0);
-    }
-    const newLoad = {
-      id: 'LOAD-' + store.nextLoadId++, poId: po.id, purchaseOrderId: po.id, poMaterialId: poMaterial.id,
     const newLoad = {
       id: 'LOAD-' + store.nextLoadId++, poId: po.id,
       material: s.material || 'Fill Sand', pricePerLoad: price,
@@ -706,7 +659,7 @@ app.post('/api/pos/:id/loads', reqMgr, async (req, res) => {
       assignedDriverId: assignedDriver ? assignedDriver.id : null,
       driverName: assignedDriver?.driverName || s.driverName || '',
       deliveryDate: s.deliveryDate || po.deliveryDate,
-      status: s.truckId ? 'assigned' : 'unassigned',
+      status: s.truckId ? 'active' : 'unassigned',
       timestamps: {}, pod: { signedBy: '', signature: '', signedAt: '', notes: '' },
       notes: '', completedAt: null
     };
@@ -747,7 +700,6 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
       pod: req.body.pod ? { ...l.pod, ...req.body.pod } : l.pod
     };
     const updated = store.loads[idx];
-    if (req.body.pod?.signature) updated.status = 'signature_collected';
     // Log activity events
     if (req.body.loadsDelivered !== undefined && Number(req.body.loadsDelivered) !== Number(prev.loadsDelivered)) {
       pushActivity('loads_logged', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, material: l.material, count: Number(req.body.loadsDelivered), assigned: l.loadsAssigned });
@@ -768,7 +720,6 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     const updated = { ...l, ...req.body, id: l.id, poId: l.poId };
     if (req.body.truckId !== undefined) {
       const assignedDriver = resolveAssignedDriver(req.body);
-      updated.status = req.body.truckId ? 'assigned' : 'unassigned';
       updated.status = req.body.truckId ? 'active' : 'unassigned';
       updated.assignedDriverId = req.body.truckId ? (assignedDriver?.id || null) : null;
       updated.driverName = req.body.truckId ? (assignedDriver?.driverName || req.body.driverName || store.trucks.find(t => t.id === req.body.truckId)?.label || '') : '';
@@ -1227,27 +1178,21 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
   });
   // Enrich each load with guide info — driver doesn't need to know anything beyond this
   const enriched = myLoads.map(l => {
-    const po = store.pos.find(p => p.id === (l.purchaseOrderId || l.poId)) || {};
-    const poMaterial = store.poMaterials.find(pm => pm.id === l.poMaterialId) || null;
+    const po = store.pos.find(p => p.id === l.poId) || {};
     const vendor = store.vendors.find(v => v.id === l.vendorId) || null;
     return {
       loadId: l.id,
-      tripId: l.id,
-      purchaseOrderId: l.purchaseOrderId || l.poId,
-      poMaterialId: l.poMaterialId || null,
       poNumber: po.poNumber,
       jobName: po.job || po.customer,
       customer: po.customer,
-      jobSite: po.job || po.customer || '',
       pickupLocation: vendor ? `${vendor.name} — ${vendor.location}` : (po.pickup || 'VBT Yard'),
       deliveryLocation: po.address || po.city || '',
-      deliveryAddress: po.address || '',
       city: po.city || '',
-      material: poMaterial?.materialName || l.material,
+      material: l.material,
       unit: l.unit || MATERIAL_UNITS[l.material] || 'CY',
       vendor: vendor ? vendor.name : null,
       vendorId: l.vendorId || '',
-      loadsAssigned: poMaterial?.loadCount || l.loadsAssigned,
+      loadsAssigned: l.loadsAssigned,
       loadsDelivered: l.loadsDelivered,
       supervisor: po.supervisor || '',
       notes: po.notes || l.notes || '',
@@ -1287,13 +1232,11 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     if (l.timestamps?.start) return res.status(400).json({ error: 'Trip already started' });
     l.timestamps = { ...l.timestamps, start: timeStr };
     l.gps = { ...l.gps, start: gps || null };
-    l.status = 'started';
     pushActivity('ts_start', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, time: timeStr });
   } else if (action === 'arrived-pickup') {
     if (!l.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
     l.timestamps = { ...l.timestamps, arrivedPickup: timeStr };
     l.gps = { ...l.gps, arrivedPickup: gps || null };
-    l.status = 'arrived_yard';
     // Driver confirms which vendor/yard they arrived at
     if (req.body.vendorId) {
       l.vendorId = req.body.vendorId;
@@ -1343,7 +1286,6 @@ app.post('/api/loads/:id/ticket-image', reqAuth, async (req, res) => {
   const before = { ticketImage: l.ticketImage, ticketImageAt: l.ticketImageAt };
   l.ticketImage = req.body.image;  // base64 data URL
   l.ticketImageAt = new Date().toISOString();
-  l.status = 'ticket_uploaded';
   audit('upload-ticket', 'load', l.id, user.username, before, { ticketImageAt: l.ticketImageAt });
   await saveData();
   res.json({ success: true });
