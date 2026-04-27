@@ -1539,6 +1539,7 @@ async function renderDrvInner(el){
       <div class="gc-body">
         ${banner}
         <dl class="gc-info-grid">
+          <dt>Customer</dt><dd>${l.customer||l.jobName||'—'}</dd>
           <dt>Pickup yard</dt><dd><span class="gc-icon-lbl">🏗</span> ${l.pickupLocation}</dd>
           <dt>Job site / delivery address</dt><dd><span class="gc-icon-lbl">📍</span> ${l.deliveryLocation||l.city||'—'}</dd>
           <dt>Delivery date</dt><dd>${fmtD(l.deliveryDate)}</dd>
