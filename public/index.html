@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>VBT Dispatch</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --f:'Inter',system-ui,sans-serif;
+  --bg:#fff;--bg2:#f4f6f9;--bg3:#eef1f6;
+  --txt:#1a2035;--txt2:#5a6478;--txt3:#9ba5b7;
+  --bdr:#e2e7f0;--bdr2:#cdd4e0;--r:10px;--rl:14px;
+  --B:#3b82f6;--Bb:#eff6ff;--Bd:#bfdbfe;
+  --G:#16a066;--Gb:#edfaf4;--Gd:#9fe4c8;
+  --A:#d97706;--Ab:#fff8ed;--Ad:#fcd38a;
+  --R:#e05252;--Rb:#fff0f0;--Rd:#f8b4b4;
+  --P:#8b5cf6;--Pb:#f5f3ff;--Pd:#ddd6fe;
+  --shadow:0 1px 3px rgba(26,32,53,.08), 0 1px 2px rgba(26,32,53,.04);
+  --shadow-md:0 4px 12px rgba(26,32,53,.1), 0 2px 4px rgba(26,32,53,.06);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden;height:100vh}
+
+/* ── APP SHELL ── */
+.shell{display:flex;height:100vh}
+.sidebar{width:220px;flex-shrink:0;background:var(--bg);border-right:1px solid var(--bdr);display:flex;flex-direction:column}
+.sidebar-brand{padding:18px 16px;background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 100%);min-height:82px;display:flex;align-items:center;justify-content:center}
+.sidebar-brand img{max-width:170px;width:100%}
+.sidebar-nav{flex:1;padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border:none;background:transparent;border-radius:var(--r);cursor:pointer;font-family:var(--f);font-size:13px;font-weight:500;color:var(--txt2);text-align:left;transition:background .12s;width:100%}
+.nav-item:hover{background:var(--bg2);color:var(--txt)}
+.nav-item.active{background:var(--Bb);color:var(--B);font-weight:600}
+.nav-icon{width:18px;height:18px;flex-shrink:0;opacity:.8}
+.nav-item.active .nav-icon{opacity:1}
+.nav-badge{background:var(--R);color:#fff;font-size:10px;padding:1px 7px;border-radius:20px;font-weight:700;margin-left:auto}
+.sidebar-footer{border-top:1px solid var(--bdr);padding:12px}
+.user-card{display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg2);border-radius:var(--r);margin-bottom:8px}
+.user-avatar{width:32px;height:32px;border-radius:50%;background:var(--B);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.user-name{font-size:12px;font-weight:600;color:var(--txt)}
+.user-role{font-size:10px;color:var(--txt3);text-transform:capitalize}
+.signout-btn{width:100%;padding:7px 12px;background:transparent;border:1px solid var(--bdr2);border-radius:var(--r);color:var(--txt2);font-size:12px;cursor:pointer;font-family:var(--f);font-weight:500;transition:all .15s}
+.signout-btn:hover{border-color:var(--R);color:var(--R);background:var(--Rb)}
+
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.topbar{display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-shrink:0;min-height:54px}
+.page-title{font-size:16px;font-weight:700;letter-spacing:-.01em}
+.menu-toggle{display:none;background:transparent;border:none;font-size:20px;cursor:pointer;padding:4px 8px}
+.topbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
+.btn{padding:7px 14px;font-size:12px;font-weight:600;border-radius:20px;border:1.5px solid var(--bdr2);background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:var(--f);transition:all .15s;display:inline-flex;align-items:center;gap:5px}
+.btn:hover{border-color:var(--txt);color:var(--txt)}
+.btn.primary{background:var(--B);color:#fff;border-color:var(--B)}
+.btn.primary:hover{background:#2563eb;border-color:#2563eb;color:#fff}
+.btn.success{background:var(--G);color:#fff;border-color:var(--G)}
+.btn.success:hover{background:#0d8a55;color:#fff}
+.btn.danger{background:var(--Rb);color:var(--R);border-color:var(--Rd)}
+.btn.danger:hover{background:var(--R);color:#fff}
+.btn.ghost{background:transparent;border-color:var(--bdr2)}
+
+.content{flex:1;overflow:auto;padding:0}
+.section{display:none}
+.section.active{display:block;min-height:100%}
+
+/* ── BOARD ── */
+.board-header{padding:14px 20px;display:flex;align-items:center;gap:10px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-wrap:wrap}
+.date-nav{display:flex;align-items:center;gap:6px}
+.date-nav button{width:32px;height:32px;border-radius:50%;border:1px solid var(--bdr2);background:var(--bg);cursor:pointer;font-size:14px;color:var(--txt2)}
+.date-nav button:hover{border-color:var(--B);color:var(--B)}
+.date-label{font-size:14px;font-weight:600;min-width:200px;text-align:center}
+.today-btn{font-size:11px;color:var(--B);background:var(--Bb);border:1px solid var(--Bd);padding:4px 10px;border-radius:20px;cursor:pointer;font-family:var(--f);font-weight:500}
+
+.board{padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;max-width:100%}
+.driver-col{background:var(--bg);border-radius:var(--rl);box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:200px}
+.driver-col.unassigned-col{background:var(--Ab);border:1.5px dashed var(--Ad)}
+.driver-col-head{padding:12px 14px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between}
+.driver-col.unassigned-col .driver-col-head{border-bottom-color:var(--Ad)}
+.driver-name{font-size:13px;font-weight:700}
+.driver-truck{font-size:11px;color:var(--txt3);margin-top:1px}
+.driver-load-count{background:var(--bg2);font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;color:var(--txt2)}
+.driver-col-body{flex:1;padding:10px;display:flex;flex-direction:column;gap:8px;min-height:80px;transition:background .12s}
+.driver-col-body.drop-target{background:var(--Bb)}
+
+.lcard{background:var(--bg);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 12px;cursor:grab;box-shadow:var(--shadow);transition:all .15s;position:relative}
+.lcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd)}
+.lcard.dragging{opacity:.5}
+.lcard.completed{opacity:.6;border-color:var(--Gd)}
+.lcard.submitted{border-color:var(--P);background:var(--Pb)}
+.lc-po{font-size:10px;font-weight:700;color:var(--B);letter-spacing:.04em;margin-bottom:3px}
+.lc-customer{font-size:13px;font-weight:600;line-height:1.3;margin-bottom:3px}
+.lc-detail{font-size:11px;color:var(--txt2);margin-bottom:2px}
+.lc-mat-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:20px;background:var(--Bb);color:var(--B);margin-top:4px}
+.lc-progress{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px}
+.lc-progress-bar{flex:1;height:4px;background:var(--bdr);border-radius:4px;overflow:hidden}
+.lc-progress-fill{height:100%;background:var(--G);transition:width .3s}
+.lc-status{position:absolute;top:8px;right:8px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:20px;text-transform:uppercase}
+.lc-status.pending{background:var(--bg2);color:var(--txt2)}
+.lc-status.submitted{background:var(--Pb);color:var(--P)}
+.lc-status.approved{background:var(--Gb);color:var(--G)}
+.lc-status.rejected{background:var(--Rb);color:var(--R)}
+
+.empty-col{padding:20px;text-align:center;color:var(--txt3);font-size:11px;font-style:italic}
+
+/* ── PO MODAL ── */
+.modal-bg{position:fixed;inset:0;background:rgba(26,32,53,.5);display:flex;align-items:flex-start;justify-content:center;padding:20px;z-index:200;overflow-y:auto}
+.modal{background:var(--bg);border-radius:var(--rl);width:100%;max-width:560px;margin:auto;box-shadow:0 8px 40px rgba(0,0,0,.2)}
+.modal-head{padding:16px 20px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between}
+.modal-head h2{font-size:15px;font-weight:700}
+.modal-close{background:var(--bg2);border:none;width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:16px;color:var(--txt2)}
+.modal-close:hover{background:var(--Rb);color:var(--R)}
+.modal-body{padding:18px 20px;display:flex;flex-direction:column;gap:12px;max-height:75vh;overflow-y:auto}
+.modal-foot{padding:14px 20px;border-top:1px solid var(--bdr);background:var(--bg2);display:flex;gap:8px;justify-content:flex-end;border-radius:0 0 var(--rl) var(--rl)}
+
+.field{display:flex;flex-direction:column;gap:5px}
+.field label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.field input,.field select,.field textarea{padding:9px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);font-family:var(--f);font-size:13px;color:var(--txt)}
+.field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--B);box-shadow:0 0 0 3px var(--Bb)}
+.field textarea{resize:vertical;min-height:60px}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+.split-row{display:grid;grid-template-columns:1fr 1fr 80px auto;gap:8px;align-items:end;padding:10px;background:var(--bg2);border-radius:var(--r);margin-bottom:6px}
+.split-row .field label{font-size:10px}
+.split-remove{background:var(--Rb);color:var(--R);border:1px solid var(--Rd);width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:14px}
+.split-add{padding:8px 14px;background:transparent;border:1.5px dashed var(--Bd);border-radius:var(--r);color:var(--B);font-family:var(--f);font-size:12px;font-weight:600;cursor:pointer}
+.split-add:hover{background:var(--Bb)}
+
+/* ── DRIVER MODE ── */
+body.driver-mode .sidebar{display:none}
+body.driver-mode .topbar{background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 100%);border-bottom:none;color:#fff}
+body.driver-mode .page-title{color:#fff}
+body.driver-mode .topbar::before{content:'';display:inline-block;width:34px;height:34px;background:url(/app/logo.png) no-repeat center/contain;margin-right:6px;flex-shrink:0}
+body.driver-mode .signout-btn,body.driver-mode .topbar-actions .btn{background:transparent;border-color:rgba(255,255,255,.25);color:#fff}
+body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{border-color:#fca5a5;color:#fca5a5;background:rgba(220,38,38,.15)}
+
+.drv-welcome{padding:18px 20px;background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);color:#fff;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px}
+.drv-greeting{display:flex;align-items:center;gap:12px}
+.drv-greeting .avatar{width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700}
+.drv-hi{font-size:18px;font-weight:700;letter-spacing:-.01em}
+.drv-sub{font-size:12px;color:rgba(255,255,255,.7);margin-top:2px}
+.drv-stats{display:flex;gap:20px}
+.drv-stat-num{font-size:22px;font-weight:700;line-height:1}
+.drv-stat-lbl{font-size:10px;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.06em;margin-top:3px;font-weight:500}
+
+.drv-trips{padding:14px;display:flex;flex-direction:column;gap:14px}
+.trip-card{background:var(--bg);border:2px solid var(--bdr);border-radius:var(--rl);overflow:hidden;box-shadow:var(--shadow)}
+.trip-card.is-today{border-color:var(--B)}
+.trip-head{padding:14px 16px;background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);color:#fff}
+.trip-po{font-size:11px;opacity:.7;letter-spacing:.04em;text-transform:uppercase;font-weight:600}
+.trip-customer{font-size:18px;font-weight:700;letter-spacing:-.01em;margin-top:2px}
+.today-badge{display:inline-block;font-size:10px;background:var(--G);padding:2px 8px;border-radius:20px;margin-left:8px;font-weight:700}
+
+.trip-body{padding:16px}
+.trip-info{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin-bottom:14px}
+.trip-info dt{font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.05em;font-weight:600;align-self:center}
+.trip-info dd{font-size:13px;color:var(--txt);font-weight:500}
+.trip-info .notes{color:var(--A);background:var(--Ab);padding:6px 10px;border-radius:var(--r);font-style:italic;border-left:3px solid var(--Ad)}
+
+.steps{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.step{flex:1;min-width:60px;text-align:center;padding:7px 4px;background:var(--bg2);border-radius:var(--r);font-size:10px;color:var(--txt3);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.step.active{background:var(--Bb);color:var(--B)}
+.step.done{background:var(--Gb);color:var(--G)}
+.step-time{display:block;font-size:9px;font-weight:400;margin-top:2px}
+
+.trip-action{width:100%;padding:14px;font-size:15px;font-weight:700;border:none;border-radius:var(--rl);cursor:pointer;font-family:var(--f);margin-bottom:8px;display:flex;align-items:center;justify-content:center;gap:8px;transition:transform .1s;box-shadow:var(--shadow-md)}
+.trip-action:active{transform:scale(.98)}
+.trip-action.start{background:var(--B);color:#fff}
+.trip-action.pickup{background:var(--A);color:#fff}
+.trip-action.ticket{background:var(--A);color:#fff}
+.trip-action.sign{background:var(--P);color:#fff}
+.trip-action.complete{background:var(--G);color:#fff}
+.trip-action svg{width:18px;height:18px}
+.action-hint{text-align:center;font-size:11px;color:var(--txt3);margin-bottom:6px;font-weight:500}
+.action-hint.required{color:var(--R);font-weight:600}
+
+.req-check{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg2);border-radius:var(--r);margin-bottom:5px;font-size:12px}
+.req-check.done{background:var(--Gb);color:var(--G);font-weight:500}
+.req-check.missing{background:var(--Rb);color:var(--R)}
+
+.banner{padding:10px 14px;border-radius:var(--r);font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.banner.submitted{background:var(--Pb);color:var(--P);border:1px solid var(--Pd)}
+.banner.approved{background:var(--Gb);color:var(--G);border:1px solid var(--Gd)}
+.banner.rejected{background:var(--Rb);color:var(--R);border:1px solid var(--Rd)}
+
+.ticket-preview{max-width:100%;border-radius:var(--r);margin:8px 0;border:1px solid var(--bdr)}
+
+.empty-state{padding:60px 20px;text-align:center;color:var(--txt3)}
+.empty-state h3{font-size:16px;color:var(--txt2);margin-bottom:6px;font-weight:600}
+.empty-state p{font-size:13px}
+
+/* ── APPROVALS ── */
+.approve-list{padding:18px;display:flex;flex-direction:column;gap:14px}
+.approve-card{background:var(--bg);border:1.5px solid var(--bdr);border-radius:var(--rl);overflow:hidden;box-shadow:var(--shadow)}
+.approve-head{padding:12px 16px;background:var(--Pb);border-bottom:1px solid var(--Pd);display:flex;justify-content:space-between;align-items:center}
+.approve-body{padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:700px){.approve-body{grid-template-columns:1fr}}
+.approve-info dt{font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-top:8px}
+.approve-info dt:first-child{margin-top:0}
+.approve-info dd{font-size:13px;color:var(--txt);margin-top:2px}
+.approve-image{max-width:100%;border-radius:var(--r);border:1px solid var(--bdr)}
+.approve-actions{padding:12px 16px;border-top:1px solid var(--bdr);background:var(--bg2);display:flex;gap:8px;justify-content:flex-end}
+
+/* ── BILLING ── */
+.bill-filters{padding:14px 18px;background:var(--bg);border-bottom:1px solid var(--bdr);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.bill-filter{padding:6px 10px;font-size:12px;border:1px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);background:var(--bg)}
+.bill-list{padding:14px 18px}
+.bill-table{width:100%;border-collapse:collapse;background:var(--bg);border-radius:var(--rl);overflow:hidden;box-shadow:var(--shadow)}
+.bill-table th{text-align:left;padding:10px 12px;background:var(--bg2);font-size:11px;font-weight:600;text-transform:uppercase;color:var(--txt2);border-bottom:1px solid var(--bdr)}
+.bill-table td{padding:10px 12px;font-size:13px;border-bottom:1px solid var(--bdr)}
+.bill-table tr:hover{background:var(--bg2)}
+.bill-table input[type="checkbox"]{cursor:pointer;width:16px;height:16px}
+
+/* ── MOBILE ── */
+@media(max-width:900px){
+  .sidebar{position:fixed;left:-220px;top:0;bottom:0;z-index:100;transition:left .2s;box-shadow:2px 0 12px rgba(0,0,0,.2)}
+  .sidebar.open{left:0}
+  .menu-toggle{display:block}
+  .field-row{grid-template-columns:1fr}
+}
+
+/* ── SIGNATURE PAD ── */
+.sig-canvas{width:100%;height:200px;background:#fff;border:2px solid var(--bdr);border-radius:var(--r);touch-action:none;cursor:crosshair}
+
+/* ── STATUS MESSAGES ── */
+.toast{position:fixed;bottom:20px;right:20px;background:var(--txt);color:#fff;padding:12px 20px;border-radius:var(--r);font-size:13px;font-weight:500;z-index:300;box-shadow:0 4px 16px rgba(0,0,0,.2);animation:slideIn .2s}
+.toast.success{background:var(--G)}
+.toast.error{background:var(--R)}
+@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand"><img src="/app/logo.png" alt="VBC"></div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-tab="board" onclick="goTab('board')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        <span>Board</span>
+      </button>
+      <button class="nav-item" data-tab="approvals" onclick="goTab('approvals')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <span>Approvals</span>
+        <span class="nav-badge" id="approve-badge" style="display:none">0</span>
+      </button>
+      <button class="nav-item" data-tab="billing" onclick="goTab('billing')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        <span>Ready to Bill</span>
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-card">
+        <div class="user-avatar" id="avatar">?</div>
+        <div>
+          <div class="user-name" id="username">—</div>
+          <div class="user-role" id="userrole">—</div>
+        </div>
+      </div>
+      <button class="signout-btn" onclick="location='/logout'">Sign out</button>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+    <header class="topbar">
+      <button class="menu-toggle" onclick="toggleMenu()">☰</button>
+      <h1 class="page-title" id="page-title">Board</h1>
+      <div class="topbar-actions" id="topbar-actions"></div>
+    </header>
+    <div class="content">
+      <!-- BOARD -->
+      <div class="section active" id="sec-board">
+        <div class="board-header" id="board-header"></div>
+        <div class="board" id="board"></div>
+      </div>
+      <!-- APPROVALS -->
+      <div class="section" id="sec-approvals">
+        <div class="approve-list" id="approve-list"></div>
+      </div>
+      <!-- BILLING -->
+      <div class="section" id="sec-billing">
+        <div class="bill-filters" id="bill-filters"></div>
+        <div class="bill-list" id="bill-list"></div>
+      </div>
+      <!-- DRIVER -->
+      <div class="section" id="sec-driver">
+        <div id="driver-welcome"></div>
+        <div class="drv-trips" id="drv-trips"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- PO MODAL -->
+<div class="modal-bg" id="po-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="po-modal-title">New Purchase Order</h2>
+      <button class="modal-close" onclick="closePO()">&#215;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>PO Number</label><input id="po-number" placeholder="auto"></div>
+        <div class="field"><label>Delivery Date</label><input type="date" id="po-date" onchange="syncSplitDates()"></div>
+      </div>
+      <div class="field"><label>Customer / Job Name</label><input id="po-customer" placeholder="e.g. Wilson Homes"></div>
+      <div class="field-row">
+        <div class="field"><label>Address</label><input id="po-address" placeholder="123 Main St"></div>
+        <div class="field"><label>City</label><input id="po-city" placeholder="Fresno"></div>
+      </div>
+      <div class="field"><label>Pickup Yard</label><input id="po-pickup" placeholder="VBT Yard / CEMEX / etc."></div>
+      <div class="field"><label>Notes (visible to driver)</label><textarea id="po-notes" placeholder="Optional"></textarea></div>
+      <div style="border-top:1px solid var(--bdr);padding-top:10px;margin-top:4px">
+        <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:8px">Loads & Drivers</label>
+        <div id="splits"></div>
+        <button class="split-add" onclick="addSplit()">+ Add load assignment</button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closePO()">Cancel</button>
+      <button class="btn primary" onclick="savePO()">Save PO</button>
+    </div>
+  </div>
+</div>
+
+<!-- TICKET UPLOAD MODAL -->
+<div class="modal-bg" id="ticket-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Upload Ticket Photo</h2>
+      <button class="modal-close" onclick="closeTicket()">&#215;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--txt2)">Take a photo of your ticket from the yard. Required before delivery.</p>
+      <input type="file" accept="image/*" capture="environment" id="ticket-input" style="padding:14px;border:2px dashed var(--bdr2);border-radius:var(--r);width:100%;background:var(--bg2)">
+      <img id="ticket-preview" style="display:none;max-width:100%;border-radius:var(--r);margin-top:8px">
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeTicket()">Cancel</button>
+      <button class="btn primary" onclick="saveTicket()" id="ticket-save-btn" disabled>Upload</button>
+    </div>
+  </div>
+</div>
+
+<!-- SIGNATURE MODAL -->
+<div class="modal-bg" id="sig-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Customer Signature</h2>
+      <button class="modal-close" onclick="closeSig()">&#215;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>Customer name</label><input id="sig-name" placeholder="Who is signing?"></div>
+      <div class="field"><label>Signature (sign below)</label>
+        <canvas class="sig-canvas" id="sig-canvas" width="500" height="200"></canvas>
+        <button class="btn ghost" onclick="clearSig()" style="margin-top:6px;font-size:11px;padding:5px 10px">Clear</button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeSig()">Cancel</button>
+      <button class="btn primary" onclick="saveSig()">Save Signature</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── STATE ────────────────────────────────────────────────────────────────────
+let me = null, role = 'driver', myTruckId = null, myUsername = '';
+let trucks = [], materials = [], pos = [], loads = [];
+let dayOffset = 0;
+let currentTab = 'board';
+let editingPoId = null;
+let splits = [];
+let currentLoadId = null;  // for ticket/sig modals
+
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+const todayStr = () => new Date().toISOString().slice(0, 10);
+function getBoardDate() {
+  const d = new Date();
+  d.setDate(d.getDate() + dayOffset);
+  return d;
+}
+function ymd(d) { return d.toISOString().slice(0, 10); }
+function fmtDate(s) {
+  if (!s) return '';
+  const d = new Date(s + 'T12:00:00');
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+function toast(msg, type = '') {
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+function api(method, url, body) {
+  return fetch(url, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(r => r.json().then(d => ({ ok: r.ok, status: r.status, ...d })));
+}
+async function loadAll() {
+  try {
+    const r = await fetch('/api/data');
+    if (!r.ok) {
+      console.error('loadAll: /api/data returned', r.status);
+      return;
+    }
+    const d = await r.json();
+    trucks = d.trucks || [];
+    materials = d.materials || [];
+    pos = d.pos || [];
+    loads = d.loads || [];
+    console.log('[loadAll] trucks:', trucks.length, 'materials:', materials.length, 'pos:', pos.length, 'loads:', loads.length);
+  } catch (e) {
+    console.error('loadAll error:', e);
+  }
+}
+
+// ── GPS TRACKING (background, drivers only) ─────────────────────────────────
+function startGPSTracking() {
+  if (!navigator.geolocation || !navigator.geolocation.watchPosition) return;
+  try {
+    navigator.geolocation.watchPosition(
+      (pos) => {
+        // Send GPS to server (best-effort, don't block on errors)
+        fetch('/api/driver-location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy
+          })
+        }).catch(() => {});
+      },
+      (err) => { console.warn('[GPS] watch error:', err.message); },
+      { enableHighAccuracy: true, maximumAge: 30000, timeout: 10000 }
+    );
+  } catch (e) {
+    console.warn('[GPS] startGPSTracking failed:', e.message);
+  }
+}
+
+// ── INIT ─────────────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    const r = await fetch('/api/me');
+    if (!r.ok) { location = '/login'; return; }
+    me = await r.json();
+    role = me.role;
+    myTruckId = me.truckId;
+    myUsername = me.username;
+    console.log('[INIT] Logged in as:', { username: me.username, role: me.role, truckId: me.truckId });
+    document.getElementById('username').textContent = me.username;
+    document.getElementById('userrole').textContent = me.role;
+    document.getElementById('avatar').textContent = me.username.slice(0, 2).toUpperCase();
+
+    await loadAll();
+
+    if (role === 'driver') {
+      document.body.classList.add('driver-mode');
+      document.getElementById('page-title').textContent = 'My Trips';
+      goTab('driver');
+    } else {
+      goTab('board');
+    }
+  } catch (e) {
+    console.error('Init error:', e);
+    toast('Failed to load app: ' + e.message, 'error');
+  }
+}
+
+// ── TAB ROUTING ──────────────────────────────────────────────────────────────
+function goTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+  if (tab === 'board')    { document.getElementById('sec-board').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch Board'; renderBoard(); }
+  if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
+  if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
+  if (tab === 'driver')   { document.getElementById('sec-driver').classList.add('active'); document.getElementById('page-title').textContent = 'My Trips'; console.log('[goTab] activating driver tab'); renderDriver(); }
+
+  const navBtn = document.querySelector(`[data-tab="${tab}"]`);
+  if (navBtn) navBtn.classList.add('active');
+
+  // Update topbar actions
+  const actions = document.getElementById('topbar-actions');
+  if (role === 'manager' && tab === 'board') {
+    actions.innerHTML = `<button class="btn primary" onclick="openNewPO()">+ New PO</button>
+      <button class="btn ghost" onclick="syncSheets()" title="Push to Google Sheets">↑ Sync</button>`;
+  } else if (role === 'driver') {
+    actions.innerHTML = `<button class="btn ghost" onclick="location='/logout'">Sign out</button>`;
+  } else {
+    actions.innerHTML = '';
+  }
+
+  // Close mobile menu
+  document.getElementById('sidebar').classList.remove('open');
+}
+
+function toggleMenu() {
+  document.getElementById('sidebar').classList.toggle('open');
+}
+
+// ── BOARD (manager) ──────────────────────────────────────────────────────────
+function renderBoard() {
+  const date = getBoardDate();
+  const dateStr = ymd(date);
+  const isToday = dateStr === todayStr();
+
+  // Header with date nav
+  document.getElementById('board-header').innerHTML = `
+    <div class="date-nav">
+      <button onclick="changeDay(-1)">‹</button>
+      <span class="date-label">${date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</span>
+      <button onclick="changeDay(1)">›</button>
+    </div>
+    ${!isToday ? `<button class="today-btn" onclick="goToday()">Today</button>` : ''}
+    <span style="font-size:12px;color:var(--txt3);margin-left:auto">
+      Drag cards between drivers to reassign
+    </span>
+  `;
+
+  // Build board: column per driver + unassigned
+  const board = document.getElementById('board');
+  const cols = [];
+
+  trucks.forEach(t => {
+    const myLoads = loads.filter(l => l.truckId === t.id && l.deliveryDate === dateStr && !l.voided);
+    cols.push(`
+      <div class="driver-col">
+        <div class="driver-col-head">
+          <div>
+            <div class="driver-name">${t.label}</div>
+            <div class="driver-truck">${t.truckNum}</div>
+          </div>
+          <span class="driver-load-count">${myLoads.length}</span>
+        </div>
+        <div class="driver-col-body" data-truckid="${t.id}"
+          ondragover="event.preventDefault();this.classList.add('drop-target')"
+          ondragleave="this.classList.remove('drop-target')"
+          ondrop="onDrop(event, '${t.id}')">
+          ${myLoads.length ? myLoads.map(l => loadCard(l)).join('') : '<div class="empty-col">No loads</div>'}
+        </div>
+      </div>
+    `);
+  });
+
+  // Unassigned column
+  const unas = loads.filter(l => (!l.truckId || l.truckId === 'unassigned') && l.deliveryDate === dateStr && !l.voided);
+  cols.push(`
+    <div class="driver-col unassigned-col">
+      <div class="driver-col-head">
+        <div>
+          <div class="driver-name" style="color:var(--A)">⚠ Unassigned</div>
+          <div class="driver-truck">Drag a card here to unassign</div>
+        </div>
+        <span class="driver-load-count" style="background:var(--Ad);color:var(--A)">${unas.length}</span>
+      </div>
+      <div class="driver-col-body" data-truckid=""
+        ondragover="event.preventDefault();this.classList.add('drop-target')"
+        ondragleave="this.classList.remove('drop-target')"
+        ondrop="onDrop(event, '')">
+        ${unas.length ? unas.map(l => loadCard(l)).join('') : '<div class="empty-col">No unassigned loads</div>'}
+      </div>
+    </div>
+  `);
+
+  board.innerHTML = cols.join('');
+  updateApproveBadge();
+}
+
+function loadCard(l) {
+  const po = pos.find(p => p.id === l.poId) || {};
+  const pct = l.loadsAssigned > 0 ? Math.round(l.loadsDelivered / l.loadsAssigned * 100) : 0;
+  let statusCls = 'pending';
+  let statusLbl = 'Pending';
+  if (l.approvalStatus === 'submitted') { statusCls = 'submitted'; statusLbl = 'Pending Review'; }
+  else if (l.approvalStatus === 'approved') { statusCls = 'approved'; statusLbl = 'Approved'; }
+  else if (l.approvalStatus === 'rejected') { statusCls = 'rejected'; statusLbl = 'Rejected'; }
+  else if (l.timestamps?.completed) { statusCls = 'submitted'; statusLbl = 'Delivered'; }
+  else if (l.timestamps?.start) { statusCls = 'pending'; statusLbl = 'In progress'; }
+
+  const cardCls = l.approvalStatus === 'approved' ? 'completed' : l.approvalStatus === 'submitted' ? 'submitted' : '';
+
+  return `<div class="lcard ${cardCls}"
+    draggable="${role === 'manager' && !l.locked ? 'true' : 'false'}"
+    data-loadid="${l.id}"
+    ondragstart="onDragStart(event, '${l.id}')"
+    ondragend="this.classList.remove('dragging')"
+    onclick="openLoadDetail('${l.id}')">
+    <span class="lc-status ${statusCls}">${statusLbl}</span>
+    <div class="lc-po">${po.poNumber || '—'}</div>
+    <div class="lc-customer">${po.customer || ''}</div>
+    ${po.city ? `<div class="lc-detail">📍 ${po.city}</div>` : ''}
+    <div class="lc-mat-pill">${l.material} · ${l.loadsAssigned} loads</div>
+    <div class="lc-progress">
+      <span>${l.loadsDelivered}/${l.loadsAssigned}</span>
+      <div class="lc-progress-bar"><div class="lc-progress-fill" style="width:${pct}%"></div></div>
+    </div>
+  </div>`;
+}
+
+function changeDay(n) { dayOffset += n; renderBoard(); }
+function goToday() { dayOffset = 0; renderBoard(); }
+
+// ── DRAG & DROP ──────────────────────────────────────────────────────────────
+let dragId = null;
+function onDragStart(e, id) {
+  dragId = id;
+  e.target.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+}
+async function onDrop(e, truckId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drop-target');
+  if (!dragId) return;
+  const d = await api('PUT', '/api/loads/' + dragId, { truckId: truckId || null });
+  if (d.ok) { await loadAll(); renderBoard(); toast('Load reassigned', 'success'); }
+  else toast(d.error || 'Failed', 'error');
+  dragId = null;
+}
+
+// ── PO MODAL ─────────────────────────────────────────────────────────────────
+function openNewPO() {
+  editingPoId = null;
+  document.getElementById('po-modal-title').textContent = 'New Purchase Order';
+  document.getElementById('po-number').value = '';
+  document.getElementById('po-date').value = todayStr();
+  document.getElementById('po-customer').value = '';
+  document.getElementById('po-address').value = '';
+  document.getElementById('po-city').value = '';
+  document.getElementById('po-pickup').value = 'VBT Yard';
+  document.getElementById('po-notes').value = '';
+  splits = [{ truckId: trucks[0]?.id || '', material: materials[0] || 'Fill Sand', loadsAssigned: 1 }];
+  renderSplits();
+  document.getElementById('po-modal').style.display = 'flex';
+}
+
+function closePO() { document.getElementById('po-modal').style.display = 'none'; }
+
+function renderSplits() {
+  const wrap = document.getElementById('splits');
+  wrap.innerHTML = splits.map((s, i) => `
+    <div class="split-row">
+      <div class="field">
+        <label>Driver</label>
+        <select onchange="splits[${i}].truckId = this.value">
+          <option value="">Unassigned</option>
+          ${trucks.map(t => `<option value="${t.id}" ${s.truckId === t.id ? 'selected' : ''}>${t.label} (${t.truckNum})</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Material</label>
+        <select onchange="splits[${i}].material = this.value">
+          ${materials.map(m => `<option value="${m}" ${s.material === m ? 'selected' : ''}>${m}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Loads</label>
+        <input type="number" min="1" value="${s.loadsAssigned}" oninput="splits[${i}].loadsAssigned = Number(this.value) || 0">
+      </div>
+      <button class="split-remove" onclick="splits.splice(${i}, 1); renderSplits()" title="Remove">×</button>
+    </div>
+  `).join('');
+}
+
+function addSplit() {
+  splits.push({ truckId: trucks[0]?.id || '', material: materials[0] || 'Fill Sand', loadsAssigned: 1 });
+  renderSplits();
+}
+
+function syncSplitDates() {
+  // Date is on PO level only — splits don't have their own dates
+}
+
+async function savePO() {
+  const po = {
+    poNumber:     document.getElementById('po-number').value.trim() || null,
+    customer:     document.getElementById('po-customer').value.trim(),
+    job:          document.getElementById('po-customer').value.trim(),
+    deliveryDate: document.getElementById('po-date').value,
+    address:      document.getElementById('po-address').value.trim(),
+    city:         document.getElementById('po-city').value.trim(),
+    pickup:       document.getElementById('po-pickup').value.trim() || 'VBT Yard',
+    notes:        document.getElementById('po-notes').value.trim(),
+  };
+  if (!po.customer) { toast('Customer name required', 'error'); return; }
+  if (!po.deliveryDate) { toast('Delivery date required', 'error'); return; }
+  if (!splits.length || !splits.some(s => s.loadsAssigned > 0)) { toast('Add at least one load', 'error'); return; }
+
+  const validSplits = splits.filter(s => s.loadsAssigned > 0 && s.material);
+  const d = await api('POST', '/api/pos', { po, splits: validSplits });
+  if (d.ok) {
+    toast('PO created', 'success');
+    closePO();
+    await loadAll();
+    renderBoard();
+  } else {
+    toast(d.error || 'Failed', 'error');
+  }
+}
+
+// ── LOAD DETAIL (manager click on card) ─────────────────────────────────────
+function openLoadDetail(id) {
+  const l = loads.find(x => x.id === id);
+  if (!l) return;
+  const po = pos.find(p => p.id === l.poId) || {};
+  let html = `<div style="font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.04em;font-weight:600;margin-bottom:4px">${po.poNumber}</div>`;
+  html += `<div style="font-size:18px;font-weight:700;margin-bottom:10px">${po.customer}</div>`;
+  html += `<dl style="display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;font-size:13px">`;
+  html += `<dt style="color:var(--txt3)">Material</dt><dd>${l.material}</dd>`;
+  html += `<dt style="color:var(--txt3)">Loads</dt><dd>${l.loadsDelivered}/${l.loadsAssigned}</dd>`;
+  html += `<dt style="color:var(--txt3)">Driver</dt><dd>${l.driverName || 'Unassigned'}</dd>`;
+  html += `<dt style="color:var(--txt3)">Date</dt><dd>${fmtDate(l.deliveryDate)}</dd>`;
+  if (po.address) html += `<dt style="color:var(--txt3)">Address</dt><dd>${po.address}, ${po.city || ''}</dd>`;
+  if (po.pickup) html += `<dt style="color:var(--txt3)">Pickup</dt><dd>${po.pickup}</dd>`;
+  if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
+  html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
+  html += `</dl>`;
+
+  if (l.ticketImage) html += `<div style="margin-top:12px"><div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Ticket</div><img src="${l.ticketImage}" style="max-width:100%;border-radius:var(--r);border:1px solid var(--bdr)"></div>`;
+  if (l.pod?.signature) html += `<div style="margin-top:12px"><div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Signed by ${l.pod.signedBy}</div><img src="${l.pod.signature}" style="max-width:100%;border-radius:var(--r);border:1px solid var(--bdr);background:#fff"></div>`;
+
+  let actions = '';
+  if (role === 'manager') {
+    if (!l.approvalStatus || l.approvalStatus === 'pending') {
+      actions = `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
+    }
+  }
+
+  showInfoModal('Load Details', html, actions);
+}
+
+function showInfoModal(title, html, actions = '') {
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.style.zIndex = 250;
+  bg.innerHTML = `<div class="modal">
+    <div class="modal-head"><h2>${title}</h2><button class="modal-close" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div class="modal-body">${html}</div>
+    <div class="modal-foot">
+      ${actions}
+      <button class="btn ghost" onclick="this.closest('.modal-bg').remove()">Close</button>
+    </div>
+  </div>`;
+  document.body.appendChild(bg);
+}
+
+async function deleteLoad(id) {
+  const d = await api('DELETE', '/api/loads/' + id);
+  if (d.ok) { document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove(); await loadAll(); renderBoard(); toast('Load deleted', 'success'); }
+  else toast(d.error || 'Failed', 'error');
+}
+
+// ── DRIVER VIEW ──────────────────────────────────────────────────────────────
+async function renderDriver() {
+  const wrap = document.getElementById('drv-trips');
+  const welcome = document.getElementById('driver-welcome');
+
+  if (!wrap) { console.error('drv-trips element missing'); return; }
+
+  // Visible loading state immediately so we never have a blank page
+  wrap.innerHTML = '<div class="empty-state"><p>Loading your trips...</p></div>';
+
+  console.log('[DRIVER VIEW] Rendering driver view');
+  console.log('[DRIVER VIEW] Logged-in driver name:', myUsername);
+  console.log('[DRIVER VIEW] Logged-in driver truckId:', myTruckId);
+
+  let dispatch = [];
+  try {
+    const r = await fetch('/api/my-dispatch');
+    console.log('[DRIVER VIEW] /api/my-dispatch response status:', r.status);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.error || ('HTTP ' + r.status));
+    }
+    const d = await r.json();
+    dispatch = d.loads || [];
+    console.log('[DRIVER VIEW] Loads received from server:', dispatch.length);
+    dispatch.forEach(l => console.log('  -', l.loadId, l.poNumber, l.material, '(' + l.loadsAssigned + ' loads)'));
+  } catch (e) {
+    console.error('[DRIVER VIEW] Failed to load:', e);
+    wrap.innerHTML = `<div class="empty-state"><h3>Could not load trips</h3><p style="color:var(--R)">${e.message}</p><button class="btn primary" onclick="renderDriver()" style="margin-top:12px">Retry</button></div>`;
+    return;
+  }
+
+  // Wrap render in try/catch so any rendering bug shows up instead of a blank page
+  try {
+    await renderDriverContent(dispatch, welcome, wrap);
+  } catch (e) {
+    console.error('[DRIVER VIEW] Render error:', e);
+    wrap.innerHTML = `<div class="empty-state"><h3>Display error</h3><p style="color:var(--R);font-family:monospace;font-size:11px;text-align:left;background:var(--Rb);padding:12px;border-radius:8px;border:1px solid var(--Rd);overflow:auto;max-width:600px;margin:0 auto">${e.message}<br><br>${(e.stack||'').replace(/</g,'&lt;')}</p><button class="btn primary" onclick="renderDriver()" style="margin-top:12px">Retry</button></div>`;
+  }
+}
+
+async function renderDriverContent(dispatch, welcome, wrap) {
+
+  const todayCount = dispatch.filter(l => l.deliveryDate === todayStr()).length;
+  const submittedCount = dispatch.filter(l => l.approvalStatus === 'submitted').length;
+  const firstName = myUsername.charAt(0).toUpperCase() + myUsername.slice(1);
+
+  welcome.innerHTML = `<div class="drv-welcome">
+    <div class="drv-greeting">
+      <div class="avatar">${firstName.charAt(0)}</div>
+      <div>
+        <div class="drv-hi">Hi, ${firstName}</div>
+        <div class="drv-sub">${todayCount ? `<b>${todayCount}</b> trip${todayCount > 1 ? 's' : ''} today` : 'No trips today'}</div>
+      </div>
+    </div>
+    <div class="drv-stats">
+      <div><div class="drv-stat-num">${dispatch.length}</div><div class="drv-stat-lbl">Active</div></div>
+      <div><div class="drv-stat-num">${submittedCount}</div><div class="drv-stat-lbl">Pending Review</div></div>
+    </div>
+  </div>`;
+
+  if (!dispatch.length) {
+    wrap.innerHTML = `<div class="empty-state"><h3>No trips assigned</h3><p>Your dispatcher will assign loads as they come in.</p></div>`;
+    return;
+  }
+
+  wrap.innerHTML = dispatch.map(l => tripCard(l)).join('');
+}
+
+function tripCard(l) {
+  const ts = l.timestamps || {};
+  const pod = l.pod || {};
+  const isToday = l.deliveryDate === todayStr();
+  const started = !!ts.start;
+  const atPickup = !!ts.arrivedPickup;
+  const hasImage = !!l.ticketImage;
+  const hasSig = !!(pod.signedBy && pod.signature);
+  const delivered = !!ts.completed;
+  const submitted = l.approvalStatus === 'submitted';
+  const approved = l.approvalStatus === 'approved';
+  const rejected = l.approvalStatus === 'rejected';
+
+  let banner = '';
+  if (rejected) banner = `<div class="banner rejected">⚠ Rejected by manager${l.rejectReason ? ': ' + l.rejectReason : ''} — re-do this trip</div>`;
+  else if (approved) banner = `<div class="banner approved">✓ Approved — trip closed</div>`;
+  else if (submitted) banner = `<div class="banner submitted">⏳ Submitted — waiting for manager approval</div>`;
+
+  const stepCls = (active, done) => done ? 'done' : active ? 'active' : '';
+
+  let action = '';
+  if (!started && !submitted) {
+    action = `<button class="trip-action start" onclick="tripAction('${l.loadId}', 'start-trip')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      Start Trip
+    </button>
+    <div class="action-hint">GPS and time captured automatically</div>`;
+  } else if (started && !atPickup) {
+    action = `<button class="trip-action pickup" onclick="tripAction('${l.loadId}', 'arrived-pickup')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
+      Arrived at Pickup
+    </button>
+    <div class="action-hint">Tap when you reach the yard</div>`;
+  } else if (atPickup && !hasImage) {
+    action = `<button class="trip-action ticket" onclick="openTicketUpload('${l.loadId}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      Upload Ticket Photo
+    </button>
+    <div class="action-hint required">Required before delivery</div>`;
+  } else if (hasImage && !hasSig) {
+    action = `<button class="trip-action sign" onclick="openSig('${l.loadId}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="18 2 22 6 12 16 8 16 8 12 18 2"/></svg>
+      Customer Signature
+    </button>
+    <div class="action-hint required">Required before delivery</div>`;
+  } else if (hasSig && !submitted) {
+    action = `<button class="trip-action complete" onclick="tripAction('${l.loadId}', 'delivered')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      Complete Delivery
+    </button>
+    <div class="action-hint">Submits to manager for approval</div>`;
+  }
+
+  return `<div class="trip-card ${isToday ? 'is-today' : ''}">
+    <div class="trip-head">
+      <div class="trip-po">${l.poNumber}${isToday ? '<span class="today-badge">TODAY</span>' : ''}</div>
+      <div class="trip-customer">${l.customer}</div>
+    </div>
+    <div class="trip-body">
+      ${banner}
+      <dl class="trip-info">
+        <dt>Pickup</dt><dd>🏗️ ${l.pickupLocation}</dd>
+        <dt>Deliver</dt><dd>📍 ${l.deliveryLocation || l.city}</dd>
+        <dt>Material</dt><dd>${l.material}</dd>
+        <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads</dd>
+        ${l.notes ? `<dt>Notes</dt><dd class="notes">${l.notes}</dd>` : ''}
+      </dl>
+      <div class="steps">
+        <div class="step ${stepCls(!started && !submitted, started)}">Start${ts.start ? `<span class="step-time">${ts.start}</span>` : ''}</div>
+        <div class="step ${stepCls(started && !atPickup, atPickup)}">Pickup${ts.arrivedPickup ? `<span class="step-time">${ts.arrivedPickup}</span>` : ''}</div>
+        <div class="step ${stepCls(atPickup && !hasImage, hasImage)}">Ticket${hasImage ? '<span class="step-time">✓</span>' : ''}</div>
+        <div class="step ${stepCls(hasImage && !hasSig, hasSig)}">Signed${hasSig ? '<span class="step-time">✓</span>' : ''}</div>
+        <div class="step ${stepCls(hasSig && !submitted, submitted || delivered)}">Done${ts.completed ? `<span class="step-time">${ts.completed}</span>` : ''}</div>
+      </div>
+      ${action}
+      ${started && !submitted ? `
+        <div class="req-check ${hasImage ? 'done' : 'missing'}">
+          <span>Ticket photo</span>
+          <span>${hasImage ? '✓ Uploaded' : '— Missing'}</span>
+        </div>
+        ${hasImage ? `<img src="${l.ticketImage}" class="ticket-preview">` : ''}
+        <div class="req-check ${hasSig ? 'done' : 'missing'}">
+          <span>Customer signature</span>
+          <span>${hasSig ? '✓ Signed by ' + pod.signedBy : '— Missing'}</span>
+        </div>
+      ` : ''}
+    </div>
+  </div>`;
+}
+
+async function tripAction(loadId, action) {
+  let gps = null;
+  try {
+    gps = await new Promise(resolve => {
+      if (!navigator.geolocation) return resolve(null);
+      navigator.geolocation.getCurrentPosition(
+        p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 5000 }
+      );
+    });
+  } catch (e) {}
+
+  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action, gps });
+  if (d.ok) {
+    toast(action === 'delivered' ? 'Submitted for approval!' : 'Updated', 'success');
+    await loadAll();
+    renderDriver();
+  } else {
+    toast(d.error || 'Failed', 'error');
+  }
+}
+
+// ── TICKET UPLOAD ────────────────────────────────────────────────────────────
+function openTicketUpload(loadId) {
+  currentLoadId = loadId;
+  document.getElementById('ticket-input').value = '';
+  document.getElementById('ticket-preview').style.display = 'none';
+  document.getElementById('ticket-save-btn').disabled = true;
+  document.getElementById('ticket-modal').style.display = 'flex';
+
+  document.getElementById('ticket-input').onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    // Compress to ~1200px max
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxDim = 1200;
+        let w = img.width, h = img.height;
+        if (w > h && w > maxDim) { h = h * maxDim / w; w = maxDim; }
+        else if (h > maxDim) { w = w * maxDim / h; h = maxDim; }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        const data = canvas.toDataURL('image/jpeg', 0.85);
+        const preview = document.getElementById('ticket-preview');
+        preview.src = data;
+        preview.style.display = 'block';
+        preview.dataset.image = data;
+        document.getElementById('ticket-save-btn').disabled = false;
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+}
+
+function closeTicket() { document.getElementById('ticket-modal').style.display = 'none'; }
+
+async function saveTicket() {
+  const data = document.getElementById('ticket-preview').dataset.image;
+  if (!data || !currentLoadId) return;
+  const d = await api('PUT', '/api/loads/' + currentLoadId, { ticketImage: data });
+  if (d.ok) { closeTicket(); await loadAll(); renderDriver(); toast('Ticket uploaded', 'success'); }
+  else toast(d.error || 'Failed', 'error');
+}
+
+// ── SIGNATURE ────────────────────────────────────────────────────────────────
+let sigCanvas, sigCtx, sigDrawing = false, sigHasInk = false;
+
+function openSig(loadId) {
+  currentLoadId = loadId;
+  sigHasInk = false;
+  document.getElementById('sig-name').value = '';
+  document.getElementById('sig-modal').style.display = 'flex';
+
+  // Set up canvas
+  setTimeout(() => {
+    sigCanvas = document.getElementById('sig-canvas');
+    sigCanvas.width = sigCanvas.offsetWidth;
+    sigCanvas.height = 200;
+    sigCtx = sigCanvas.getContext('2d');
+    sigCtx.fillStyle = '#fff';
+    sigCtx.fillRect(0, 0, sigCanvas.width, sigCanvas.height);
+    sigCtx.strokeStyle = '#000';
+    sigCtx.lineWidth = 2.5;
+    sigCtx.lineCap = 'round';
+
+    const start = (e) => { sigDrawing = true; sigCtx.beginPath(); const p = getPos(e); sigCtx.moveTo(p.x, p.y); };
+    const move = (e) => { if (!sigDrawing) return; e.preventDefault(); const p = getPos(e); sigCtx.lineTo(p.x, p.y); sigCtx.stroke(); sigHasInk = true; };
+    const end = () => { sigDrawing = false; };
+    const getPos = (e) => {
+      const rect = sigCanvas.getBoundingClientRect();
+      const t = e.touches?.[0] || e;
+      return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+    };
+    sigCanvas.onmousedown = start; sigCanvas.onmousemove = move; sigCanvas.onmouseup = end; sigCanvas.onmouseleave = end;
+    sigCanvas.ontouchstart = start; sigCanvas.ontouchmove = move; sigCanvas.ontouchend = end;
+  }, 50);
+}
+
+function clearSig() {
+  if (!sigCtx) return;
+  sigCtx.fillStyle = '#fff';
+  sigCtx.fillRect(0, 0, sigCanvas.width, sigCanvas.height);
+  sigHasInk = false;
+}
+
+function closeSig() { document.getElementById('sig-modal').style.display = 'none'; }
+
+async function saveSig() {
+  const name = document.getElementById('sig-name').value.trim();
+  if (!name) { toast('Customer name required', 'error'); return; }
+  if (!sigHasInk) { toast('Please sign on the canvas', 'error'); return; }
+  const sig = sigCanvas.toDataURL('image/png');
+  const d = await api('PUT', '/api/loads/' + currentLoadId, {
+    pod: { signedBy: name, signature: sig, signedAt: new Date().toISOString() }
+  });
+  if (d.ok) { closeSig(); await loadAll(); renderDriver(); toast('Signature saved', 'success'); }
+  else toast(d.error || 'Failed', 'error');
+}
+
+// ── APPROVALS ────────────────────────────────────────────────────────────────
+function renderApprovals() {
+  const submitted = loads.filter(l => l.approvalStatus === 'submitted' && !l.voided);
+  const wrap = document.getElementById('approve-list');
+  if (!submitted.length) {
+    wrap.innerHTML = `<div class="empty-state"><h3>No loads awaiting approval</h3><p>Approved loads automatically move to "Ready to Bill".</p></div>`;
+    return;
+  }
+  wrap.innerHTML = submitted.map(l => {
+    const po = pos.find(p => p.id === l.poId) || {};
+    const ts = l.timestamps || {};
+    const pod = l.pod || {};
+    return `<div class="approve-card">
+      <div class="approve-head">
+        <div>
+          <div style="font-size:11px;color:var(--P);font-weight:700;letter-spacing:.04em">${po.poNumber}</div>
+          <div style="font-size:15px;font-weight:700">${po.customer}</div>
+        </div>
+        <div style="text-align:right;font-size:11px;color:var(--txt2)">
+          <div>Submitted ${l.submittedAt ? new Date(l.submittedAt).toLocaleString() : ''}</div>
+          <div>By ${l.driverName}</div>
+        </div>
+      </div>
+      <div class="approve-body">
+        <div>
+          <dl class="approve-info">
+            <dt>Material</dt><dd>${l.material}</dd>
+            <dt>Loads</dt><dd>${l.loadsDelivered}/${l.loadsAssigned}</dd>
+            <dt>Delivery date</dt><dd>${fmtDate(l.deliveryDate)}</dd>
+            <dt>Address</dt><dd>${po.address || ''} ${po.city || ''}</dd>
+            <dt>Started</dt><dd>${ts.start || '—'}</dd>
+            <dt>At pickup</dt><dd>${ts.arrivedPickup || '—'}</dd>
+            <dt>Delivered</dt><dd>${ts.completed || '—'}</dd>
+            <dt>Signed by</dt><dd>${pod.signedBy || '—'}</dd>
+          </dl>
+        </div>
+        <div>
+          ${l.ticketImage ? `<div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Ticket</div><img src="${l.ticketImage}" class="approve-image">` : '<div style="color:var(--R);font-size:13px">⚠ No ticket image</div>'}
+          ${pod.signature ? `<div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin:10px 0 4px">Signature</div><img src="${pod.signature}" class="approve-image" style="background:#fff">` : ''}
+        </div>
+      </div>
+      <div class="approve-actions">
+        <button class="btn danger" onclick="rejectLoad('${l.id}')">Reject</button>
+        <button class="btn success" onclick="approveLoad('${l.id}')">Approve & Lock</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function updateApproveBadge() {
+  const count = loads.filter(l => l.approvalStatus === 'submitted' && !l.voided).length;
+  const badge = document.getElementById('approve-badge');
+  if (count > 0) { badge.textContent = count; badge.style.display = 'inline-block'; }
+  else { badge.style.display = 'none'; }
+}
+
+async function approveLoad(id) {
+  const d = await api('POST', '/api/loads/' + id + '/approve', {});
+  if (d.ok) { toast('Approved & locked', 'success'); await loadAll(); renderApprovals(); updateApproveBadge(); }
+  else toast(d.error || 'Failed', 'error');
+}
+
+async function rejectLoad(id) {
+  const reason = prompt('Reason for rejection?');
+  if (!reason) return;
+  const d = await api('POST', '/api/loads/' + id + '/reject', { reason });
+  if (d.ok) { toast('Rejected', 'success'); await loadAll(); renderApprovals(); updateApproveBadge(); }
+  else toast(d.error || 'Failed', 'error');
+}
+
+// ── BILLING ──────────────────────────────────────────────────────────────────
+let billFilters = { month: '', material: '', truckId: '' };
+let billSelected = new Set();
+
+function renderBilling() {
+  // Build filter bar
+  const months = [...new Set(loads.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready').map(l => (l.deliveryDate || '').slice(0, 7)))].sort().reverse();
+  document.getElementById('bill-filters').innerHTML = `
+    <select class="bill-filter" onchange="billFilters.month=this.value;loadBilling()">
+      <option value="">All months</option>
+      ${months.map(m => `<option value="${m}" ${billFilters.month === m ? 'selected' : ''}>${m}</option>`).join('')}
+    </select>
+    <select class="bill-filter" onchange="billFilters.material=this.value;loadBilling()">
+      <option value="">All materials</option>
+      ${materials.map(m => `<option value="${m}" ${billFilters.material === m ? 'selected' : ''}>${m}</option>`).join('')}
+    </select>
+    <select class="bill-filter" onchange="billFilters.truckId=this.value;loadBilling()">
+      <option value="">All drivers</option>
+      ${trucks.map(t => `<option value="${t.id}" ${billFilters.truckId === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}
+    </select>
+    <span style="flex:1"></span>
+    <button class="btn primary" onclick="markBilled()" id="mark-billed-btn" disabled>Mark ${billSelected.size} as Billed</button>
+  `;
+  loadBilling();
+}
+
+async function loadBilling() {
+  const params = new URLSearchParams();
+  if (billFilters.month)    params.set('month', billFilters.month);
+  if (billFilters.material) params.set('material', billFilters.material);
+  if (billFilters.truckId)  params.set('truckId', billFilters.truckId);
+  const r = await fetch('/api/ready-to-bill?' + params);
+  const d = await r.json();
+  const items = d.items || [];
+
+  const wrap = document.getElementById('bill-list');
+  if (!items.length) {
+    wrap.innerHTML = `<div class="empty-state"><h3>No loads ready to bill</h3><p>Approve loads from the Approvals tab to add them here.</p></div>`;
+    return;
+  }
+  wrap.innerHTML = `<table class="bill-table">
+    <thead><tr>
+      <th><input type="checkbox" id="bill-all" onchange="toggleAllBill(this.checked)"></th>
+      <th>PO</th><th>Customer</th><th>City</th><th>Material</th><th>Loads</th><th>Driver</th><th>Date</th><th>Approved</th>
+    </tr></thead>
+    <tbody>
+      ${items.map(l => `<tr>
+        <td><input type="checkbox" data-id="${l.id}" onchange="toggleBillSelect('${l.id}', this.checked)" ${billSelected.has(l.id) ? 'checked' : ''}></td>
+        <td style="font-weight:600;color:var(--B)">${l.poNumber}</td>
+        <td>${l.customer}</td>
+        <td>${l.city || '—'}</td>
+        <td>${l.material}</td>
+        <td>${l.loadsDelivered}</td>
+        <td>${l.driverName}</td>
+        <td>${fmtDate(l.deliveryDate)}</td>
+        <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+function toggleBillSelect(id, checked) {
+  if (checked) billSelected.add(id); else billSelected.delete(id);
+  document.getElementById('mark-billed-btn').disabled = billSelected.size === 0;
+  document.getElementById('mark-billed-btn').textContent = `Mark ${billSelected.size} as Billed`;
+}
+
+function toggleAllBill(checked) {
+  document.querySelectorAll('[data-id]').forEach(cb => {
+    cb.checked = checked;
+    if (checked) billSelected.add(cb.dataset.id); else billSelected.delete(cb.dataset.id);
+  });
+  document.getElementById('mark-billed-btn').disabled = billSelected.size === 0;
+  document.getElementById('mark-billed-btn').textContent = `Mark ${billSelected.size} as Billed`;
+}
+
+async function markBilled() {
+  if (!billSelected.size) return;
+  if (!confirm(`Mark ${billSelected.size} load(s) as billed? This is permanent.`)) return;
+  const d = await api('POST', '/api/loads/bill', { loadIds: [...billSelected] });
+  if (d.ok) {
+    toast(`Marked ${d.billed} as billed`, 'success');
+    billSelected.clear();
+    await loadAll();
+    renderBilling();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+// ── SHEETS SYNC ──────────────────────────────────────────────────────────────
+async function syncSheets() {
+  toast('Syncing to Google Sheets...');
+  const d = await api('POST', '/api/sync', {});
+  if (d.ok) toast(`Synced ${d.pos} POs and ${d.loads} loads`, 'success');
+  else toast(d.error || 'Sync failed', 'error');
+}
+
+// ── START ────────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
