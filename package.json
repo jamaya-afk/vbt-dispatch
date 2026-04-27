@@ -1,20 +1,2572 @@
-{
-  "name": "vbt-dispatch",
-  "version": "1.0.0",
-  "description": "Valley Best Transport — Dispatch Scheduler",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "build": "echo build ok"
-  },
-  "dependencies": {
-    "express": "4.18.2",
-    "express-session": "1.17.3",
-    "googleapis": "140.0.0",
-    "pg": "8.11.3",
-    "connect-pg-simple": "9.0.1"
-  },
-  "engines": {
-    "node": "18.x"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>VBT Dispatch</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --f:'IBM Plex Sans',system-ui,sans-serif;--m:'IBM Plex Mono',monospace;
+  --bg:#ffffff;--bg2:#f4f6f9;--bg3:#eef1f6;--txt:#1a2035;--txt2:#5a6478;--txt3:#9ba5b7;
+  --bdr:#e2e7f0;--bdr2:#cdd4e0;--r:10px;--rl:16px;
+  --G:#16a066;--Gb:#edfaf4;--Gd:#9fe4c8;
+  --A:#d97706;--Ab:#fff8ed;--Ad:#fcd38a;
+  --R:#e05252;--Rb:#fff0f0;--Rd:#f8b4b4;
+  --B:#3b82f6;--Bb:#eff6ff;--Bd:#bfdbfe;
+  --P:#8b5cf6;--Pb:#f5f3ff;--Pd:#ddd6fe;
+  --O:#f97316;--Ob:#fff7ed;--Od:#fed7aa;
+  --T:#0891b2;--Tb:#ecfeff;--Td:#a5f3fc;
+  --shadow:0 1px 4px rgba(26,32,53,.07),0 4px 16px rgba(26,32,53,.05);
+  --shadow-md:0 2px 8px rgba(26,32,53,.09),0 8px 24px rgba(26,32,53,.07);
+}
+
+/* Material color coding */
+:root{
+  --mat-Fill-Sand:#8a5c00;--mat-Fill-Sand-bg:#fff8e6;
+  --mat-Gravel:#1a5fa8;--mat-Gravel-bg:#eaf2fd;
+  --mat-Rock:#6c3fc5;--mat-Rock-bg:#f3eeff;
+  --mat-Cold-Mix:#0a7a7a;--mat-Cold-Mix-bg:#e6f7f7;
+  --mat-34-Rock:#b85c00;--mat-34-Rock-bg:#fff3e6;
+  --mat-Recycle-Base:#1a7a4a;--mat-Recycle-Base-bg:#eaf7f0;
+  --mat-Dirt:#666;--mat-Dirt-bg:#f0efe9;
+  --mat-Base-Rock:#c0392b;--mat-Base-Rock-bg:#fdf0ee;
+  --mat-Other:#111;--mat-Other-bg:#f7f6f2;
+}
+
+body{font-family:var(--f);background:var(--bg3);color:var(--txt);min-height:100vh}
+
+/* ── TOPBAR ── */
+.topbar{display:flex;align-items:center;gap:8px;padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-wrap:wrap;position:sticky;top:0;z-index:100;box-shadow:0 1px 0 var(--bdr)}
+.topbar h1{font-family:var(--f);font-size:15px;font-weight:600;color:var(--txt);flex:1;min-width:80px;letter-spacing:-.02em}
+.tb{padding:6px 14px;font-size:12px;border:1.5px solid var(--bdr2);border-radius:20px;background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f);white-space:nowrap;font-weight:500;transition:all .15s}
+.tb:hover{border-color:var(--B);color:var(--B);background:var(--Bb)}
+.tb.active{background:var(--B);color:#fff;border-color:var(--B)}
+.nbtn{border:1.5px solid var(--bdr2);background:var(--bg);cursor:pointer;color:var(--txt2);font-size:13px;padding:6px 12px;border-radius:20px;font-family:var(--f);font-weight:500;transition:all .15s}
+.nbtn:hover{border-color:var(--B);color:var(--B);background:var(--Bb)}
+.nlbl{font-family:var(--f);font-size:13px;font-weight:500;color:var(--txt);min-width:160px;text-align:center}
+.sync-btn{padding:6px 14px;font-size:12px;border:1.5px solid var(--Bd);border-radius:20px;background:var(--Bb);cursor:pointer;color:var(--B);font-family:var(--f);font-weight:500;transition:all .15s}
+.sync-btn:hover{background:var(--B);color:#fff}
+.sync-btn:disabled{opacity:.5;pointer-events:none}
+.ss{font-size:11px;font-family:var(--f)}.ss.ok{color:var(--G)}.ss.err{color:var(--R)}
+.uinfo{font-size:12px;color:var(--txt3);font-family:var(--f);background:var(--bg2);padding:4px 10px;border-radius:20px}
+.lobtn{font-size:12px;color:var(--txt3);background:transparent;border:none;cursor:pointer;font-family:var(--f);text-decoration:none;padding:4px 8px;border-radius:var(--r);transition:background .15s}
+.lobtn:hover{background:var(--bg2);color:var(--txt2)}
+.mgr{display:none}.is-manager .mgr{display:block}
+.mgrf{display:none}.is-manager .mgrf{display:flex}
+
+/* ── SUMMARY BAR ── */
+.sbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;padding:12px 16px;background:var(--bg2);border-bottom:1px solid var(--bdr)}
+.met{background:var(--bg);border-radius:var(--rl);padding:10px 14px;box-shadow:var(--shadow)}
+.met .ml{font-size:10px;color:var(--txt3);margin-bottom:3px;text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.met .mv{font-size:20px;font-weight:700;font-family:var(--f);color:var(--txt)}
+.met.w .mv{color:var(--R)}.met.g .mv{color:var(--G)}.met.b .mv{color:var(--B)}.met.o .mv{color:var(--O)}
+
+/* ── BOARD ── */
+.board-outer{overflow-y:auto;height:calc(100vh - 120px)}
+.board-inner{min-width:900px;padding:0 16px 32px}
+
+/* Day block */
+.day-block{margin-bottom:0;border-bottom:1px solid var(--bdr)}
+.day-header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:linear-gradient(135deg,#1a2035 0%,#2d3a5e 100%);color:#fff;position:sticky;top:0;z-index:20;border-radius:0}
+.day-header .dh-day{font-family:var(--f);font-size:14px;font-weight:700;color:#fff}
+.day-header .dh-date{font-size:12px;opacity:.7;font-family:var(--f)}
+.day-header .dh-today{font-size:11px;background:var(--G);color:#fff;padding:3px 10px;border-radius:20px;font-weight:600}
+.day-header .dh-summary{font-size:12px;opacity:.75;margin-left:auto;font-weight:500}
+
+/* Driver columns grid */
+.drivers-grid{display:grid;border-bottom:1px solid var(--bdr)}
+.col-head-row{display:grid;background:var(--bg2);border-bottom:1px solid var(--bdr)}
+.col-head{padding:10px 12px;border-right:1px solid var(--bdr);display:flex;flex-direction:column;gap:3px}
+.col-head:last-child{border-right:none}
+.ch-name{font-size:13px;font-weight:600;color:var(--txt)}
+.ch-truck{font-size:11px;color:var(--txt3);font-weight:400}
+.truck-edit{font-size:11px;background:transparent;border:1px solid transparent;border-radius:var(--r);color:var(--txt3);width:100%;padding:2px 4px;cursor:pointer;font-family:var(--f)}
+.truck-edit:hover{border-color:var(--bdr2);background:var(--bg)}.truck-edit:focus{border-color:var(--B);background:var(--bg);outline:none;color:var(--txt)}
+.col-body-row{display:grid;align-items:start}
+.driver-cell{border-right:1px solid var(--bdr);padding:10px 8px;min-height:90px;background:var(--bg2)}
+.driver-cell:last-child{border-right:none}
+.driver-drop{min-height:70px;border-radius:var(--rl);padding:4px;transition:background .15s,box-shadow .15s}
+.driver-drop.over{background:var(--Gb);box-shadow:inset 0 0 0 2px var(--G)}
+
+/* Load card */
+.lcard{background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--r);padding:7px 9px;cursor:grab;margin-bottom:4px;position:relative;transition:box-shadow .1s}
+.lcard:hover{border-color:var(--bdr2)}
+.lcard.dragging{opacity:.45;cursor:grabbing}
+.lcard.unassigned-card{border-style:dashed;background:var(--bg2)}
+.lcard .lc-po{font-family:var(--m);font-size:10px;color:var(--B);margin-bottom:2px;display:flex;align-items:center;gap:5px}
+.lcard .lc-cust{font-size:12px;font-weight:500;color:var(--txt);line-height:1.3;margin-bottom:2px}
+.lcard .lc-mat{display:flex;align-items:center;gap:4px;font-size:10px;margin-bottom:4px}
+.mat-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.lcard .lc-pills{display:flex;gap:3px;flex-wrap:wrap;margin-top:3px}
+.pill{font-size:10px;padding:1px 6px;border-radius:20px;border:0.5px solid var(--bdr);background:var(--bg2);color:var(--txt2);white-space:nowrap}
+.pill.g{background:var(--Gb);color:var(--G);border-color:var(--Gd)}
+.pill.a{background:var(--Ab);color:var(--A);border-color:var(--Ad)}
+.pill.r{background:var(--Rb);color:var(--R);border-color:var(--Rd)}
+.pill.p{background:var(--Pb);color:var(--P);border-color:var(--Pd)}
+.pill.b{background:var(--Bb);color:var(--B);border-color:var(--Bd)}
+.lc-prog{height:3px;background:var(--bdr);border-radius:2px;margin-top:5px;overflow:hidden}
+.lc-prog-fill{height:100%;border-radius:2px;transition:width .3s}
+.lcard.missing-card{border-left:3px solid var(--R)}
+.lcard.unassigned-card{border-left:3px solid var(--A);border-style:solid}
+
+/* Unassigned row */
+.unassigned-row{padding:10px 16px;background:var(--Ab);border-top:1px solid var(--Ad);display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
+.unassigned-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--A);font-weight:700;white-space:nowrap;padding-top:4px}
+.unassigned-drop-zone{flex:1;min-height:44px;display:flex;flex-wrap:wrap;gap:6px;padding:4px;border-radius:var(--rl);transition:background .15s,box-shadow .15s}
+.unassigned-drop-zone.over{background:var(--Gb);box-shadow:inset 0 0 0 2px var(--G)}
+.add-job-btn{padding:7px 14px;border:1.5px dashed var(--Bd);border-radius:20px;background:var(--Bb);cursor:pointer;font-size:12px;color:var(--B);font-family:var(--f);font-weight:500;transition:all .15s}
+.add-job-btn:hover{background:var(--B);color:#fff;border-color:var(--B)}
+
+/* PO progress bar (inside day header) */
+.po-progress-chip{font-size:10px;font-family:var(--m);background:rgba(255,255,255,.15);padding:2px 7px;border-radius:20px;white-space:nowrap}
+
+/* ── LIST VIEWS ── */
+.list-view{padding:12px;overflow-y:auto;height:calc(100vh - 108px)}
+.poc{background:var(--bg);border:1.5px solid var(--bdr);border-radius:var(--rl);overflow:hidden;margin-bottom:10px;box-shadow:var(--shadow);transition:box-shadow .15s}
+.poc:hover{box-shadow:var(--shadow-md)}
+.poc.completed{opacity:.75;border-color:var(--Gd)}
+.poh{padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;user-select:none}
+.poh:hover{background:var(--bg2)}
+.poc-chev{font-size:10px;color:var(--txt3);transition:transform .15s;flex-shrink:0}
+.poc-chev.o{transform:rotate(90deg)}
+.poc-num{font-family:var(--m);font-size:12px;font-weight:500;color:var(--B);white-space:nowrap}
+.poc-cust{font-size:12px;font-weight:500;color:var(--txt);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.poc-date{font-size:11px;font-family:var(--m);color:var(--txt2);white-space:nowrap}
+.poc-prog{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
+.poc-bar{width:56px;height:4px;background:var(--bdr);border-radius:2px;overflow:hidden}
+.poc-fill{height:100%;border-radius:2px}
+.poc-fill.z{background:var(--bdr2)}.poc-fill.p{background:var(--A)}.poc-fill.f{background:var(--G)}
+.sp{font-size:10px;padding:2px 6px;border-radius:20px;border:0.5px solid;white-space:nowrap;flex-shrink:0}
+.sp-active{background:var(--Bb);color:var(--B);border-color:var(--Bd)}
+.sp-completed{background:var(--Gb);color:var(--G);border-color:var(--Gd)}
+.sp-scheduled{background:var(--Pb);color:var(--P);border-color:var(--Pd)}
+.sp-unassigned{background:var(--bg2);color:var(--txt2);border-color:var(--bdr)}
+.sp-unpaid{background:var(--Rb);color:var(--R);border-color:var(--Rd)}
+.sp-partial{background:var(--Ab);color:var(--A);border-color:var(--Ad)}
+.sp-paid{background:var(--Gb);color:var(--G);border-color:var(--Gd)}
+.pob{border-top:0.5px solid var(--bdr);display:none}
+.pob.o{display:block}
+.po-meta{padding:8px 12px;background:var(--bg2);display:flex;flex-wrap:wrap;gap:8px;border-bottom:0.5px solid var(--bdr);font-size:12px;color:var(--txt2)}
+.po-meta b{color:var(--txt)}
+.po-acts{padding:6px 12px;display:flex;gap:6px;flex-wrap:wrap;border-bottom:0.5px solid var(--bdr);background:var(--bg2)}
+.ab{padding:6px 13px;font-size:12px;border:1.5px solid var(--bdr2);border-radius:20px;background:var(--bg2);cursor:pointer;color:var(--txt2);font-family:var(--f);font-weight:500;transition:all .15s}
+.ab:hover{background:var(--txt);color:var(--bg);border-color:var(--txt)}
+.ab.g{border-color:var(--Gd);color:var(--G);background:var(--Gb)}.ab.g:hover{background:var(--G);color:#fff;border-color:var(--G)}
+.ab.r{border-color:var(--Rd);color:var(--R);background:var(--Rb)}.ab.r:hover{background:var(--R);color:#fff;border-color:var(--R)}
+.ab.b{border-color:var(--Bd);color:var(--B);background:var(--Bb)}.ab.b:hover{background:var(--B);color:#fff;border-color:var(--B)}
+.ab.o{border-color:var(--Od);color:var(--O);background:var(--Ob)}.ab.o:hover{background:var(--O);color:#fff;border-color:var(--O)}
+
+/* Multi-material table */
+.mat-table{width:100%;border-collapse:collapse;font-size:12px}
+.mat-table th{padding:5px 10px;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:500;text-align:left;border-bottom:0.5px solid var(--bdr);background:var(--bg2)}
+.mat-table td{padding:7px 10px;border-bottom:0.5px solid var(--bdr);color:var(--txt)}
+.mat-table tr:last-child td{border-bottom:none}
+.mat-table tr:hover td{background:var(--bg2)}
+.mat-chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:20px;font-weight:500}
+
+/* Invoice section */
+.inv-sec{padding:10px 12px;border-bottom:0.5px solid var(--bdr)}
+.inv-title{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);margin-bottom:8px;font-weight:500}
+.inv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:6px;margin-bottom:8px}
+.icard{background:var(--bg2);border-radius:var(--r);padding:8px 10px}
+.icard .il{font-size:10px;color:var(--txt2);margin-bottom:2px}
+.icard .iv{font-size:15px;font-weight:500;font-family:var(--m);color:var(--txt)}
+.icard.money .iv{color:var(--G)}.icard.owed .iv{color:var(--R)}
+.pay-row{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:var(--bg2);border-radius:var(--r);margin-bottom:3px;font-size:11px}
+.pay-amt{font-weight:500;color:var(--G);font-family:var(--m)}
+.pod-badge{font-size:10px;padding:2px 6px;border-radius:20px;background:var(--Gb);color:var(--G);border:0.5px solid var(--Gd)}
+.no-items{padding:16px;text-align:center;font-size:12px;color:var(--txt3)}
+
+/* History */
+.hm{margin-bottom:14px}
+.hml{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--txt2);font-weight:500;margin-bottom:6px;padding-bottom:3px;border-bottom:0.5px solid var(--bdr)}
+.hi{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--r);margin-bottom:4px}
+
+/* ── DRIVER VIEW ── */
+.drv-view{padding:0;display:flex;flex-direction:column;gap:0}
+body.driver-mode .drv-view{padding:0}
+/* Make sure the driver's cards area has breathing room below welcome header */
+.drv-welcome + .guided-card,
+.drv-welcome + .no-loads{margin-top:14px}
+.drv-view > .guided-card,
+.drv-view > .no-loads{margin:0 14px 14px}
+.drv-view > .guided-card:first-of-type,
+.drv-view > .no-loads:first-of-type{margin-top:14px}
+.dlc{background:var(--bg);border:1.5px solid var(--bdr);border-radius:var(--rl);overflow:hidden;box-shadow:var(--shadow)}
+.dlch{padding:12px 16px;background:linear-gradient(135deg,#1a2035 0%,#2d3a5e 100%);border-bottom:none}
+.dlch-po{color:rgba(255,255,255,.6)!important}
+.dlch-c{color:#fff!important}
+.dlch-po{font-family:var(--m);font-size:10px;color:var(--B);margin-bottom:1px}
+.dlch-c{font-size:13px;font-weight:500;color:var(--txt)}
+.dlcb{padding:11px 12px}
+.dlc-grid{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:start}
+.dlc-meta{font-size:12px;color:var(--txt2);line-height:1.8}
+.dlc-big{font-size:26px;font-weight:500;font-family:var(--m);color:var(--txt);text-align:right}
+.dlc-lbl{font-size:10px;color:var(--txt3);text-align:right}
+.drv-btns{display:flex;flex-direction:column;gap:5px;margin-top:10px}
+.dbtn{padding:13px 0;font-size:14px;border:1.5px solid var(--bdr2);border-radius:var(--rl);background:var(--bg2);cursor:pointer;color:var(--txt2);font-family:var(--f);text-align:center;font-weight:600;transition:all .15s;box-shadow:var(--shadow)}
+.dbtn:active{transform:scale(.98)}
+.dbtn.start{border-color:var(--Bd);background:var(--Bb);color:var(--B);box-shadow:0 2px 8px rgba(59,130,246,.15)}
+.dbtn.arr{border-color:var(--Ad);background:var(--Ab);color:var(--A);box-shadow:0 2px 8px rgba(217,119,6,.15)}
+.dbtn.comp{border-color:var(--Gd);background:var(--Gb);color:var(--G);box-shadow:0 2px 8px rgba(22,160,102,.15)}
+.dbtn.sig{border-color:var(--Pd);background:var(--Pb);color:var(--P);box-shadow:0 2px 8px rgba(139,92,246,.15)}
+.dbtn.stamped{opacity:.65;cursor:default}
+.drv-ts{font-size:10px;font-family:var(--m);color:var(--txt3);margin-top:6px;line-height:2}
+.pod-ok{margin-top:7px;padding:6px 9px;background:var(--Gb);border-radius:var(--r);font-size:11px;color:var(--G)}
+.no-loads{padding:28px;text-align:center;font-size:13px;color:var(--txt3)}
+
+/* ── MODAL ── */
+.mbg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(26,32,53,.45);backdrop-filter:blur(4px);display:flex;align-items:flex-start;justify-content:center;padding:16px;z-index:300;overflow-y:auto}
+.mod{background:var(--bg);border-radius:20px;border:1.5px solid var(--bdr);width:100%;max-width:560px;margin:auto;box-shadow:0 8px 40px rgba(26,32,53,.18)}
+.mh{padding:16px 20px;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center}
+.mh h2{font-size:15px;font-weight:700;color:var(--txt);letter-spacing:-.01em}
+.mc{background:var(--bg2);border:none;cursor:pointer;font-size:18px;color:var(--txt2);line-height:1;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:background .15s}
+.mc:hover{background:var(--Rb);color:var(--R)}
+.mb{padding:16px 20px;display:flex;flex-direction:column;gap:12px;max-height:78vh;overflow-y:auto}
+.fl{display:flex;flex-direction:column;gap:5px}
+.fl label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.fl input,.fl select,.fl textarea{width:100%;padding:9px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg2);color:var(--txt);font-size:13px;font-family:var(--f);transition:border-color .15s}
+.fl input:focus,.fl select:focus,.fl textarea:focus{outline:none;border-color:var(--B);background:var(--bg);box-shadow:0 0 0 3px var(--Bb)}
+.fl input:disabled,.fl select:disabled{opacity:.5;cursor:default}
+.fl textarea{resize:vertical;min-height:52px}
+.fr{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.sdiv{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);padding:8px 0 4px;border-bottom:1px solid var(--bdr);margin-top:4px;font-weight:600}
+.srow{display:grid;grid-template-columns:1fr 1fr 80px auto;gap:8px;align-items:end;padding:8px 10px;background:var(--bg2);border-radius:var(--r);border:0.5px solid var(--bdr);margin-bottom:5px}
+.srow select,.srow input{padding:5px 7px;font-size:12px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-family:var(--f);width:100%}
+.srow-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:2px}
+.sr{padding:5px 8px;font-size:11px;border:0.5px solid var(--Rd);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--R);font-family:var(--f)}
+.rem{font-size:12px;font-family:var(--m);padding:5px 9px;background:var(--bg2);border-radius:var(--r);border:0.5px solid var(--bdr)}
+.rem.w{color:var(--R);border-color:var(--Rd);background:var(--Rb)}.rem.ok{color:var(--G);border-color:var(--Gd);background:var(--Gb)}
+.asBtn{padding:5px 10px;font-size:12px;border:0.5px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
+.asBtn:hover{background:var(--bg2)}
+.mf{padding:12px 20px;border-top:1px solid var(--bdr);display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap;background:var(--bg2);border-radius:0 0 20px 20px}
+.bp{padding:9px 20px;background:var(--B);color:#fff;border:none;border-radius:20px;cursor:pointer;font-size:13px;font-family:var(--f);font-weight:600;transition:all .15s;box-shadow:0 2px 8px rgba(59,130,246,.3)}
+.bp:hover{background:#2563eb;box-shadow:0 4px 16px rgba(59,130,246,.4)}
+.bs{padding:9px 20px;background:var(--bg);color:var(--txt2);border:1.5px solid var(--bdr2);border-radius:20px;cursor:pointer;font-size:13px;font-family:var(--f);font-weight:500;transition:all .15s}
+.bs:hover{border-color:var(--bdr);color:var(--txt);background:var(--bg2)}
+.bd{padding:8px 14px;background:var(--Rb);color:var(--R);border:1.5px solid var(--Rd);border-radius:20px;cursor:pointer;font-size:12px;font-family:var(--f);font-weight:500;margin-right:auto;transition:all .15s}
+.bd:hover{background:var(--R);color:#fff}
+.ts-row{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+.ts-btn{padding:4px 9px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:var(--f);white-space:nowrap}
+.ts-btn:hover{background:var(--txt);color:var(--bg)}
+.ts-val{flex:1;padding:4px 7px;font-size:11px;font-family:var(--m);border:0.5px solid var(--bdr);border-radius:var(--r);background:var(--bg2);color:var(--txt2)}
+.sig-wrap{border:0.5px solid var(--bdr2);border-radius:var(--r);overflow:hidden;background:#fff}
+.sig-canvas{display:block;width:100%;height:140px;touch-action:none;cursor:crosshair}
+.sig-tools{display:flex;gap:6px;padding:5px 7px;background:var(--bg2);border-top:0.5px solid var(--bdr)}
+.sig-clear{padding:3px 10px;font-size:11px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;color:var(--txt2);font-family:var(--f)}
+
+/* Price table modal */
+.price-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.price-row{display:flex;align-items:center;gap:8px;padding:6px 9px;background:var(--bg2);border-radius:var(--r)}
+.price-mat{font-size:12px;color:var(--txt);flex:1}
+.price-inp{width:80px;padding:5px 7px;border:0.5px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-family:var(--m);font-size:13px;text-align:right}
+
+/* ── YARD PICKER (driver) ── */
+.yard-card{display:flex;align-items:center;gap:12px;padding:14px 15px;border:2px solid var(--bdr);border-radius:var(--rl);background:var(--bg);cursor:pointer;transition:all .15s;margin-bottom:8px}
+.yard-card:hover{border-color:var(--B);background:var(--Bb);box-shadow:var(--shadow-md)}
+.yard-card.preset{border-color:var(--G);background:var(--Gb)}
+.yard-card.preset:hover{border-color:var(--G);background:var(--Gb)}
+.yard-icon{width:42px;height:42px;border-radius:var(--r);display:flex;align-items:center;justify-content:space-around;font-size:20px;flex-shrink:0;background:var(--bg2)}
+.yard-info{flex:1;min-width:0}
+.yard-name{font-size:14px;font-weight:600;color:var(--txt);line-height:1.3}
+.yard-loc{font-size:11px;color:var(--txt2);margin-top:2px}
+.yard-preset-tag{font-size:10px;color:var(--G);background:var(--Gb);padding:1px 8px;border-radius:20px;font-weight:700;display:inline-block;margin-top:4px;border:1px solid var(--Gd)}
+.yard-mat-price{font-size:11px;color:var(--txt3);margin-top:2px;font-family:var(--m)}
+
+/* ── DRIVER PICKER ── */
+.dp-card{display:flex;align-items:center;gap:12px;padding:12px 14px;border:2px solid var(--bdr);border-radius:var(--rl);background:var(--bg);cursor:pointer;transition:all .15s;margin-bottom:8px;position:relative}
+.dp-card:hover{border-color:var(--B);background:var(--Bb);box-shadow:var(--shadow-md)}
+.dp-card.best{border-color:var(--G);background:var(--Gb)}
+.dp-card.best:hover{border-color:var(--G);background:var(--Gb);box-shadow:0 4px 16px rgba(22,160,102,.2)}
+.dp-card.selected{border-color:var(--B);background:var(--Bb);box-shadow:0 0 0 3px var(--Bd)}
+.dp-avatar{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;flex-shrink:0;color:#fff}
+.dp-info{flex:1;min-width:0}
+.dp-name{font-size:14px;font-weight:600;color:var(--txt)}
+.dp-loc{font-size:11px;color:var(--txt2);margin-top:2px}
+.dp-dist{text-align:right;flex-shrink:0}
+.dp-miles{font-size:18px;font-weight:700;color:var(--txt);font-family:var(--f)}
+.dp-miles.close{color:var(--G)}
+.dp-miles.mid{color:var(--A)}
+.dp-miles.far{color:var(--R)}
+.dp-time{font-size:11px;color:var(--txt2);margin-top:2px;text-align:right}
+.dp-badge{position:absolute;top:-8px;right:10px;font-size:10px;font-weight:700;background:var(--G);color:#fff;padding:2px 9px;border-radius:20px;letter-spacing:.04em}
+.dp-workload{display:flex;gap:3px;margin-top:4px}
+.dp-dot{width:7px;height:7px;border-radius:50%;background:var(--B);opacity:.8}
+.dp-loading{text-align:center;padding:24px;color:var(--txt2);font-size:13px}
+.dp-no-addr{padding:14px;background:var(--Ab);border-radius:var(--rl);font-size:12px;color:var(--A);border:1px solid var(--Ad);margin-bottom:12px}
+.dp-dest{font-size:12px;color:var(--txt2);margin-bottom:12px;padding:8px 12px;background:var(--bg2);border-radius:var(--r)}
+.dp-dest b{color:var(--txt)}
+.live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--G);margin-right:4px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ── DRIVER GUIDED CARD (mobile-first) ── */
+.guided-card{background:var(--bg);border:2px solid var(--bdr);border-radius:var(--rl);overflow:hidden;box-shadow:var(--shadow);margin-bottom:14px}
+.guided-card.is-today{border-color:var(--B)}
+.gc-head{padding:14px 16px;background:linear-gradient(135deg,#1a2035 0%,#2d3a5e 100%);color:#fff}
+.gc-po{font-size:11px;font-weight:600;opacity:.7;letter-spacing:.05em;text-transform:uppercase}
+.gc-job{font-size:16px;font-weight:700;margin-top:3px}
+.gc-today-badge{font-size:10px;background:var(--G);padding:2px 9px;border-radius:20px;margin-left:6px;font-weight:700}
+.gc-body{padding:14px 16px}
+.gc-info-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:13px;margin-bottom:14px}
+.gc-info-grid dt{color:var(--txt2);font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:600;padding-top:2px}
+.gc-info-grid dd{color:var(--txt);font-weight:500}
+.gc-status-strip{display:flex;gap:0;margin:14px 0;border:1px solid var(--bdr);border-radius:var(--rl);overflow:hidden}
+.gc-step{flex:1;padding:9px 6px;text-align:center;font-size:11px;font-weight:600;background:var(--bg2);color:var(--txt3);border-right:1px solid var(--bdr);position:relative}
+.gc-step:last-child{border-right:none}
+.gc-step.done{background:var(--Gb);color:var(--G)}
+.gc-step.active{background:var(--B);color:#fff}
+.gc-step .gc-step-time{display:block;font-size:9px;font-weight:400;margin-top:1px;opacity:.7}
+.gc-action{width:100%;padding:14px;font-size:15px;font-weight:700;border:none;border-radius:var(--rl);cursor:pointer;font-family:var(--f);margin-bottom:8px;transition:transform .1s;box-shadow:var(--shadow)}
+.gc-action:active{transform:scale(.98)}
+.gc-action.primary{background:var(--B);color:#fff}
+.gc-action.warn{background:var(--A);color:#fff}
+.gc-action.success{background:var(--G);color:#fff}
+.gc-action.purple{background:var(--P);color:#fff}
+.gc-action.outline{background:var(--bg);color:var(--txt);border:2px solid var(--bdr2)}
+.gc-action:disabled{opacity:.4;cursor:not-allowed;background:var(--bg2);color:var(--txt3)}
+.gc-req{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg2);border:1.5px solid var(--bdr);border-radius:var(--r);margin-bottom:7px;font-size:12px}
+.gc-req.done{background:var(--Gb);border-color:var(--Gd);color:var(--G)}
+.gc-req.missing{background:var(--Ab);border-color:var(--Ad);color:var(--A)}
+.gc-req-label{font-weight:600}
+.gc-req-status{font-size:11px;font-weight:700}
+.ticket-preview{max-width:100%;max-height:200px;border-radius:var(--r);border:1px solid var(--bdr);margin:6px 0;display:block}
+.gc-approval-banner{padding:9px 12px;border-radius:var(--r);font-size:12px;font-weight:600;text-align:center;margin-bottom:10px}
+.gc-approval-banner.pending{background:var(--bg2);color:var(--txt2)}
+.gc-approval-banner.submitted{background:var(--Ab);color:var(--A);border:1px solid var(--Ad)}
+.gc-approval-banner.approved{background:var(--Gb);color:var(--G);border:1px solid var(--Gd)}
+.gc-approval-banner.rejected{background:var(--Rb);color:var(--R);border:1px solid var(--Rd)}
+
+/* ── APPROVAL CARDS ── */
+.appr-card{background:var(--bg);border:1.5px solid var(--Ad);border-radius:var(--rl);padding:14px 16px;margin-bottom:10px;box-shadow:var(--shadow)}
+.appr-head{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.appr-po{font-family:var(--f);font-weight:700;color:var(--B);font-size:13px}
+.appr-cust{font-size:14px;font-weight:600;color:var(--txt);flex:1}
+.appr-driver{font-size:12px;color:var(--txt2);padding:3px 9px;background:var(--bg2);border-radius:20px}
+.appr-submitted{font-size:11px;color:var(--txt3)}
+.appr-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px;font-size:12px;color:var(--txt2)}
+.appr-meta b{color:var(--txt)}
+.appr-proofs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.appr-proof{flex:1;min-width:140px;border:1px solid var(--bdr);border-radius:var(--r);padding:8px;background:var(--bg2)}
+.appr-proof-label{font-size:10px;text-transform:uppercase;color:var(--txt2);font-weight:600;margin-bottom:4px}
+.appr-proof img{max-width:100%;max-height:120px;border-radius:var(--r);display:block}
+.appr-proof.missing{background:var(--Rb);border-color:var(--Rd)}
+.appr-proof.missing .appr-proof-label{color:var(--R)}
+.appr-actions{display:flex;gap:7px;margin-top:8px}
+
+/* ── BILL TABLE ── */
+.bill-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:var(--bg2);border-radius:var(--rl)}
+.bill-filters input,.bill-filters select{padding:6px 10px;border:1px solid var(--bdr2);border-radius:var(--r);background:var(--bg);color:var(--txt);font-size:12px;font-family:var(--f)}
+.bill-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px}
+.bill-row{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bg);border:1px solid var(--bdr);border-radius:var(--r);margin-bottom:5px;font-size:12px;flex-wrap:wrap}
+.bill-row.selected{background:var(--Bb);border-color:var(--B)}
+.bill-row input[type=checkbox]{width:16px;height:16px;cursor:pointer}
+
+/* ── ACTIVITY FEED ── */
+.feed-event{padding:8px 10px;border-radius:var(--r);margin-bottom:6px;font-size:12px;line-height:1.5;border-left:3px solid var(--bdr2)}
+.feed-event.ev-logs{border-color:var(--B);background:var(--Bb)}
+.feed-event.ev-start{border-color:var(--A);background:var(--Ab)}
+.feed-event.ev-arrived{border-color:var(--P);background:var(--Pb)}
+.feed-event.ev-done{border-color:var(--G);background:var(--Gb)}
+.feed-event.ev-signed{border-color:var(--G);background:var(--Gb)}
+.feed-event.ev-note{border-color:var(--T);background:var(--Tb)}
+.feed-event.ev-reassigned{border-color:var(--O);background:var(--Ob)}
+.feed-event.ev-completed{border-color:var(--G);background:var(--Gb)}
+.fe-driver{font-weight:700;color:var(--txt)}
+.fe-time{font-size:10px;color:var(--txt3);margin-top:2px}
+.fe-note{font-style:italic;color:var(--txt2);margin-top:2px;font-size:11px}
+.feed-empty{padding:20px;text-align:center;font-size:12px;color:var(--txt3)}
+
+/* ── PRINT STYLES ── */
+@media print{
+  body *{visibility:hidden}
+  #print-sheet,#print-sheet *{visibility:visible}
+  #print-sheet{position:fixed;top:0;left:0;width:100%;background:#fff;color:#000;font-family:Arial,sans-serif}
+  .no-print{display:none!important}
+}
+.print-page{padding:24px;background:#fff;color:#111;font-family:Arial,sans-serif;max-width:800px;margin:0 auto}
+.print-header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #111;padding-bottom:10px;margin-bottom:16px}
+.print-title{font-size:20px;font-weight:700}
+.print-sub{font-size:12px;color:#666;margin-top:3px}
+.print-driver-section{margin-bottom:20px;break-inside:avoid}
+.print-driver-head{background:#1a2035;color:#fff;padding:8px 12px;border-radius:6px;font-size:13px;font-weight:700;margin-bottom:8px}
+.print-job-row{display:flex;gap:10px;padding:7px 10px;border:1px solid #ddd;border-radius:5px;margin-bottom:5px;align-items:flex-start;font-size:12px}
+.print-job-row .pj-po{font-weight:700;color:#1a5fa8;min-width:80px}
+.print-job-row .pj-cust{font-weight:600;flex:1}
+.print-job-row .pj-mat{color:#666;min-width:90px}
+.print-job-row .pj-loads{font-weight:600;min-width:70px;text-align:right}
+.print-sig-box{margin-top:4px;border:1px dashed #ccc;border-radius:4px;padding:5px 10px;font-size:11px;color:#aaa}
+
+/* ── MONTH VIEW ── */
+.month-board{padding:0 0 32px;min-width:900px}
+.mgh-row{display:flex;background:var(--bg2);border-bottom:1px solid var(--bdr);position:sticky;top:0;z-index:25}
+.mgh-day{width:82px;flex-shrink:0;padding:8px 10px;border-right:1px solid var(--bdr);font-size:11px;font-weight:700;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em}
+.mgh-col{flex:1;padding:8px 10px;border-right:1px solid var(--bdr);font-size:12px;font-weight:600;color:var(--txt);text-align:center}
+.mgh-col:last-child{border-right:none}
+.mgh-unas{width:78px;flex-shrink:0;padding:8px 8px;font-size:11px;font-weight:700;color:var(--A);text-align:center;border-left:1px solid var(--bdr)}
+.mrow{display:flex;border-bottom:1px solid var(--bdr);min-height:120px}
+.mrow.today-row{box-shadow:inset 3px 0 0 var(--B)}
+.mrow.past-row{opacity:.55}
+.mdaycell{width:82px;flex-shrink:0;padding:8px 10px;border-right:1px solid var(--bdr);background:var(--bg2);display:flex;flex-direction:column;gap:2px;cursor:pointer;transition:background .12s}
+.mdaycell:hover{background:var(--Bb)}
+.mdaycell .mdc-num{font-size:20px;font-weight:800;color:var(--txt);line-height:1}
+.mdaycell .mdc-name{font-size:10px;color:var(--txt3);text-transform:uppercase;letter-spacing:.04em}
+.mdaycell .mdc-tod{font-size:9px;background:var(--B);color:#fff;padding:1px 6px;border-radius:20px;font-weight:700;width:fit-content;margin-bottom:2px}
+.mdaycell .mdc-tot{font-size:10px;color:var(--txt2);margin-top:auto}
+.mdaycell .mdc-warn{font-size:9px;color:var(--R);font-weight:700}
+.mdrvcell{flex:1;padding:6px 6px;border-right:1px solid var(--bdr);background:var(--bg3);min-height:120px}
+.mdrvcell.has-l{background:var(--bg)}
+.mdrvcell:last-child{border-right:none}
+.munas{width:78px;flex-shrink:0;padding:5px 5px;background:var(--Ab);border-left:1px solid var(--Ad)}
+.munas-lbl{font-size:9px;font-weight:700;color:var(--A);text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
+.mlcard{background:var(--bg);border:1px solid var(--bdr);border-radius:var(--rl);padding:8px 10px;margin-bottom:5px;cursor:pointer;transition:box-shadow .15s,border-color .15s;box-shadow:var(--shadow)}
+.mlcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd)}
+.mlcard.m-unas{border-color:var(--Ad);background:var(--Ab);border-left:3px solid var(--A)}
+.mlcard.m-done{border-color:var(--Gd);border-left:3px solid var(--G)}
+.mlcard .ml-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.mlcard .ml-po{font-size:10px;font-weight:700;color:var(--B);letter-spacing:.03em}
+.mlcard .ml-status{font-size:9px;padding:1px 5px;border-radius:20px;font-weight:600}
+.mlcard .ml-customer{font-size:12px;font-weight:700;color:var(--txt);line-height:1.2;margin-bottom:3px}
+.mlcard .ml-address{font-size:10px;color:var(--txt3);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mlcard .ml-mat{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:600;margin-bottom:3px}
+.mlcard .ml-loads{display:flex;align-items:center;justify-content:space-between;margin-top:4px}
+.mlcard .ml-loads-text{font-size:11px;font-family:var(--m);color:var(--txt2)}
+.mlcard .ml-bar{flex:1;height:3px;background:var(--bdr);border-radius:3px;overflow:hidden;margin:0 7px}
+.mlcard .ml-bar-fill{height:100%;border-radius:3px;transition:width .3s}
+.mlcard .ml-supervisor{font-size:10px;color:var(--txt3);margin-top:3px}
+.mlcard .ml-pickup{font-size:10px;color:var(--txt3)}
+.mmore{font-size:10px;color:var(--B);padding:2px 5px;background:var(--Bb);border-radius:20px;cursor:pointer;text-align:center;margin-top:2px;border:1px solid var(--Bd)}
+.mmore:hover{background:var(--B);color:#fff}
+.madd{width:100%;padding:4px;border:1px dashed var(--bdr2);border-radius:var(--r);background:transparent;cursor:pointer;font-size:10px;color:var(--txt3);font-family:var(--f);margin-top:2px}
+.madd:hover{background:var(--Bb);color:var(--B);border-color:var(--Bd)}
+
+/* ── DRIVER MODE: locked, mobile-first ────────────────────────────────────── */
+body.driver-mode .sidebar{display:none!important}
+body.driver-mode .main-area{width:100%}
+body.driver-mode #nav-wrap,
+body.driver-mode #sync-btn,
+body.driver-mode .mgr,
+body.driver-mode .mgrf,
+body.driver-mode #sbar{display:none!important}
+body.driver-mode .vbtn{display:none!important}
+body.driver-mode .topbar-new{background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 100%);border-bottom:none;color:#fff}
+body.driver-mode .topbar-new .page-title{color:#fff;font-size:18px}
+body.driver-mode .topbar-new .sidebar-toggle{display:none}
+body.driver-mode .topbar-new::before{content:'';display:inline-block;width:34px;height:34px;background-image:url(/app/logo.png);background-size:contain;background-repeat:no-repeat;background-position:center;margin-right:8px;filter:brightness(1.2);flex-shrink:0}
+/* Force only sec-drv visible when in driver mode */
+body.driver-mode #sec-drv{display:block!important;background:var(--bg3)}
+body.driver-mode #sec-board,
+body.driver-mode #sec-pos,
+body.driver-mode #sec-approve,
+body.driver-mode #sec-bill,
+body.driver-mode #sec-hist,
+body.driver-mode #sec-finance{display:none!important}
+
+/* Driver welcome header */
+.drv-welcome{background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);color:#fff;padding:18px 18px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px}
+.dw-greeting{display:flex;align-items:center;gap:12px}
+.dw-avatar{width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.15);color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;backdrop-filter:blur(10px)}
+.dw-hi{font-size:17px;font-weight:700;letter-spacing:-.01em}
+.dw-sub{font-size:12px;color:rgba(255,255,255,.7);margin-top:2px}
+.dw-sub b{color:#fff;font-weight:700}
+.dw-stats{display:flex;gap:20px}
+.dw-stat{text-align:center}
+.dw-stat-num{font-size:22px;font-weight:700;color:#fff;line-height:1}
+.dw-stat-lbl{font-size:10px;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.06em;margin-top:3px;font-weight:500}
+
+/* Action button icons inside driver actions */
+.gc-action svg{width:18px;height:18px;margin-right:8px;vertical-align:middle}
+.gc-hint{text-align:center;font-size:11px;color:var(--txt3);margin-top:6px;font-weight:500}
+.gc-hint.required{color:var(--R);font-weight:600}
+.gc-icon-lbl{display:inline-block;margin-right:4px;font-size:13px}
+
+/* Status strip SVG alignment */
+.gc-status-strip svg{flex-shrink:0}
+.gc-step{display:flex;align-items:center;gap:5px}
+
+/* Approval banner with SVG */
+.gc-approval-banner{display:flex;align-items:center;gap:7px}
+.gc-approval-banner svg{flex-shrink:0}
+
+/* ── APP SHELL (sidebar + main) ───────────────────────────────────────────── */
+body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:hidden}
+.app-shell{display:flex;height:100vh;overflow:hidden}
+
+/* Sidebar */
+.sidebar{width:220px;flex-shrink:0;background:var(--bg);border-right:1px solid var(--bdr);display:flex;flex-direction:column;box-shadow:1px 0 2px rgba(0,0,0,.03)}
+.sidebar-brand{padding:18px 16px 14px;border-bottom:1px solid var(--bdr);background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 100%);display:flex;align-items:center;justify-content:center;min-height:82px}
+.brand-logo{max-width:170px;width:100%;height:auto;display:block}
+.sidebar-nav{flex:1;overflow-y:auto;padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border:none;background:transparent;border-radius:var(--r);cursor:pointer;font-family:var(--f);font-size:13px;font-weight:500;color:var(--txt2);width:100%;text-align:left;transition:background .12s}
+.nav-item:hover{background:var(--bg2);color:var(--txt)}
+.nav-item.active{background:var(--Bb);color:var(--B);font-weight:600}
+.nav-icon{font-size:15px;width:20px;text-align:center;flex-shrink:0}
+.nav-icon-svg{width:18px;height:18px;flex-shrink:0;opacity:.85}
+.nav-item.active .nav-icon-svg{opacity:1}
+.nav-label{flex:1}
+.nav-badge{background:var(--R);color:#fff;font-size:10px;padding:1px 7px;border-radius:20px;font-weight:700;font-family:var(--f)}
+.sidebar-footer{border-top:1px solid var(--bdr);padding:12px;display:flex;flex-direction:column;gap:8px}
+.user-card{display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg2);border-radius:var(--r)}
+.user-avatar{width:32px;height:32px;border-radius:50%;background:var(--B);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0}
+.user-info-block{flex:1;min-width:0}
+.user-name{font-size:12px;font-weight:600;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-role{font-size:10px;color:var(--txt3);text-transform:capitalize}
+.logout-link{background:transparent;border:none;color:var(--txt3);font-family:var(--f);font-size:11px;cursor:pointer;padding:4px;border-radius:var(--r);text-align:left}
+.logout-link:hover{color:var(--R);background:var(--Rb)}
+
+/* Main area */
+.main-area{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+
+/* New topbar */
+.topbar-new{display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-shrink:0;min-height:54px;flex-wrap:wrap}
+.sidebar-toggle{display:none;background:transparent;border:none;font-size:18px;cursor:pointer;color:var(--txt2);padding:4px 8px;border-radius:var(--r)}
+.sidebar-toggle:hover{background:var(--bg2)}
+.page-title{font-size:16px;font-weight:700;color:var(--txt);letter-spacing:-.01em;margin:0;flex-shrink:0}
+.vbtn{padding:4px 12px;font-size:11px;font-weight:500;color:var(--txt2);background:transparent;border:none;border-radius:18px;cursor:pointer;font-family:var(--f);transition:all .12s}
+.vbtn:hover{color:var(--txt)}
+.vbtn.active{background:var(--B);color:#fff;box-shadow:0 1px 3px rgba(59,130,246,.3)}
+
+/* Section scroll containers sit inside main */
+#sec-board,#sec-pos,#sec-approve,#sec-bill,#sec-hist,#sec-finance,#sec-drv{flex:1;overflow:auto;min-height:0}
+
+/* ── KANBAN BOARD ─────────────────────────────────────────────────────────── */
+.kanban{display:flex;gap:14px;padding:18px;height:100%;overflow-x:auto;overflow-y:hidden;min-height:calc(100vh - 180px)}
+.kan-col{flex:1;min-width:280px;max-width:340px;background:var(--bg2);border-radius:var(--rl);display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--shadow)}
+.kan-col-head{padding:14px 16px;display:flex;align-items:center;gap:8px;border-bottom:2px solid;background:var(--bg)}
+.kan-col.unas .kan-col-head{border-color:#94a3b8}
+.kan-col.asg  .kan-col-head{border-color:var(--B)}
+.kan-col.prog .kan-col-head{border-color:var(--A)}
+.kan-col.done .kan-col-head{border-color:var(--G)}
+.kan-col-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.kan-col.unas .kan-col-dot{background:#94a3b8}
+.kan-col.asg  .kan-col-dot{background:var(--B)}
+.kan-col.prog .kan-col-dot{background:var(--A)}
+.kan-col.done .kan-col-dot{background:var(--G)}
+.kan-col-title{font-size:13px;font-weight:700;color:var(--txt);flex:1;letter-spacing:-.01em}
+.kan-count{background:var(--bg2);color:var(--txt2);font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;font-family:var(--m)}
+.kan-col-body{flex:1;overflow-y:auto;padding:10px;min-height:100px}
+.kan-col-body.over{background:var(--Bb)}
+
+.kcard{background:var(--bg);border:1px solid var(--bdr);border-radius:var(--rl);padding:12px 14px;margin-bottom:8px;cursor:grab;box-shadow:var(--shadow);transition:box-shadow .15s,transform .1s,border-color .15s;position:relative;overflow:hidden}
+.kcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd)}
+.kcard.dragging{opacity:.45;cursor:grabbing}
+.kcard::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--bdr2)}
+.kcard.unas-c::before{background:#94a3b8}
+.kcard.asg-c::before{background:var(--B)}
+.kcard.prog-c::before{background:var(--A)}
+.kcard.done-c::before{background:var(--G)}
+.kc-po{font-size:11px;font-weight:700;color:var(--B);letter-spacing:.03em;margin-bottom:4px;display:flex;align-items:center;justify-content:space-between}
+.kc-status-pill{font-size:9px;padding:1px 7px;border-radius:20px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.kc-status-pill.unas{background:#e5e9ef;color:#64748b}
+.kc-status-pill.asg{background:var(--Bb);color:var(--B)}
+.kc-status-pill.prog{background:var(--Ab);color:var(--A)}
+.kc-status-pill.done{background:var(--Gb);color:var(--G)}
+.kc-cust{font-size:14px;font-weight:700;color:var(--txt);line-height:1.3;margin-bottom:4px;letter-spacing:-.01em}
+.kc-row{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--txt2);margin-bottom:3px}
+.kc-row-icon{font-size:11px;width:14px;text-align:center;flex-shrink:0;color:var(--txt3)}
+.kc-mat{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;margin-top:5px}
+.kc-footer{display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px dashed var(--bdr)}
+.kc-driver{font-size:11px;color:var(--txt2);display:flex;align-items:center;gap:5px;font-weight:500}
+.kc-driver-avatar{width:20px;height:20px;border-radius:50%;background:var(--B);color:#fff;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0}
+.kc-loads{font-family:var(--m);font-size:11px;color:var(--txt2);font-weight:600}
+.kc-assign-btn{width:100%;margin-top:7px;padding:6px;border:1px dashed var(--Bd);border-radius:var(--r);background:var(--Bb);color:var(--B);font-size:11px;font-weight:600;cursor:pointer;font-family:var(--f);transition:all .12s}
+.kc-assign-btn:hover{background:var(--B);color:#fff;border-color:var(--B)}
+.kan-empty{padding:30px 20px;text-align:center;color:var(--txt3);font-size:12px;border:2px dashed var(--bdr2);border-radius:var(--rl);margin:8px 4px}
+
+/* Responsive */
+@media(max-width:900px){
+  .sidebar{position:fixed;left:-220px;top:0;bottom:0;z-index:100;transition:left .2s;box-shadow:2px 0 8px rgba(0,0,0,.1)}
+  .sidebar.open{left:0}
+  .sidebar-toggle{display:block}
+  .main-area{width:100%}
+}
+
+@media(max-width:700px){
+  .fr{grid-template-columns:1fr}
+  .srow{grid-template-columns:1fr 1fr 80px auto}
+  .sr{grid-column:1/-1}
+}
+</style>
+</head>
+<body>
+
+<!-- APP SHELL: sidebar + content -->
+<div class="app-shell">
+
+  <!-- SIDEBAR NAVIGATION -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <img src="/app/logo.png" alt="Valley Best Concrete" class="brand-logo">
+    </div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" id="tab-board"   onclick="swTab('board')">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9-4 9 4M3 7v10l9 4 9-4V7M3 7l9 4M21 7l-9 4M12 11v10"/></svg>
+        <span class="nav-label">Dispatch Board</span>
+      </button>
+      <button class="nav-item mgr" id="tab-approve" onclick="swTab('approve')">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <span class="nav-label">Approvals</span>
+        <span id="approve-badge" class="nav-badge" style="display:none"></span>
+      </button>
+      <button class="nav-item" id="tab-pos"     onclick="swTab('pos')">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        <span class="nav-label">Jobs / POs</span>
+      </button>
+      <button class="nav-item mgr" id="tab-bill"    onclick="swTab('bill')">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        <span class="nav-label">Billing</span>
+      </button>
+      <button class="nav-item" id="tab-hist"    onclick="swTab('hist')">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
+        <span class="nav-label">History</span>
+      </button>
+      <button class="nav-item mgr" id="tab-finance" onclick="swTab('finance')">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        <span class="nav-label">Reports</span>
+      </button>
+      <button class="nav-item" id="tab-drv"     onclick="swTab('drv')">
+        <svg class="nav-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+        <span class="nav-label">My Trips</span>
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-card">
+        <div class="user-avatar" id="user-avatar">?</div>
+        <div class="user-info-block">
+          <div class="user-name" id="uinfo">—</div>
+          <div class="user-role" id="urole">—</div>
+        </div>
+      </div>
+      <button class="logout-link" onclick="location='/logout'">↪ Sign out</button>
+    </div>
+  </aside>
+
+  <!-- CONTENT AREA -->
+  <main class="main-area">
+
+    <!-- TOP BAR -->
+    <header class="topbar-new">
+      <button class="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+      <h1 class="page-title" id="page-title">Dispatch Board</h1>
+      <div style="display:flex;align-items:center;gap:6px" id="nav-wrap">
+        <button class="nbtn" onclick="navBack()">&#8592;</button>
+        <span class="nlbl" id="nav-lbl" style="min-width:180px;text-align:center"></span>
+        <button class="nbtn" onclick="navFwd()">&#8594;</button>
+        <div style="display:flex;gap:3px;margin-left:6px;background:var(--bg2);padding:3px;border-radius:20px">
+          <button class="vbtn" id="vbtn-day" onclick="setViewMode('day')">Day</button>
+          <button class="vbtn active" id="vbtn-month" onclick="setViewMode('month')">Month</button>
+        </div>
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:6px">
+        <button class="bp mgr" style="font-size:12px;padding:7px 14px" onclick="openNewPO()">+ New PO</button>
+        <button class="sync-btn mgrf" id="sync-btn" onclick="doSync()">&#8593; Sheets</button>
+        <button class="nbtn mgrf" onclick="openPrintSheet()" style="font-size:12px">🖨 Print</button>
+        <span class="ss" id="ss"></span>
+      </div>
+    </header>
+
+    <div class="sbar mgr" id="sbar" style="display:none"></div>
+
+<!-- BOARD -->
+<div id="sec-board">
+  <div style="display:flex;height:calc(100vh - 120px)">
+    <div class="board-outer" style="flex:1;overflow-y:auto;overflow-x:auto">
+      <div class="board-inner" id="board-inner"></div>
+    </div>
+    <!-- ACTIVITY FEED DRAWER (manager only) -->
+    <div id="activity-drawer" class="mgr" style="width:280px;flex-shrink:0;border-left:1px solid var(--bdr);background:var(--bg);flex-direction:column;display:none">
+      <div style="padding:10px 14px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;background:var(--bg2)">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="font-size:13px;font-weight:600;color:var(--txt)">Live Feed</span>
+          <span id="feed-live-dot" style="width:7px;height:7px;border-radius:50%;background:var(--G);display:inline-block;animation:pulse 2s infinite"></span>
+        </div>
+        <button onclick="toggleFeed()" style="font-size:11px;color:var(--txt3);background:transparent;border:none;cursor:pointer;font-family:var(--f);padding:3px 7px;border-radius:var(--r)" title="Hide feed">✕</button>
+      </div>
+      <div id="activity-list" style="flex:1;overflow-y:auto;padding:8px"></div>
+    </div>
+  </div>
+  <!-- Feed toggle button (when drawer is hidden) -->
+  <button id="feed-toggle-btn" class="mgr" onclick="toggleFeed()" style="position:fixed;bottom:20px;right:20px;background:var(--B);color:#fff;border:none;border-radius:50px;padding:10px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--f);box-shadow:0 4px 16px rgba(59,130,246,.4);z-index:50;display:flex;align-items:center;gap:6px">
+    <span style="width:7px;height:7px;border-radius:50%;background:#fff;display:inline-block;animation:pulse 2s infinite"></span>
+    Live Feed
+  </button>
+</div>
+
+<!-- ALL POs -->
+<div id="sec-pos" style="display:none">
+  <div class="list-view" id="pos-list-wrap"></div>
+</div>
+
+<!-- HISTORY -->
+<div id="sec-hist" style="display:none">
+  <div class="list-view" id="hist-wrap"></div>
+</div>
+
+<!-- FINANCE (manager only) -->
+<div id="sec-finance" style="display:none">
+  <div class="list-view" id="finance-wrap"></div>
+</div>
+
+<!-- APPROVALS TAB -->
+<div id="sec-approve" style="display:none">
+  <div class="list-view" id="approve-wrap"></div>
+</div>
+
+<!-- READY TO BILL TAB -->
+<div id="sec-bill" style="display:none">
+  <div class="list-view" id="bill-wrap"></div>
+</div>
+
+<!-- DRIVER -->
+<div id="sec-drv" style="display:none">
+  <div class="drv-view" id="drv-view"></div>
+</div>
+
+  </main>
+</div><!-- /app-shell -->
+
+<!-- ════ MODALS ════ -->
+
+<!-- PO MODAL -->
+<div class="mbg" id="po-m" style="display:none"><div class="mod">
+  <div class="mh"><h2 id="po-m-title">New Purchase Order</h2><button class="mc" onclick="closePOM()">&#215;</button></div>
+  <div class="mb">
+    <div class="fr">
+      <div class="fl"><label>PO Number</label><input id="pm-num" placeholder="Auto (PO-1001)"></div>
+      <div class="fl"><label>Delivery date <span style="font-size:10px;color:var(--txt3);text-transform:none;letter-spacing:0;font-weight:400">(applies to all drivers)</span></label><input type="date" id="pm-date" onchange="syncAllSplitDates(this.value)"></div>
+    </div>
+    <div class="fr">
+      <div class="fl"><label>Customer / Project</label><input id="pm-cust" placeholder="Wilson Homes"></div>
+      <div class="fl"><label>Job code / ref</label><input id="pm-code" placeholder="WHAT-01"></div>
+    </div>
+    <div class="fr">
+      <div class="fl"><label>Pickup location</label><select id="pm-pick"><option>VBT Yard</option><option>Keith Farms</option><option>CEMEX</option><option>Vulcan Sanger</option><option>Precision Bakersfield</option><option>Other</option></select></div>
+      <div class="fl"><label>Supervisor on site</label><input id="pm-sup" placeholder="Billy"></div>
+    </div>
+    <div class="fr">
+      <div class="fl"><label>Delivery address / city</label><input id="pm-addr" placeholder="2007 N Cobbler Dr, Fresno"></div>
+      <div class="fl"><label>Job type</label><select id="pm-type" onchange="onTypeChg()"><option value="one-time">One-time</option><option value="scheduled">Scheduled (future)</option><option value="recurring">Recurring</option></select></div>
+    </div>
+    <div class="fl" id="pm-rw" style="display:none"><label>Repeats every</label><select id="pm-recur"><option value="weekly">Week</option><option value="biweekly">2 Weeks</option><option value="monthly">Month</option></select></div>
+    <div class="fl"><label>Notes</label><textarea id="pm-notes" placeholder="Special instructions..."></textarea></div>
+
+    <div class="sdiv">Load assignments — add one row per driver / material combination</div>
+    <div id="pm-splits"></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+      <button class="asBtn" onclick="addSplit()">+ Add row</button>
+      <div class="rem" id="pm-rem" style="flex:1">No loads entered yet</div>
+    </div>
+  </div>
+  <div class="mf">
+    <button class="bd" id="pm-del" style="display:none" onclick="delPO()">Delete PO</button>
+    <button class="bs" onclick="closePOM()">Cancel</button>
+    <button class="bp" onclick="savePO()">Save PO</button>
+  </div>
+</div></div>
+
+<!-- LOAD DETAIL MODAL -->
+<div class="mbg" id="ll-m" style="display:none"><div class="mod">
+  <div class="mh"><h2 id="ll-title">Load detail</h2><button class="mc" onclick="closeLL()">&#215;</button></div>
+  <div class="mb">
+    <div id="ll-info" style="font-size:12px;color:var(--txt2);line-height:1.8;padding:8px;background:var(--bg2);border-radius:var(--r)"></div>
+    <div class="fr">
+      <div class="fl"><label>Loads delivered</label><input id="ll-del" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>
+      <div class="fl"><label>Notes</label><input id="ll-notes" placeholder="Issues, lot #s..."></div>
+    </div>
+    <div class="fl"><label>Timestamps</label>
+      <div style="margin-top:5px;display:flex;flex-direction:column;gap:5px">
+        <div class="ts-row"><button class="ts-btn" type="button" onclick="stmp('ll-ts-s')">&#9654; Start</button><input id="ll-ts-s" class="ts-val" readonly placeholder="not stamped"></div>
+        <div class="ts-row"><button class="ts-btn" type="button" onclick="stmp('ll-ts-a')">&#128205; Arrived</button><input id="ll-ts-a" class="ts-val" readonly placeholder="not stamped"></div>
+        <div class="ts-row"><button class="ts-btn" type="button" onclick="stmp('ll-ts-c')">&#9632; Complete</button><input id="ll-ts-c" class="ts-val" readonly placeholder="not stamped"></div>
+      </div>
+    </div>
+    <div id="ll-move-wrap" class="mgr" style="display:none">
+      <div class="sdiv">Move or reassign</div>
+      <div class="fr">
+        <div class="fl"><label>Move to date</label><input type="date" id="ll-mv-date"></div>
+        <div class="fl"><label>Reassign driver <button type="button" onclick="openPickerFromLL()" style="font-size:10px;color:var(--B);background:var(--Bb);border:1px solid var(--Bd);border-radius:20px;padding:1px 7px;cursor:pointer;font-family:var(--f);font-weight:500;margin-left:6px">&#x1F4CD; Find best</button></label><select id="ll-reassign"><option value="">— same driver —</option></select></div>
+      </div>
+      <button class="bs" style="font-size:12px;padding:5px 11px;margin-top:5px" onclick="applyMoveReassign()">Apply move / reassign</button>
+    </div>
+  </div>
+  <div class="mf">
+    <button class="bd" id="ll-delbtn" style="display:none" onclick="delLoad()">Remove</button>
+    <button class="ab g" id="ll-compbtn" onclick="complLoad()">&#10003; Done</button>
+    <button class="ab" onclick="openSigFromLL()">&#9997; Signature</button>
+    <button class="bs" onclick="closeLL()">Cancel</button>
+    <button class="bp" onclick="saveLL()">Save</button>
+  </div>
+</div></div>
+
+<!-- PAYMENT MODAL -->
+<div class="mbg" id="pay-m" style="display:none"><div class="mod">
+  <div class="mh"><h2 id="pay-title">Add Payment</h2><button class="mc" onclick="closePayM()">&#215;</button></div>
+  <div class="mb">
+    <div id="pay-info" style="font-size:13px;color:var(--txt2);line-height:1.6"></div>
+    <div class="fr">
+      <div class="fl"><label>Amount ($)</label><input id="pay-amt" type="number" min="0" step="0.01" placeholder="0.00"></div>
+      <div class="fl"><label>Method</label><select id="pay-method"><option>Cash</option><option>Check</option><option>ACH</option><option>Zelle</option><option>Other</option></select></div>
+    </div>
+    <div class="fl"><label>Note / Reference</label><input id="pay-note" placeholder="Check #, ref..."></div>
+  </div>
+  <div class="mf"><button class="bs" onclick="closePayM()">Cancel</button><button class="bp" onclick="savePayment()">Save payment</button></div>
+</div></div>
+
+<!-- SIGNATURE MODAL -->
+<div class="mbg" id="sig-m" style="display:none"><div class="mod">
+  <div class="mh"><h2>Proof of Delivery</h2><button class="mc" onclick="closeSig()">&#215;</button></div>
+  <div class="mb">
+    <div id="sig-info" style="font-size:12px;color:var(--txt2)"></div>
+    <div class="fl"><label>Signed by (print name)</label><input id="sig-name" placeholder="Customer / receiver name"></div>
+    <div class="fl"><label>Signature</label>
+      <div class="sig-wrap"><canvas id="sig-canvas" class="sig-canvas" width="480" height="140"></canvas>
+        <div class="sig-tools"><button class="sig-clear" onclick="clearSig()">Clear</button><span style="font-size:11px;color:var(--txt3);margin-left:auto">Sign with finger or mouse</span></div>
+      </div>
+    </div>
+    <div class="fl"><label>POD Notes</label><input id="sig-notes" placeholder="Condition, lot #s..."></div>
+  </div>
+  <div class="mf"><button class="bs" onclick="closeSig()">Cancel</button><button class="bp" onclick="saveSig()">Save signature</button></div>
+</div></div>
+
+<!-- ROLLOVER MODAL -->
+<div class="mbg" id="ro-m" style="display:none"><div class="mod">
+  <div class="mh"><h2>Rollover loads</h2><button class="mc" onclick="document.getElementById('ro-m').style.display='none'">&#215;</button></div>
+  <div class="mb">
+    <div id="ro-info" style="font-size:13px;color:var(--txt2)"></div>
+    <div class="fl"><label>Move remaining loads to date</label><input type="date" id="ro-date"></div>
+  </div>
+  <div class="mf"><button class="bs" onclick="document.getElementById('ro-m').style.display='none'">Cancel</button><button class="bp" onclick="doRollover()">Roll over</button></div>
+</div></div>
+
+<!-- PRICE TABLE MODAL -->
+<div class="mbg" id="price-m" style="display:none"><div class="mod">
+  <div class="mh"><h2>Material Price Table</h2><button class="mc" onclick="document.getElementById('price-m').style.display='none'">&#215;</button></div>
+  <div class="mb">
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:8px">Set default price per load for each material. These apply automatically when creating new loads.</div>
+    <div class="price-grid" id="price-grid"></div>
+  </div>
+  <div class="mf"><button class="bs" onclick="document.getElementById('price-m').style.display='none'">Cancel</button><button class="bp" onclick="savePriceTable()">Save prices</button></div>
+</div></div>
+
+<!-- YARD PICKER MODAL (driver) -->
+<div class="mbg" id="yard-m" style="display:none"><div class="mod" style="max-width:440px">
+  <div class="mh">
+    <h2>🏭 Which yard did you arrive at?</h2>
+    <button class="mc" onclick="closeYard()">&#215;</button>
+  </div>
+  <div class="mb" style="padding:16px 18px">
+    <div id="yard-info" style="font-size:13px;color:var(--txt2);margin-bottom:12px;padding:10px 12px;background:var(--bg2);border-radius:var(--r)"></div>
+    <div id="yard-list"></div>
+  </div>
+  <div class="mf">
+    <button class="bs" onclick="closeYard()">Cancel</button>
+  </div>
+</div></div>
+
+<!-- DRIVER PICKER MODAL -->
+<div class="mbg" id="dp-m" style="display:none"><div class="mod" style="max-width:480px">
+  <div class="mh">
+    <h2>&#x1F4CD; Choose Best Driver</h2>
+    <button class="mc" onclick="closeDP()">&#215;</button>
+  </div>
+  <div class="mb" style="padding:16px 18px">
+    <div id="dp-dest-info" class="dp-dest"></div>
+    <div id="dp-no-addr" class="dp-no-addr" style="display:none">
+      ⚠ No delivery address on this job — distances can't be calculated. You can still pick a driver below.
+    </div>
+    <div id="dp-list"></div>
+  </div>
+  <div class="mf">
+    <button class="bs" onclick="closeDP()">Cancel</button>
+    <button class="bp" id="dp-confirm" onclick="confirmDP()" disabled>Select driver</button>
+  </div>
+</div></div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let trucks=[],pos=[],loads=[],payments=[],matPrices={},vendors=[],vendorPrices={};
+let role='driver',myTruckId=null,myUsername='';
+let curTab='board',dayOffset=0,monthOffset=0,viewMode='month';
+let editPoId=null,editLoadId=null,sigLoadId=null,payPoId=null,roPoId=null;
+let splits=[],expanded=new Set();
+let sigCtx=null,sigDrawing=false,sigHasData=false,dragLoadId=null;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const ymd=d=>d.toISOString().slice(0,10);
+const tod=()=>ymd(new Date());
+const fmtD=iso=>iso?new Date(iso+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+const fmtM=iso=>new Date(iso+'-01T12:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'});
+const money=n=>'$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const dUntil=iso=>{const t=new Date(iso+'T12:00:00'),n=new Date();n.setHours(0,0,0,0);return Math.round((t-n)/86400000);};
+const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+// Material color map
+const MAT_COLORS={
+  'Fill Sand':    {dot:'#8a5c00',bg:'#fff8e6'},
+  'Gravel':       {dot:'#1a5fa8',bg:'#eaf2fd'},
+  'Rock':         {dot:'#6c3fc5',bg:'#f3eeff'},
+  'Cold Mix':     {dot:'#0a7a7a',bg:'#e6f7f7'},
+  '3/4 Rock':     {dot:'#b85c00',bg:'#fff3e6'},
+  'Recycle Base': {dot:'#1a7a4a',bg:'#eaf7f0'},
+  'Dirt':         {dot:'#666',  bg:'#f0efe9'},
+  'Base Rock':    {dot:'#c0392b',bg:'#fdf0ee'},
+  'Other':        {dot:'#111',  bg:'#f7f6f2'},
+};
+function matColor(m){ return MAT_COLORS[m]||{dot:'#888',bg:'#f0efe9'}; }
+
+function getBoardDate(){ const d=new Date();d.setDate(d.getDate()+dayOffset);d.setHours(0,0,0,0);return d; }
+function changeDay(d){ dayOffset+=d; renderBoard(); }
+function navBack(){ viewMode==='day'?dayOffset--:monthOffset--; renderBoard(); }
+function navFwd(){  viewMode==='day'?dayOffset++:monthOffset++; renderBoard(); }
+function setViewMode(v){
+  viewMode=v;
+  ['day','month','kanban'].forEach(mode=>{
+    const btn=document.getElementById('vbtn-'+mode);
+    if(btn) btn.classList.toggle('active',v===mode);
+  });
+  // Hide date nav for kanban (not date-based)
+  const navWrap=document.getElementById('nav-wrap');
+  if(navWrap){
+    const children=Array.from(navWrap.children);
+    children.forEach(c=>{
+      if(c.tagName==='BUTTON'&&c.id.startsWith('vbtn-')){c.style.display='';return;}
+      if(c.classList?.contains('nbtn')||c.classList?.contains('nlbl')){
+        c.style.display=v==='kanban'?'none':'';
+      }
+    });
+  }
+  renderBoard();
+}
+function jumpToDay(dateStr){
+  const today=new Date();today.setHours(0,0,0,0);
+  const target=new Date(dateStr+'T12:00:00');
+  dayOffset=Math.round((target-today)/86400000);
+  setViewMode('day');
+}
+
+function pLoads(id){ return loads.filter(l=>l.poId===id); }
+function pActivL(id){ return loads.filter(l=>l.poId===id&&l.status!=='completed'); }
+function pDel(id){ return loads.filter(l=>l.poId===id).reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0); }
+function pOrd(id){ return loads.filter(l=>l.poId===id).reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0); }
+function pPay(id){ return payments.filter(p=>p.poId===id); }
+function pInvoice(id){
+  const ls=loads.filter(l=>l.poId===id);
+  const invoiced=ls.reduce((s,l)=>s+(Number(l.loadsAssigned)||0)*(Number(l.pricePerLoad)||0),0);
+  const earned=ls.reduce((s,l)=>s+(Number(l.loadsDelivered)||0)*(Number(l.pricePerLoad)||0),0);
+  const paid=pPay(id).reduce((s,p)=>s+p.amount,0);
+  return{invoiced,earned,paid,balance:invoiced-paid};
+}
+
+// ── Tab ───────────────────────────────────────────────────────────────────────
+const TAB_TITLES={board:'Dispatch Board',approve:'Approvals',pos:'Jobs / POs',bill:'Billing',hist:'History',finance:'Reports',drv:'My Trips'};
+function swTab(t){
+  curTab=t;
+  ['board','pos','approve','bill','hist','finance','drv'].forEach(x=>{
+    const tb=document.getElementById('tab-'+x);
+    const sc=document.getElementById('sec-'+x);
+    if(tb) tb.classList.toggle('active',t===x);
+    if(sc) sc.style.display=t===x?'block':'none';
+  });
+  document.getElementById('nav-wrap').style.display=t==='board'?'flex':'none';
+  const title=document.getElementById('page-title');
+  if(title) title.textContent=TAB_TITLES[t]||'VBT Dispatch';
+  // Close mobile sidebar on nav
+  document.getElementById('sidebar')?.classList.remove('open');
+  if(t==='board')   renderBoard();
+  if(t==='pos')     renderPOs();
+  if(t==='approve') renderApprove();
+  if(t==='bill')    renderBill();
+  if(t==='hist')    renderHist();
+  if(t==='finance') renderFinance();
+  if(t==='drv')     renderDrv();
+}
+
+function toggleSidebar(){
+  document.getElementById('sidebar')?.classList.toggle('open');
+}
+
+// ── Summary bar ───────────────────────────────────────────────────────────────
+function renderSbar(){
+  if(role!=='manager'){return;}
+  const act=pos.filter(p=>p.status==='active');
+  const sched=pos.filter(p=>p.status==='scheduled');
+  const tOrd=loads.filter(l=>act.find(p=>p.id===l.poId)).reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+  const tDel=loads.filter(l=>act.find(p=>p.id===l.poId)).reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+  const miss=tOrd-tDel;
+  const unassigned=loads.filter(l=>(!l.truckId||l.truckId==='unassigned')&&l.status!=='completed').length;
+  const awaitingApproval=loads.filter(l=>l.approvalStatus==='submitted'&&!l.voided).length;
+  const readyToBill=loads.filter(l=>l.approvalStatus==='approved'&&l.billStatus==='ready'&&!l.voided).length;
+  document.getElementById('sbar').innerHTML=`
+    <div class="met"><div class="ml">Active jobs</div><div class="mv">${act.length}</div></div>
+    <div class="met b"><div class="ml">Upcoming</div><div class="mv">${sched.length}</div></div>
+    <div class="met g"><div class="ml">Delivered</div><div class="mv">${tDel}/${tOrd}</div></div>
+    <div class="met ${miss>0?'w':'g'}"><div class="ml">Missing</div><div class="mv">${miss}</div></div>
+    <div class="met ${unassigned>0?'w':''}"><div class="ml">Unassigned</div><div class="mv">${unassigned}</div></div>
+    <div class="met ${awaitingApproval>0?'o':''}"><div class="ml">To approve</div><div class="mv">${awaitingApproval}</div></div>
+    <div class="met ${readyToBill>0?'b':''}"><div class="ml">Ready to bill</div><div class="mv">${readyToBill}</div></div>
+  `;
+  // Keep approve tab badge in sync
+  const badge=document.getElementById('approve-badge');
+  if(badge){ badge.textContent=awaitingApproval; badge.style.display=awaitingApproval?'inline-block':'none'; }
+}
+
+// ════════════════════════════════════
+// DISPATCH BOARD (PRIMARY VIEW)
+// ════════════════════════════════════
+function renderBoard(){
+  renderSbar();
+  if(viewMode==='kanban'){ renderKanbanBoard(); return; }
+  if(viewMode==='month'){ renderMonthBoard(); return; }
+  const boardDate=getBoardDate();
+  const dateStr=ymd(boardDate);
+  const todStr=tod();
+  const isToday=dateStr===todStr;
+  const dayName=DAYS[boardDate.getDay()];
+  const dateLabel=boardDate.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
+  document.getElementById('nav-lbl').textContent=`${dayName}, ${dateLabel}`;
+
+  // Gather all active loads for this date
+  const dateLoads=loads.filter(l=>l.deliveryDate===dateStr&&l.status!=='completed');
+  const assignedLoads=dateLoads.filter(l=>l.truckId&&l.truckId!=='unassigned');
+  const unassignedLoads=dateLoads.filter(l=>!l.truckId||l.truckId==='unassigned');
+
+  // PO progress summary for day header chips
+  // Flag any issues
+  const issueLoads=dateLoads.filter(l=>!l.truckId||l.truckId==='unassigned');
+  const dayPoIds=[...new Set(dateLoads.map(l=>l.poId))];
+  const dayPoSummary=dayPoIds.map(pid=>{
+    const po=pos.find(p=>p.id===pid);
+    if(!po) return '';
+    const dayL=dateLoads.filter(l=>l.poId===pid);
+    const ord=dayL.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+    const del=dayL.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+    return `<span class="po-progress-chip">${po.poNumber}: ${del}/${ord}</span>`;
+  }).join('');
+
+  // Total day loads summary
+  const dayOrd=dateLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+  const dayDel=dateLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+
+  const numT=trucks.length;
+  const colPct=Math.floor(100/numT);
+  const gridCols=trucks.map(()=>colPct+'%').join(' ');
+
+  let h=`
+    <div class="day-block">
+      <div class="day-header">
+        <span class="dh-day">${dayName}</span>
+        <span class="dh-date">${dateLabel}</span>
+        ${isToday?'<span class="dh-today">TODAY</span>':''}
+        ${dayPoSummary}
+        <span class="dh-summary">${dayDel}/${dayOrd} loads</span>
+        ${issueLoads.length>0?`<span style="font-size:10px;background:var(--R);color:#fff;padding:2px 8px;border-radius:20px">⚠ ${issueLoads.length} unassigned</span>`:''}
+      </div>
+
+      <!-- Column headers -->
+      <div class="col-head-row" style="grid-template-columns:${gridCols}">`;
+  trucks.forEach(t=>{
+    const tLoads=assignedLoads.filter(l=>l.truckId===t.id);
+    const tOrd=tLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+    const tDel=tLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+    h+=`<div class="col-head">
+      <div class="ch-name">${t.label} ${tOrd>0?`<span style="font-size:10px;color:var(--txt3)">${tDel}/${tOrd}</span>`:''}</div>
+      ${role==='manager'
+        ?`<input class="truck-edit" value="${t.truckNum}" title="Edit truck #" onchange="updateTruckNum('${t.id}',this.value)">`
+        :`<div class="ch-truck">${t.truckNum}</div>`}
+    </div>`;
+  });
+  h+=`</div>
+
+      <!-- Driver job cells -->
+      <div class="col-body-row" style="grid-template-columns:${gridCols}">`;
+  trucks.forEach(t=>{
+    const tLoads=assignedLoads.filter(l=>l.truckId===t.id);
+    h+=`<div class="driver-cell">
+      <div class="driver-drop" id="drop-${t.id}-${dateStr}"
+        ondragover="onDragOver(event)"
+        ondragleave="onDragLeave(event)"
+        ondrop="onDrop(event,'${t.id}','${dateStr}')">
+        ${tLoads.map(l=>renderLoadCard(l)).join('')}
+      </div>
+      ${role==='manager'?`<button class="add-job-btn" onclick="openNewPO('${t.id}','${dateStr}')">+ add job</button>`:''}
+    </div>`;
+  });
+  h+=`</div>
+
+      <!-- Unassigned row -->
+      <div class="unassigned-row">
+        <div class="unassigned-label">Unassigned${unassignedLoads.length?` (${unassignedLoads.length})`:''}</div>
+        <div class="unassigned-drop-zone" id="drop-unassigned-${dateStr}"
+          ondragover="onDragOver(event)"
+          ondragleave="onDragLeave(event)"
+          ondrop="onDrop(event,null,'${dateStr}')">
+          ${unassignedLoads.length
+            ? unassignedLoads.map(l=>renderLoadCard(l,true)).join('')
+            : `<span style="font-size:11px;color:var(--txt3);padding:4px 8px">Drop loads here to unassign</span>`}
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById('board-inner').innerHTML=h;
+}
+
+function renderMonthBoard(){
+  const today=new Date();
+  const target=new Date(today.getFullYear(), today.getMonth()+monthOffset, 1);
+  const daysInMonth=new Date(target.getFullYear(), target.getMonth()+1, 0).getDate();
+  const todStr=tod();
+  const monthLabel=target.toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  document.getElementById('nav-lbl').textContent=monthLabel;
+
+  let h='<div class="month-board">';
+
+  // Sticky header row
+  h+='<div class="mgh-row"><div class="mgh-day">Date</div>';
+  trucks.forEach(t=>{ h+=`<div class="mgh-col">${t.label}<div style="font-size:10px;font-weight:400;color:var(--txt3)">${t.truckNum}</div></div>`; });
+  h+='<div class="mgh-unas">⚠ Unassigned</div></div>';
+
+  for(let d=1;d<=daysInMonth;d++){
+    const dt=new Date(target.getFullYear(), target.getMonth(), d);
+    const dateStr=ymd(dt);
+    const dayName=DAYS[dt.getDay()];
+    const isToday=dateStr===todStr;
+    const isPast=dateStr<todStr;
+    const dayLoads=loads.filter(l=>l.deliveryDate===dateStr&&l.status!=='completed');
+    const dayOrd=dayLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+    const dayDel=dayLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+    const unasLoads=dayLoads.filter(l=>!l.truckId||l.truckId==='unassigned');
+
+    h+='<div class="mrow'+(isToday?' today-row':isPast?' past-row':'')+'">';
+
+    // Day label
+    h+=`<div class="mdaycell" onclick="jumpToDay('${dateStr}')" title="Open day view">`;
+    if(isToday) h+='<div class="mdc-tod">TODAY</div>';
+    h+=`<div class="mdc-num">${d}</div><div class="mdc-name">${dayName}</div>`;
+    if(dayLoads.length>0) h+=`<div class="mdc-tot">${dayDel}/${dayOrd}</div>`;
+    if(unasLoads.length>0) h+=`<div class="mdc-warn">⚠ ${unasLoads.length}</div>`;
+    h+='</div>';
+
+    // Driver cells
+    trucks.forEach(t=>{
+      const tLoads=dayLoads.filter(l=>l.truckId===t.id);
+      h+=`<div class="mdrvcell ${tLoads.length>0?'has-l':''}" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event,'${t.id}','${dateStr}')">`;
+      const show=tLoads.slice(0,3);
+      show.forEach(l=>{ h+=renderMiniCard(l); });
+      if(tLoads.length>3) h+=`<div class="mmore" onclick="jumpToDay('${dateStr}')">+${tLoads.length-3} more</div>`;
+      if(tLoads.length===0&&role==='manager'&&!isPast) h+=`<button class="madd" onclick="openNewPO('${t.id}','${dateStr}')">+ add</button>`;
+      h+='</div>';
+    });
+
+    // Unassigned cell
+    h+=`<div class="munas" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event,null,'${dateStr}')">`;
+    if(unasLoads.length>0){
+      h+='<div class="munas-lbl">Unassigned</div>';
+      unasLoads.slice(0,2).forEach(l=>{ h+=renderMiniCard(l,true); });
+      if(unasLoads.length>2) h+=`<div class="mmore">+${unasLoads.length-2}</div>`;
+    } else if(role==='manager'&&!isPast){
+      h+=`<button class="madd" onclick="openNewPO(null,'${dateStr}')">+ add</button>`;
+    }
+    h+='</div>';
+
+    h+='</div>'; // end mrow
+  }
+  h+='</div>'; // end month-board
+  document.getElementById('board-inner').innerHTML=h;
+}
+
+function renderMiniCard(l, isUnas=false){
+  const po=pos.find(p=>p.id===l.poId)||{};
+  const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
+  const mc=matColor(l.material);
+  const done=l.status==='completed';
+  const pct=la>0?Math.round(ld/la*100):0;
+  const miss=la>0&&ld<la&&!done;
+  const ts=l.timestamps||{};
+
+  // Status pill
+  let statusTxt='', statusBg='var(--bg2)', statusColor='var(--txt3)';
+  if(done){ statusTxt='Done'; statusBg='var(--Gb)'; statusColor='var(--G)'; }
+  else if(ts.completed){ statusTxt='Done'; statusBg='var(--Gb)'; statusColor='var(--G)'; }
+  else if(ts.arrived){ statusTxt='On site'; statusBg='var(--Pb)'; statusColor='var(--P)'; }
+  else if(ts.start){ statusTxt='Started'; statusBg='var(--Bb)'; statusColor='var(--B)'; }
+  else if(ld>0){ statusTxt='In prog'; statusBg='var(--Ab)'; statusColor='var(--A)'; }
+  else if(isUnas){ statusTxt='⚠ Unassigned'; statusBg='var(--Ab)'; statusColor='var(--A)'; }
+  else { statusTxt='Pending'; statusBg='var(--bg2)'; statusColor='var(--txt3)'; }
+
+  const barColor = pct>=100?'var(--G)':pct>0?'var(--A)':'var(--bdr2)';
+
+  return `<div class="mlcard ${isUnas?'m-unas':''} ${done?'m-done':''}"
+    draggable="${role==='manager'?'true':'false'}"
+    ondragstart="onDragStart(event,'${l.id}')"
+    ondragend="onDragEnd(event)"
+    onclick="openLL('${l.id}')">
+    <div class="ml-header">
+      <span class="ml-po">${po.poNumber||'—'}</span>
+      <span class="ml-status" style="background:${statusBg};color:${statusColor}">${statusTxt}</span>
+    </div>
+    <div class="ml-customer">${po.customer||'Unassigned'}</div>
+    ${po.city||po.address?`<div class="ml-address">📍 ${po.city||po.address}</div>`:''}
+    <div class="ml-mat">
+      <div class="mat-dot" style="background:${mc.dot};width:8px;height:8px;flex-shrink:0"></div>
+      <span style="color:${mc.dot}">${l.material}</span>
+    </div>
+    <div class="ml-loads">
+      <span class="ml-loads-text">${ld}/${la} loads</span>
+      <div class="ml-bar"><div class="ml-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+      ${miss?`<span style="font-size:10px;color:var(--R);font-weight:600">-${la-ld}</span>`:(pct>=100?'<span style="font-size:10px;color:var(--G)">✓</span>':'')}
+    </div>
+    ${po.supervisor?`<div class="ml-supervisor">👤 ${po.supervisor}</div>`:''}
+    ${po.pickup?`<div class="ml-pickup">🏭 ${po.pickup}</div>`:''}
+  </div>`;
+}
+
+function renderLoadCard(l,mini=false){
+  const po=pos.find(p=>p.id===l.poId)||{};
+  const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
+  const pct=la>0?Math.round(ld/la*100):0;
+  const miss=la>0&&ld<la&&l.status!=='completed';
+  const mc=matColor(l.material);
+  const pod=l.pod||{};
+  const ts=l.timestamps||{};
+  const isUnassigned=!l.truckId||l.truckId==='unassigned';
+
+  // Status badge
+  let statusBadge='';
+  if(l.status==='completed') statusBadge=`<span class="pill g">✓ done</span>`;
+  else if(pct>=100) statusBadge=`<span class="pill g">${ld}/${la} delivered</span>`;
+  else if(ld>0) statusBadge=`<span class="pill a">${ld}/${la} in progress</span>`;
+  else if(la>0) statusBadge=`<span class="pill">${la} loads</span>`;
+  if(miss&&ld>0) statusBadge+=`<span class="pill r">-${la-ld} missing</span>`;
+  if(pod.signedBy) statusBadge+=`<span class="pill g">✓ POD</span>`;
+  if(ts.start&&!ts.completed) statusBadge+=`<span class="pill b">▶ started</span>`;
+
+  // Quick-assign button for unassigned loads — opens smart driver picker
+  const jobAddr=(po.city||po.address||'');
+  const quickAssign = (role==='manager'&&isUnassigned) ?
+    `<div style="margin-top:7px" onclick="event.stopPropagation()">
+      <button onclick="openDriverPickerForLoad('${l.id}','${jobAddr.replace(/'/g,"\'")}',event)" style="width:100%;padding:6px 10px;font-size:11px;border:1.5px solid var(--Ad);border-radius:20px;background:var(--Ab);color:var(--A);font-family:var(--f);cursor:pointer;font-weight:600;transition:all .15s" onmouseover="this.style.background='var(--A)';this.style.color='#fff'" onmouseout="this.style.background='var(--Ab)';this.style.color='var(--A)'">
+        &#x1F4CD; Assign driver
+      </button>
+    </div>` : '';
+
+  return `<div class="lcard ${isUnassigned?'unassigned-card':''} ${miss&&!isUnassigned?'missing-card':''}"
+    draggable="${role==='manager'?'true':'false'}"
+    ondragstart="onDragStart(event,'${l.id}')"
+    ondragend="onDragEnd(event)"
+    onclick="openLL('${l.id}')">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:4px">
+      <div style="flex:1;min-width:0">
+        <div class="lc-po">${po.poNumber||'—'} <span style="font-size:9px;opacity:.6">${po.customer||''}</span></div>
+        <div class="lc-mat">
+          <div class="mat-dot" style="background:${mc.dot}"></div>
+          <span style="color:${mc.dot};font-weight:500">${l.material}</span>
+        </div>
+        ${po.city||po.address?`<div style="font-size:10px;color:var(--txt3);margin-top:1px">📍 ${po.city||po.address}</div>`:''}
+      </div>
+      ${isUnassigned?'<span style="font-size:16px;flex-shrink:0">⚠</span>':''}
+    </div>
+    <div class="lc-pills" style="margin-top:5px">${statusBadge}</div>
+    <div class="lc-prog" style="margin-top:5px"><div class="lc-prog-fill" style="width:${pct}%;background:${pct>=100?'var(--G)':pct>0?'var(--A)':'var(--bdr2)'}"></div></div>
+    ${quickAssign}
+  </div>`;
+}
+
+async function quickAssignLoad(loadId, truckId){
+  if(!truckId) return;
+  const t=trucks.find(x=>x.id===truckId);
+  await fetch('/api/loads/'+loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId,driverName:t?.label||''})});
+  await loadAll();renderBoard();
+}
+
+function openDriverPickerForLoad(loadId, destAddr, event){
+  event.stopPropagation();
+  const l=loads.find(x=>x.id===loadId);if(!l)return;
+  openDriverPicker(destAddr, async (truckId)=>{
+    await quickAssignLoad(loadId, truckId);
+  }, l.truckId);
+}
+
+// ── DRAG & DROP ───────────────────────────────────────────────────────────────
+function onDragStart(e,id){dragLoadId=id;e.currentTarget.classList.add('dragging');e.dataTransfer.effectAllowed='move';}
+function onDragEnd(e){e.currentTarget.classList.remove('dragging');dragLoadId=null;}
+function onDragOver(e){e.preventDefault();e.dataTransfer.dropEffect='move';e.currentTarget.classList.add('over');}
+function onDragLeave(e){e.currentTarget.classList.remove('over');}
+async function onDrop(e,truckId,dateStr){
+  e.preventDefault();e.currentTarget.classList.remove('over');
+  if(!dragLoadId)return;
+  const l=loads.find(x=>x.id===dragLoadId);if(!l)return;
+  const t=truckId?trucks.find(x=>x.id===truckId):null;
+  await fetch('/api/loads/'+dragLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({truckId:truckId||null,driverName:t?.label||'',deliveryDate:dateStr||l.deliveryDate})});
+  await loadAll();renderBoard();
+}
+
+// ── LOAD DETAIL MODAL ─────────────────────────────────────────────────────────
+function openLL(id){
+  const l=loads.find(x=>x.id===id);if(!l)return;
+  const po=pos.find(p=>p.id===l.poId)||{};
+  const t=trucks.find(x=>x.id===l.truckId);
+  editLoadId=id;
+  const mc=matColor(l.material);
+  document.getElementById('ll-title').textContent=`${po.poNumber||'Load'} — ${l.material}`;
+  document.getElementById('ll-info').innerHTML=
+    `<span style="display:inline-flex;align-items:center;gap:5px;margin-bottom:4px"><span style="width:10px;height:10px;border-radius:50%;background:${mc.dot};flex-shrink:0"></span><b>${l.material}</b> · ${po.customer||'—'}</span><br>`+
+    `Pickup: ${po.pickup||'—'} · Deliver to: ${po.city||po.address||'—'}<br>`+
+    `Driver: ${l.driverName||t?.label||'Unassigned'} (${t?.truckNum||'—'})<br>`+
+    `Assigned: ${l.loadsAssigned} loads · Supervisor: ${po.supervisor||'—'}`+
+    (po.notes?`<br><em style="color:var(--txt3)">${po.notes}</em>`:'');
+  document.getElementById('ll-del').value=l.loadsDelivered||0;
+  document.getElementById('ll-notes').value=l.notes||'';
+  const ts=l.timestamps||{};
+  document.getElementById('ll-ts-s').value=ts.start||'';
+  document.getElementById('ll-ts-a').value=ts.arrived||'';
+  document.getElementById('ll-ts-c').value=ts.completed||'';
+  document.getElementById('ll-delbtn').style.display=role==='manager'?'block':'none';
+  document.getElementById('ll-compbtn').style.display=l.status==='completed'?'none':'block';
+  const mw=document.getElementById('ll-move-wrap');
+  if(role==='manager'){
+    mw.style.display='block';
+    document.getElementById('ll-mv-date').value=l.deliveryDate||tod();
+    const rs=document.getElementById('ll-reassign');
+    rs.innerHTML='<option value="">— same driver —</option>'+
+      trucks.map(x=>`<option value="${x.id}"${x.id===l.truckId?' selected':''}>${x.label} (${x.truckNum})</option>`).join('');
+  } else {mw.style.display='none';}
+  document.getElementById('ll-m').style.display='flex';
+  setTimeout(()=>document.getElementById('ll-del').focus(),80);
+}
+function closeLL(){document.getElementById('ll-m').style.display='none';editLoadId=null;}
+async function saveLL(){
+  const del=Number(document.getElementById('ll-del').value)||0;
+  const notes=document.getElementById('ll-notes').value.trim();
+  const ts={start:document.getElementById('ll-ts-s').value,arrived:document.getElementById('ll-ts-a').value,completed:document.getElementById('ll-ts-c').value};
+  await fetch('/api/loads/'+editLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({loadsDelivered:del,notes,timestamps:ts})});
+  await loadAll();closeLL();renderBoard();if(curTab==='pos')renderPOs();if(curTab==='drv')renderDrv();
+}
+async function applyMoveReassign(){
+  const nd=document.getElementById('ll-mv-date').value;
+  const nt=document.getElementById('ll-reassign').value;
+  if(!nd&&!nt){alert('Pick a new date or driver');return;}
+  const l=loads.find(x=>x.id===editLoadId);if(!l)return;
+  const t=nt?trucks.find(x=>x.id===nt):null;
+  await fetch('/api/loads/'+editLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({deliveryDate:nd||l.deliveryDate,truckId:nt||l.truckId,driverName:t?.label||l.driverName})});
+  await loadAll();closeLL();renderBoard();
+}
+async function complLoad(){
+  if(!confirm('Mark this load as completed?'))return;
+  await fetch('/api/loads/'+editLoadId+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+  await loadAll();closeLL();renderBoard();if(curTab==='pos')renderPOs();
+}
+async function delLoad(){
+  if(!confirm('Remove this load assignment?'))return;
+  await fetch('/api/loads/'+editLoadId,{method:'DELETE'});
+  await loadAll();closeLL();renderBoard();
+}
+function openSigFromLL(){const id=editLoadId;closeLL();openSig(id);}
+
+// ── ALL POs ───────────────────────────────────────────────────────────────────
+function renderPOs(){
+  const active=pos.filter(p=>p.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
+  let h=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px" class="mgrf"><button class="bp" onclick="openNewPO()">+ New PO</button></div>`;
+  if(!active.length){document.getElementById('pos-list-wrap').innerHTML=h+'<div class="no-items">No active POs.</div>';return;}
+  active.forEach(p=>{h+=buildPOCard(p);});
+  document.getElementById('pos-list-wrap').innerHTML=h;
+}
+
+function buildPOCard(p){
+  const isOpen=expanded.has(p.id);
+  const del=pDel(p.id),ord=pOrd(p.id),pct=ord>0?Math.round(del/ord*100):0;
+  const inv=pInvoice(p.id);
+  const payStatus=p.invoice?.paymentStatus||'unpaid';
+  const pLoadsArr=pLoads(p.id);
+  const miss=ord-del;
+  const allDone=pLoadsArr.length>0&&pLoadsArr.every(l=>l.status==='completed');
+
+  // Multi-material summary
+  const matSummary=p.materials?.map(m=>{
+    const mc=matColor(m.material);
+    const mLoads=loads.filter(l=>l.poId===p.id&&l.material===m.material);
+    const mDel=mLoads.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0);
+    const mOrd=mLoads.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0);
+    return `<span class="mat-chip" style="background:${mc.bg};color:${mc.dot};border:0.5px solid ${mc.dot}40">
+      <span style="width:7px;height:7px;border-radius:50%;background:${mc.dot};flex-shrink:0"></span>
+      ${mDel}/${mOrd} ${m.material}
+    </span>`;
+  }).join(' ')||'';
+
+  // Invoice section removed from main PO card — lives in Finance tab
+  const invHtml='';
+
+  // Materials + loads breakdown table
+  const matGroups={};
+  pLoads(p.id).forEach(l=>{ if(!matGroups[l.material]) matGroups[l.material]=[]; matGroups[l.material].push(l); });
+  let loadsHtml='';
+  Object.entries(matGroups).forEach(([mat,mls])=>{
+    const mc=matColor(mat);
+    loadsHtml+=`<div style="border-top:0.5px solid var(--bdr)">
+      <div style="display:flex;align-items:center;gap:7px;padding:7px 12px;background:${mc.bg}">
+        <div class="mat-dot" style="background:${mc.dot}"></div>
+        <span style="font-size:11px;font-weight:500;color:${mc.dot}">${mat}</span>
+        <span style="font-size:11px;color:${mc.dot};opacity:.7">${mls.reduce((s,l)=>s+(Number(l.loadsDelivered)||0),0)}/${mls.reduce((s,l)=>s+(Number(l.loadsAssigned)||0),0)} loads</span>
+
+      </div>
+      <table class="mat-table"><thead><tr>
+        <th>Driver</th><th>Truck</th><th>Date</th><th>Loads</th><th>Status</th><th>POD</th>
+        ${role==='manager'?'<th>Actions</th>':''}
+      </tr></thead><tbody>`;
+    mls.forEach(l=>{
+      const t=trucks.find(x=>x.id===l.truckId);
+      const la=Number(l.loadsAssigned)||0,ld=Number(l.loadsDelivered)||0;
+      const lpct=la>0?Math.round(ld/la*100):0;
+      const pod=l.pod||{};
+      loadsHtml+=`<tr>
+        <td style="font-weight:500">${l.driverName||t?.label||'Unassigned'}</td>
+        <td style="font-family:var(--m);font-size:11px;color:var(--txt2)">${t?.truckNum||'—'}</td>
+        <td style="font-family:var(--m);font-size:11px">${fmtD(l.deliveryDate)}</td>
+        <td style="font-family:var(--m);font-size:12px">${ld}/${la}</td>
+        <td><span class="sp sp-${l.status}">${l.status}</span></td>
+        <td>${pod.signedBy?`<span class="pod-badge">✓ ${pod.signedBy}</span>`:'—'}</td>
+        ${role==='manager'?`<td><div style="display:flex;gap:4px">
+          <button class="ab" onclick="openLL('${l.id}')">Log</button>
+          ${l.status!=='completed'?`<button class="ab g" onclick="qComplLoad('${l.id}')">Done</button>`:''}
+          <button class="ab" onclick="openSig('${l.id}')">Sign</button>
+          <button class="ab r" onclick="qDelLoad('${l.id}')">&#215;</button>
+        </div></td>`:''}
+      </tr>`;
+    });
+    loadsHtml+=`</tbody></table></div>`;
+  });
+  if(!Object.keys(matGroups).length) loadsHtml=`<div class="no-items">No load assignments yet.</div>`;
+
+  return `<div class="poc ${p.status}" id="poc-${p.id}">
+    <div class="poh" onclick="togglePO('${p.id}')">
+      <span class="poc-chev ${isOpen?'o':''}">&#9654;</span>
+      <span class="poc-num">${p.poNumber}</span>
+      <span class="poc-cust">${p.customer}</span>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;flex:1;min-width:0">${matSummary}</div>
+      <span class="poc-date">${fmtD(p.deliveryDate)}</span>
+      <div class="poc-prog">
+        <div class="poc-bar"><div class="poc-fill ${pct===0?'z':pct<100?'p':'f'}" style="width:${pct}%"></div></div>
+        <span class="poc-pt">${del}/${ord}</span>
+      </div>
+      <span class="sp sp-${p.status}">${p.status}</span>
+      <span class="sp sp-${payStatus}">${payStatus}</span>
+    </div>
+    <div class="pob ${isOpen?'o':''}" id="pob-${p.id}">
+      <div class="po-meta">
+        <span><b>Pickup:</b> ${p.pickup||'—'}</span>
+        <span><b>Deliver to:</b> ${p.city||p.address||'—'}</span>
+        <span><b>Supervisor:</b> ${p.supervisor||'—'}</span>
+        ${p.notes?`<span><b>Notes:</b> ${p.notes}</span>`:''}
+        ${miss>0&&p.status==='active'?`<span style="color:var(--R)"><b>Missing:</b> ${miss} loads</span>`:''}
+      </div>
+      ${role==='manager'?`<div class="po-acts">
+        <button class="ab" onclick="openEditPO('${p.id}')">&#9998; Edit PO</button>
+        <button class="ab" onclick="openAddLoads('${p.id}')">+ Add loads</button>
+        ${miss>0?`<button class="ab o" onclick="openRO('${p.id}')">&#8634; Roll over</button>`:''}
+        <button class="ab g" onclick="complAllLoads('${p.id}')">✓ All done</button>
+        <button class="ab r" onclick="delPOById('${p.id}')">Delete</button>
+      </div>`:''}
+      ${invHtml}
+      ${loadsHtml}
+    </div>
+  </div>`;
+}
+
+function togglePO(id){if(expanded.has(id))expanded.delete(id);else expanded.add(id);renderPOs();}
+async function qComplLoad(id){if(!confirm('Mark done?'))return;await fetch('/api/loads/'+id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await loadAll();renderPOs();renderBoard();}
+async function qDelLoad(id){if(!confirm('Remove load?'))return;await fetch('/api/loads/'+id,{method:'DELETE'});await loadAll();renderPOs();renderBoard();}
+async function complAllLoads(id){if(!confirm('Mark ALL loads completed?'))return;for(const l of pActivL(id)) await fetch('/api/loads/'+l.id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await loadAll();renderPOs();renderBoard();}
+async function delPOById(id){if(!confirm('Delete this PO and all its loads?'))return;await fetch('/api/pos/'+id,{method:'DELETE'});await loadAll();renderPOs();renderBoard();}
+
+// ── HISTORY ───────────────────────────────────────────────────────────────────
+function renderHist(){
+  const done=pos.filter(p=>p.status==='completed');
+  if(!done.length){document.getElementById('hist-wrap').innerHTML='<div class="no-items" style="padding:32px">No completed POs yet.</div>';return;}
+  const byM={};done.forEach(p=>{const m=(p.completedAt||p.deliveryDate||'').slice(0,7)||'x';if(!byM[m])byM[m]=[];byM[m].push(p);});
+  let h='';
+  Object.keys(byM).sort().reverse().forEach(m=>{
+    h+=`<div class="hm"><div class="hml">${m==='x'?'Unknown':fmtM(m)}</div>`;
+    byM[m].forEach(p=>{
+      const matSummary=p.materials?.map(m=>{const mc=matColor(m.material);return `<span style="font-size:10px;color:${mc.dot};background:${mc.bg};padding:1px 6px;border-radius:20px;border:0.5px solid ${mc.dot}40">${m.totalLoads} ${m.material}</span>`;}).join(' ')||'';
+      h+=`<div class="hi">
+        <div>
+          <div style="font-family:var(--m);font-size:11px;color:var(--B)">${p.poNumber}</div>
+          <div style="font-size:13px;font-weight:500;color:var(--txt)">${p.customer}</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">${matSummary}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:11px;font-family:var(--m);color:var(--G)">✓ ${fmtD(p.completedAt||p.deliveryDate)}</div>
+
+        </div>
+      </div>`;
+    });
+    h+=`</div>`;
+  });
+  document.getElementById('hist-wrap').innerHTML=h;
+}
+
+// ── DRIVER GUIDED VIEW ────────────────────────────────────────────────────────
+async function renderDrv(){
+  const el=document.getElementById('drv-view');
+  if(!el){ console.error('drv-view element missing'); return; }
+  try { await renderDrvInner(el); }
+  catch(e){
+    console.error('renderDrv error:', e);
+    el.innerHTML=`<div style="padding:40px 20px;text-align:center;color:var(--R);background:var(--Rb);margin:14px;border-radius:var(--rl);border:1px solid var(--Rd)">
+      <div style="font-weight:700;margin-bottom:6px">Could not display your trips</div>
+      <div style="font-size:12px;color:var(--txt2);font-family:var(--m)">${e.message||e}</div>
+      <button onclick="renderDrv()" style="margin-top:12px;padding:8px 16px;background:var(--B);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-family:var(--f);font-weight:600">Retry</button>
+    </div>`;
   }
 }
+
+async function renderDrvInner(el){
+  // Fetch dispatch cards (pre-enriched server-side — no client lookups)
+  let dispatch=[];
+  let fetchError=null;
+  try{
+    const r=await fetch('/api/my-dispatch');
+    if(!r.ok){ fetchError='Server returned '+r.status; }
+    else{
+      const d=await r.json();
+      dispatch=d.loads||[];
+    }
+  }catch(e){ fetchError=e.message||'Network error'; console.error('my-dispatch fetch:', e); }
+
+  if(fetchError){
+    el.innerHTML=`<div style="padding:40px 20px;text-align:center;color:var(--R);background:var(--Rb);margin:14px;border-radius:var(--rl);border:1px solid var(--Rd)">
+      <div style="font-weight:700;margin-bottom:6px">Could not load your trips</div>
+      <div style="font-size:12px;color:var(--txt2)">${fetchError}</div>
+      <button onclick="renderDrv()" style="margin-top:12px;padding:8px 16px;background:var(--B);color:#fff;border:none;border-radius:var(--r);cursor:pointer;font-family:var(--f);font-weight:600">Retry</button>
+    </div>`;
+    return;
+  }
+
+  const todStr=tod();
+  const firstName=myUsername?myUsername.charAt(0).toUpperCase()+myUsername.slice(1):'Driver';
+  const todayCount=dispatch.filter(l=>l.deliveryDate===todStr).length;
+  const pendingCount=dispatch.filter(l=>!['approved','rejected'].includes(l.approvalStatus)).length;
+
+  // Driver welcome header
+  let header=`<div class="drv-welcome">
+    <div class="dw-greeting">
+      <div class="dw-avatar">${firstName.charAt(0)}</div>
+      <div>
+        <div class="dw-hi">Hi, ${firstName}</div>
+        <div class="dw-sub">${todayCount?`You have <b>${todayCount}</b> trip${todayCount>1?'s':''} today`:'No trips scheduled today'}</div>
+      </div>
+    </div>
+    <div class="dw-stats">
+      <div class="dw-stat"><div class="dw-stat-num">${pendingCount}</div><div class="dw-stat-lbl">Active</div></div>
+      <div class="dw-stat"><div class="dw-stat-num">${dispatch.filter(l=>l.approvalStatus==='submitted').length}</div><div class="dw-stat-lbl">Pending review</div></div>
+    </div>
+  </div>`;
+
+  if(!dispatch.length){ el.innerHTML=header+'<div class="no-loads" style="background:var(--bg);border-radius:var(--rl);margin:12px;padding:40px 20px;box-shadow:var(--shadow);text-align:center">No trips assigned right now.<br><br><span style="font-size:12px;color:var(--txt3)">Your dispatcher will assign loads as they come in.</span></div>'; return; }
+
+  let h=header;
+  dispatch.forEach(l=>{
+    const isToday=l.deliveryDate===todStr;
+    const ts=l.timestamps||{};
+    const pod=l.pod||{};
+    const hasImage=!!l.ticketImage;
+    const hasSig=!!(pod.signedBy&&pod.signature);
+
+    // Step state: pending -> start -> pickup -> ticket -> delivered -> submitted -> approved
+    const started=!!ts.start;
+    const atPickup=!!ts.arrivedPickup;
+    const delivered=!!ts.completed;
+    const submitted=l.approvalStatus==='submitted';
+    const approved=l.approvalStatus==='approved';
+    const rejected=l.approvalStatus==='rejected';
+
+    // Approval banner
+    let banner='';
+    if(rejected) banner='<div class="gc-approval-banner rejected"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Rejected by manager — contact dispatch</div>';
+    else if(approved) banner='<div class="gc-approval-banner approved"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><polyline points="20 6 9 17 4 12"/></svg> Approved — trip closed</div>';
+    else if(submitted) banner='<div class="gc-approval-banner submitted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Submitted — awaiting manager approval</div>';
+
+    h+=`<div class="guided-card ${isToday?'is-today':''}">
+      <div class="gc-head">
+        <div class="gc-po">${l.poNumber}${isToday?'<span class="gc-today-badge">TODAY</span>':''}</div>
+        <div class="gc-job">${l.jobName||l.customer||''}</div>
+      </div>
+      <div class="gc-body">
+        ${banner}
+        <dl class="gc-info-grid">
+          <dt>Pickup</dt><dd><span class="gc-icon-lbl">🏗</span> ${l.pickupLocation}</dd>
+          <dt>Deliver to</dt><dd><span class="gc-icon-lbl">📍</span> ${l.deliveryLocation||l.city||'—'}</dd>
+          <dt>Material</dt><dd>${l.material} <span style="color:var(--txt3);font-size:11px">(${l.unit})</span></dd>
+          <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads assigned</dd>
+          ${l.supervisor?`<dt>Supervisor</dt><dd><span class="gc-icon-lbl">👤</span> ${l.supervisor}</dd>`:''}
+          ${l.notes?`<dt>Notes</dt><dd style="color:var(--A);font-weight:500">${l.notes}</dd>`:''}
+        </dl>
+
+        <!-- Progress strip -->
+        <div class="gc-status-strip">
+          <div class="gc-step ${started?'done':(!submitted&&!approved?'active':'')}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Start
+            ${ts.start?`<span class="gc-step-time">${ts.start}</span>`:''}
+          </div>
+          <div class="gc-step ${atPickup?'done':(started&&!atPickup&&!submitted?'active':'')}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
+            Pickup
+            ${ts.arrivedPickup?`<span class="gc-step-time">${ts.arrivedPickup}</span>`:''}
+          </div>
+          <div class="gc-step ${hasImage?'done':(atPickup&&!hasImage?'active':'')}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Ticket
+            ${l.ticketImageAt?`<span class="gc-step-time">✓</span>`:''}
+          </div>
+          <div class="gc-step ${hasSig?'done':(hasImage&&!hasSig?'active':'')}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M20 14.66V20a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5.34"/><polygon points="18 2 22 6 12 16 8 16 8 12 18 2"/></svg>
+            Signed
+            ${hasSig?`<span class="gc-step-time">✓</span>`:''}
+          </div>
+          <div class="gc-step ${delivered?'done':(hasSig&&!delivered?'active':'')}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><polyline points="20 6 9 17 4 12"/></svg>
+            Delivered
+            ${ts.completed?`<span class="gc-step-time">${ts.completed}</span>`:''}
+          </div>
+        </div>
+
+        ${!approved&&!rejected?`
+        <!-- Guided action buttons — shown based on step -->
+        ${!started?`
+          <button class="gc-action primary" onclick="tripAction('${l.loadId}','start-trip')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Start Trip
+          </button>
+          <div class="gc-hint">GPS and time will be captured automatically</div>
+        `:!atPickup?`
+          <button class="gc-action warn" onclick="openYardPicker('${l.loadId}')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
+            Arrived at Pickup
+          </button>
+          <div class="gc-hint">Tap when you arrive — confirm which yard</div>
+        `:!hasImage?`
+          <button class="gc-action warn" onclick="openTicketUpload('${l.loadId}')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Upload Ticket Photo
+          </button>
+          <div class="gc-hint required">Required before delivery</div>
+        `:!hasSig?`
+          <button class="gc-action purple" onclick="openSig('${l.loadId}')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="18 2 22 6 12 16 8 16 8 12 18 2"/></svg>
+            Customer Signature
+          </button>
+          <div class="gc-hint required">Required before delivery</div>
+        `:!submitted?`
+          <button class="gc-action success" onclick="tripAction('${l.loadId}','delivered')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Complete Delivery
+          </button>
+          <div class="gc-hint">All checks passed — tap to submit</div>
+        `:''}
+
+        <!-- Requirements checklist -->
+        ${started&&!submitted?`<div style="margin-top:14px">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:7px">Required before completion</div>
+          <div class="gc-req ${hasImage?'done':'missing'}">
+            <span class="gc-req-label">Ticket Image</span>
+            <span class="gc-req-status">${hasImage?'✓ Uploaded':'— Missing'}</span>
+          </div>
+          ${hasImage?`<img src="${l.ticketImage}" class="ticket-preview">`:''}
+          <div class="gc-req ${hasSig?'done':'missing'}">
+            <span class="gc-req-label">Customer Signature</span>
+            <span class="gc-req-status">${hasSig?'✓ Signed by '+pod.signedBy:'— Missing'}</span>
+          </div>
+        </div>`:''}
+        `:''}
+
+        ${rejected&&l.rejectReason?`<div style="background:var(--Rb);padding:9px 12px;border-radius:var(--r);font-size:12px;color:var(--R);margin-top:10px">Reason: ${l.rejectReason}</div>`:''}
+      </div>
+    </div>`;
+  });
+  el.innerHTML=h;
+}
+
+// ── Yard picker (driver) ──────────────────────────────────────────────────────
+let yardLoadId=null;
+
+function openYardPicker(loadId){
+  const l=loads.find(x=>x.id===loadId); if(!l) return;
+  if(!l.timestamps?.start){ alert('Start the trip first'); return; }
+  const po=pos.find(p=>p.id===l.poId)||{};
+  yardLoadId=loadId;
+
+  // Show job context
+  document.getElementById('yard-info').innerHTML=
+    `<b>${po.poNumber}</b> — ${po.customer}<br>`+
+    `<b>Material:</b> ${l.material}<br>`+
+    (po.pickup?`<b>Suggested pickup:</b> ${po.pickup}`:'');
+
+  // Build yard list — put the PO's designated pickup first if it matches a vendor
+  const suggestedVendor = vendors.find(v =>
+    po.pickup && (
+      v.name.toLowerCase() === po.pickup.toLowerCase() ||
+      v.name.toLowerCase().includes(po.pickup.toLowerCase()) ||
+      po.pickup.toLowerCase().includes(v.name.toLowerCase())
+    )
+  );
+  const activeVendors = (vendors||[]).filter(v => v.active !== false);
+  const ordered = suggestedVendor
+    ? [suggestedVendor, ...activeVendors.filter(v => v.id !== suggestedVendor.id)]
+    : activeVendors;
+
+  if(!ordered.length){
+    document.getElementById('yard-list').innerHTML=
+      '<div style="padding:16px;text-align:center;color:var(--txt3);font-size:12px">No yards configured. Ask the manager to add vendors.</div>';
+  } else {
+    document.getElementById('yard-list').innerHTML=ordered.map(v=>{
+      const isPreset = suggestedVendor && v.id === suggestedVendor.id;
+      const price = vendorPrices?.[v.id]?.[l.material];
+      return `<div class="yard-card ${isPreset?'preset':''}" onclick="confirmYard('${v.id}')">
+        <div class="yard-icon">🏭</div>
+        <div class="yard-info">
+          <div class="yard-name">${v.name}</div>
+          ${v.location?`<div class="yard-loc">📍 ${v.location}</div>`:''}
+          ${isPreset?'<span class="yard-preset-tag">✓ Assigned pickup</span>':''}
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  document.getElementById('yard-m').style.display='flex';
+}
+
+function closeYard(){ document.getElementById('yard-m').style.display='none'; yardLoadId=null; }
+
+async function confirmYard(vendorId){
+  if(!yardLoadId) return;
+  let gps=null;
+  try{
+    gps=await new Promise(resolve=>{
+      if(!navigator.geolocation){resolve(null);return;}
+      navigator.geolocation.getCurrentPosition(
+        p=>resolve({lat:p.coords.latitude,lng:p.coords.longitude,accuracy:p.coords.accuracy}),
+        ()=>resolve(null),
+        {enableHighAccuracy:true,timeout:5000}
+      );
+    });
+  }catch(e){}
+  try{
+    const r=await fetch('/api/loads/'+yardLoadId+'/trip-action',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'arrived-pickup',gps,vendorId})
+    });
+    const d=await r.json();
+    if(!d.success){alert(d.error||'Action failed');return;}
+    closeYard();
+    await loadAll();renderDrv();
+  }catch(e){alert('Error: '+e.message);}
+}
+
+// Trip action with GPS capture
+async function tripAction(loadId, action){
+  let gps=null;
+  try{
+    gps=await new Promise((resolve)=>{
+      if(!navigator.geolocation){ resolve(null); return; }
+      navigator.geolocation.getCurrentPosition(
+        p=>resolve({lat:p.coords.latitude, lng:p.coords.longitude, accuracy:p.coords.accuracy}),
+        ()=>resolve(null),
+        {enableHighAccuracy:true,timeout:5000}
+      );
+    });
+  }catch(e){}
+  try{
+    const r=await fetch('/api/loads/'+loadId+'/trip-action',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action,gps})
+    });
+    const d=await r.json();
+    if(!d.success){alert(d.error||'Action failed');return;}
+    await loadAll();renderDrv();
+  }catch(e){alert('Error: '+e.message);}
+}
+
+// Ticket image upload — opens camera on mobile
+function openTicketUpload(loadId){
+  const input=document.createElement('input');
+  input.type='file';
+  input.accept='image/*';
+  input.capture='environment';  // Prefer rear camera on mobile
+  input.onchange=async(e)=>{
+    const f=e.target.files[0];
+    if(!f) return;
+    // Compress to stay under 2MB
+    const img=new Image();
+    const reader=new FileReader();
+    reader.onload=async(ev)=>{
+      img.onload=async()=>{
+        // Resize to max 1200px wide
+        const canvas=document.createElement('canvas');
+        const scale=Math.min(1,1200/img.width);
+        canvas.width=img.width*scale;
+        canvas.height=img.height*scale;
+        canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+        const data=canvas.toDataURL('image/jpeg',0.75);
+        try{
+          const r=await fetch('/api/loads/'+loadId+'/ticket-image',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({image:data})
+          });
+          const d=await r.json();
+          if(!d.success){alert(d.error||'Upload failed');return;}
+          await loadAll();renderDrv();
+        }catch(err){alert('Upload error: '+err.message);}
+      };
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(f);
+  };
+  input.click();
+}
+
+async function quickTs(id,key){
+  const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});
+  const l=loads.find(x=>x.id===id);if(!l)return;
+  await fetch('/api/loads/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({timestamps:{...l.timestamps,[key]:now}})});
+  await loadAll();renderDrv();
+}
+async function qComplDrv(id){if(!confirm('Mark complete?'))return;await fetch('/api/loads/'+id+'/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await loadAll();renderDrv();renderBoard();}
+
+// ── PO MODAL ──────────────────────────────────────────────────────────────────
+function openNewPO(defaultTruck,defaultDate){
+  editPoId=null;
+  const dt=defaultDate||tod();
+  const dTruck=defaultTruck||trucks[0]?.id||'';
+  splits=[{truckId:dTruck,driverName:trucks.find(t=>t.id===dTruck)?.label||'',material:'Fill Sand',loadsAssigned:'',deliveryDate:dt}];
+  document.getElementById('po-m-title').textContent='New Purchase Order';
+  document.getElementById('pm-del').style.display='none';
+  ['pm-num','pm-cust','pm-code','pm-addr','pm-notes'].forEach(x=>document.getElementById(x).value='');
+  ['pm-num','pm-date','pm-cust','pm-code','pm-pick','pm-sup','pm-addr','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=false;e.style.opacity='';}});
+  document.getElementById('pm-pick').value='VBT Yard';
+  document.getElementById('pm-type').value='one-time';
+  document.getElementById('pm-rw').style.display='none';
+  document.getElementById('pm-date').value=dt;
+  renderSplits();updRem();
+  document.getElementById('po-m').style.display='flex';
+}
+function openEditPO(id){
+  const po=pos.find(p=>p.id===id);if(!po)return;
+  editPoId=id;
+  const pl=pLoads(id);
+  splits=pl.length?pl.map(l=>({truckId:l.truckId||'',driverName:l.driverName||'',material:l.material,loadsAssigned:l.loadsAssigned,deliveryDate:l.deliveryDate||po.deliveryDate,loadId:l.id})):[{truckId:'',driverName:'',material:'Fill Sand',loadsAssigned:'',deliveryDate:po.deliveryDate||tod()}];
+  document.getElementById('po-m-title').textContent='Edit PO — '+po.poNumber;
+  document.getElementById('pm-del').style.display='block';
+  document.getElementById('pm-num').value=po.poNumber;
+  document.getElementById('pm-date').value=po.deliveryDate||tod();
+  document.getElementById('pm-cust').value=po.customer||'';
+  document.getElementById('pm-code').value=po.code||'';
+  document.getElementById('pm-pick').value=po.pickup||'VBT Yard';
+  document.getElementById('pm-sup').value=po.supervisor||'';
+  document.getElementById('pm-addr').value=po.city||po.address||'';
+  document.getElementById('pm-type').value=po.type||'one-time';
+  document.getElementById('pm-recur').value=po.recurrenceRule||'weekly';
+  document.getElementById('pm-rw').style.display=po.type==='recurring'?'block':'none';
+  document.getElementById('pm-notes').value=po.notes||'';
+  ['pm-num','pm-date','pm-cust','pm-code','pm-pick','pm-sup','pm-addr','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=false;e.style.opacity='';}});
+  renderSplits();updRem();
+  document.getElementById('po-m').style.display='flex';
+}
+function openAddLoads(id){
+  const po=pos.find(p=>p.id===id);if(!po)return;
+  editPoId=id;
+  splits=[{truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',material:'Fill Sand',loadsAssigned:'',deliveryDate:po.deliveryDate||tod()}];
+  document.getElementById('po-m-title').textContent='Add loads — '+po.poNumber;
+  document.getElementById('pm-del').style.display='none';
+  document.getElementById('pm-num').value=po.poNumber;
+  document.getElementById('pm-cust').value=po.customer||'';
+  ['pm-num','pm-date','pm-cust','pm-code','pm-pick','pm-sup','pm-addr','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=true;e.style.opacity='.5';}});
+  renderSplits();updRem();
+  document.getElementById('po-m').style.display='flex';
+}
+function closePOM(){
+  document.getElementById('po-m').style.display='none';editPoId=null;splits=[];
+  ['pm-num','pm-date','pm-cust','pm-code','pm-pick','pm-sup','pm-addr','pm-type','pm-notes'].forEach(x=>{const e=document.getElementById(x);if(e){e.disabled=false;e.style.opacity='';}});
+}
+function onTypeChg(){document.getElementById('pm-rw').style.display=document.getElementById('pm-type').value==='recurring'?'block':'none';}
+
+const MATERIALS=['Fill Sand','Gravel','Rock','Cold Mix','3/4 Rock','Recycle Base','Dirt','Base Rock','Other'];
+function renderSplits(){
+  const topts=trucks.map(t=>`<option value="${t.id}">${t.label} (${t.truckNum})</option>`).join('');
+  const mopts=MATERIALS.map(m=>`<option>${m}</option>`).join('');
+  document.getElementById('pm-splits').innerHTML=splits.map((s,i)=>{
+    const mc=matColor(s.material);
+    return `<div class="srow" style="border-left:3px solid ${mc.dot}">
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
+          <div class="srow-label">Driver</div>
+          <button type="button" onclick="openPickerForSplit(${i})" style="font-size:10px;color:var(--B);background:var(--Bb);border:1px solid var(--Bd);border-radius:20px;padding:1px 7px;cursor:pointer;font-family:var(--f);font-weight:500">&#x1F4CD; Find best</button>
+        </div>
+        <select id="split-drv-${i}" onchange="splits[${i}].truckId=this.value;splits[${i}].driverName=trucks.find(t=>t.id===this.value)?.label||''">
+          <option value="">Unassigned</option>${topts.replace(`value="${s.truckId}"`,`value="${s.truckId}" selected`)}
+        </select>
+      </div>
+      <div>
+        <div class="srow-label">Material</div>
+        <select onchange="splits[${i}].material=this.value;renderSplits()">
+          ${MATERIALS.map(m=>`<option${m===s.material?' selected':''}>${m}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <div class="srow-label">Loads</div>
+        <input type="number" min="1" step="1" placeholder="0" value="${s.loadsAssigned||''}" oninput="splits[${i}].loadsAssigned=Number(this.value)||0;updRem()">
+      </div>
+      <button class="sr" onclick="splits.splice(${i},1);renderSplits()">&#215;</button>
+    </div>`;
+  }).join('');
+  updRem();
+}
+function addSplit(){
+  const poDate=document.getElementById('pm-date')?.value||tod();
+  splits.push({truckId:trucks[0]?.id||'',driverName:trucks[0]?.label||'',material:'Fill Sand',loadsAssigned:'',deliveryDate:poDate});
+  renderSplits();
+}
+
+// When PO delivery date changes, sync every split row to match
+function syncAllSplitDates(newDate){
+  if(!newDate) return;
+  splits.forEach(s=>{ s.deliveryDate=newDate; });
+}
+function updRem(){
+  // Group by material
+  const matMap={};
+  splits.forEach(s=>{const m=s.material||'?';if(!matMap[m])matMap[m]=0;matMap[m]+=(Number(s.loadsAssigned)||0);});
+  const total=Object.values(matMap).reduce((s,v)=>s+v,0);
+  const parts=Object.entries(matMap).map(([m,n])=>`${n} ${m}`).join(', ');
+  const el=document.getElementById('pm-rem');
+  el.textContent=total?`${parts} — ${total} total loads`:'No loads entered yet';
+  el.className='rem '+(total>0?'ok':'');
+}
+async function savePO(){
+  const g=id=>document.getElementById(id)?.value?.trim()||'';
+  const isAddMode=editPoId&&document.getElementById('pm-num').disabled;
+  const po={poNumber:g('pm-num')||null,customer:g('pm-cust'),code:g('pm-code'),pickup:g('pm-pick'),supervisor:g('pm-sup'),city:g('pm-addr'),address:g('pm-addr'),deliveryDate:g('pm-date')||tod(),type:g('pm-type'),recurrenceRule:g('pm-type')==='recurring'?g('pm-recur'):null,notes:g('pm-notes')};
+  if(!isAddMode&&!po.customer){alert('Customer required');return;}
+  // Always use the PO's delivery date for all splits — single source of truth
+  const sp=splits.map(s=>({truckId:s.truckId||null,driverName:s.driverName||trucks.find(t=>t.id===s.truckId)?.label||'',material:s.material||'Fill Sand',loadsAssigned:Number(s.loadsAssigned)||0,deliveryDate:po.deliveryDate}));
+  if(!sp.some(s=>s.loadsAssigned>0)){alert('Enter at least one load');return;}
+  try{
+    if(isAddMode){
+      await fetch('/api/pos/'+editPoId+'/loads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sp)});
+    } else if(editPoId){
+      await fetch('/api/pos/'+editPoId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(po)});
+      for(const s of sp){
+        // Force PO's deliveryDate onto every split (prevents drift between PO and loads)
+        const splitData={truckId:s.truckId,driverName:s.driverName,material:s.material,loadsAssigned:s.loadsAssigned,deliveryDate:po.deliveryDate};
+        if(s.loadId) await fetch('/api/loads/'+s.loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(splitData)});
+        else await fetch('/api/pos/'+editPoId+'/loads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify([splitData])});
+      }
+    } else {
+      await fetch('/api/pos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({po,splits:sp})});
+    }
+    await loadAll();closePOM();renderBoard();if(curTab==='pos')renderPOs();
+  }catch(e){alert('Error: '+e.message);}
+}
+async function delPO(){if(!confirm('Delete this PO and all loads?'))return;await fetch('/api/pos/'+editPoId,{method:'DELETE'});await loadAll();closePOM();renderBoard();if(curTab==='pos')renderPOs();}
+
+// ── PAYMENT ───────────────────────────────────────────────────────────────────
+function openPayM(id){
+  const po=pos.find(p=>p.id===id);if(!po)return;
+  payPoId=id;
+  const inv=pInvoice(id);
+  document.getElementById('pay-title').textContent='Add Payment — '+po.poNumber;
+  document.getElementById('pay-info').innerHTML=`<b>${po.customer}</b><br>Invoiced: ${money(inv.invoiced)} · Paid: ${money(inv.paid)} · <b style="color:var(--R)">Balance: ${money(inv.balance)}</b>`;
+  document.getElementById('pay-amt').value='';
+  document.getElementById('pay-note').value='';
+  document.getElementById('pay-m').style.display='flex';
+  setTimeout(()=>document.getElementById('pay-amt').focus(),80);
+}
+function closePayM(){document.getElementById('pay-m').style.display='none';payPoId=null;}
+async function savePayment(){
+  const amt=Number(document.getElementById('pay-amt').value)||0;
+  if(!amt){alert('Enter amount');return;}
+  await fetch('/api/payments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({poId:payPoId,amount:amt,method:document.getElementById('pay-method').value,note:document.getElementById('pay-note').value.trim()})});
+  await loadAll();closePayM();if(curTab==='pos')renderPOs();
+}
+
+// ── ROLLOVER ──────────────────────────────────────────────────────────────────
+function openRO(id){
+  const po=pos.find(p=>p.id===id);if(!po)return;
+  roPoId=id;
+  const rem=pActivL(id).reduce((s,l)=>s+(Number(l.loadsAssigned)||0)-(Number(l.loadsDelivered)||0),0);
+  document.getElementById('ro-info').innerHTML=`<b>${po.poNumber} — ${po.customer}</b><br>${rem} load${rem!==1?'s':''} remaining.`;
+  const nd=new Date();nd.setDate(nd.getDate()+1);
+  document.getElementById('ro-date').value=ymd(nd);
+  document.getElementById('ro-m').style.display='flex';
+}
+async function doRollover(){
+  const d=document.getElementById('ro-date').value;if(!d){alert('Pick a date');return;}
+  await fetch('/api/pos/'+roPoId+'/rollover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({newDate:d})});
+  await loadAll();document.getElementById('ro-m').style.display='none';roPoId=null;renderBoard();if(curTab==='pos')renderPOs();
+}
+
+// ── SIGNATURE ─────────────────────────────────────────────────────────────────
+function openSig(id){
+  const l=loads.find(x=>x.id===id);if(!l)return;
+  const po=pos.find(p=>p.id===l.poId)||{};
+  sigLoadId=id;
+  document.getElementById('sig-info').innerHTML=`<b>${po.poNumber} — ${po.customer}</b> · ${l.material} · ${l.driverName||l.truckId}`;
+  document.getElementById('sig-name').value=l.pod?.signedBy||'';
+  document.getElementById('sig-notes').value=l.pod?.notes||'';
+  document.getElementById('sig-m').style.display='flex';
+  initSigCanvas();
+}
+function closeSig(){document.getElementById('sig-m').style.display='none';sigLoadId=null;sigHasData=false;}
+function initSigCanvas(){
+  const c=document.getElementById('sig-canvas');
+  const r=c.getBoundingClientRect();
+  c.width=r.width>0?r.width:460;c.height=140;
+  sigCtx=c.getContext('2d');sigCtx.clearRect(0,0,c.width,c.height);
+  sigCtx.fillStyle='#fff';sigCtx.fillRect(0,0,c.width,c.height);
+  sigCtx.strokeStyle='#111';sigCtx.lineWidth=2;sigCtx.lineCap='round';sigCtx.lineJoin='round';
+  sigHasData=false;
+  const gP=e=>{const r=c.getBoundingClientRect();if(e.touches)return{x:(e.touches[0].clientX-r.left)*(c.width/r.width),y:(e.touches[0].clientY-r.top)*(c.height/r.height)};return{x:(e.clientX-r.left)*(c.width/r.width),y:(e.clientY-r.top)*(c.height/r.height)};};
+  c.onmousedown=e=>{e.preventDefault();sigDrawing=true;sigCtx.beginPath();const p=gP(e);sigCtx.moveTo(p.x,p.y);};
+  c.onmousemove=e=>{e.preventDefault();if(!sigDrawing)return;const p=gP(e);sigCtx.lineTo(p.x,p.y);sigCtx.stroke();sigHasData=true;};
+  c.onmouseup=c.onmouseleave=e=>{e.preventDefault();sigDrawing=false;};
+  c.ontouchstart=e=>{e.preventDefault();sigDrawing=true;sigCtx.beginPath();const p=gP(e);sigCtx.moveTo(p.x,p.y);};
+  c.ontouchmove=e=>{e.preventDefault();if(!sigDrawing)return;const p=gP(e);sigCtx.lineTo(p.x,p.y);sigCtx.stroke();sigHasData=true;};
+  c.ontouchend=e=>{e.preventDefault();sigDrawing=false;};
+}
+function clearSig(){if(sigCtx){const c=document.getElementById('sig-canvas');sigCtx.clearRect(0,0,c.width,c.height);sigCtx.fillStyle='#fff';sigCtx.fillRect(0,0,c.width,c.height);sigHasData=false;}}
+async function saveSig(){
+  const name=document.getElementById('sig-name').value.trim();
+  if(!name){alert('Enter signer name');return;}
+  if(!sigHasData){alert('Please draw a signature');return;}
+  const pod={signedBy:name,signature:document.getElementById('sig-canvas').toDataURL('image/png'),signedAt:new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})+' '+new Date().toLocaleDateString('en-US'),notes:document.getElementById('sig-notes').value.trim()};
+  await fetch('/api/loads/'+sigLoadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pod})});
+  await loadAll();closeSig();renderBoard();if(curTab==='drv')renderDrv();
+}
+
+// ── PRICE TABLE ───────────────────────────────────────────────────────────────
+function openPriceTable(){
+  const g=document.getElementById('price-grid');
+  g.innerHTML=MATERIALS.map(m=>{
+    const mc=matColor(m);
+    return `<div class="price-row">
+      <span class="price-mat" style="display:flex;align-items:center;gap:7px">
+        <span style="width:10px;height:10px;border-radius:50%;background:${mc.dot};flex-shrink:0"></span>${m}
+      </span>
+      <div style="display:flex;align-items:center;gap:4px">
+        <span style="font-size:12px;color:var(--txt2)">$</span>
+        <input class="price-inp" id="price-${m.replace(/[^a-z0-9]/gi,'_')}" type="number" min="0" step="1" value="${matPrices[m]||0}">
+        <span style="font-size:11px;color:var(--txt3)">/load</span>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('price-m').style.display='flex';
+}
+async function savePriceTable(){
+  const prices={};
+  MATERIALS.forEach(m=>{const el=document.getElementById('price-'+m.replace(/[^a-z0-9]/gi,'_'));if(el)prices[m]=Number(el.value)||0;});
+  await fetch('/api/material-prices',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(prices)});
+  matPrices=prices;
+  document.getElementById('price-m').style.display='none';
+  if(curTab==='pos')renderPOs();
+}
+
+// ── TIMESTAMPS ────────────────────────────────────────────────────────────────
+function stmp(id){const el=document.getElementById(id);el.value=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});el.style.color='var(--G)';}
+
+// ── TRUCK # EDIT ──────────────────────────────────────────────────────────────
+function updateTruckNum(id,val){
+  const t=trucks.find(x=>x.id===id);if(t){t.truckNum=val;fetch('/api/trucks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(trucks)});}
+}
+
+// ── APPROVALS TAB (manager only) ──────────────────────────────────────────────
+function renderApprove(){
+  const pending=loads.filter(l=>l.approvalStatus==='submitted'&&!l.voided);
+  // Update badge on tab
+  const badge=document.getElementById('approve-badge');
+  if(badge){ badge.textContent=pending.length; badge.style.display=pending.length?'inline-block':'none'; }
+  const el=document.getElementById('approve-wrap');
+  if(!el) return;
+  if(!pending.length){ el.innerHTML='<div class="no-items" style="padding:32px">No loads awaiting approval.</div>'; return; }
+  let h=`<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Loads Awaiting Approval (${pending.length})</div>`;
+  pending.forEach(l=>{
+    const po=pos.find(p=>p.id===l.poId)||{};
+    const t=trucks.find(x=>x.id===l.truckId);
+    const pod=l.pod||{};
+    const ts=l.timestamps||{};
+    const mc=matColor(l.material);
+    h+=`<div class="appr-card">
+      <div class="appr-head">
+        <span class="appr-po">${po.poNumber}</span>
+        <span class="appr-cust">${po.customer||''}</span>
+        <span class="appr-driver">${l.driverName||t?.label||'—'} · ${t?.truckNum||''}</span>
+        <span class="appr-submitted">Submitted ${l.submittedAt?fmtAgo(l.submittedAt):''}</span>
+      </div>
+      <div class="appr-meta">
+        <div><b style="display:inline-flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span>${l.material}</b> · ${l.loadsAssigned} loads @ $${l.pricePerLoad}/load</div>
+        <div>📍 ${po.city||po.address||'—'}</div>
+        <div>🏭 ${po.pickup||'—'}</div>
+        <div>⏱ Start: ${ts.start||'—'} · Done: ${ts.completed||'—'}</div>
+      </div>
+      <div class="appr-proofs">
+        <div class="appr-proof ${l.ticketImage?'':'missing'}">
+          <div class="appr-proof-label">📷 Ticket Image</div>
+          ${l.ticketImage?`<img src="${l.ticketImage}" onclick="window.open('${l.ticketImage}','_blank')" style="cursor:zoom-in">`:'<span style="color:var(--R);font-size:11px">Missing</span>'}
+        </div>
+        <div class="appr-proof ${pod.signature?'':'missing'}">
+          <div class="appr-proof-label">✍ Signature (${pod.signedBy||'—'})</div>
+          ${pod.signature?`<img src="${pod.signature}" style="background:#fff">`:'<span style="color:var(--R);font-size:11px">Missing</span>'}
+        </div>
+      </div>
+      ${l.notes?`<div style="padding:7px 10px;background:var(--bg2);border-radius:var(--r);font-size:12px;font-style:italic;color:var(--txt2);margin-bottom:8px">"${l.notes}"</div>`:''}
+      <div class="appr-actions">
+        <button class="ab g" onclick="approveLoad('${l.id}')">✓ Approve & Lock</button>
+        <button class="ab r" onclick="rejectLoad('${l.id}')">⚠ Reject</button>
+        <button class="ab" onclick="openLL('${l.id}')">View detail</button>
+      </div>
+    </div>`;
+  });
+  el.innerHTML=h;
+}
+
+function fmtAgo(iso){
+  const m=Math.round((Date.now()-new Date(iso).getTime())/60000);
+  if(m<1) return 'just now';
+  if(m<60) return m+'m ago';
+  if(m<1440) return Math.round(m/60)+'h ago';
+  return Math.round(m/1440)+'d ago';
+}
+
+async function approveLoad(id){
+  if(!confirm('Approve this load? It will be locked and moved to Ready-to-Bill.')) return;
+  try{
+    const r=await fetch('/api/loads/'+id+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();
+    if(!d.success){alert(d.error||'Approval failed');return;}
+    await loadAll();renderApprove();renderBoard();
+  }catch(e){alert('Error: '+e.message);}
+}
+
+async function rejectLoad(id){
+  const reason=prompt('Reason for rejecting (optional):');
+  if(reason===null) return;
+  await fetch('/api/loads/'+id+'/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})});
+  await loadAll();renderApprove();renderBoard();
+}
+
+// ── READY TO BILL TAB (manager only) ──────────────────────────────────────────
+let billFilters={month:'',city:'',job:'',vendor:'',material:''};
+let billSelected=new Set();
+
+async function renderBill(){
+  const el=document.getElementById('bill-wrap');
+  if(!el) return;
+  // Fetch filtered data
+  const params=new URLSearchParams();
+  Object.entries(billFilters).forEach(([k,v])=>{if(v)params.append(k,v);});
+  let rtb=[];
+  try{
+    const r=await fetch('/api/ready-to-bill?'+params.toString());
+    const d=await r.json();
+    rtb=d.loads||[];
+  }catch(e){}
+
+  const totalLoads=rtb.reduce((s,l)=>s+(Number(l.loadsDelivered)||Number(l.loadsAssigned)||0),0);
+  const totalRev=rtb.reduce((s,l)=>s+(Number(l.loadsDelivered)||Number(l.loadsAssigned)||0)*(Number(l.pricePerLoad)||0),0);
+  const totalCost=rtb.reduce((s,l)=>s+(Number(l.loadsDelivered)||Number(l.loadsAssigned)||0)*(Number(l.vendorCost)||0),0);
+
+  // Collect unique filter options from full loads (not filtered)
+  const allRTB=loads.filter(l=>l.approvalStatus==='approved'&&l.billStatus==='ready'&&!l.voided);
+  const months=[...new Set(allRTB.map(l=>(l.completedAt||l.deliveryDate||'').slice(0,7)).filter(Boolean))].sort().reverse();
+  const cities=[...new Set(allRTB.map(l=>{const p=pos.find(x=>x.id===l.poId);return p?.city;}).filter(Boolean))].sort();
+  const materials=[...new Set(allRTB.map(l=>l.material))].sort();
+
+  let h=`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700">Ready to Bill</div>
+      <span style="font-size:11px;color:var(--txt2)">${rtb.length} approved loads</span>
+      <div style="margin-left:auto;display:flex;gap:7px">
+        <button class="ab b" onclick="billSelected.clear();document.querySelectorAll('.bill-cb').forEach(c=>c.checked=true);billSelected=new Set(Array.from(document.querySelectorAll('.bill-cb')).map(c=>c.dataset.id));renderBillSummary()">Select all</button>
+        <button class="bp" onclick="markSelectedBilled()" ${billSelected.size?'':'disabled'}>Mark ${billSelected.size} as billed</button>
+      </div>
+    </div>
+
+    <div class="bill-filters">
+      <select onchange="billFilters.month=this.value;renderBill()">
+        <option value="">All months</option>
+        ${months.map(m=>`<option value="${m}" ${billFilters.month===m?'selected':''}>${fmtM(m)}</option>`).join('')}
+      </select>
+      <select onchange="billFilters.city=this.value;renderBill()">
+        <option value="">All cities</option>
+        ${cities.map(c=>`<option value="${c}" ${billFilters.city===c?'selected':''}>${c}</option>`).join('')}
+      </select>
+      <select onchange="billFilters.material=this.value;renderBill()">
+        <option value="">All materials</option>
+        ${materials.map(m=>`<option value="${m}" ${billFilters.material===m?'selected':''}>${m}</option>`).join('')}
+      </select>
+      <input type="text" placeholder="Filter by job/customer..." value="${billFilters.job}" oninput="billFilters.job=this.value;debounceBillRender()">
+      ${Object.values(billFilters).some(v=>v)?`<button class="ab" onclick="billFilters={month:'',city:'',job:'',vendor:'',material:''};renderBill()">Clear filters</button>`:''}
+    </div>
+
+    <div class="bill-summary" id="bill-summary">
+      <div class="met"><div class="ml">Loads</div><div class="mv">${totalLoads}</div></div>
+      <div class="met g"><div class="ml">Billable revenue</div><div class="mv">${money(totalRev)}</div></div>
+      <div class="met o"><div class="ml">Vendor cost</div><div class="mv">${money(totalCost)}</div></div>
+      <div class="met b"><div class="ml">Gross profit</div><div class="mv">${money(totalRev-totalCost)}</div></div>
+    </div>`;
+
+  if(!rtb.length){h+='<div class="no-items" style="padding:32px">No loads ready to bill with current filters.</div>';el.innerHTML=h;return;}
+
+  h+='<div>';
+  rtb.forEach(l=>{
+    const po=l.po||{};
+    const selected=billSelected.has(l.id);
+    const mc=matColor(l.material);
+    const rev=(Number(l.loadsDelivered)||Number(l.loadsAssigned)||0)*(Number(l.pricePerLoad)||0);
+    h+=`<div class="bill-row ${selected?'selected':''}">
+      <input type="checkbox" class="bill-cb" data-id="${l.id}" ${selected?'checked':''} onchange="toggleBillRow('${l.id}',this.checked)">
+      <span style="font-family:var(--m);font-weight:700;color:var(--B);min-width:75px">${po.poNumber}</span>
+      <span style="flex:1;min-width:120px"><b>${po.customer||''}</b><div style="font-size:11px;color:var(--txt3)">${po.city||''}</div></span>
+      <span style="display:flex;align-items:center;gap:5px;min-width:90px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span>${l.material}</span>
+      <span style="font-family:var(--m);min-width:60px">${l.loadsDelivered||l.loadsAssigned} loads</span>
+      <span style="font-family:var(--m);color:var(--G);font-weight:600">${money(rev)}</span>
+      <span style="font-size:11px;color:var(--txt3)">${fmtD(l.completedAt||l.deliveryDate)}</span>
+      <button class="ab" onclick="openLL('${l.id}')">View</button>
+    </div>`;
+  });
+  h+='</div>';
+
+  el.innerHTML=h;
+}
+
+function toggleBillRow(id, checked){
+  if(checked) billSelected.add(id); else billSelected.delete(id);
+  renderBill();
+}
+
+async function markSelectedBilled(){
+  if(!billSelected.size) return;
+  if(!confirm(`Mark ${billSelected.size} load${billSelected.size>1?'s':''} as billed? This cannot be undone.`)) return;
+  const r=await fetch('/api/loads/bill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loadIds:Array.from(billSelected)})});
+  const d=await r.json();
+  if(!d.success){alert('Billing failed');return;}
+  billSelected.clear();
+  await loadAll();renderBill();
+}
+
+let billRenderTimer=null;
+function debounceBillRender(){clearTimeout(billRenderTimer);billRenderTimer=setTimeout(renderBill,400);}
+function renderBillSummary(){renderBill();}
+
+// ── FINANCE TAB ──────────────────────────────────────────────────────────────
+async function renderFinance(){
+  const el=document.getElementById('finance-wrap');
+  if(!el) return;
+  el.innerHTML='<div style="padding:24px;text-align:center;color:var(--txt2)">Loading reports...</div>';
+
+  // Fetch reports from server
+  let rep={driverStats:{},custStats:{},matStats:{},weeks:[]};
+  try{ const r=await fetch('/api/reports'); rep=await r.json(); }catch(e){}
+
+  const tRev=pos.reduce((s,p)=>s+pInvoice(p.id).invoiced,0);
+  const tPaid=payments.reduce((s,p)=>s+p.amount,0);
+  const tBal=tRev-tPaid;
+  const unpaid=pos.filter(p=>p.status!=='completed'&&(p.invoice?.paymentStatus||'unpaid')==='unpaid');
+  const partial=pos.filter(p=>(p.invoice?.paymentStatus||'unpaid')==='partial');
+  const paidPos=pos.filter(p=>(p.invoice?.paymentStatus||'unpaid')==='paid');
+
+  // ── Payment summary cards
+  let h=`<div style="margin-bottom:22px">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Payment Overview</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px">
+      <div class="met o"><div class="ml">Total invoiced</div><div class="mv">${money(tRev)}</div></div>
+      <div class="met g"><div class="ml">Collected</div><div class="mv">${money(tPaid)}</div></div>
+      <div class="met ${tBal>0?'w':'g'}"><div class="ml">Outstanding</div><div class="mv">${money(tBal)}</div></div>
+      <div class="met w"><div class="ml">Unpaid POs</div><div class="mv">${unpaid.length}</div></div>
+      <div class="met"><div class="ml">Partial</div><div class="mv">${partial.length}</div></div>
+      <div class="met g"><div class="ml">Paid</div><div class="mv">${paidPos.length}</div></div>
+    </div>`;
+
+  // Material prices
+  h+=`<div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:4px">
+    ${Object.entries(matPrices).map(([m,p])=>{const mc=matColor(m);return `<span style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;background:${mc.bg};border-radius:var(--r);border:0.5px solid ${mc.dot}40;font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:${mc.dot}"></span><b style="color:${mc.dot}">${m}</b><span style="color:var(--txt2)">${money(p)}/load</span></span>`;}).join('')}
+    <button class="ab b" onclick="openPriceTable()">&#9998; Edit prices</button>
+  </div>`;
+  h+=`</div>`;
+
+  // ── Weekly trend chart (simple bar chart using divs)
+  if(rep.weeks&&rep.weeks.length){
+    const maxLoads=Math.max(...rep.weeks.map(w=>w.ordered),1);
+    h+=`<div style="margin-bottom:22px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Weekly Load Volume (last 8 weeks)</div>
+      <div style="display:flex;gap:6px;align-items:flex-end;height:100px;padding:0 4px">
+        ${rep.weeks.map(w=>{
+          const pct=Math.round(w.ordered/maxLoads*100);
+          const dpct=w.ordered>0?Math.round(w.delivered/w.ordered*100):0;
+          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px" title="${w.label}: ${w.delivered}/${w.ordered} loads">
+            <div style="font-size:9px;color:var(--txt3)">${w.ordered||''}</div>
+            <div style="width:100%;background:var(--bdr);border-radius:4px 4px 0 0;height:${Math.max(pct,2)}px;position:relative;overflow:hidden">
+              <div style="position:absolute;bottom:0;width:100%;background:var(--G);height:${dpct}%;border-radius:4px 4px 0 0;transition:height .3s"></div>
+              <div style="position:absolute;bottom:0;width:100%;background:var(--Bd);height:100%;border-radius:4px 4px 0 0;z-index:-1"></div>
+            </div>
+            <div style="font-size:9px;color:var(--txt3);writing-mode:vertical-rl;transform:rotate(180deg);height:36px;white-space:nowrap">${w.label}</div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;gap:10px;margin-top:6px;font-size:11px;color:var(--txt2)">
+        <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:var(--G);display:inline-block"></span>Delivered</span>
+        <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:var(--Bd);display:inline-block"></span>Ordered</span>
+      </div>
+    </div>`;
+  }
+
+  // ── Driver performance table
+  const dStats=Object.values(rep.driverStats||{});
+  if(dStats.length){
+    h+=`<div style="margin-bottom:22px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Driver Performance</div>
+      <table class="mat-table"><thead><tr>
+        <th>Driver</th><th>Truck</th><th>Total Loads</th><th>Delivered</th><th>Completion %</th><th>Active Now</th>
+      </tr></thead><tbody>`;
+    dStats.sort((a,b)=>b.delivered-a.delivered).forEach(d=>{
+      const pct=d.totalLoads>0?Math.round(d.delivered/d.totalLoads*100):0;
+      h+=`<tr>
+        <td style="font-weight:600">${d.label}</td>
+        <td style="font-family:var(--m);font-size:11px;color:var(--txt2)">${d.truckNum}</td>
+        <td style="font-family:var(--m)">${d.totalLoads}</td>
+        <td style="font-family:var(--m)">${d.delivered}</td>
+        <td>
+          <div style="display:flex;align-items:center;gap:7px">
+            <div style="flex:1;height:6px;background:var(--bdr);border-radius:3px;overflow:hidden;min-width:60px">
+              <div style="height:100%;width:${pct}%;background:${pct>=80?'var(--G)':pct>=50?'var(--A)':'var(--R)'};border-radius:3px"></div>
+            </div>
+            <span style="font-size:11px;font-family:var(--m);min-width:32px">${pct}%</span>
+          </div>
+        </td>
+        <td><span class="pill ${d.active>0?'b':''}">${d.active} load${d.active!==1?'s':''}</span></td>
+      </tr>`;
+    });
+    h+=`</tbody></table></div>`;
+  }
+
+  // ── Top customers
+  const cStats=Object.entries(rep.custStats||{}).sort((a,b)=>b[1].loads-a[1].loads).slice(0,10);
+  if(cStats.length){
+    h+=`<div style="margin-bottom:22px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Top Customers by Volume</div>
+      <table class="mat-table"><thead><tr><th>Customer</th><th>POs</th><th>Loads Ordered</th><th>Delivered</th><th>Rate</th></tr></thead><tbody>`;
+    cStats.forEach(([name,d])=>{
+      const pct=d.loads>0?Math.round(d.delivered/d.loads*100):0;
+      h+=`<tr>
+        <td style="font-weight:600">${name}</td>
+        <td style="font-family:var(--m)">${d.pos}</td>
+        <td style="font-family:var(--m)">${d.loads}</td>
+        <td style="font-family:var(--m)">${d.delivered}</td>
+        <td><span style="font-family:var(--m);font-size:12px;color:${pct>=80?'var(--G)':pct>=50?'var(--A)':'var(--R)'}">${pct}%</span></td>
+      </tr>`;
+    });
+    h+=`</tbody></table></div>`;
+  }
+
+  // ── Material breakdown
+  const mStats=Object.entries(rep.matStats||{}).sort((a,b)=>b[1].ordered-a[1].ordered);
+  if(mStats.length){
+    h+=`<div style="margin-bottom:22px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:10px">Material Volume</div>
+      <table class="mat-table"><thead><tr><th>Material</th><th>Loads Ordered</th><th>Loads Delivered</th><th>Delivery Rate</th></tr></thead><tbody>`;
+    mStats.forEach(([m,d])=>{
+      const mc=matColor(m);
+      const pct=d.ordered>0?Math.round(d.delivered/d.ordered*100):0;
+      h+=`<tr>
+        <td><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:9px;height:9px;border-radius:50%;background:${mc.dot}"></span>${m}</span></td>
+        <td style="font-family:var(--m)">${d.ordered}</td>
+        <td style="font-family:var(--m)">${d.delivered}</td>
+        <td><div style="display:flex;align-items:center;gap:7px">
+          <div style="flex:1;height:5px;background:var(--bdr);border-radius:3px;overflow:hidden;min-width:60px">
+            <div style="height:100%;width:${pct}%;background:${mc.dot};border-radius:3px"></div>
+          </div>
+          <span style="font-size:11px;font-family:var(--m)">${pct}%</span>
+        </div></td>
+      </tr>`;
+    });
+    h+=`</tbody></table></div>`;
+  }
+
+  // ── PO payment status
+  const allActivePOs=pos.filter(p=>p.status!=='completed').sort((a,b)=>(a.deliveryDate||'').localeCompare(b.deliveryDate||''));
+  h+=`<div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:8px">PO Payment Status</div>`;
+  if(!allActivePOs.length){h+='<div class="no-items">No active POs.</div>';}
+  else{
+    allActivePOs.forEach(p=>{
+      const inv=pInvoice(p.id);
+      const ps=p.invoice?.paymentStatus||'unpaid';
+      h+=`<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bg);border:0.5px solid var(--bdr);border-radius:var(--r);margin-bottom:5px;flex-wrap:wrap">
+        <span style="font-family:var(--m);font-size:11px;color:var(--B);white-space:nowrap">${p.poNumber}</span>
+        <span style="font-size:13px;font-weight:500;color:var(--txt);flex:1">${p.customer}</span>
+        <span style="font-size:11px;color:var(--txt2)">${fmtD(p.deliveryDate)}</span>
+        <span class="sp sp-${ps}">${ps}</span>
+        <span style="font-family:var(--m);font-size:12px;color:var(--G)">${money(inv.paid)}</span>
+        <span style="font-size:11px;color:var(--txt2)">/ ${money(inv.invoiced)}</span>
+        ${inv.balance>0?`<span style="font-family:var(--m);font-size:12px;color:var(--R)">-${money(inv.balance)}</span>`:''}
+        <button class="ab g" style="font-size:11px;padding:3px 9px" onclick="openPayM('${p.id}')">+ Pay</button>
+      </div>`;
+    });
+  }
+  h+=`</div>`;
+  el.innerHTML=h;
+}
+
+
+// ── DRIVER PICKER ────────────────────────────────────────────────────────────
+let dpCallback=null, dpSelectedTruckId=null, dpLoadingDest=null;
+
+// Avatar colors per driver
+const AVATAR_COLORS=['#3b82f6','#16a066','#d97706','#8b5cf6','#e05252','#0891b2'];
+function avatarColor(idx){ return AVATAR_COLORS[idx%AVATAR_COLORS.length]; }
+function initials(name){ return name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2); }
+
+async function openDriverPicker(destAddress, onSelect, currentTruckId){
+  dpCallback=onSelect;
+  dpSelectedTruckId=currentTruckId||null;
+  dpLoadingDest=destAddress||'';
+  document.getElementById('dp-confirm').disabled=!dpSelectedTruckId;
+  document.getElementById('dp-m').style.display='flex';
+
+  if(destAddress){
+    document.getElementById('dp-dest-info').innerHTML=`<b>Job location:</b> ${destAddress}`;
+    document.getElementById('dp-no-addr').style.display='none';
+  } else {
+    document.getElementById('dp-dest-info').style.display='none';
+    document.getElementById('dp-no-addr').style.display='block';
+  }
+
+  document.getElementById('dp-list').innerHTML=`<div class="dp-loading">&#x1F4CD; Calculating distances...</div>`;
+
+  try{
+    const r=await fetch('/api/distances',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({destination:destAddress||'',trucks:trucks.map(t=>t.id)})});
+    const d=await r.json();
+    renderDriverPicker(d.results, d.destFound);
+  } catch(e){
+    // Fallback: show drivers without distances
+    renderDriverPicker(trucks.map((t,i)=>({truckId:t.id,label:t.label,truckNum:t.truckNum,baseLocation:t.baseLocation||'Unknown',currentLocation:t.baseLocation||'Unknown',locationSource:'base',distanceMiles:null,estMinutes:null,activeLoads:loads.filter(l=>l.truckId===t.id&&l.status==='active').length})), false);
+  }
+}
+
+function renderDriverPicker(results, destFound){
+  if(!results||!results.length){document.getElementById('dp-list').innerHTML='<div class="dp-loading">No drivers available.</div>';return;}
+  const best=destFound?results[0]:null;
+  let h='';
+  results.forEach((d,i)=>{
+    const isBest=destFound&&i===0&&d.distanceMiles!==null;
+    const isSelected=d.truckId===dpSelectedTruckId;
+    const distClass=d.distanceMiles===null?'':d.distanceMiles<20?'close':d.distanceMiles<60?'mid':'far';
+    const workloadDots=Array.from({length:Math.min(d.activeLoads,5)},(_,j)=>`<div class="dp-dot" style="opacity:${0.4+j*0.12}"></div>`).join('');
+    h+=`<div class="dp-card ${isBest?'best':''} ${isSelected?'selected':''}" onclick="selectDP('${d.truckId}')">
+      ${isBest?'<div class="dp-badge">&#10003; Best match</div>':''}
+      <div class="dp-avatar" style="background:${avatarColor(i)}">${initials(d.label)}</div>
+      <div class="dp-info">
+        <div class="dp-name">${d.label} <span style="font-size:11px;font-weight:400;color:var(--txt2)">${d.truckNum}</span></div>
+        <div class="dp-loc">
+          ${d.locationSource==='live'?'<span class="live-dot"></span>':'📍 '}
+          ${d.currentLocation}
+          ${d.locationSource==='live'&&d.locationUpdatedAt?`<span style="color:var(--txt3)"> · ${minutesAgo(d.locationUpdatedAt)}</span>`:''}
+        </div>
+        ${d.activeLoads>0?`<div class="dp-workload" style="margin-top:4px">${workloadDots}<span style="font-size:10px;color:var(--txt3);margin-left:4px">${d.activeLoads} active load${d.activeLoads>1?'s':''}</span></div>`:'<div style="font-size:10px;color:var(--G);margin-top:4px">✓ Available</div>'}
+      </div>
+      <div class="dp-dist">
+        ${d.distanceMiles!==null
+          ?`<div class="dp-miles ${distClass}">${d.distanceMiles} mi</div>
+            <div class="dp-time">~${d.estMinutes<60?d.estMinutes+' min':Math.round(d.estMinutes/60*10)/10+' hr'}</div>`
+          :`<div style="font-size:11px;color:var(--txt3);text-align:right">no address<br>to compare</div>`}
+        ${isSelected?'<div style="font-size:10px;color:var(--B);margin-top:4px;text-align:right;font-weight:600">✓ Selected</div>':''}
+      </div>
+    </div>`;
+  });
+  document.getElementById('dp-list').innerHTML=h;
+}
+
+function selectDP(truckId){
+  dpSelectedTruckId=truckId;
+  document.getElementById('dp-confirm').disabled=false;
+  // Re-render to show selection
+  document.querySelectorAll('.dp-card').forEach(c=>c.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+  // Update selected indicator
+  document.querySelectorAll('.dp-card').forEach(c=>{
+    const existing=c.querySelector('.dp-sel-txt');
+    if(existing) existing.remove();
+  });
+  const cards=document.querySelectorAll('.dp-card');
+  cards.forEach(c=>{
+    if(c.onclick.toString().includes(`'${truckId}'`)) c.classList.add('selected');
+  });
+}
+
+function closeDP(){ document.getElementById('dp-m').style.display='none'; dpCallback=null; dpSelectedTruckId=null; }
+
+async function confirmDP(){
+  if(!dpSelectedTruckId||!dpCallback) return;
+  await dpCallback(dpSelectedTruckId);
+  closeDP();
+}
+
+function minutesAgo(iso){
+  const min=Math.round((Date.now()-new Date(iso).getTime())/60000);
+  if(min<1) return 'just now';
+  if(min<60) return `${min}m ago`;
+  return `${Math.round(min/60)}h ago`;
+}
+
+// Start GPS tracking for drivers (called after init if role=driver)
+function startGPSTracking(){
+  if(!navigator.geolocation) return;
+  navigator.geolocation.watchPosition(pos=>{
+    fetch('/api/driver-location',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy:pos.coords.accuracy})
+    }).catch(()=>{});
+  },{enableHighAccuracy:true,maximumAge:30000,timeout:10000});
+}
+
+// ── DATA ──────────────────────────────────────────────────────────────────────
+async function loadAll(){
+  const r=await fetch('/api/data');const d=await r.json();
+  trucks=d.trucks||[];pos=d.pos||[];loads=d.loads||[];payments=d.payments||[];matPrices=d.materialPrices||{};
+  vendors=d.vendors||[];vendorPrices=d.vendorPrices||{};
+  if(role==='manager') renderSbar();  // keep counters fresh
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+async function init(){
+  try{
+    const r=await fetch('/api/me');const me=await r.json();
+    role=me.role;myTruckId=me.truckId||null;myUsername=me.username||'';
+    document.getElementById('uinfo').textContent=me.username;
+    const urole=document.getElementById('urole'); if(urole) urole.textContent=me.role;
+    const avatar=document.getElementById('user-avatar'); if(avatar){ avatar.textContent=me.username.slice(0,2).toUpperCase(); }
+    if(role==='manager'){document.body.classList.add('is-manager');document.getElementById('sbar').style.display='grid';}
+    await loadAll();
+  }catch(e){console.error(e);}
+  if(role==='driver'){
+    // Lock down — drivers ONLY see their trips. No sidebar nav, no tabs, no other views.
+    document.body.classList.add('driver-mode');
+    // Force the driver section visible before anything else
+    document.getElementById('sec-drv').style.display='block';
+    document.getElementById('sec-board').style.display='none';
+    const pageTitle=document.getElementById('page-title');
+    if(pageTitle) pageTitle.textContent='My Trips';
+    startGPSTracking();
+    swTab('drv');
+    // Belt-and-suspenders: render driver view directly, don't trust swTab
+    setTimeout(()=>renderDrv(), 100);
+  } else {
+    swTab('board');
+    setViewMode('month');
+    setTimeout(initFeed, 500);
+  }
+}
+init();
+</script>
+</body>
+</html>

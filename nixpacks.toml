@@ -1,8 +1,4 @@
-[phases.setup]
-nixPkgs = ["nodejs_20", "npm-9_x"]
-
-[phases.install]
-cmds = ["npm install"]
-
-[start]
-cmd = "node server.js"
+service-account.json
+node_modules/
+.env
+*.log
