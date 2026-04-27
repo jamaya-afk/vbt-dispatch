@@ -1562,7 +1562,7 @@ async function renderDrvInner(el){
     </div>
   </div>`;
 
-  if(!dispatch.length){ el.innerHTML=header+'<div class="no-loads" style="background:var(--bg);border-radius:var(--rl);margin:12px;padding:40px 20px;box-shadow:var(--shadow);text-align:center">No trips assigned right now.<br><br><span style="font-size:12px;color:var(--txt3)">Your dispatcher will assign loads as they come in.</span></div>'; return; }
+  if(!dispatch.length){ el.innerHTML=header+'<div class="no-loads" style="background:var(--bg);border-radius:var(--rl);margin:12px;padding:40px 20px;box-shadow:var(--shadow);text-align:center">No loads assigned to you yet. Please contact the manager.</div>'; return; }
 
   let h=header;
   dispatch.forEach(l=>{
@@ -1594,10 +1594,11 @@ async function renderDrvInner(el){
       <div class="gc-body">
         ${banner}
         <dl class="gc-info-grid">
-          <dt>Pickup</dt><dd><span class="gc-icon-lbl">🏗</span> ${l.pickupLocation}</dd>
+          <dt>Pickup</dt><dd><span class="gc-icon-lbl">🏗</span> ${l.pickupLocation}<div style="margin-top:6px"><button type="button" class="ab" onclick="openYardPicker('${l.loadId}')">Find closest yard</button></div></dd>
           <dt>Deliver to</dt><dd><span class="gc-icon-lbl">📍</span> ${l.deliveryLocation||l.city||'—'}</dd>
           <dt>Material</dt><dd>${l.material} <span style="color:var(--txt3);font-size:11px">(${l.unit})</span></dd>
           <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads assigned</dd>
+          <dt>Status</dt><dd>${approved?'Approved':submitted?'Submitted':delivered?'Delivered':hasSig?'Signature captured':hasImage?'Ticket uploaded':atPickup?'Arrived at yard':started?'Started':'Not started'}</dd>
           ${l.supervisor?`<dt>Supervisor</dt><dd><span class="gc-icon-lbl">👤</span> ${l.supervisor}</dd>`:''}
           ${l.notes?`<dt>Notes</dt><dd style="color:var(--A);font-weight:500">${l.notes}</dd>`:''}
         </dl>
@@ -1657,12 +1658,18 @@ async function renderDrvInner(el){
             Customer Signature
           </button>
           <div class="gc-hint required">Required before delivery</div>
-        `:!submitted?`
+        `:!delivered?`
           <button class="gc-action success" onclick="tripAction('${l.loadId}','delivered')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Complete Delivery
+            Delivered
           </button>
-          <div class="gc-hint">All checks passed — tap to submit</div>
+          <div class="gc-hint">Marks the load as delivered with GPS/time</div>
+        `:!submitted?`
+          <button class="gc-action primary" onclick="tripAction('${l.loadId}','submit-to-manager')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Submit to Manager
+          </button>
+          <div class="gc-hint">Sends this trip to Approvals</div>
         `:''}
 
         <!-- Requirements checklist -->
