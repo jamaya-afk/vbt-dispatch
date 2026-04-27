@@ -64,7 +64,6 @@ const YARDS = [
   { id: 'cemex-fresno',  name: 'CEMEX',          location: 'Fresno, CA' },
   { id: 'vulcan',        name: 'Vulcan',         location: 'Fresno, CA' },
   { id: 'keith-farms',   name: 'Keith Farms',    location: 'Fowler, CA' },
-  { id: 'hanson',        name: 'Hanson',         location: 'Bakersfield, CA' },
   { id: 'graniterock',   name: 'Graniterock',    location: 'Madera, CA' },
   { id: 'other',         name: 'Other',          location: '' },
 ];
