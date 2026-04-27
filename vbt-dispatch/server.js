@@ -178,29 +178,6 @@ function findDriverByTruckId(truckId) {
   return (store.users || []).find(u => u.role === 'driver' && u.truckId === truckId) || null;
 }
 
-function findDriverByName(name) {
-  if (!name) return null;
-  const normalized = String(name).toLowerCase().trim();
-  return (store.users || []).find(u =>
-    u.role === 'driver' &&
-    (
-      String(u.driverName || '').toLowerCase() === normalized ||
-      String(u.name || '').toLowerCase() === normalized ||
-      String(u.username || '').toLowerCase() === normalized
-    )
-  ) || null;
-}
-
-function resolveAssignedDriverId(load) {
-  if (!load) return null;
-  if (load.assignedDriverId) return load.assignedDriverId;
-  const byTruck = findDriverByTruckId(load.truckId);
-  if (byTruck) return byTruck.id;
-  const byName = findDriverByName(load.driverName);
-  if (byName) return byName.id;
-  return null;
-}
-
 async function loadData() {
   // Always try Postgres first if available
   if (pg) {
@@ -300,8 +277,10 @@ function fixStore() {
     if (!l.gps)            l.gps = { start: null, arrived: null, completed: null };
     if (!l.locked)         l.locked = false;
     if (!l.voided)         l.voided = false;
-    const resolvedDriverId = resolveAssignedDriverId(l);
-    if (resolvedDriverId) l.assignedDriverId = resolvedDriverId;
+    if (!l.assignedDriverId && l.truckId) {
+      const drv = findDriverByTruckId(l.truckId);
+      if (drv) l.assignedDriverId = drv.id;
+    }
   });
 }
 
@@ -502,7 +481,7 @@ app.get('/api/data', reqAuth, (req, res) => {
   promoteScheduled();
   const user = req.session.user;
   if (user.role === 'driver') {
-    const myLoads = store.loads.filter(l => resolveAssignedDriverId(l) === user.id && !l.voided);
+    const myLoads = store.loads.filter(l => l.assignedDriverId === user.id && !l.voided);
     const myPoIds = new Set(myLoads.map(l => l.poId));
     const myPos = store.pos.filter(p => myPoIds.has(p.id)).map(p => ({
       id: p.id, poNumber: p.poNumber, customer: p.customer, city: p.city,
@@ -655,7 +634,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Load not found' });
   const l = store.loads[idx];
-  if (user.role === 'driver' && resolveAssignedDriverId(l) !== user.id) return res.status(403).json({ error: 'Not your load' });
+  if (user.role === 'driver' && l.assignedDriverId !== user.id) return res.status(403).json({ error: 'Not your load' });
 
   const po = store.pos.find(p => p.id === l.poId) || {};
   if (user.role === 'driver') {
@@ -707,7 +686,7 @@ app.post('/api/loads/:id/complete', reqAuth, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Load not found' });
   const l = store.loads[idx];
-  if (user.role === 'driver' && resolveAssignedDriverId(l) !== user.id) return res.status(403).json({ error: 'Not your load' });
+  if (user.role === 'driver' && l.assignedDriverId !== user.id) return res.status(403).json({ error: 'Not your load' });
 
   store.loads[idx].status = 'completed';
   store.loads[idx].completedAt = new Date().toISOString();
@@ -1115,16 +1094,7 @@ app.put('/api/vendor-prices/:vendorId', reqMgr, async (req, res) => {
 app.get('/api/my-dispatch', reqAuth, (req, res) => {
   const user = req.session.user;
   if (user.role !== 'driver') return res.status(403).json({ error: 'Driver only' });
-  const myLoads = store.loads.filter(l => resolveAssignedDriverId(l) === user.id && !l.voided && l.status !== 'completed');
-  console.log('[driver-dispatch]', {
-    loggedInUserId: user.id,
-    loggedInUserName: user.username,
-    tripsReturned: myLoads.length,
-    assignedDriverValues: store.loads.filter(l => !l.voided).map(l => ({
-      loadId: l.id,
-      assignedDriverId: resolveAssignedDriverId(l) || null
-    }))
-  });
+  const myLoads = store.loads.filter(l => l.assignedDriverId === user.id && !l.voided && l.status !== 'completed');
   // Enrich each load with guide info — driver doesn't need to know anything beyond this
   const enriched = myLoads.map(l => {
     const po = store.pos.find(p => p.id === l.poId) || {};
@@ -1168,7 +1138,7 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Load not found' });
   const l = store.loads[idx];
-  if (user.role === 'driver' && resolveAssignedDriverId(l) !== user.id) return res.status(403).json({ error: 'Not your load' });
+  if (user.role === 'driver' && l.assignedDriverId !== user.id) return res.status(403).json({ error: 'Not your load' });
   if (l.locked || l.voided) return res.status(403).json({ error: 'This load is locked and cannot be changed' });
 
   const { action, gps } = req.body;
@@ -1229,7 +1199,7 @@ app.post('/api/loads/:id/ticket-image', reqAuth, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Load not found' });
   const l = store.loads[idx];
-  if (user.role === 'driver' && resolveAssignedDriverId(l) !== user.id) return res.status(403).json({ error: 'Not your load' });
+  if (user.role === 'driver' && l.assignedDriverId !== user.id) return res.status(403).json({ error: 'Not your load' });
   if (l.locked || l.voided) return res.status(403).json({ error: 'Load is locked' });
   if (!req.body.image) return res.status(400).json({ error: 'Image data required' });
   const before = { ticketImage: l.ticketImage, ticketImageAt: l.ticketImageAt };
