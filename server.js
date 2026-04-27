@@ -58,14 +58,24 @@ const TRUCKS = [
 
 const MATERIALS = ['Fill Sand','Gravel','Rock','3/4 Rock','Cold Mix','Recycle Base','Dirt','Base Rock','Other'];
 
+// Pickup yards / vendors — drivers pick which yard they actually arrived at
+const YARDS = [
+  { id: 'vbt',           name: 'VBT Yard',       location: 'Fresno, CA' },
+  { id: 'cemex-fresno',  name: 'CEMEX',          location: 'Fresno, CA' },
+  { id: 'vulcan',        name: 'Vulcan',         location: 'Fresno, CA' },
+  { id: 'keith-farms',   name: 'Keith Farms',    location: 'Fowler, CA' },
+  { id: 'hanson',        name: 'Hanson',         location: 'Bakersfield, CA' },
+  { id: 'graniterock',   name: 'Graniterock',    location: 'Madera, CA' },
+  { id: 'other',         name: 'Other',          location: '' },
+];
+
 // ── DATA STORE — Postgres primary, file backup ───────────────────────────────
 const DATA_FILE = path.join(__dirname, 'data.json');
 let pg = null;
 let store = {
-  pos: [],         // { id, poNumber, customer, job, address, city, deliveryDate, pickup, notes, status, createdAt }
-  loads: [],       // { id, poId, material, loadsAssigned, loadsDelivered, truckId, driverName, deliveryDate,
-                   //   status, timestamps, gps, pod, ticketImage, ticketImageAt, approvalStatus,
-                   //   submittedAt, approvedAt, approvedBy, billStatus, billedAt, locked, voided }
+  pos: [],         // active POs
+  loads: [],       // active loads
+  archive: [],     // { archivedAt, batchId, pos: [...], loads: [...] } — billed loads moved here when sent to Sheets
   nextPoNum: 1001,
   nextLoadId: 1,
 };
@@ -138,8 +148,9 @@ async function saveData() {
 
 // Ensure all loads have required fields (backward compat for old data)
 function normalizeStore() {
-  if (!store.pos)    store.pos = [];
-  if (!store.loads)  store.loads = [];
+  if (!store.pos)     store.pos = [];
+  if (!store.loads)   store.loads = [];
+  if (!store.archive) store.archive = [];
   if (!store.nextPoNum)  store.nextPoNum = 1001;
   if (!store.nextLoadId) store.nextLoadId = 1;
 
@@ -234,9 +245,9 @@ app.get('/api/data', reqAuth, (req, res) => {
     const myLoads = store.loads.filter(l => l.truckId === u.truckId && !l.voided);
     const myPoIds = new Set(myLoads.map(l => l.poId));
     const myPos = store.pos.filter(p => myPoIds.has(p.id));
-    return res.json({ trucks: TRUCKS, materials: MATERIALS, pos: myPos, loads: myLoads });
+    return res.json({ trucks: TRUCKS, materials: MATERIALS, yards: YARDS, pos: myPos, loads: myLoads });
   }
-  res.json({ trucks: TRUCKS, materials: MATERIALS, pos: store.pos, loads: store.loads });
+  res.json({ trucks: TRUCKS, materials: MATERIALS, yards: YARDS, pos: store.pos, loads: store.loads });
 });
 
 // ── API: DRIVER DISPATCH (enriched view for drivers — guided flow) ──────────
@@ -479,6 +490,14 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     if (!l.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
     l.timestamps = { ...l.timestamps, arrivedPickup: time };
     l.gps        = { ...l.gps, arrivedPickup: gps || null };
+    // Driver can confirm which yard they actually arrived at
+    if (req.body.yardId) {
+      const yard = YARDS.find(y => y.id === req.body.yardId);
+      if (yard) {
+        l.actualYardId   = yard.id;
+        l.actualYardName = yard.name;
+      }
+    }
   } else if (action === 'delivered') {
     if (!l.timestamps?.start)         return res.status(400).json({ error: 'Must start trip first' });
     if (!l.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
@@ -559,6 +578,169 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
   });
   await saveData();
   res.json({ success: true, billed: count });
+});
+
+// ── API: REPORTS / FINANCE ───────────────────────────────────────────────────
+app.get('/api/reports', reqMgr, (req, res) => {
+  // Driver performance
+  const driverStats = {};
+  TRUCKS.forEach(t => {
+    const tLoads = store.loads.filter(l => l.truckId === t.id && !l.voided);
+    driverStats[t.id] = {
+      label: t.label,
+      truckNum: t.truckNum,
+      totalLoads: tLoads.reduce((s, l) => s + (Number(l.loadsAssigned) || 0), 0),
+      delivered: tLoads.reduce((s, l) => s + (Number(l.loadsDelivered) || 0), 0),
+      completed: tLoads.filter(l => l.status === 'completed').length,
+      active:    tLoads.filter(l => l.status === 'active').length,
+    };
+  });
+
+  // Customer volume
+  const custStats = {};
+  store.pos.forEach(p => {
+    if (!custStats[p.customer]) custStats[p.customer] = { pos: 0, loads: 0, delivered: 0 };
+    custStats[p.customer].pos++;
+    const pLoads = store.loads.filter(l => l.poId === p.id);
+    custStats[p.customer].loads     += pLoads.reduce((s, l) => s + (Number(l.loadsAssigned) || 0), 0);
+    custStats[p.customer].delivered += pLoads.reduce((s, l) => s + (Number(l.loadsDelivered) || 0), 0);
+  });
+
+  // Material breakdown
+  const matStats = {};
+  store.loads.forEach(l => {
+    if (l.voided) return;
+    if (!matStats[l.material]) matStats[l.material] = { ordered: 0, delivered: 0 };
+    matStats[l.material].ordered   += Number(l.loadsAssigned) || 0;
+    matStats[l.material].delivered += Number(l.loadsDelivered) || 0;
+  });
+
+  // Weekly trend (last 8 weeks)
+  const weeks = [];
+  for (let w = 7; w >= 0; w--) {
+    const wStart = new Date();
+    wStart.setDate(wStart.getDate() - w * 7 - wStart.getDay() + 1);
+    wStart.setHours(0, 0, 0, 0);
+    const wEnd = new Date(wStart);
+    wEnd.setDate(wStart.getDate() + 6);
+    const wStartStr = wStart.toISOString().slice(0, 10);
+    const wEndStr   = wEnd.toISOString().slice(0, 10);
+    const wLoads = store.loads.filter(l => l.deliveryDate >= wStartStr && l.deliveryDate <= wEndStr);
+    weeks.push({
+      label: wStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      ordered:   wLoads.reduce((s, l) => s + (Number(l.loadsAssigned) || 0), 0),
+      delivered: wLoads.reduce((s, l) => s + (Number(l.loadsDelivered) || 0), 0),
+    });
+  }
+
+  // Totals
+  const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided);
+  const ready  = store.loads.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready' && !l.voided);
+
+  res.json({
+    driverStats, custStats, matStats, weeks,
+    totals: {
+      activePOs:    store.pos.filter(p => p.status === 'active').length,
+      scheduledPOs: store.pos.filter(p => p.status === 'scheduled').length,
+      totalLoads:   store.loads.filter(l => !l.voided).length,
+      readyToBill:  ready.length,
+      billedThisMonth: billed.filter(l => (l.billedAt || '').startsWith(new Date().toISOString().slice(0, 7))).length,
+    }
+  });
+});
+
+// ── API: HISTORY (billed loads, ready to archive) ───────────────────────────
+app.get('/api/history', reqMgr, (req, res) => {
+  // Loads that are billed (waiting to be archived)
+  const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided)
+    .map(l => {
+      const po = store.pos.find(p => p.id === l.poId) || {};
+      return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address, pickup: po.pickup };
+    });
+  res.json({ billed, archive: store.archive });
+});
+
+// Archive billed loads → push to Sheets and remove from active store
+app.post('/api/history/archive', reqMgr, async (req, res) => {
+  const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided);
+  if (!billed.length) return res.status(400).json({ error: 'No billed loads to archive' });
+
+  const billedPoIds = new Set(billed.map(l => l.poId));
+  // Only archive POs whose ALL loads are billed (otherwise leave the PO active)
+  const fullyBilledPos = [...billedPoIds].filter(pid => {
+    const all = store.loads.filter(l => l.poId === pid && !l.voided);
+    return all.length > 0 && all.every(l => l.billStatus === 'billed');
+  });
+  const archivedPos = store.pos.filter(p => fullyBilledPos.includes(p.id));
+
+  // Try to push to Sheets first — only delete if it succeeds
+  let sheetSuccess = false;
+  if (sheets) {
+    try {
+      const archiveRows = [['Archived At', 'PO', 'Customer', 'City', 'Material', 'Loads', 'Driver', 'Date', 'Yard', 'Approved By', 'Billed At']];
+      billed.forEach(l => {
+        const po = store.pos.find(p => p.id === l.poId) || {};
+        archiveRows.push([
+          new Date().toISOString(),
+          po.poNumber || '', po.customer || '', po.city || '',
+          l.material, l.loadsDelivered, l.driverName, l.deliveryDate,
+          l.actualYardName || po.pickup || '',
+          l.approvedBy || '', l.billedAt || ''
+        ]);
+      });
+      // Append (don't clear) so history accumulates over time
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: 'Archive!A1',
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: archiveRows },
+      }).catch(async err => {
+        // If tab doesn't exist, create it then retry
+        if (String(err.message).includes('Unable to parse range')) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: SHEET_ID,
+            requestBody: { requests: [{ addSheet: { properties: { title: 'Archive' } } }] }
+          }).catch(() => {});
+          await sheets.spreadsheets.values.append({
+            spreadsheetId: SHEET_ID,
+            range: 'Archive!A1',
+            valueInputOption: 'USER_ENTERED',
+            insertDataOption: 'INSERT_ROWS',
+            requestBody: { values: archiveRows },
+          });
+        } else { throw err; }
+      });
+      sheetSuccess = true;
+    } catch (e) {
+      console.error('Archive sync error:', e.message);
+      return res.status(500).json({ error: 'Failed to push to Sheets: ' + e.message + '. Nothing was archived.' });
+    }
+  }
+
+  // Move archived data to archive[] for in-app reference
+  const batchId = 'BATCH-' + Date.now();
+  store.archive.unshift({
+    batchId,
+    archivedAt: new Date().toISOString(),
+    archivedBy: req.session.user.username,
+    poCount: archivedPos.length,
+    loadCount: billed.length,
+    syncedToSheet: sheetSuccess,
+  });
+  // Cap archive log at 50 batches
+  if (store.archive.length > 50) store.archive = store.archive.slice(0, 50);
+
+  // Remove archived loads + their fully-completed POs from the active store
+  const billedIds = new Set(billed.map(l => l.id));
+  store.loads = store.loads.filter(l => !billedIds.has(l.id));
+  store.pos   = store.pos.filter(p => !fullyBilledPos.includes(p.id));
+
+  await saveData();
+  res.json({
+    success: true,
+    archived: { pos: archivedPos.length, loads: billed.length, batchId, syncedToSheet: sheetSuccess }
+  });
 });
 
 // ── API: GOOGLE SHEETS SYNC ──────────────────────────────────────────────────
