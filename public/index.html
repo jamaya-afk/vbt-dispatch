@@ -58,8 +58,8 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .btn.ghost{background:transparent;border-color:var(--bdr2)}
 
 .content{flex:1;overflow:auto;padding:0}
-.section{display:none;height:100%}
-.section.active{display:block}
+.section{display:none}
+.section.active{display:block;min-height:100%}
 
 /* ── BOARD ── */
 .board-header{padding:14px 20px;display:flex;align-items:center;gap:10px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-wrap:wrap}
@@ -400,13 +400,21 @@ function api(method, url, body) {
   }).then(r => r.json().then(d => ({ ok: r.ok, status: r.status, ...d })));
 }
 async function loadAll() {
-  const r = await fetch('/api/data');
-  if (!r.ok) throw new Error('Failed to load data');
-  const d = await r.json();
-  trucks = d.trucks || [];
-  materials = d.materials || [];
-  pos = d.pos || [];
-  loads = d.loads || [];
+  try {
+    const r = await fetch('/api/data');
+    if (!r.ok) {
+      console.error('loadAll: /api/data returned', r.status);
+      return;
+    }
+    const d = await r.json();
+    trucks = d.trucks || [];
+    materials = d.materials || [];
+    pos = d.pos || [];
+    loads = d.loads || [];
+    console.log('[loadAll] trucks:', trucks.length, 'materials:', materials.length, 'pos:', pos.length, 'loads:', loads.length);
+  } catch (e) {
+    console.error('loadAll error:', e);
+  }
 }
 
 // ── INIT ─────────────────────────────────────────────────────────────────────
@@ -447,7 +455,7 @@ function goTab(tab) {
   if (tab === 'board')    { document.getElementById('sec-board').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch Board'; renderBoard(); }
   if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
-  if (tab === 'driver')   { document.getElementById('sec-driver').classList.add('active'); renderDriver(); }
+  if (tab === 'driver')   { document.getElementById('sec-driver').classList.add('active'); document.getElementById('page-title').textContent = 'My Trips'; console.log('[goTab] activating driver tab'); renderDriver(); }
 
   const navBtn = document.querySelector(`[data-tab="${tab}"]`);
   if (navBtn) navBtn.classList.add('active');
@@ -727,6 +735,11 @@ async function renderDriver() {
   const wrap = document.getElementById('drv-trips');
   const welcome = document.getElementById('driver-welcome');
 
+  if (!wrap) { console.error('drv-trips element missing'); return; }
+
+  // Visible loading state immediately so we never have a blank page
+  wrap.innerHTML = '<div class="empty-state"><p>Loading your trips...</p></div>';
+
   console.log('[DRIVER VIEW] Rendering driver view');
   console.log('[DRIVER VIEW] Logged-in driver name:', myUsername);
   console.log('[DRIVER VIEW] Logged-in driver truckId:', myTruckId);
@@ -745,9 +758,20 @@ async function renderDriver() {
     dispatch.forEach(l => console.log('  -', l.loadId, l.poNumber, l.material, '(' + l.loadsAssigned + ' loads)'));
   } catch (e) {
     console.error('[DRIVER VIEW] Failed to load:', e);
-    wrap.innerHTML = `<div class="empty-state"><h3>Could not load trips</h3><p>${e.message}</p><button class="btn primary" onclick="renderDriver()" style="margin-top:12px">Retry</button></div>`;
+    wrap.innerHTML = `<div class="empty-state"><h3>Could not load trips</h3><p style="color:var(--R)">${e.message}</p><button class="btn primary" onclick="renderDriver()" style="margin-top:12px">Retry</button></div>`;
     return;
   }
+
+  // Wrap render in try/catch so any rendering bug shows up instead of a blank page
+  try {
+    await renderDriverContent(dispatch, welcome, wrap);
+  } catch (e) {
+    console.error('[DRIVER VIEW] Render error:', e);
+    wrap.innerHTML = `<div class="empty-state"><h3>Display error</h3><p style="color:var(--R);font-family:monospace;font-size:11px;text-align:left;background:var(--Rb);padding:12px;border-radius:8px;border:1px solid var(--Rd);overflow:auto;max-width:600px;margin:0 auto">${e.message}<br><br>${(e.stack||'').replace(/</g,'&lt;')}</p><button class="btn primary" onclick="renderDriver()" style="margin-top:12px">Retry</button></div>`;
+  }
+}
+
+async function renderDriverContent(dispatch, welcome, wrap) {
 
   const todayCount = dispatch.filter(l => l.deliveryDate === todayStr()).length;
   const submittedCount = dispatch.filter(l => l.approvalStatus === 'submitted').length;
