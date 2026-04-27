@@ -886,7 +886,7 @@ body{background:var(--bg3);color:var(--txt);margin:0;min-height:100vh;overflow:h
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
 let trucks=[],pos=[],loads=[],payments=[],matPrices={},vendors=[],vendorPrices={};
-let role='driver',myTruckId=null,myUsername='';
+let role='driver',myTruckId=null,myUsername='',myUserId='';
 let curTab='board',dayOffset=0,monthOffset=0,viewMode='month';
 let editPoId=null,editLoadId=null,sigLoadId=null,payPoId=null,roPoId=null;
 let splits=[],expanded=new Set();
@@ -900,6 +900,8 @@ const fmtM=iso=>new Date(iso+'-01T12:00:00').toLocaleDateString('en-US',{month:'
 const money=n=>'$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const dUntil=iso=>{const t=new Date(iso+'T12:00:00'),n=new Date();n.setHours(0,0,0,0);return Math.round((t-n)/86400000);};
 const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const DRIVER_USER_IDS={beryle:'U-BERYLE',matthew:'U-MATTHEW',rigo:'U-RIGO',leonardo:'U-LEONARDO',carlos:'U-CARLOS'};
+function assignedUserIdForTruck(truckId){ return truckId?DRIVER_USER_IDS[truckId]||null:null; }
 
 // Material color map
 const MAT_COLORS={
@@ -1560,9 +1562,12 @@ async function renderDrvInner(el){
       <div class="dw-stat"><div class="dw-stat-num">${pendingCount}</div><div class="dw-stat-lbl">Active</div></div>
       <div class="dw-stat"><div class="dw-stat-num">${dispatch.filter(l=>l.approvalStatus==='submitted').length}</div><div class="dw-stat-lbl">Pending review</div></div>
     </div>
+  </div>
+  <div style="margin:12px;padding:10px 12px;border:1px solid var(--bdr);background:var(--bg2);border-radius:var(--r);font-size:12px;color:var(--txt2);font-family:var(--m)">
+    Debug: userId=<b>${myUserId||'unknown'}</b> · user=<b>${myUsername||'unknown'}</b> · assignedTrips=<b>${dispatch.length}</b>
   </div>`;
 
-  if(!dispatch.length){ el.innerHTML=header+'<div class="no-loads" style="background:var(--bg);border-radius:var(--rl);margin:12px;padding:40px 20px;box-shadow:var(--shadow);text-align:center">No trips assigned right now.<br><br><span style="font-size:12px;color:var(--txt3)">Your dispatcher will assign loads as they come in.</span></div>'; return; }
+  if(!dispatch.length){ el.innerHTML=header+'<div class="no-loads" style="background:var(--bg);border-radius:var(--rl);margin:12px;padding:40px 20px;box-shadow:var(--shadow);text-align:center">No loads assigned to you yet. Please contact the manager.</div>'; return; }
 
   let h=header;
   dispatch.forEach(l=>{
@@ -1594,10 +1599,11 @@ async function renderDrvInner(el){
       <div class="gc-body">
         ${banner}
         <dl class="gc-info-grid">
-          <dt>Pickup</dt><dd><span class="gc-icon-lbl">🏗</span> ${l.pickupLocation}</dd>
+          <dt>Pickup</dt><dd><span class="gc-icon-lbl">🏗</span> ${l.pickupLocation}<div style="margin-top:6px"><button type="button" class="ab" onclick="openYardPicker('${l.loadId}')">Find closest yard</button></div></dd>
           <dt>Deliver to</dt><dd><span class="gc-icon-lbl">📍</span> ${l.deliveryLocation||l.city||'—'}</dd>
           <dt>Material</dt><dd>${l.material} <span style="color:var(--txt3);font-size:11px">(${l.unit})</span></dd>
           <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads assigned</dd>
+          <dt>Status</dt><dd>${approved?'Approved':submitted?'Submitted':delivered?'Delivered':hasSig?'Signature captured':hasImage?'Ticket uploaded':atPickup?'Arrived at yard':started?'Started':'Not started'}</dd>
           ${l.supervisor?`<dt>Supervisor</dt><dd><span class="gc-icon-lbl">👤</span> ${l.supervisor}</dd>`:''}
           ${l.notes?`<dt>Notes</dt><dd style="color:var(--A);font-weight:500">${l.notes}</dd>`:''}
         </dl>
@@ -1657,12 +1663,18 @@ async function renderDrvInner(el){
             Customer Signature
           </button>
           <div class="gc-hint required">Required before delivery</div>
-        `:!submitted?`
+        `:!delivered?`
           <button class="gc-action success" onclick="tripAction('${l.loadId}','delivered')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Complete Delivery
+            Delivered
           </button>
-          <div class="gc-hint">All checks passed — tap to submit</div>
+          <div class="gc-hint">Marks the load as delivered with GPS/time</div>
+        `:!submitted?`
+          <button class="gc-action primary" onclick="tripAction('${l.loadId}','submit-to-manager')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Submit to Manager
+          </button>
+          <div class="gc-hint">Sends this trip to Approvals</div>
         `:''}
 
         <!-- Requirements checklist -->
@@ -1950,7 +1962,7 @@ async function savePO(){
   const po={poNumber:g('pm-num')||null,customer:g('pm-cust'),code:g('pm-code'),pickup:g('pm-pick'),supervisor:g('pm-sup'),city:g('pm-addr'),address:g('pm-addr'),deliveryDate:g('pm-date')||tod(),type:g('pm-type'),recurrenceRule:g('pm-type')==='recurring'?g('pm-recur'):null,notes:g('pm-notes')};
   if(!isAddMode&&!po.customer){alert('Customer required');return;}
   // Always use the PO's delivery date for all splits — single source of truth
-  const sp=splits.map(s=>({truckId:s.truckId||null,driverName:s.driverName||trucks.find(t=>t.id===s.truckId)?.label||'',material:s.material||'Fill Sand',loadsAssigned:Number(s.loadsAssigned)||0,deliveryDate:po.deliveryDate}));
+  const sp=splits.map(s=>({truckId:s.truckId||null,assignedDriverId:assignedUserIdForTruck(s.truckId||null),driverName:s.driverName||trucks.find(t=>t.id===s.truckId)?.label||'',material:s.material||'Fill Sand',loadsAssigned:Number(s.loadsAssigned)||0,deliveryDate:po.deliveryDate}));
   if(!sp.some(s=>s.loadsAssigned>0)){alert('Enter at least one load');return;}
   try{
     if(isAddMode){
@@ -1959,7 +1971,7 @@ async function savePO(){
       await fetch('/api/pos/'+editPoId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(po)});
       for(const s of sp){
         // Force PO's deliveryDate onto every split (prevents drift between PO and loads)
-        const splitData={truckId:s.truckId,driverName:s.driverName,material:s.material,loadsAssigned:s.loadsAssigned,deliveryDate:po.deliveryDate};
+        const splitData={truckId:s.truckId,assignedDriverId:assignedUserIdForTruck(s.truckId||null),driverName:s.driverName,material:s.material,loadsAssigned:s.loadsAssigned,deliveryDate:po.deliveryDate};
         if(s.loadId) await fetch('/api/loads/'+s.loadId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(splitData)});
         else await fetch('/api/pos/'+editPoId+'/loads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify([splitData])});
       }
@@ -2541,7 +2553,7 @@ async function loadAll(){
 async function init(){
   try{
     const r=await fetch('/api/me');const me=await r.json();
-    role=me.role;myTruckId=me.truckId||null;myUsername=me.username||'';
+    role=me.role;myTruckId=me.truckId||null;myUsername=me.username||'';myUserId=me.id||'';
     document.getElementById('uinfo').textContent=me.username;
     const urole=document.getElementById('urole'); if(urole) urole.textContent=me.role;
     const avatar=document.getElementById('user-avatar'); if(avatar){ avatar.textContent=me.username.slice(0,2).toUpperCase(); }
