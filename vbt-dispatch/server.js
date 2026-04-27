@@ -1132,7 +1132,7 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
 
 // ── DRIVER TRIP ACTIONS — guided step-by-step ────────────────────────────────
 // POST /api/loads/:id/trip-action  body: { action, gps: {lat,lng} }
-// action: 'start-trip' | 'arrived-pickup' | 'delivered'
+// action: 'start-trip' | 'arrived-pickup' | 'delivered' | 'submit-to-manager'
 app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const user = req.session.user;
   const idx = store.loads.findIndex(l => l.id === req.params.id);
@@ -1175,9 +1175,14 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     l.timestamps = { ...l.timestamps, completed: timeStr, arrived: l.timestamps?.arrived || timeStr };
     l.gps = { ...l.gps, completed: gps || null };
     l.loadsDelivered = l.loadsAssigned;  // Assume full delivery on "Delivered" button
+    l.status = 'delivered';
+    pushActivity('load_delivered', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, material: l.material, loads: l.loadsDelivered });
+  } else if (action === 'submit-to-manager') {
+    if (!l.timestamps?.completed) return res.status(400).json({ error: 'Tap Delivered first' });
     l.approvalStatus = 'submitted';
     l.submittedAt = now.toISOString();
     l.submittedBy = user.username;
+    l.status = 'submitted';
     pushActivity('load_submitted', { driver: l.driverName || user.username, truckId: l.truckId, poNumber: po.poNumber, customer: po.customer, material: l.material, loads: l.loadsDelivered });
   } else {
     return res.status(400).json({ error: 'Unknown action' });
