@@ -698,6 +698,8 @@ app.post('/api/pos/:id/loads', reqMgr, async (req, res) => {
     }
     const newLoad = {
       id: 'LOAD-' + store.nextLoadId++, poId: po.id, purchaseOrderId: po.id, poMaterialId: poMaterial.id,
+    const newLoad = {
+      id: 'LOAD-' + store.nextLoadId++, poId: po.id,
       material: s.material || 'Fill Sand', pricePerLoad: price,
       loadsAssigned: Number(s.loadsAssigned) || 0, loadsDelivered: 0,
       truckId: s.truckId || null,
@@ -767,6 +769,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     if (req.body.truckId !== undefined) {
       const assignedDriver = resolveAssignedDriver(req.body);
       updated.status = req.body.truckId ? 'assigned' : 'unassigned';
+      updated.status = req.body.truckId ? 'active' : 'unassigned';
       updated.assignedDriverId = req.body.truckId ? (assignedDriver?.id || null) : null;
       updated.driverName = req.body.truckId ? (assignedDriver?.driverName || req.body.driverName || store.trucks.find(t => t.id === req.body.truckId)?.label || '') : '';
       console.log('[manager-assign:update-load]', {
