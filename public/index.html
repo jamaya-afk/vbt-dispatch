@@ -83,8 +83,34 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .lcard{background:var(--bg);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 12px;cursor:grab;box-shadow:var(--shadow);transition:all .15s;position:relative}
 .lcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd)}
 .lcard.dragging{opacity:.5}
-.lcard.completed{opacity:.6;border-color:var(--Gd)}
 .lcard.submitted{border-color:var(--P);background:var(--Pb)}
+
+/* ── STATUS-COLORED CARDS (Day + Month views) ── */
+.lcard.is-completed,.mcard.is-completed{
+  background:#e8f7ee;border-color:#9fe4c8;
+}
+.lcard.is-completed .lc-customer,.lcard.is-completed .lc-detail,
+.lcard.is-completed .lc-progress span,
+.mcard.is-completed .mcard-cust,.mcard.is-completed .mcard-mat{color:#0d5c3a}
+.lcard.is-completed .lc-po,.mcard.is-completed .mcard-po{color:#0d5c3a}
+
+.lcard.is-overdue,.mcard.is-overdue{
+  background:#fde6e6;border-color:#f4a8a8;
+}
+.lcard.is-overdue .lc-customer,.lcard.is-overdue .lc-detail,
+.lcard.is-overdue .lc-progress span,
+.mcard.is-overdue .mcard-cust,.mcard.is-overdue .mcard-mat{color:#7a1a1a}
+.lcard.is-overdue .lc-po,.mcard.is-overdue .mcard-po{color:#a82828}
+
+.lcard.is-active,.mcard.is-active{
+  background:#fff8ed;border-color:#fcd38a;
+}
+.lcard.is-active .lc-po,.mcard.is-active .mcard-po{color:#a86109}
+
+/* Status pills */
+.lc-status.is-completed{background:var(--G);color:#fff}
+.lc-status.is-overdue{background:var(--R);color:#fff}
+.lc-status.is-active{background:var(--A);color:#fff}
 .lc-po{font-size:10px;font-weight:700;color:var(--B);letter-spacing:.04em;margin-bottom:3px}
 .lc-customer{font-size:13px;font-weight:600;line-height:1.3;margin-bottom:3px}
 .lc-detail{font-size:11px;color:var(--txt2);margin-bottom:2px}
@@ -505,7 +531,49 @@ let splits = [];
 let currentLoadId = null;  // for ticket/sig modals
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
-const todayStr = () => new Date().toISOString().slice(0, 10);
+// Local-date string (NOT UTC) — important for color status logic so loads don't go red early
+const todayStr = () => {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
+
+// Card status logic — drives green/red/normal coloring
+// Returns: { kind: 'completed'|'overdue'|'active'|'normal', label: string }
+function getCardStatus(l) {
+  const today = todayStr();
+  const sched = l.deliveryDate || '';
+  const ts = l.timestamps || {};
+
+  // 1. Completed (delivered/submitted/approved/billed) — always green regardless of date
+  if (l.approvalStatus === 'approved' || l.billStatus === 'billed') {
+    return { kind: 'completed', label: 'Approved' };
+  }
+  if (l.approvalStatus === 'submitted' || ts.completed) {
+    return { kind: 'completed', label: 'Delivered' };
+  }
+  // Rejected stands out so it can be re-done
+  if (l.approvalStatus === 'rejected') {
+    return { kind: 'overdue', label: 'Rejected' };
+  }
+
+  // 2. In progress today (started but not done) — amber
+  if (sched === today && ts.start) {
+    return { kind: 'active', label: 'In progress' };
+  }
+
+  // 3. Overdue — scheduled date is today or earlier and not completed/in-progress
+  if (sched && sched < today) {
+    return { kind: 'overdue', label: 'Overdue' };
+  }
+  if (sched === today && !ts.start) {
+    // It's today but not yet started — leave it normal until end of day
+    // The "overdue" status only kicks in for past dates (sched < today)
+    return { kind: 'normal', label: 'Today' };
+  }
+
+  // 4. Future — normal
+  return { kind: 'normal', label: 'Scheduled' };
+}
 function getBoardDate() {
   const d = new Date();
   d.setDate(d.getDate() + dayOffset);
@@ -773,8 +841,8 @@ function renderMonthBoard() {
       else {
         myLoads.slice(0, 3).forEach(l => {
           const po = pos.find(p => p.id === l.poId) || {};
-          const isComplete = l.approvalStatus === 'approved';
-          h += `<div class="mcard ${isComplete ? 'completed-m' : ''}" onclick="openLoadDetail('${l.id}')">
+          const status = getCardStatus(l);
+          h += `<div class="mcard is-${status.kind}" onclick="openLoadDetail('${l.id}')">
             <div class="mcard-po">${po.poNumber || ''}</div>
             <div class="mcard-cust">${po.customer || ''}</div>
             <div class="mcard-mat">${l.material}</div>
@@ -821,15 +889,8 @@ function jumpToDay(dateStr) {
 function loadCard(l) {
   const po = pos.find(p => p.id === l.poId) || {};
   const pct = l.loadsAssigned > 0 ? Math.round(l.loadsDelivered / l.loadsAssigned * 100) : 0;
-  let statusCls = 'pending';
-  let statusLbl = 'Pending';
-  if (l.approvalStatus === 'submitted') { statusCls = 'submitted'; statusLbl = 'Pending Review'; }
-  else if (l.approvalStatus === 'approved') { statusCls = 'approved'; statusLbl = 'Approved'; }
-  else if (l.approvalStatus === 'rejected') { statusCls = 'rejected'; statusLbl = 'Rejected'; }
-  else if (l.timestamps?.completed) { statusCls = 'submitted'; statusLbl = 'Delivered'; }
-  else if (l.timestamps?.start) { statusCls = 'pending'; statusLbl = 'In progress'; }
-
-  const cardCls = l.approvalStatus === 'approved' ? 'completed' : l.approvalStatus === 'submitted' ? 'submitted' : '';
+  const status = getCardStatus(l);
+  const cardCls = `is-${status.kind}`;
 
   return `<div class="lcard ${cardCls}"
     draggable="${role === 'manager' && !l.locked ? 'true' : 'false'}"
@@ -837,7 +898,7 @@ function loadCard(l) {
     ondragstart="onDragStart(event, '${l.id}')"
     ondragend="this.classList.remove('dragging')"
     onclick="openLoadDetail('${l.id}')">
-    <span class="lc-status ${statusCls}">${statusLbl}</span>
+    <span class="lc-status ${cardCls}">${status.label}</span>
     <div class="lc-po">${po.poNumber || '—'}</div>
     <div class="lc-customer">${po.customer || ''}</div>
     ${po.city ? `<div class="lc-detail">📍 ${po.city}</div>` : ''}
