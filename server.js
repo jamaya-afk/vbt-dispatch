@@ -63,7 +63,6 @@ const MATERIALS = ['Fill Sand','Gravel','Rock','3/4 Rock','Cold Mix','Recycle Ba
 // Each vendor has its own list of materials with unit/price/notes
 const DEFAULT_VENDORS = [
   { id: 'vulcan',     name: 'Vulcan',                 location: 'Fresno, CA',      active: true },
-  { id: 'teichert',   name: 'Teichert',               location: 'Sacramento, CA',  active: true },
   { id: 'granite',    name: 'Granite Construction',   location: 'Fresno, CA',      active: true },
   { id: 'cemex',      name: 'CEMEX',                  location: 'Fresno, CA',      active: true },
   { id: 'keith',      name: 'Keith Farms',            location: 'Fowler, CA',      active: true },
