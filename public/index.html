@@ -515,12 +515,17 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
         <div class="field"><label>PO Number</label><input id="po-number" placeholder="auto"></div>
         <div class="field"><label>Delivery Date</label><input type="date" id="po-date" onchange="syncSplitDates()"></div>
       </div>
-      <div class="field"><label>Customer / Job Name</label><input id="po-customer" placeholder="e.g. Wilson Homes"></div>
+      <div class="field-row">
+        <div class="field"><label>Customer / Job Name</label><input id="po-customer" placeholder="e.g. Wilson Homes"></div>
+        <div class="field"><label>Job Code <span style="color:var(--txt3);text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label><input id="po-jobcode" placeholder="e.g. JOB-2024-1138"></div>
+      </div>
       <div class="field-row">
         <div class="field"><label>Address</label><input id="po-address" placeholder="123 Main St"></div>
         <div class="field"><label>City</label><input id="po-city" placeholder="Fresno"></div>
       </div>
-      <div class="field"><label>Pickup Yard</label><input id="po-pickup" placeholder="VBT Yard / CEMEX / etc."></div>
+      <div class="field"><label>Planned Pickup Yard <span style="color:var(--txt3);text-transform:none;letter-spacing:0;font-weight:400">(driver can change at pickup)</span></label>
+        <select id="po-vendor"></select>
+      </div>
       <div class="field"><label>Notes (visible to driver)</label><textarea id="po-notes" placeholder="Optional"></textarea></div>
       <div style="border-top:1px solid var(--bdr);padding-top:10px;margin-top:4px">
         <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:8px">Loads & Drivers</label>
@@ -985,9 +990,9 @@ function renderMonthBoard() {
           const po = pos.find(p => p.id === l.poId) || {};
           const status = getCardStatus(l);
           h += `<div class="mcard is-${status.kind}" onclick="openLoadDetail('${l.id}')">
-            <div class="mcard-po">${po.poNumber || ''}</div>
+            <div class="mcard-po">${po.poNumber || ''}${po.jobCode ? ` · ${po.jobCode}` : ''}</div>
             <div class="mcard-cust">${po.customer || ''}</div>
-            <div class="mcard-mat">${l.material}</div>
+            <div class="mcard-mat">${l.material}${po.city ? ' · ' + po.city : ''}</div>
             <div class="mcard-progress">${l.loadsDelivered}/${l.loadsAssigned} loads</div>
           </div>`;
         });
@@ -1044,9 +1049,9 @@ function loadCard(l) {
     ondragend="this.classList.remove('dragging')"
     onclick="openLoadDetail('${l.id}')">
     <span class="lc-status ${cardCls}">${status.label}</span>
-    <div class="lc-po">${po.poNumber || '—'}</div>
+    <div class="lc-po">${po.poNumber || '—'}${po.jobCode ? ` · <span style="color:var(--txt3);font-weight:600">${po.jobCode}</span>` : ''}</div>
     <div class="lc-customer">${po.customer || ''}</div>
-    ${po.city ? `<div class="lc-detail">📍 ${po.city}</div>` : ''}
+    <div class="lc-detail">${po.city ? `📍 ${po.city}` : ''}${po.address ? (po.city ? ' · ' : '📍 ') + po.address : ''}</div>
     <div class="lc-mat-pill">${l.material} · ${l.loadsAssigned} loads</div>
     <div class="lc-progress">
       <span>${l.loadsDelivered}/${l.loadsAssigned}</span>
@@ -1083,11 +1088,28 @@ function openNewPO() {
   document.getElementById('po-number').value = '';
   document.getElementById('po-date').value = todayStr();
   document.getElementById('po-customer').value = '';
+  document.getElementById('po-jobcode').value = '';
   document.getElementById('po-address').value = '';
   document.getElementById('po-city').value = '';
-  document.getElementById('po-pickup').value = 'VBT Yard';
   document.getElementById('po-notes').value = '';
-  splits = [{ truckId: trucks[0]?.id || '', material: materials[0] || 'Fill Sand', loadsAssigned: 1 }];
+
+  // Build vendor dropdown
+  const vSel = document.getElementById('po-vendor');
+  const activeVendors = vendors.filter(v => v.active);
+  vSel.innerHTML = activeVendors.map(v =>
+    `<option value="${v.id}" ${v.id === 'vbt' ? 'selected' : ''}>${v.name}${v.location ? ' — ' + v.location : ''}</option>`
+  ).join('');
+
+  // Default first split to use VBT vendor (or whatever's in dropdown)
+  const defaultVendorId = vSel.value || (activeVendors[0]?.id || '');
+  const defaultMats = getVendorMaterials(defaultVendorId);
+  splits = [{
+    truckId: trucks[0]?.id || '',
+    vendorId: defaultVendorId,
+    material: defaultMats[0]?.material || (materials[0] || 'Fill Sand'),
+    unit: defaultMats[0]?.unit || '',
+    loadsAssigned: 1
+  }];
   renderSplits();
   document.getElementById('po-modal').style.display = 'flex';
 }
@@ -1171,15 +1193,19 @@ function syncSplitDates() {
 }
 
 async function savePO() {
+  const vendorId = document.getElementById('po-vendor').value;
+  const vendorObj = vendors.find(v => v.id === vendorId);
   const po = {
-    poNumber:     document.getElementById('po-number').value.trim() || null,
-    customer:     document.getElementById('po-customer').value.trim(),
-    job:          document.getElementById('po-customer').value.trim(),
-    deliveryDate: document.getElementById('po-date').value,
-    address:      document.getElementById('po-address').value.trim(),
-    city:         document.getElementById('po-city').value.trim(),
-    pickup:       document.getElementById('po-pickup').value.trim() || 'VBT Yard',
-    notes:        document.getElementById('po-notes').value.trim(),
+    poNumber:        document.getElementById('po-number').value.trim() || null,
+    customer:        document.getElementById('po-customer').value.trim(),
+    job:             document.getElementById('po-customer').value.trim(),
+    jobCode:         document.getElementById('po-jobcode').value.trim(),
+    deliveryDate:    document.getElementById('po-date').value,
+    address:         document.getElementById('po-address').value.trim(),
+    city:            document.getElementById('po-city').value.trim(),
+    pickup:          vendorObj?.name || 'VBT Yard',
+    plannedVendorId: vendorId || 'vbt',
+    notes:           document.getElementById('po-notes').value.trim(),
   };
   if (!po.customer) { toast('Customer name required', 'error'); return; }
   if (!po.deliveryDate) { toast('Delivery date required', 'error'); return; }
@@ -1215,8 +1241,10 @@ function openLoadDetail(id) {
   html += `<dt style="color:var(--txt3)">Loads</dt><dd>${l.loadsDelivered}/${l.loadsAssigned}</dd>`;
   html += `<dt style="color:var(--txt3)">Driver</dt><dd>${l.driverName || 'Unassigned'}</dd>`;
   html += `<dt style="color:var(--txt3)">Date</dt><dd>${fmtDate(l.deliveryDate)}</dd>`;
+  if (po.jobCode) html += `<dt style="color:var(--txt3)">Job Code</dt><dd>${po.jobCode}</dd>`;
   if (po.address) html += `<dt style="color:var(--txt3)">Address</dt><dd>${po.address}, ${po.city || ''}</dd>`;
-  if (po.pickup) html += `<dt style="color:var(--txt3)">Pickup</dt><dd>${po.pickup}</dd>`;
+  if (po.pickup) html += `<dt style="color:var(--txt3)">Planned Pickup</dt><dd>${po.pickup}</dd>`;
+  if (l.actualYardName && l.actualYardName !== po.pickup) html += `<dt style="color:var(--txt3)">Actual Pickup</dt><dd style="color:var(--A);font-weight:600">${l.actualYardName}</dd>`;
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
   html += `</dl>`;
@@ -1650,6 +1678,7 @@ function tripCard(l) {
       <dl class="trip-info">
         <dt>Pickup</dt><dd>🏗️ ${l.pickupLocation}</dd>
         <dt>Deliver</dt><dd>📍 ${l.deliveryLocation || l.city}</dd>
+        ${l.jobCode ? `<dt>Job Code</dt><dd><b>${l.jobCode}</b></dd>` : ''}
         <dt>Material</dt><dd>${l.material}</dd>
         <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads</dd>
         ${l.notes ? `<dt>Notes</dt><dd class="notes">${l.notes}</dd>` : ''}
@@ -2023,22 +2052,44 @@ async function markBilled() {
 }
 
 // ── VENDORS & PRICING (manager admin) ────────────────────────────────────────
+let vendorSubview = 'prices';  // 'prices' | 'costs'
+
+function setVendorSubview(view) {
+  vendorSubview = view;
+  renderVendors();
+}
+
 function renderVendors() {
   const wrap = document.getElementById('vendors-content');
   if (!vendors.length) {
     wrap.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
     return;
   }
+
+  let h = '<div class="vendors-wrap">';
+
+  // Sub-tabs: Prices vs Costs
+  h += `<div style="display:flex;gap:6px;margin-bottom:14px;background:var(--bg2);padding:4px;border-radius:24px;width:fit-content">
+    <button class="view-btn ${vendorSubview === 'prices' ? 'active' : ''}" onclick="setVendorSubview('prices')">📋 Vendor Prices</button>
+    <button class="view-btn ${vendorSubview === 'costs' ? 'active' : ''}" onclick="setVendorSubview('costs')">💰 Material Costs</button>
+  </div>`;
+
+  if (vendorSubview === 'costs') {
+    h += '</div>';  // close vendors-wrap
+    wrap.innerHTML = h;
+    renderMaterialCosts();
+    return;
+  }
+
+  // PRICES view (existing vendor admin)
   // Pick the first active vendor as default if none selected
   if (!currentVendorTab || !vendors.find(v => v.id === currentVendorTab)) {
     currentVendorTab = (vendors.find(v => v.active) || vendors[0])?.id;
   }
   const v = vendors.find(x => x.id === currentVendorTab);
-  if (!v) { wrap.innerHTML = '<div class="empty-state"><p>No vendors yet.</p></div>'; return; }
+  if (!v) { wrap.innerHTML = h + '<div class="empty-state"><p>No vendors yet.</p></div></div>'; return; }
 
   const prices = vendorPrices[v.id] || [];
-
-  let h = '<div class="vendors-wrap">';
 
   // Vendor tabs
   h += '<div class="vendor-tabs">';
@@ -2111,6 +2162,85 @@ function renderVendors() {
 }
 
 function switchVendorTab(vendorId) { currentVendorTab = vendorId; renderVendors(); }
+
+// ── MATERIAL COSTS (vendor payables view) ──────────────────────────────────
+let mcMonthFilter = '';
+
+async function renderMaterialCosts() {
+  const wrap = document.getElementById('vendors-content');
+  // Append below the sub-tab nav
+  const subnav = wrap.innerHTML;
+  wrap.innerHTML = subnav + '<div style="padding:18px;text-align:center;color:var(--txt2)">Loading costs...</div>';
+
+  try {
+    const params = new URLSearchParams();
+    if (mcMonthFilter) params.set('month', mcMonthFilter);
+    const r = await fetch('/api/material-costs?' + params);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+
+    let h = subnav;
+    h += `<div style="padding:0 18px 18px">`;
+    h += `<div style="background:var(--bg);border-radius:var(--rl);padding:14px 16px;box-shadow:var(--shadow);margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+      <div>
+        <div style="font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.05em;font-weight:600">${mcMonthFilter ? mcMonthFilter : 'All time'}</div>
+        <div style="font-size:24px;font-weight:700">${money(data.grandTotal)}</div>
+        <div style="font-size:12px;color:var(--txt2)">${data.grandLoads} loads from outside vendors</div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:3px">Excludes VBT Yard (internal inventory)</div>
+      </div>
+      <div>
+        <label style="font-size:10px;text-transform:uppercase;color:var(--txt2);font-weight:600;display:block;margin-bottom:4px">Month</label>
+        <select onchange="mcMonthFilter = this.value; renderMaterialCosts()" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
+          <option value="">All time</option>
+          ${data.months.map(m => `<option value="${m}" ${mcMonthFilter === m ? 'selected' : ''}>${m}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
+
+    const vendorsArr = Object.entries(data.vendors).sort((a,b) => b[1].totalCost - a[1].totalCost);
+    if (vendorsArr.length === 0) {
+      h += '<div class="vendor-empty" style="background:var(--bg);box-shadow:var(--shadow)">No outside vendor pickups in this period.<br><br>VBT Yard pickups are not counted here since they\'re from internal inventory.</div>';
+    } else {
+      vendorsArr.forEach(([vendorId, v]) => {
+        const pct = data.grandTotal > 0 ? Math.round(v.totalCost / data.grandTotal * 100) : 0;
+        const matRows = Object.entries(v.byMaterial).sort((a,b) => b[1].cost - a[1].cost);
+        h += `<div class="vendor-panel" style="margin-bottom:12px">
+          <div class="vendor-panel-head" style="margin-bottom:10px">
+            <div>
+              <div class="vendor-panel-title">${v.name}</div>
+              <div class="vendor-panel-sub">${v.location || ''} · ${v.totalLoads} load${v.totalLoads !== 1 ? 's' : ''} delivered</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:22px;font-weight:700;color:var(--R)">${money(v.totalCost)}</div>
+              <div style="font-size:11px;color:var(--txt3)">${pct}% of total spend</div>
+            </div>
+          </div>
+          <table class="price-table">
+            <thead><tr><th>Material</th><th style="width:90px">Unit</th><th style="width:90px">Loads</th><th style="width:110px">Unit Price</th><th style="width:120px;text-align:right">Subtotal</th></tr></thead>
+            <tbody>
+              ${matRows.map(([mat, d]) => `<tr>
+                <td>${mat}</td>
+                <td>${d.unit || '—'}</td>
+                <td>${d.loads}</td>
+                <td>${money(d.unitPrice)}</td>
+                <td style="text-align:right;font-weight:600">${money(d.cost)}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+      });
+    }
+    h += '</div>';
+    wrap.innerHTML = h;
+  } catch (e) {
+    wrap.innerHTML = subnav + `<div class="empty-state"><h3>Could not load costs</h3><p style="color:var(--R)">${e.message}</p></div>`;
+  }
+}
+
+function money(n) {
+  return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 
 async function addNewVendor() {
   const name = prompt('Vendor name:');

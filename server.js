@@ -363,7 +363,9 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
       poNumber: po.poNumber || '—',
       customer: po.customer || '',
       jobName: po.job || po.customer || '',
+      jobCode: po.jobCode || '',
       pickupLocation: po.pickup || 'VBT Yard',
+      plannedVendorId: po.plannedVendorId || null,
       deliveryLocation: po.address || po.city || '',
       city: po.city || '',
       material: l.material,
@@ -396,16 +398,18 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   const newPo = {
     id: 'PO-' + Date.now(),
     poNumber,
-    customer:     po.customer || '',
-    job:          po.job || po.customer || '',
-    address:      po.address || '',
-    city:         po.city || '',
-    deliveryDate: po.deliveryDate,
-    pickup:       po.pickup || 'VBT Yard',
-    notes:        po.notes || '',
-    status:       po.deliveryDate > todayStr() ? 'scheduled' : 'active',
-    materials:    [],
-    createdAt:    new Date().toISOString(),
+    customer:        po.customer || '',
+    job:             po.job || po.customer || '',
+    jobCode:         po.jobCode || '',                                 // optional customer job code
+    address:         po.address || '',
+    city:            po.city || '',
+    deliveryDate:    po.deliveryDate,
+    pickup:          po.pickup || 'VBT Yard',                          // human label of planned pickup
+    plannedVendorId: po.plannedVendorId || 'vbt',                      // structured planned pickup vendor
+    notes:           po.notes || '',
+    status:          po.deliveryDate > todayStr() ? 'scheduled' : 'active',
+    materials:       [],
+    createdAt:       new Date().toISOString(),
   };
 
   // Aggregate materials from splits
@@ -821,6 +825,78 @@ app.delete('/api/vendors/:id/prices/:priceId', reqMgr, async (req, res) => {
   list.splice(idx, 1);
   await saveData();
   res.json({ success: true });
+});
+
+// ── API: VENDOR / MATERIAL COSTS (payables — what VBT owes outside vendors) ─
+// Returns totals broken down by vendor. VBT Yard is excluded (internal inventory, no cost).
+app.get('/api/material-costs', reqMgr, (req, res) => {
+  // Filter by month if supplied (YYYY-MM), otherwise all-time
+  const monthFilter = req.query.month || '';
+
+  // We use the ACTUAL pickup yard (where the driver said they went) as the cost source.
+  // If the driver hasn't arrived yet, fall back to the PO's planned vendor.
+  const eligible = store.loads.filter(l => {
+    if (l.voided) return false;
+    if (monthFilter && !(l.deliveryDate || '').startsWith(monthFilter)) return false;
+    return true;
+  });
+
+  // Build per-vendor totals
+  const byVendor = {};   // { vendorId: { name, totalLoads, totalCost, byMaterial: { mat: { loads, cost } } } }
+
+  eligible.forEach(l => {
+    // Determine which vendor this load was picked up from
+    const vendorId = l.actualYardId || l.vendorId || (store.pos.find(p => p.id === l.poId) || {}).plannedVendorId;
+    if (!vendorId) return;
+    if (vendorId === 'vbt') return;  // VBT Yard = internal, no cost
+
+    const v = store.vendors.find(x => x.id === vendorId);
+    if (!v) return;
+
+    if (!byVendor[vendorId]) {
+      byVendor[vendorId] = { name: v.name, location: v.location, totalLoads: 0, totalCost: 0, byMaterial: {} };
+    }
+    const delivered = Number(l.loadsDelivered) || 0;
+    if (delivered === 0) return;  // only count loads actually delivered (so cost is real)
+
+    // Find the vendor's price for this material at the time it was used
+    let unitPrice = 0;
+    let unit = '';
+    if (l.pricePerUnit !== undefined && l.pricePerUnit !== null) {
+      // Snapshot saved at PO creation
+      unitPrice = Number(l.pricePerUnit) || 0;
+      unit = l.unit || '';
+    } else {
+      // Fall back to current vendor price table
+      const priceRow = (store.vendorPrices[vendorId] || []).find(p => p.material === l.material);
+      if (priceRow) { unitPrice = priceRow.price; unit = priceRow.unit; }
+    }
+
+    const cost = delivered * unitPrice;
+    byVendor[vendorId].totalLoads += delivered;
+    byVendor[vendorId].totalCost  += cost;
+
+    if (!byVendor[vendorId].byMaterial[l.material]) {
+      byVendor[vendorId].byMaterial[l.material] = { loads: 0, cost: 0, unit, unitPrice };
+    }
+    byVendor[vendorId].byMaterial[l.material].loads += delivered;
+    byVendor[vendorId].byMaterial[l.material].cost  += cost;
+  });
+
+  // List of available months (for filter dropdown)
+  const months = [...new Set(store.loads.map(l => (l.deliveryDate || '').slice(0, 7)).filter(Boolean))].sort().reverse();
+
+  // Grand total
+  const grandTotal = Object.values(byVendor).reduce((s, v) => s + v.totalCost, 0);
+  const grandLoads = Object.values(byVendor).reduce((s, v) => s + v.totalLoads, 0);
+
+  res.json({
+    vendors: byVendor,
+    months,
+    monthFilter,
+    grandTotal,
+    grandLoads
+  });
 });
 
 // ── API: REPORTS / FINANCE ───────────────────────────────────────────────────
