@@ -234,6 +234,33 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
 .bill-table tr:hover{background:var(--bg2)}
 .bill-table input[type="checkbox"]{cursor:pointer;width:16px;height:16px}
 
+/* ── REASSIGN MODAL ── */
+.driver-pick{display:flex;align-items:center;gap:10px;padding:10px 12px;border:2px solid var(--bdr);border-radius:var(--r);background:var(--bg);cursor:pointer;transition:all .15s;margin-bottom:6px}
+.driver-pick:hover{border-color:var(--B);background:var(--Bb)}
+.driver-pick.selected{border-color:var(--B);background:var(--Bb)}
+.driver-pick.disabled{opacity:.45;cursor:not-allowed;background:var(--bg2)}
+.driver-pick.disabled:hover{border-color:var(--bdr);background:var(--bg2)}
+.driver-pick-avatar{width:32px;height:32px;border-radius:50%;background:var(--B);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0}
+.driver-pick-info{flex:1;min-width:0}
+.driver-pick-name{font-size:13px;font-weight:600}
+.driver-pick-detail{font-size:11px;color:var(--txt2);margin-top:1px}
+
+/* ── MOVE DATE MODAL ── */
+.move-scope-opt{padding:10px 12px;border:2px solid var(--bdr);border-radius:var(--r);cursor:pointer;background:var(--bg);transition:all .15s;display:flex;align-items:flex-start;gap:10px}
+.move-scope-opt:hover{border-color:var(--B);background:var(--Bb)}
+.move-scope-opt.selected{border-color:var(--B);background:var(--Bb)}
+.move-scope-opt input[type="radio"]{margin-top:3px;flex-shrink:0;cursor:pointer}
+.move-scope-opt .opt-title{font-weight:600;font-size:13px}
+.move-scope-opt .opt-desc{font-size:11px;color:var(--txt2);margin-top:2px}
+.move-scope-opt.disabled{opacity:.5;cursor:not-allowed}
+.move-scope-opt.disabled:hover{border-color:var(--bdr);background:var(--bg)}
+
+/* Move history pill on cards */
+.lc-moved-pill{display:inline-flex;align-items:center;gap:3px;font-size:9px;padding:1px 7px;border-radius:20px;background:var(--Ab);color:var(--A);font-weight:700;border:1px solid var(--Ad);margin-top:5px;cursor:help}
+.move-history-list{margin-top:8px;padding:8px 10px;background:var(--bg2);border-radius:var(--r);font-size:11px}
+.move-history-item{padding:4px 0;color:var(--txt2);border-bottom:1px dashed var(--bdr)}
+.move-history-item:last-child{border-bottom:none}
+
 /* ── VIEW TOGGLE (Day / Month) ── */
 .view-btn{padding:5px 12px;font-size:11px;font-weight:600;color:var(--txt2);background:transparent;border:none;border-radius:18px;cursor:pointer;font-family:var(--f);transition:all .15s}
 .view-btn:hover{color:var(--txt)}
@@ -498,6 +525,69 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
   </div>
 </div>
 
+<!-- REASSIGN DRIVER MODAL -->
+<div class="modal-bg" id="reassign-modal" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-head">
+      <h2>🔄 Reassign Driver</h2>
+      <button class="modal-close" onclick="closeReassign()">&#215;</button>
+    </div>
+    <div class="modal-body">
+      <div id="reassign-context" style="font-size:13px;color:var(--txt2);padding:10px 12px;background:var(--bg2);border-radius:var(--r);margin-bottom:6px"></div>
+
+      <div class="field">
+        <label>Assign to</label>
+        <div id="reassign-driver-list"></div>
+      </div>
+
+      <div class="field" id="reassign-reason-wrap" style="display:none">
+        <label>Reason (optional)</label>
+        <input type="text" id="reassign-reason" placeholder="e.g. Beryle called in sick">
+      </div>
+
+      <div id="reassign-warn" style="display:none;padding:10px 12px;background:var(--Ab);border:1px solid var(--Ad);border-radius:var(--r);color:var(--A);font-size:12px"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeReassign()">Cancel</button>
+      <button class="btn primary" onclick="confirmReassign()" id="reassign-confirm-btn" disabled>Reassign</button>
+    </div>
+  </div>
+</div>
+
+<!-- MOVE DATE MODAL -->
+<div class="modal-bg" id="move-modal" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-head">
+      <h2>📅 Move to Another Date</h2>
+      <button class="modal-close" onclick="closeMove()">&#215;</button>
+    </div>
+    <div class="modal-body">
+      <div id="move-context" style="font-size:13px;color:var(--txt2);padding:10px 12px;background:var(--bg2);border-radius:var(--r);margin-bottom:6px"></div>
+
+      <div class="field">
+        <label>What do you want to move?</label>
+        <div id="move-scope-options" style="display:flex;flex-direction:column;gap:8px"></div>
+      </div>
+
+      <div class="field">
+        <label>New scheduled date</label>
+        <input type="date" id="move-new-date">
+      </div>
+
+      <div class="field">
+        <label>Reason for move (required)</label>
+        <textarea id="move-reason" placeholder="e.g. only 6 of 10 loads delivered Monday — moving rest to Tuesday" rows="3"></textarea>
+      </div>
+
+      <div id="move-warn" style="display:none;padding:10px 12px;background:var(--Ab);border:1px solid var(--Ad);border-radius:var(--r);color:var(--A);font-size:12px"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeMove()">Cancel</button>
+      <button class="btn primary" onclick="confirmMove()">Move Date</button>
+    </div>
+  </div>
+</div>
+
 <!-- SIGNATURE MODAL -->
 <div class="modal-bg" id="sig-modal" style="display:none">
   <div class="modal">
@@ -743,12 +833,13 @@ function renderDayBoard() {
 
   trucks.forEach(t => {
     const myLoads = loads.filter(l => l.truckId === t.id && l.deliveryDate === dateStr && !l.voided);
+    const reassignableCount = myLoads.filter(l => !l.locked).length;
     cols.push(`
       <div class="driver-col">
         <div class="driver-col-head">
-          <div>
+          <div style="flex:1;min-width:0">
             <div class="driver-name">${t.label}</div>
-            <div class="driver-truck">${t.truckNum}</div>
+            <div class="driver-truck">${t.truckNum}${reassignableCount > 0 ? ` · <a onclick="event.stopPropagation();openReassignModal('all-driver','${t.id}')" style="color:var(--B);cursor:pointer;text-decoration:underline;font-weight:500">Reassign all</a>` : ''}</div>
           </div>
           <span class="driver-load-count">${myLoads.length}</span>
         </div>
@@ -892,6 +983,9 @@ function loadCard(l) {
   const status = getCardStatus(l);
   const cardCls = `is-${status.kind}`;
 
+  const wasMoved = l.moveHistory && l.moveHistory.length > 0;
+  const lastMove = wasMoved ? l.moveHistory[l.moveHistory.length - 1] : null;
+
   return `<div class="lcard ${cardCls}"
     draggable="${role === 'manager' && !l.locked ? 'true' : 'false'}"
     data-loadid="${l.id}"
@@ -907,6 +1001,7 @@ function loadCard(l) {
       <span>${l.loadsDelivered}/${l.loadsAssigned}</span>
       <div class="lc-progress-bar"><div class="lc-progress-fill" style="width:${pct}%"></div></div>
     </div>
+    ${wasMoved ? `<span class="lc-moved-pill" title="Moved from ${fmtDate(lastMove.from)} — ${lastMove.reason}">📅 Moved</span>` : ''}
   </div>`;
 }
 
@@ -1031,10 +1126,22 @@ function openLoadDetail(id) {
   if (l.ticketImage) html += `<div style="margin-top:12px"><div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Ticket</div><img src="${l.ticketImage}" style="max-width:100%;border-radius:var(--r);border:1px solid var(--bdr)"></div>`;
   if (l.pod?.signature) html += `<div style="margin-top:12px"><div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Signed by ${l.pod.signedBy}</div><img src="${l.pod.signature}" style="max-width:100%;border-radius:var(--r);border:1px solid var(--bdr);background:#fff"></div>`;
 
+  // Show move history if any
+  if (l.moveHistory && l.moveHistory.length) {
+    html += `<div class="move-history-list">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt3);font-weight:600;margin-bottom:4px">Move History</div>
+      ${l.moveHistory.map(h => `<div class="move-history-item">📅 <b>${fmtDate(h.from)} → ${fmtDate(h.to)}</b> · ${h.reason} <span style="color:var(--txt3)">— ${h.movedBy}</span></div>`).join('')}
+    </div>`;
+  }
+
   let actions = '';
   if (role === 'manager') {
+    if (!l.locked) {
+      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openReassignModal('single','${l.id}')">🔄 Reassign Driver</button>`;
+      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openMoveModal('single','${l.id}')">📅 Move Date</button>`;
+    }
     if (!l.approvalStatus || l.approvalStatus === 'pending') {
-      actions = `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
+      actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
     }
   }
 
@@ -1060,6 +1167,250 @@ async function deleteLoad(id) {
   const d = await api('DELETE', '/api/loads/' + id);
   if (d.ok) { document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove(); await loadAll(); renderBoard(); toast('Load deleted', 'success'); }
   else toast(d.error || 'Failed', 'error');
+}
+
+// ── REASSIGN DRIVER ──────────────────────────────────────────────────────────
+let reassignPayload = null;  // { scope: 'single'|'all-driver', loadIds: [], fromTruckId? }
+let reassignTarget = null;   // truckId of selected new driver
+
+function openReassignModal(scope, refId) {
+  reassignTarget = null;
+  document.getElementById('reassign-confirm-btn').disabled = true;
+
+  let loadIds = [];
+  let fromTruckId = null;
+  let context = '';
+
+  if (scope === 'single') {
+    const l = loads.find(x => x.id === refId);
+    if (!l) return;
+    if (l.locked) { toast('This load is locked', 'error'); return; }
+    const po = pos.find(p => p.id === l.poId) || {};
+    loadIds = [l.id];
+    fromTruckId = l.truckId;
+    const fromTruck = trucks.find(t => t.id === l.truckId);
+    context = `<b>${po.poNumber}</b> — ${po.customer}<br>`
+      + `<b>Material:</b> ${l.material}, ${l.loadsAssigned} load${l.loadsAssigned !== 1 ? 's' : ''}<br>`
+      + `<b>Currently:</b> ${fromTruck ? fromTruck.label : 'Unassigned'} · ${fmtDate(l.deliveryDate)}`;
+  } else if (scope === 'all-driver') {
+    const fromTruck = trucks.find(t => t.id === refId);
+    if (!fromTruck) return;
+    fromTruckId = fromTruck.id;
+    // All UNLOCKED loads currently assigned to this driver, regardless of date
+    const myLoads = loads.filter(l => l.truckId === fromTruck.id && !l.locked && !l.voided);
+    if (!myLoads.length) { toast('No reassignable loads for this driver', 'error'); return; }
+    loadIds = myLoads.map(l => l.id);
+    // Group by date for context summary
+    const byDate = {};
+    myLoads.forEach(l => { byDate[l.deliveryDate] = (byDate[l.deliveryDate] || 0) + 1; });
+    const dateSummary = Object.entries(byDate)
+      .sort((a,b) => a[0].localeCompare(b[0]))
+      .map(([d, n]) => `${n} on ${fmtDate(d)}`)
+      .join(', ');
+    context = `<b>Reassign all of ${fromTruck.label}'s loads</b><br>`
+      + `<b>${myLoads.length}</b> unlocked load${myLoads.length !== 1 ? 's' : ''}: ${dateSummary}<br>`
+      + `<span style="color:var(--txt3);font-size:11px">Locked (approved/billed) loads stay where they are.</span>`;
+  }
+
+  reassignPayload = { scope, loadIds, fromTruckId };
+  document.getElementById('reassign-context').innerHTML = context;
+  document.getElementById('reassign-reason').value = '';
+  document.getElementById('reassign-reason-wrap').style.display = scope === 'all-driver' ? 'flex' : 'none';
+  document.getElementById('reassign-warn').style.display = 'none';
+
+  // Build driver list
+  const driverHtml = trucks.map(t => {
+    const isFrom = t.id === fromTruckId;
+    const activeCount = loads.filter(l => l.truckId === t.id && l.status !== 'completed' && !l.voided).length;
+    return `<div class="driver-pick ${isFrom ? 'disabled' : ''}" data-truckid="${t.id}"
+      onclick="${isFrom ? '' : `selectReassignDriver('${t.id}', this)`}">
+      <div class="driver-pick-avatar">${t.label.charAt(0)}</div>
+      <div class="driver-pick-info">
+        <div class="driver-pick-name">${t.label} ${isFrom ? '<span style="color:var(--txt3);font-size:11px;font-weight:400">(current)</span>' : ''}</div>
+        <div class="driver-pick-detail">${t.truckNum} · ${activeCount} active load${activeCount !== 1 ? 's' : ''}</div>
+      </div>
+    </div>`;
+  }).join('') + `<div class="driver-pick" data-truckid=""
+      onclick="selectReassignDriver('', this)">
+      <div class="driver-pick-avatar" style="background:var(--A)">⚠</div>
+      <div class="driver-pick-info">
+        <div class="driver-pick-name">Unassigned</div>
+        <div class="driver-pick-detail">Move to the unassigned column</div>
+      </div>
+    </div>`;
+  document.getElementById('reassign-driver-list').innerHTML = driverHtml;
+
+  document.getElementById('reassign-modal').style.display = 'flex';
+}
+
+function selectReassignDriver(truckId, el) {
+  reassignTarget = truckId;
+  document.querySelectorAll('.driver-pick').forEach(e => e.classList.remove('selected'));
+  el.classList.add('selected');
+  document.getElementById('reassign-confirm-btn').disabled = false;
+}
+
+function closeReassign() {
+  document.getElementById('reassign-modal').style.display = 'none';
+  reassignPayload = null;
+  reassignTarget = null;
+}
+
+async function confirmReassign() {
+  if (!reassignPayload || reassignTarget === null) return;
+  const { loadIds } = reassignPayload;
+  const newTruck = trucks.find(t => t.id === reassignTarget);
+  const driverName = newTruck ? newTruck.label : '';
+
+  // Update loads in parallel
+  document.getElementById('reassign-confirm-btn').disabled = true;
+  let success = 0, failed = 0;
+  for (const id of loadIds) {
+    const d = await api('PUT', '/api/loads/' + id, {
+      truckId: reassignTarget || null,
+      driverName,
+    });
+    if (d.ok) success++; else failed++;
+  }
+
+  if (failed === 0) {
+    const target = newTruck ? newTruck.label : 'Unassigned';
+    toast(`Reassigned ${success} load${success !== 1 ? 's' : ''} to ${target}`, 'success');
+  } else {
+    toast(`Reassigned ${success}, ${failed} failed`, failed > 0 ? 'error' : 'success');
+  }
+
+  closeReassign();
+  await loadAll();
+  if (currentTab === 'board') renderBoard();
+}
+
+// ── MOVE DATE ────────────────────────────────────────────────────────────────
+let movePayload = null;  // { scope, poId, loadId, ... }
+
+function openMoveModal(scope, refId) {
+  // refId = loadId for 'single', poId for 'po' or 'remaining'
+  movePayload = { scope, refId };
+
+  let context = '', scopeOptions = '';
+  let l = null, po = null;
+
+  if (scope === 'single') {
+    l = loads.find(x => x.id === refId);
+    if (!l) return;
+    po = pos.find(p => p.id === l.poId) || {};
+    movePayload.loadId = l.id;
+    movePayload.poId = po.id;
+  } else {
+    po = pos.find(p => p.id === refId);
+    if (!po) return;
+    movePayload.poId = po.id;
+  }
+
+  // Calculate totals for context
+  const allPoLoads = loads.filter(x => x.poId === po.id && !x.voided);
+  const remaining = allPoLoads.filter(x =>
+    x.approvalStatus !== 'approved' &&
+    x.approvalStatus !== 'submitted' &&
+    x.billStatus !== 'billed' &&
+    x.status !== 'completed' &&
+    !x.locked
+  );
+  const completed = allPoLoads.length - remaining.length;
+
+  // Build context box
+  context = `<b>${po.poNumber}</b> — ${po.customer}<br>`;
+  if (l) {
+    context += `<b>This load:</b> ${l.material}, ${l.loadsAssigned} load${l.loadsAssigned !== 1 ? 's' : ''}, currently ${fmtDate(l.deliveryDate)}<br>`;
+  }
+  context += `<b>PO has:</b> ${allPoLoads.length} total loads — ${completed} done/locked, ${remaining.length} undelivered`;
+  document.getElementById('move-context').innerHTML = context;
+
+  // Build scope radio options based on what makes sense
+  const opts = [];
+  if (l) {
+    opts.push({
+      value: 'single',
+      title: 'Move just this load',
+      desc: `${l.material}, ${l.loadsAssigned} load${l.loadsAssigned !== 1 ? 's' : ''} only`,
+      disabled: false
+    });
+  }
+  opts.push({
+    value: 'remaining',
+    title: 'Move remaining undelivered loads',
+    desc: `${remaining.length} unfinished load${remaining.length !== 1 ? 's' : ''} on this PO`,
+    disabled: remaining.length === 0
+  });
+  opts.push({
+    value: 'po',
+    title: 'Move the entire PO',
+    desc: `All ${allPoLoads.length} load${allPoLoads.length !== 1 ? 's' : ''} (locked ones will be skipped)`,
+    disabled: false
+  });
+
+  scopeOptions = opts.map((o, i) => `
+    <label class="move-scope-opt ${o.disabled ? 'disabled' : ''} ${i === 0 && !o.disabled ? 'selected' : ''}">
+      <input type="radio" name="move-scope" value="${o.value}" ${o.disabled ? 'disabled' : ''} ${i === 0 && !o.disabled ? 'checked' : ''}
+        onchange="document.querySelectorAll('.move-scope-opt').forEach(e=>e.classList.remove('selected'));this.closest('.move-scope-opt').classList.add('selected')">
+      <div>
+        <div class="opt-title">${o.title}</div>
+        <div class="opt-desc">${o.desc}</div>
+      </div>
+    </label>
+  `).join('');
+  document.getElementById('move-scope-options').innerHTML = scopeOptions;
+
+  // Default the date to tomorrow
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  document.getElementById('move-new-date').value = tomorrow.getFullYear() + '-' +
+    String(tomorrow.getMonth() + 1).padStart(2, '0') + '-' +
+    String(tomorrow.getDate()).padStart(2, '0');
+  document.getElementById('move-new-date').min = todayStr();
+
+  document.getElementById('move-reason').value = '';
+  document.getElementById('move-warn').style.display = 'none';
+  document.getElementById('move-modal').style.display = 'flex';
+}
+
+function closeMove() {
+  document.getElementById('move-modal').style.display = 'none';
+  movePayload = null;
+}
+
+async function confirmMove() {
+  if (!movePayload) return;
+  const newDate = document.getElementById('move-new-date').value;
+  const reason  = document.getElementById('move-reason').value.trim();
+  const scope   = document.querySelector('input[name="move-scope"]:checked')?.value;
+
+  const warn = document.getElementById('move-warn');
+  warn.style.display = 'none';
+
+  if (!scope)   { warn.textContent = 'Pick what to move'; warn.style.display = 'block'; return; }
+  if (!newDate) { warn.textContent = 'Pick a new date'; warn.style.display = 'block'; return; }
+  if (!reason)  { warn.textContent = 'Reason is required'; warn.style.display = 'block'; return; }
+
+  const payload = {
+    scope,
+    newDate,
+    reason,
+    poId:   movePayload.poId,
+    loadId: scope === 'single' ? movePayload.loadId : null,
+  };
+
+  const d = await api('POST', '/api/loads/move', payload);
+  if (d.ok) {
+    let msg = `Moved ${d.moved} load${d.moved !== 1 ? 's' : ''} to ${fmtDate(newDate)}`;
+    if (d.skipped > 0) msg += ` (${d.skipped} locked, skipped)`;
+    toast(msg, 'success');
+    closeMove();
+    await loadAll();
+    if (currentTab === 'board') renderBoard();
+  } else {
+    toast(d.error || 'Move failed', 'error');
+  }
 }
 
 // ── DRIVER VIEW ──────────────────────────────────────────────────────────────
@@ -1149,6 +1500,12 @@ function tripCard(l) {
   if (rejected) banner = `<div class="banner rejected">⚠ Rejected by manager${l.rejectReason ? ': ' + l.rejectReason : ''} — re-do this trip</div>`;
   else if (approved) banner = `<div class="banner approved">✓ Approved — trip closed</div>`;
   else if (submitted) banner = `<div class="banner submitted">⏳ Submitted — waiting for manager approval</div>`;
+
+  // If load was moved, show a notice with the most recent move reason
+  if (l.moveHistory && l.moveHistory.length) {
+    const latest = l.moveHistory[l.moveHistory.length - 1];
+    banner += `<div class="banner" style="background:var(--Ab);color:var(--A);border:1px solid var(--Ad)">📅 Rescheduled from ${fmtDate(latest.from)} — ${latest.reason}</div>`;
+  }
 
   const stepCls = (active, done) => done ? 'done' : active ? 'active' : '';
 
