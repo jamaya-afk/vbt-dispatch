@@ -76,7 +76,7 @@ const DEFAULT_VENDOR_PRICES = {
   vulcan: [
     { id: 'v1', material: '3/4 Rock',   unit: 'CY',  price: 38, active: true, notes: '' },
     { id: 'v2', material: 'Base Rock',  unit: 'TON', price: 22, active: true, notes: '' },
-    { id: 'v3', material: 'FILL Sand',       unit: 'CY',  price: 28, active: true, notes: '' },
+    { id: 'v3', material: 'Fill Sand',       unit: 'CY',  price: 28, active: true, notes: '' },
   ],
   ],
   granite: [
