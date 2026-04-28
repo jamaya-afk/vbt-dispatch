@@ -78,7 +78,6 @@ const DEFAULT_VENDOR_PRICES = {
     { id: 'v2', material: 'Base Rock',  unit: 'TON', price: 22, active: true, notes: '' },
     { id: 'v3', material: 'Fill Sand',       unit: 'CY',  price: 28, active: true, notes: '' },
   ],
-  ],
   granite: [
     { id: 'g1', material: '3/4 Rock',   unit: 'TON', price: 30, active: true, notes: '' },
     { id: 'g2', material: 'Fill Sand',       unit: 'TON', price: 26, active: true, notes: '' },
