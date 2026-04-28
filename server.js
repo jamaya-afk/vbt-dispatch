@@ -56,25 +56,63 @@ const TRUCKS = [
   { id: 'carlos',   label: 'Carlos',   truckNum: 'Truck #2B' },
 ];
 
+// Generic fallback materials list (for the "Other" vendor or legacy data)
 const MATERIALS = ['Fill Sand','Gravel','Rock','3/4 Rock','Cold Mix','Recycle Base','Dirt','Base Rock','Other'];
 
-// Pickup yards / vendors — drivers pick which yard they actually arrived at
-const YARDS = [
-  { id: 'vbt',           name: 'VBT Yard',       location: 'Fresno, CA' },
-  { id: 'cemex-fresno',  name: 'CEMEX',          location: 'Fresno, CA' },
-  { id: 'vulcan',        name: 'Vulcan',         location: 'Fresno, CA' },
-  { id: 'keith-farms',   name: 'Keith Farms',    location: 'Fowler, CA' },
-  { id: 'graniterock',   name: 'Graniterock',    location: 'Madera, CA' },
-  { id: 'other',         name: 'Other',          location: '' },
+// Default vendors seeded the first time the app runs
+// Each vendor has its own list of materials with unit/price/notes
+const DEFAULT_VENDORS = [
+  { id: 'vulcan',     name: 'Vulcan',                 location: 'Fresno, CA',      active: true },
+  { id: 'teichert',   name: 'Teichert',               location: 'Sacramento, CA',  active: true },
+  { id: 'granite',    name: 'Granite Construction',   location: 'Fresno, CA',      active: true },
+  { id: 'cemex',      name: 'CEMEX',                  location: 'Fresno, CA',      active: true },
+  { id: 'keith',      name: 'Keith Farms',            location: 'Fowler, CA',      active: true },
+  { id: 'hanson',     name: 'Hanson',                 location: 'Bakersfield, CA', active: true },
+  { id: 'vbt',        name: 'VBT Yard',               location: 'Fresno, CA',      active: true },
+  { id: 'other',      name: 'Other',                  location: '',                active: true },
 ];
+
+// Default per-vendor prices (just a starting set — manager edits these)
+const DEFAULT_VENDOR_PRICES = {
+  vulcan: [
+    { id: 'v1', material: '3/4 Rock',   unit: 'CY',  price: 38, active: true, notes: '' },
+    { id: 'v2', material: 'Base Rock',  unit: 'TON', price: 22, active: true, notes: '' },
+    { id: 'v3', material: 'Sand',       unit: 'CY',  price: 28, active: true, notes: '' },
+  ],
+  teichert: [
+    { id: 't1', material: 'Fill Sand',  unit: 'CY',  price: 18, active: true, notes: '' },
+    { id: 't2', material: 'Gravel',     unit: 'CY',  price: 32, active: true, notes: '' },
+  ],
+  granite: [
+    { id: 'g1', material: '3/4 Rock',   unit: 'TON', price: 30, active: true, notes: '' },
+    { id: 'g2', material: 'Rock',       unit: 'TON', price: 26, active: true, notes: '' },
+  ],
+  cemex: [
+    { id: 'c1', material: 'Cold Mix',   unit: 'TON', price: 95, active: true, notes: '' },
+    { id: 'c2', material: 'Base Rock',  unit: 'TON', price: 24, active: true, notes: '' },
+  ],
+  keith: [
+    { id: 'k1', material: 'Fill Sand',  unit: 'CY',  price: 16, active: true, notes: '' },
+    { id: 'k2', material: 'Recycle Base', unit: 'TON', price: 14, active: true, notes: '' },
+  ],
+  hanson: [
+    { id: 'h1', material: 'Rock',       unit: 'TON', price: 32, active: true, notes: '' },
+  ],
+  vbt: [
+    { id: 'vb1', material: 'Dirt',      unit: 'CY',  price: 0, active: true, notes: 'Internal yard' },
+  ],
+  other: []
+};
 
 // ── DATA STORE — Postgres primary, file backup ───────────────────────────────
 const DATA_FILE = path.join(__dirname, 'data.json');
 let pg = null;
 let store = {
-  pos: [],         // active POs
-  loads: [],       // active loads
-  archive: [],     // { archivedAt, batchId, pos: [...], loads: [...] } — billed loads moved here when sent to Sheets
+  pos: [],
+  loads: [],
+  archive: [],
+  vendors: [],          // [{ id, name, location, active }]
+  vendorPrices: {},     // { vendorId: [{ id, material, unit, price, active, notes }] }
   nextPoNum: 1001,
   nextLoadId: 1,
 };
@@ -150,6 +188,18 @@ function normalizeStore() {
   if (!store.pos)     store.pos = [];
   if (!store.loads)   store.loads = [];
   if (!store.archive) store.archive = [];
+  // Seed vendors only if missing (preserves user edits)
+  if (!Array.isArray(store.vendors) || store.vendors.length === 0) {
+    store.vendors = JSON.parse(JSON.stringify(DEFAULT_VENDORS));
+  }
+  if (!store.vendorPrices || typeof store.vendorPrices !== 'object') {
+    store.vendorPrices = JSON.parse(JSON.stringify(DEFAULT_VENDOR_PRICES));
+  } else {
+    // Make sure every existing vendor has an entry (even if empty)
+    store.vendors.forEach(v => {
+      if (!Array.isArray(store.vendorPrices[v.id])) store.vendorPrices[v.id] = [];
+    });
+  }
   if (!store.nextPoNum)  store.nextPoNum = 1001;
   if (!store.nextLoadId) store.nextLoadId = 1;
 
@@ -163,6 +213,9 @@ function normalizeStore() {
     if (l.locked === undefined) l.locked = false;
     if (l.voided === undefined) l.voided = false;
     if (l.loadsDelivered === undefined) l.loadsDelivered = 0;
+    // Date-move tracking
+    if (!l.originalScheduledDate) l.originalScheduledDate = l.deliveryDate;
+    if (!Array.isArray(l.moveHistory)) l.moveHistory = [];
   });
   store.pos.forEach(p => {
     if (!p.materials) p.materials = [];
@@ -239,14 +292,25 @@ app.get('/api/me', reqAuth, (req, res) => {
 // ── API: DATA (board, lists, etc.) ──────────────────────────────────────────
 app.get('/api/data', reqAuth, (req, res) => {
   const u = req.session.user;
+  // Build "yards" view (just the active vendors with name + location, for the driver yard picker)
+  const yards = store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, location: v.location }));
+
   if (u.role === 'driver') {
-    // Drivers only get THEIR own loads + the linked POs
     const myLoads = store.loads.filter(l => l.truckId === u.truckId && !l.voided);
     const myPoIds = new Set(myLoads.map(l => l.poId));
     const myPos = store.pos.filter(p => myPoIds.has(p.id));
-    return res.json({ trucks: TRUCKS, materials: MATERIALS, yards: YARDS, pos: myPos, loads: myLoads });
+    return res.json({ trucks: TRUCKS, materials: MATERIALS, yards, pos: myPos, loads: myLoads });
   }
-  res.json({ trucks: TRUCKS, materials: MATERIALS, yards: YARDS, pos: store.pos, loads: store.loads });
+  // Manager sees full vendor data
+  res.json({
+    trucks: TRUCKS,
+    materials: MATERIALS,
+    yards,
+    vendors: store.vendors,
+    vendorPrices: store.vendorPrices,
+    pos: store.pos,
+    loads: store.loads
+  });
 });
 
 // ── API: DRIVER DISPATCH (enriched view for drivers — guided flow) ──────────
@@ -313,6 +377,8 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
       ticketImageAt: l.ticketImageAt || '',
       approvalStatus: l.approvalStatus,
       rejectReason: l.rejectReason || '',
+      moveHistory:  l.moveHistory || [],
+      originalScheduledDate: l.originalScheduledDate || l.deliveryDate,
     };
   });
   res.json({ loads: enriched });
@@ -491,7 +557,7 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     l.gps        = { ...l.gps, arrivedPickup: gps || null };
     // Driver can confirm which yard they actually arrived at
     if (req.body.yardId) {
-      const yard = YARDS.find(y => y.id === req.body.yardId);
+      const yard = store.vendors.find(y => y.id === req.body.yardId);
       if (yard) {
         l.actualYardId   = yard.id;
         l.actualYardName = yard.name;
@@ -577,6 +643,184 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
   });
   await saveData();
   res.json({ success: true, billed: count });
+});
+
+// ── API: MOVE LOADS TO A NEW DATE ────────────────────────────────────────────
+// Body:
+//   { scope: 'po' | 'remaining' | 'single', poId?, loadId?, newDate, reason }
+// scope='po'        → moves all unlocked loads belonging to a PO
+// scope='remaining' → moves only loads that are NOT yet completed/approved (i.e. undelivered)
+// scope='single'    → moves one specific load
+app.post('/api/loads/move', reqMgr, async (req, res) => {
+  const { scope, poId, loadId, newDate, reason } = req.body;
+  if (!newDate) return res.status(400).json({ error: 'New date is required' });
+  if (!reason || !reason.trim()) return res.status(400).json({ error: 'Reason is required' });
+
+  // Figure out which loads to move
+  let toMove = [];
+  if (scope === 'single') {
+    if (!loadId) return res.status(400).json({ error: 'loadId required for single move' });
+    const l = store.loads.find(x => x.id === loadId);
+    if (!l) return res.status(404).json({ error: 'Load not found' });
+    toMove = [l];
+  } else if (scope === 'po' || scope === 'remaining') {
+    if (!poId) return res.status(400).json({ error: 'poId required' });
+    let candidates = store.loads.filter(l => l.poId === poId && !l.voided);
+    if (scope === 'remaining') {
+      // Only loads that haven't been delivered/approved/billed
+      candidates = candidates.filter(l =>
+        l.approvalStatus !== 'approved' &&
+        l.approvalStatus !== 'submitted' &&
+        l.billStatus !== 'billed' &&
+        l.status !== 'completed'
+      );
+    }
+    toMove = candidates;
+  } else {
+    return res.status(400).json({ error: 'Invalid scope' });
+  }
+
+  if (!toMove.length) return res.status(400).json({ error: 'No eligible loads to move' });
+
+  // Locked loads (approved/billed) can't be moved — skip them
+  const movable = toMove.filter(l => !l.locked);
+  const skipped = toMove.length - movable.length;
+
+  if (!movable.length) return res.status(400).json({ error: 'All eligible loads are locked (approved or billed)' });
+
+  const movedAt = new Date().toISOString();
+  const movedBy = req.session.user.username;
+
+  movable.forEach(l => {
+    const fromDate = l.deliveryDate;
+    if (!l.originalScheduledDate) l.originalScheduledDate = fromDate;
+    l.moveHistory = l.moveHistory || [];
+    l.moveHistory.push({
+      from:    fromDate,
+      to:      newDate,
+      reason:  reason.trim(),
+      movedBy, movedAt, scope
+    });
+    l.deliveryDate = newDate;
+  });
+
+  // If we moved every load on the PO and the PO has its own deliveryDate,
+  // update the PO's deliveryDate to match (keeps the PO list consistent).
+  // But ONLY for scope='po' — for 'remaining' and 'single' the PO date stays the same.
+  if (scope === 'po' && poId) {
+    const po = store.pos.find(p => p.id === poId);
+    if (po) {
+      if (!po.originalDeliveryDate) po.originalDeliveryDate = po.deliveryDate;
+      po.deliveryDate = newDate;
+      po.poMoveHistory = po.poMoveHistory || [];
+      po.poMoveHistory.push({ from: po.originalDeliveryDate, to: newDate, reason: reason.trim(), movedBy, movedAt });
+      // If the PO was completed and we move it, reactivate it
+      if (po.status === 'completed') po.status = 'active';
+    }
+  }
+
+  await saveData();
+  res.json({
+    success: true,
+    moved: movable.length,
+    skipped,
+    newDate,
+    loadIds: movable.map(l => l.id)
+  });
+});
+
+// ── API: VENDORS & PRICING ───────────────────────────────────────────────────
+// List vendors (manager only — drivers get this through /api/data as 'yards')
+app.get('/api/vendors', reqMgr, (req, res) => {
+  res.json({ vendors: store.vendors, vendorPrices: store.vendorPrices });
+});
+
+// Add a new vendor
+app.post('/api/vendors', reqMgr, async (req, res) => {
+  const { name, location } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
+  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || ('vendor-' + Date.now());
+  if (store.vendors.find(v => v.id === id)) return res.status(400).json({ error: 'A vendor with that name already exists' });
+  const newVendor = { id, name: name.trim(), location: (location || '').trim(), active: true };
+  store.vendors.push(newVendor);
+  store.vendorPrices[id] = [];
+  await saveData();
+  res.json({ success: true, vendor: newVendor });
+});
+
+// Update a vendor (rename/relocate/toggle active)
+app.put('/api/vendors/:id', reqMgr, async (req, res) => {
+  const v = store.vendors.find(x => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Not found' });
+  if (req.body.name !== undefined)     v.name = String(req.body.name).trim();
+  if (req.body.location !== undefined) v.location = String(req.body.location).trim();
+  if (req.body.active !== undefined)   v.active = !!req.body.active;
+  await saveData();
+  res.json({ success: true, vendor: v });
+});
+
+// Delete a vendor (only if no active loads reference it)
+app.delete('/api/vendors/:id', reqMgr, async (req, res) => {
+  const id = req.params.id;
+  const idx = store.vendors.findIndex(v => v.id === id);
+  if (idx === -1) return res.status(404).json({ error: 'Not found' });
+  // Refuse if any active load uses this vendor
+  const inUse = store.loads.some(l => l.vendorId === id && !l.voided);
+  if (inUse) return res.status(400).json({ error: 'Cannot delete — there are loads using this vendor. Mark inactive instead.' });
+  store.vendors.splice(idx, 1);
+  delete store.vendorPrices[id];
+  await saveData();
+  res.json({ success: true });
+});
+
+// Add a material price to a vendor
+app.post('/api/vendors/:id/prices', reqMgr, async (req, res) => {
+  const v = store.vendors.find(x => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Vendor not found' });
+  const { material, unit, price, notes } = req.body;
+  if (!material || !material.trim()) return res.status(400).json({ error: 'Material required' });
+  if (!store.vendorPrices[v.id]) store.vendorPrices[v.id] = [];
+  // Prevent dupes (same material+unit on the same vendor)
+  if (store.vendorPrices[v.id].some(p => p.material === material.trim() && (p.unit || '') === (unit || ''))) {
+    return res.status(400).json({ error: 'That material already exists for this vendor' });
+  }
+  const newPrice = {
+    id: 'price-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+    material: material.trim(),
+    unit: (unit || '').trim(),
+    price: Number(price) || 0,
+    active: true,
+    notes: (notes || '').trim(),
+  };
+  store.vendorPrices[v.id].push(newPrice);
+  await saveData();
+  res.json({ success: true, price: newPrice });
+});
+
+// Update a price row
+app.put('/api/vendors/:id/prices/:priceId', reqMgr, async (req, res) => {
+  const list = store.vendorPrices[req.params.id];
+  if (!list) return res.status(404).json({ error: 'Vendor not found' });
+  const p = list.find(x => x.id === req.params.priceId);
+  if (!p) return res.status(404).json({ error: 'Price not found' });
+  if (req.body.material !== undefined) p.material = String(req.body.material).trim();
+  if (req.body.unit !== undefined)     p.unit     = String(req.body.unit).trim();
+  if (req.body.price !== undefined)    p.price    = Number(req.body.price) || 0;
+  if (req.body.active !== undefined)   p.active   = !!req.body.active;
+  if (req.body.notes !== undefined)    p.notes    = String(req.body.notes).trim();
+  await saveData();
+  res.json({ success: true, price: p });
+});
+
+// Delete a price row
+app.delete('/api/vendors/:id/prices/:priceId', reqMgr, async (req, res) => {
+  const list = store.vendorPrices[req.params.id];
+  if (!list) return res.status(404).json({ error: 'Vendor not found' });
+  const idx = list.findIndex(x => x.id === req.params.priceId);
+  if (idx === -1) return res.status(404).json({ error: 'Price not found' });
+  list.splice(idx, 1);
+  await saveData();
+  res.json({ success: true });
 });
 
 // ── API: REPORTS / FINANCE ───────────────────────────────────────────────────
