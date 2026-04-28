@@ -234,6 +234,44 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
 .bill-table tr:hover{background:var(--bg2)}
 .bill-table input[type="checkbox"]{cursor:pointer;width:16px;height:16px}
 
+/* ── VENDORS / PRICING ADMIN ── */
+.vendors-wrap{padding:18px}
+.vendor-tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--bdr);margin-bottom:18px;padding-bottom:0;align-items:center}
+.vendor-tab{padding:10px 16px;border:none;background:transparent;border-bottom:3px solid transparent;cursor:pointer;font-family:var(--f);font-size:13px;font-weight:600;color:var(--txt2);margin-bottom:-1px;transition:all .15s;white-space:nowrap}
+.vendor-tab:hover{color:var(--B)}
+.vendor-tab.active{color:var(--B);border-bottom-color:var(--B)}
+.vendor-tab.inactive-tab{opacity:.5}
+.vendor-tab .v-name{display:inline-block}
+.vendor-tab .v-count{display:inline-block;font-size:10px;background:var(--bg2);color:var(--txt3);padding:1px 7px;border-radius:20px;margin-left:5px;font-weight:600}
+.vendor-tab.active .v-count{background:var(--Bb);color:var(--B)}
+.add-vendor-btn{padding:8px 12px;border:1.5px dashed var(--Bd);border-radius:20px;background:transparent;color:var(--B);font-family:var(--f);font-size:12px;font-weight:600;cursor:pointer;margin-left:auto}
+.add-vendor-btn:hover{background:var(--Bb)}
+
+.vendor-panel{background:var(--bg);border-radius:var(--rl);box-shadow:var(--shadow);padding:18px;margin-bottom:14px}
+.vendor-panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px}
+.vendor-panel-title{font-size:18px;font-weight:700}
+.vendor-panel-sub{font-size:12px;color:var(--txt2);margin-top:2px}
+.vendor-panel-actions{display:flex;gap:6px;flex-wrap:wrap}
+
+.price-table{width:100%;border-collapse:collapse}
+.price-table th{text-align:left;padding:8px 12px;font-size:11px;text-transform:uppercase;color:var(--txt3);font-weight:600;letter-spacing:.04em;border-bottom:1px solid var(--bdr);background:var(--bg2)}
+.price-table td{padding:8px 12px;font-size:13px;border-bottom:1px solid var(--bdr);vertical-align:middle}
+.price-table tr:last-child td{border-bottom:none}
+.price-table tr.inactive td{opacity:.45}
+.price-table input,.price-table select{padding:6px 8px;border:1px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px;width:100%;background:var(--bg)}
+.price-table input:focus,.price-table select:focus{outline:none;border-color:var(--B)}
+.price-table .col-action{width:60px;text-align:right}
+.price-table .icon-btn{padding:5px 8px;background:transparent;border:1px solid var(--bdr2);border-radius:var(--r);cursor:pointer;font-family:var(--f);font-size:12px;color:var(--txt2)}
+.price-table .icon-btn:hover{background:var(--Rb);color:var(--R);border-color:var(--Rd)}
+.add-price-row{padding:10px;background:var(--Bb);border-radius:var(--r);margin-top:12px;display:grid;grid-template-columns:2fr 100px 100px 1fr auto;gap:8px;align-items:end;border:1px dashed var(--Bd)}
+.add-price-row label{font-size:10px;text-transform:uppercase;color:var(--txt2);font-weight:600;letter-spacing:.04em;display:block;margin-bottom:3px}
+
+.vendor-empty{padding:30px;text-align:center;color:var(--txt3);font-size:13px;background:var(--bg2);border-radius:var(--r);margin-top:10px}
+
+/* Make split rows in PO modal accommodate vendor + material */
+.split-row.with-vendor{grid-template-columns:1fr 1.2fr 1.5fr 80px auto}
+@media(max-width:700px){.split-row.with-vendor{grid-template-columns:1fr 1fr;gap:6px}.split-row.with-vendor>*{grid-column:span 1}.split-row.with-vendor button{grid-column:1/-1}}
+
 /* ── REASSIGN MODAL ── */
 .driver-pick{display:flex;align-items:center;gap:10px;padding:10px 12px;border:2px solid var(--bdr);border-radius:var(--r);background:var(--bg);cursor:pointer;transition:all .15s;margin-bottom:6px}
 .driver-pick:hover{border-color:var(--B);background:var(--Bb)}
@@ -405,6 +443,10 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         <span>Reports</span>
       </button>
+      <button class="nav-item" data-tab="vendors" onclick="goTab('vendors')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <span>Vendors & Prices</span>
+      </button>
     </nav>
     <div class="sidebar-footer">
       <div class="user-card">
@@ -439,6 +481,10 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
       <div class="section" id="sec-billing">
         <div class="bill-filters" id="bill-filters"></div>
         <div class="bill-list" id="bill-list"></div>
+      </div>
+      <!-- VENDORS & PRICES -->
+      <div class="section" id="sec-vendors">
+        <div id="vendors-content"></div>
       </div>
       <!-- HISTORY -->
       <div class="section" id="sec-history">
@@ -613,6 +659,8 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
 // ── STATE ────────────────────────────────────────────────────────────────────
 let me = null, role = 'driver', myTruckId = null, myUsername = '';
 let trucks = [], materials = [], yards = [], pos = [], loads = [];
+let vendors = [], vendorPrices = {};
+let currentVendorTab = null;  // selected vendor in the Vendors screen
 let dayOffset = 0, monthOffset = 0;
 let boardView = 'day';  // 'day' | 'month'
 let currentTab = 'board';
@@ -700,6 +748,8 @@ async function loadAll() {
     trucks = d.trucks || [];
     materials = d.materials || [];
     yards = d.yards || [];
+    vendors = d.vendors || [];
+    vendorPrices = d.vendorPrices || {};
     pos = d.pos || [];
     loads = d.loads || [];
     console.log('[loadAll] trucks:', trucks.length, 'materials:', materials.length, 'pos:', pos.length, 'loads:', loads.length);
@@ -773,6 +823,7 @@ function goTab(tab) {
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
   if (tab === 'history')  { document.getElementById('sec-history').classList.add('active'); document.getElementById('page-title').textContent = 'History'; renderHistory(); }
   if (tab === 'reports')  { document.getElementById('sec-reports').classList.add('active'); document.getElementById('page-title').textContent = 'Reports'; renderReports(); }
+  if (tab === 'vendors')  { document.getElementById('sec-vendors').classList.add('active'); document.getElementById('page-title').textContent = 'Vendors & Prices'; renderVendors(); }
   if (tab === 'driver')   { document.getElementById('sec-driver').classList.add('active'); document.getElementById('page-title').textContent = 'My Trips'; renderDriver(); }
 
   const navBtn = document.querySelector(`[data-tab="${tab}"]`);
@@ -1045,8 +1096,14 @@ function closePO() { document.getElementById('po-modal').style.display = 'none';
 
 function renderSplits() {
   const wrap = document.getElementById('splits');
-  wrap.innerHTML = splits.map((s, i) => `
-    <div class="split-row">
+  wrap.innerHTML = splits.map((s, i) => {
+    const vendorMats = getVendorMaterials(s.vendorId);
+    // Build the material dropdown from selected vendor's prices, fall back to flat list if vendor has none
+    const matOptions = vendorMats.length
+      ? vendorMats.map(p => `<option value="${p.material}" data-unit="${p.unit}" data-price="${p.price}" ${s.material === p.material ? 'selected' : ''}>${p.material}${p.unit ? ' (' + p.unit + ')' : ''}${p.price ? ' — $' + p.price : ''}</option>`).join('')
+      : materials.map(m => `<option value="${m}" ${s.material === m ? 'selected' : ''}>${m}</option>`).join('');
+
+    return `<div class="split-row with-vendor">
       <div class="field">
         <label>Driver</label>
         <select onchange="splits[${i}].truckId = this.value">
@@ -1055,9 +1112,15 @@ function renderSplits() {
         </select>
       </div>
       <div class="field">
-        <label>Material</label>
-        <select onchange="splits[${i}].material = this.value">
-          ${materials.map(m => `<option value="${m}" ${s.material === m ? 'selected' : ''}>${m}</option>`).join('')}
+        <label>Vendor</label>
+        <select onchange="onSplitVendorChange(${i}, this.value)">
+          ${vendors.filter(v => v.active).map(v => `<option value="${v.id}" ${s.vendorId === v.id ? 'selected' : ''}>${v.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label>Material${vendorMats.length === 0 ? ' (no prices set)' : ''}</label>
+        <select onchange="onSplitMaterialChange(${i}, this)">
+          ${matOptions}
         </select>
       </div>
       <div class="field">
@@ -1065,13 +1128,42 @@ function renderSplits() {
         <input type="number" min="1" value="${s.loadsAssigned}" oninput="splits[${i}].loadsAssigned = Number(this.value) || 0">
       </div>
       <button class="split-remove" onclick="splits.splice(${i}, 1); renderSplits()" title="Remove">×</button>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
+}
+
+function onSplitVendorChange(i, vendorId) {
+  splits[i].vendorId = vendorId;
+  // Reset material to first available from new vendor
+  const mats = getVendorMaterials(vendorId);
+  if (mats.length) {
+    splits[i].material = mats[0].material;
+    splits[i].unit = mats[0].unit;
+  }
+  renderSplits();
+}
+
+function onSplitMaterialChange(i, sel) {
+  splits[i].material = sel.value;
+  splits[i].unit = sel.options[sel.selectedIndex]?.dataset?.unit || '';
 }
 
 function addSplit() {
-  splits.push({ truckId: trucks[0]?.id || '', material: materials[0] || 'Fill Sand', loadsAssigned: 1 });
+  // Default to first vendor that has prices (or first vendor)
+  const firstVendor = (vendors.find(v => v.active && (vendorPrices[v.id]?.length || 0) > 0) || vendors[0] || { id: '' });
+  const firstVendorPrices = vendorPrices[firstVendor.id]?.filter(p => p.active) || [];
+  splits.push({
+    truckId: trucks[0]?.id || '',
+    vendorId: firstVendor.id,
+    material: firstVendorPrices[0]?.material || (materials[0] || 'Fill Sand'),
+    unit: firstVendorPrices[0]?.unit || '',
+    loadsAssigned: 1
+  });
   renderSplits();
+}
+
+function getVendorMaterials(vendorId) {
+  return (vendorPrices[vendorId] || []).filter(p => p.active);
 }
 
 function syncSplitDates() {
@@ -1093,7 +1185,13 @@ async function savePO() {
   if (!po.deliveryDate) { toast('Delivery date required', 'error'); return; }
   if (!splits.length || !splits.some(s => s.loadsAssigned > 0)) { toast('Add at least one load', 'error'); return; }
 
-  const validSplits = splits.filter(s => s.loadsAssigned > 0 && s.material);
+  const validSplits = splits.filter(s => s.loadsAssigned > 0 && s.material).map(s => ({
+    truckId: s.truckId,
+    vendorId: s.vendorId || null,
+    material: s.material,
+    unit: s.unit || '',
+    loadsAssigned: s.loadsAssigned,
+  }));
   const d = await api('POST', '/api/pos', { po, splits: validSplits });
   if (d.ok) {
     toast('PO created', 'success');
@@ -1921,6 +2019,192 @@ async function markBilled() {
     billSelected.clear();
     await loadAll();
     renderBilling();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+// ── VENDORS & PRICING (manager admin) ────────────────────────────────────────
+function renderVendors() {
+  const wrap = document.getElementById('vendors-content');
+  if (!vendors.length) {
+    wrap.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+    return;
+  }
+  // Pick the first active vendor as default if none selected
+  if (!currentVendorTab || !vendors.find(v => v.id === currentVendorTab)) {
+    currentVendorTab = (vendors.find(v => v.active) || vendors[0])?.id;
+  }
+  const v = vendors.find(x => x.id === currentVendorTab);
+  if (!v) { wrap.innerHTML = '<div class="empty-state"><p>No vendors yet.</p></div>'; return; }
+
+  const prices = vendorPrices[v.id] || [];
+
+  let h = '<div class="vendors-wrap">';
+
+  // Vendor tabs
+  h += '<div class="vendor-tabs">';
+  vendors.forEach(vd => {
+    const count = (vendorPrices[vd.id] || []).filter(p => p.active).length;
+    h += `<button class="vendor-tab ${vd.id === currentVendorTab ? 'active' : ''} ${vd.active ? '' : 'inactive-tab'}"
+      onclick="switchVendorTab('${vd.id}')">
+      <span class="v-name">${vd.name}${vd.active ? '' : ' (inactive)'}</span>
+      <span class="v-count">${count}</span>
+    </button>`;
+  });
+  h += `<button class="add-vendor-btn" onclick="addNewVendor()">+ Add Vendor</button>`;
+  h += '</div>';
+
+  // Vendor info panel (rename / location / active toggle / delete)
+  h += `<div class="vendor-panel">
+    <div class="vendor-panel-head">
+      <div>
+        <div class="vendor-panel-title" id="v-title">${v.name} Material Prices</div>
+        <div class="vendor-panel-sub">${v.location || 'No location set'}</div>
+      </div>
+      <div class="vendor-panel-actions">
+        <button class="btn ghost" onclick="editVendorInfo('${v.id}')">✏️ Edit Vendor</button>
+        <button class="btn ghost" onclick="toggleVendorActive('${v.id}')">${v.active ? 'Mark Inactive' : 'Mark Active'}</button>
+        <button class="btn danger" onclick="deleteVendorConfirm('${v.id}')">Delete</button>
+      </div>
+    </div>`;
+
+  if (!prices.length) {
+    h += '<div class="vendor-empty">No materials added yet for this vendor.<br>Add one below.</div>';
+  } else {
+    h += `<table class="price-table">
+      <thead><tr>
+        <th>Material</th>
+        <th style="width:90px">Unit</th>
+        <th style="width:100px">Price</th>
+        <th>Notes</th>
+        <th style="width:90px">Status</th>
+        <th class="col-action"></th>
+      </tr></thead>
+      <tbody>
+      ${prices.map(p => `<tr class="${p.active ? '' : 'inactive'}" data-pid="${p.id}">
+        <td><input type="text" value="${p.material.replace(/"/g, '&quot;')}" onblur="updatePrice('${v.id}','${p.id}',{material:this.value})"></td>
+        <td><input type="text" value="${p.unit || ''}" placeholder="CY/TON" onblur="updatePrice('${v.id}','${p.id}',{unit:this.value})"></td>
+        <td><input type="number" min="0" step="0.01" value="${p.price || 0}" onblur="updatePrice('${v.id}','${p.id}',{price:Number(this.value)})"></td>
+        <td><input type="text" value="${(p.notes || '').replace(/"/g, '&quot;')}" placeholder="Optional notes" onblur="updatePrice('${v.id}','${p.id}',{notes:this.value})"></td>
+        <td><select onchange="updatePrice('${v.id}','${p.id}',{active:this.value === 'true'})">
+          <option value="true" ${p.active ? 'selected' : ''}>Active</option>
+          <option value="false" ${!p.active ? 'selected' : ''}>Inactive</option>
+        </select></td>
+        <td class="col-action"><button class="icon-btn" onclick="deletePriceConfirm('${v.id}','${p.id}','${p.material.replace(/'/g, "&#39;")}')">×</button></td>
+      </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  // Add a new material row
+  h += `<div class="add-price-row">
+    <div><label>Material</label><input type="text" id="new-mat" placeholder="e.g. 3/4 Rock" onkeydown="if(event.key==='Enter')addNewPrice('${v.id}')"></div>
+    <div><label>Unit</label><input type="text" id="new-unit" placeholder="CY"></div>
+    <div><label>Price</label><input type="number" min="0" step="0.01" id="new-price" placeholder="0"></div>
+    <div><label>Notes</label><input type="text" id="new-notes" placeholder="Optional"></div>
+    <button class="btn primary" onclick="addNewPrice('${v.id}')">+ Add Material</button>
+  </div>`;
+
+  h += '</div>'; // close panel
+  h += '</div>'; // close wrap
+
+  wrap.innerHTML = h;
+}
+
+function switchVendorTab(vendorId) { currentVendorTab = vendorId; renderVendors(); }
+
+async function addNewVendor() {
+  const name = prompt('Vendor name:');
+  if (!name || !name.trim()) return;
+  const location = prompt('Location (optional):') || '';
+  const d = await api('POST', '/api/vendors', { name: name.trim(), location });
+  if (d.ok) {
+    toast(`Added ${d.vendor.name}`, 'success');
+    currentVendorTab = d.vendor.id;
+    await loadAll();
+    // Refresh vendor data via /api/vendors (which has the full price tables)
+    await refreshVendorData();
+    renderVendors();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+async function refreshVendorData() {
+  try {
+    const r = await fetch('/api/vendors');
+    if (!r.ok) return;
+    const d = await r.json();
+    vendors = d.vendors || [];
+    vendorPrices = d.vendorPrices || {};
+  } catch (e) {}
+}
+
+async function editVendorInfo(vendorId) {
+  const v = vendors.find(x => x.id === vendorId);
+  if (!v) return;
+  const name = prompt('Vendor name:', v.name);
+  if (name === null) return;
+  const location = prompt('Location:', v.location || '');
+  if (location === null) return;
+  const d = await api('PUT', '/api/vendors/' + vendorId, { name: name.trim(), location: location.trim() });
+  if (d.ok) {
+    toast('Updated', 'success');
+    await refreshVendorData();
+    renderVendors();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+async function toggleVendorActive(vendorId) {
+  const v = vendors.find(x => x.id === vendorId);
+  if (!v) return;
+  const d = await api('PUT', '/api/vendors/' + vendorId, { active: !v.active });
+  if (d.ok) {
+    toast(`Vendor ${d.vendor.active ? 'activated' : 'deactivated'}`, 'success');
+    await refreshVendorData();
+    renderVendors();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+async function deleteVendorConfirm(vendorId) {
+  const v = vendors.find(x => x.id === vendorId);
+  if (!v) return;
+  if (!confirm(`Delete "${v.name}" entirely? Loads using this vendor must be moved first.`)) return;
+  const d = await api('DELETE', '/api/vendors/' + vendorId);
+  if (d.ok) {
+    toast('Deleted', 'success');
+    currentVendorTab = null;
+    await refreshVendorData();
+    renderVendors();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+async function addNewPrice(vendorId) {
+  const material = document.getElementById('new-mat').value.trim();
+  const unit     = document.getElementById('new-unit').value.trim();
+  const price    = Number(document.getElementById('new-price').value) || 0;
+  const notes    = document.getElementById('new-notes').value.trim();
+  if (!material) { toast('Material required', 'error'); return; }
+  const d = await api('POST', '/api/vendors/' + vendorId + '/prices', { material, unit, price, notes });
+  if (d.ok) {
+    toast(`Added ${material}`, 'success');
+    await refreshVendorData();
+    renderVendors();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+async function updatePrice(vendorId, priceId, patch) {
+  const d = await api('PUT', `/api/vendors/${vendorId}/prices/${priceId}`, patch);
+  if (d.ok) {
+    // Refresh in background so other components stay consistent — but don't re-render and lose focus
+    refreshVendorData();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+async function deletePriceConfirm(vendorId, priceId, materialName) {
+  if (!confirm(`Remove ${materialName}?`)) return;
+  const d = await api('DELETE', `/api/vendors/${vendorId}/prices/${priceId}`);
+  if (d.ok) {
+    toast('Removed', 'success');
+    await refreshVendorData();
+    renderVendors();
   } else toast(d.error || 'Failed', 'error');
 }
 

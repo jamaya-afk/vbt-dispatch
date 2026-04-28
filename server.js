@@ -57,12 +57,13 @@ const TRUCKS = [
 ];
 
 // Generic fallback materials list (for the "Other" vendor or legacy data)
-const MATERIALS = ['Fill Sand','Gravel','3/4 Rock','Cold Mix','Base Rock','Other'];
+const MATERIALS = ['Fill Sand','Gravel','Rock','3/4 Rock','Cold Mix','Recycle Base','Dirt','Base Rock','Other'];
 
 // Default vendors seeded the first time the app runs
 // Each vendor has its own list of materials with unit/price/notes
 const DEFAULT_VENDORS = [
   { id: 'vulcan',     name: 'Vulcan',                 location: 'Fresno, CA',      active: true },
+  { id: 'teichert',   name: 'Teichert',               location: 'Sacramento, CA',  active: true },
   { id: 'granite',    name: 'Granite Construction',   location: 'Fresno, CA',      active: true },
   { id: 'cemex',      name: 'CEMEX',                  location: 'Fresno, CA',      active: true },
   { id: 'keith',      name: 'Keith Farms',            location: 'Fowler, CA',      active: true },
@@ -76,26 +77,29 @@ const DEFAULT_VENDOR_PRICES = {
   vulcan: [
     { id: 'v1', material: '3/4 Rock',   unit: 'CY',  price: 38, active: true, notes: '' },
     { id: 'v2', material: 'Base Rock',  unit: 'TON', price: 22, active: true, notes: '' },
-    { id: 'v3', material: 'Fill Sand',       unit: 'CY',  price: 28, active: true, notes: '' },
+    { id: 'v3', material: 'Sand',       unit: 'CY',  price: 28, active: true, notes: '' },
+  ],
+  teichert: [
+    { id: 't1', material: 'Fill Sand',  unit: 'CY',  price: 18, active: true, notes: '' },
+    { id: 't2', material: 'Gravel',     unit: 'CY',  price: 32, active: true, notes: '' },
   ],
   granite: [
     { id: 'g1', material: '3/4 Rock',   unit: 'TON', price: 30, active: true, notes: '' },
-    { id: 'g2', material: 'Fill Sand',       unit: 'TON', price: 26, active: true, notes: '' },
+    { id: 'g2', material: 'Rock',       unit: 'TON', price: 26, active: true, notes: '' },
   ],
   cemex: [
     { id: 'c1', material: 'Cold Mix',   unit: 'TON', price: 95, active: true, notes: '' },
-    { id: 'c2', material: 'Fill Sand',  unit: 'TON', price: 24, active: true, notes: '' },
+    { id: 'c2', material: 'Base Rock',  unit: 'TON', price: 24, active: true, notes: '' },
   ],
   keith: [
     { id: 'k1', material: 'Fill Sand',  unit: 'CY',  price: 16, active: true, notes: '' },
-    { id: 'k2', material: '3/4 Rock', unit: 'TON', price: 14, active: true, notes: '' },
+    { id: 'k2', material: 'Recycle Base', unit: 'TON', price: 14, active: true, notes: '' },
   ],
   hanson: [
-    { id: 'h1', material: '3/4 Rock',       unit: 'TON', price: 32, active: true, notes: '' },
+    { id: 'h1', material: 'Rock',       unit: 'TON', price: 32, active: true, notes: '' },
   ],
   vbt: [
-    { id: 'vb1', material: 'Fill Sand',      unit: 'TON',  price: 25, active: true, notes: 'Internal yard' },                                  
-    { id: 'vb2', material: '3/4 Rock',      unit: 'TON',  price: 25, active: true, notes: 'Internal yard' },
+    { id: 'vb1', material: 'Dirt',      unit: 'CY',  price: 0, active: true, notes: 'Internal yard' },
   ],
   other: []
 };
