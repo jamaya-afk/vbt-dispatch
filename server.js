@@ -122,13 +122,24 @@ async function uploadPhoto(kind, dataUrl, loadId) {
 }
 
 // ── USERS & TRUCKS ───────────────────────────────────────────────────────────
+// ── USERS ────────────────────────────────────────────────────────────────────
+// Roles:
+//   admin   — full access. Can manage pricing, delete records, archive, sync, everything.
+//             Currently: Oscar, Perla, Joshua.
+//   manager — reserved for future office staff (e.g. dispatcher hires) who do day-to-day
+//             dispatch but shouldn't touch pricing or destructive actions. Unused for now.
+//   driver  — locked-down mobile flow, sees only their own loads.
 const USERS = {
-  manager:  { password: process.env.MANAGER_PASS  || 'vbt2025!',   role: 'manager', truckId: null       },
-  beryle:   { password: process.env.BERYLE_PASS   || 'beryle123',  role: 'driver',  truckId: 'beryle'   },
-  matthew:  { password: process.env.MATTHEW_PASS  || 'matthew123', role: 'driver',  truckId: 'matthew'  },
-  rigo:     { password: process.env.RIGO_PASS     || 'rigo123',    role: 'driver',  truckId: 'rigo'     },
-  leonardo: { password: process.env.LEONARDO_PASS || 'leo123',     role: 'driver',  truckId: 'leonardo' },
-  carlos:   { password: process.env.CARLOS_PASS   || 'carlos123',  role: 'driver',  truckId: 'carlos'   },
+  // Admins (full power)
+  joshua:   { password: process.env.JOSHUA_PASS   || 'joshua123',  role: 'admin',   truckId: null,       displayName: 'Joshua'   },
+  oscar:    { password: process.env.OSCAR_PASS    || 'oscar123',   role: 'admin',   truckId: null,       displayName: 'Oscar'    },
+  perla:    { password: process.env.PERLA_PASS    || 'perla123',   role: 'admin',   truckId: null,       displayName: 'Perla'    },
+  // Drivers
+  beryle:   { password: process.env.BERYLE_PASS   || 'beryle123',  role: 'driver',  truckId: 'beryle',   displayName: 'Beryle'   },
+  matthew:  { password: process.env.MATTHEW_PASS  || 'matthew123', role: 'driver',  truckId: 'matthew',  displayName: 'Matthew'  },
+  rigo:     { password: process.env.RIGO_PASS     || 'rigo123',    role: 'driver',  truckId: 'rigo',     displayName: 'Rigo'     },
+  leonardo: { password: process.env.LEONARDO_PASS || 'leo123',     role: 'driver',  truckId: 'leonardo', displayName: 'Leonardo' },
+  carlos:   { password: process.env.CARLOS_PASS   || 'carlos123',  role: 'driver',  truckId: 'carlos',   displayName: 'Carlos'   },
 };
 
 const TRUCKS = [
@@ -196,6 +207,7 @@ let store = {
   archive: [],
   vendors: [],          // [{ id, name, location, active }]
   vendorPrices: {},     // { vendorId: [{ id, material, unit, price, active, notes }] }
+  auditLog: [],         // [{ id, at, user, action, target, details }]
   nextPoNum: 1001,
   nextLoadId: 1,
 };
@@ -271,6 +283,16 @@ function normalizeStore() {
   if (!store.pos)     store.pos = [];
   if (!store.loads)   store.loads = [];
   if (!store.archive) store.archive = [];
+  if (!Array.isArray(store.auditLog)) store.auditLog = [];
+  // ONE-TIME wipe: starting fresh with named user accounts.
+  // After first run with auditLogResetV1=true, this block does nothing.
+  if (!store.auditLogResetV1) {
+    if (store.auditLog.length > 0) {
+      console.log(`[normalize] Wiping ${store.auditLog.length} legacy audit entries (pre-named-accounts)`);
+    }
+    store.auditLog = [];
+    store.auditLogResetV1 = true;
+  }
   // Seed vendors only if missing (preserves user edits)
   if (!Array.isArray(store.vendors) || store.vendors.length === 0) {
     store.vendors = JSON.parse(JSON.stringify(DEFAULT_VENDORS));
@@ -307,9 +329,51 @@ function normalizeStore() {
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 
+// ── AUDIT LOG ────────────────────────────────────────────────────────────────
+// Records every meaningful manager action — used for activity log + future QBO push tracking
+// action: short verb-noun like 'approved-load', 'rejected-load', 'moved-loads', 'reassigned-load',
+//         'edited-price', 'deleted-vendor', 'archived-batch', 'marked-billed', 'created-po',
+//         'updated-po', 'deleted-po', 'created-vendor', 'updated-vendor', 'added-price', 'deleted-price'
+// target: short id reference (loadId, poId, vendorId, batchId, etc.)
+// details: object with anything useful — old/new values, count, reason, etc.
+function logAction(user, action, target, details) {
+  // user may be a session object or just a username string — accept both
+  let username = 'system';
+  let displayName = 'System';
+  let role = '';
+  if (typeof user === 'string') {
+    username = user;
+    const u = USERS[user];
+    displayName = u?.displayName || (user.charAt(0).toUpperCase() + user.slice(1));
+    role = u?.role || '';
+  } else if (user && typeof user === 'object') {
+    username = user.username || 'system';
+    displayName = user.displayName || username;
+    role = user.role || '';
+  }
+  const entry = {
+    id: 'AUD-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+    at: new Date().toISOString(),
+    user: username,
+    displayName,
+    role,
+    action,
+    target: target || '',
+    details: details || {},
+  };
+  store.auditLog.push(entry);
+  // Cap at 5000 entries; older ones are still in archive batches
+  if (store.auditLog.length > 5000) {
+    store.auditLog = store.auditLog.slice(-5000);
+  }
+  return entry;
+}
+
+
 // ── AUTH ─────────────────────────────────────────────────────────────────────
 function reqAuth(req, res, next) { if (req.session?.user) return next(); res.redirect('/login'); }
-function reqMgr(req, res, next)  { if (req.session?.user?.role === 'manager') return next(); res.status(403).json({ error: 'Manager only' }); }
+function reqMgr(req, res, next)   { const r = req.session?.user?.role; if (r === 'admin' || r === 'manager') return next(); res.status(403).json({ error: 'Office access required' }); }
+function reqAdmin(req, res, next) { if (req.session?.user?.role === 'admin') return next(); res.status(403).json({ error: 'Admin access required' }); }
 
 app.get('/healthz', (req, res) => res.json({ ok: true, hasDb: !!process.env.DATABASE_URL, time: new Date().toISOString() }));
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
@@ -353,8 +417,13 @@ app.post('/login', (req, res) => {
     console.log(`[LOGIN] FAILED: username="${cleanName}"`);
     return res.redirect('/login?error=1');
   }
-  req.session.user = { username: cleanName, role: u.role, truckId: u.truckId };
-  console.log(`[LOGIN] SUCCESS: username="${cleanName}", role="${u.role}", truckId="${u.truckId}"`);
+  req.session.user = {
+    username: cleanName,
+    role: u.role,
+    truckId: u.truckId,
+    displayName: u.displayName || (cleanName.charAt(0).toUpperCase() + cleanName.slice(1)),
+  };
+  console.log(`[LOGIN] SUCCESS: username="${cleanName}", role="${u.role}", displayName="${u.displayName}"`);
   res.redirect('/app/');
 });
 
@@ -369,7 +438,7 @@ app.get('/', (req, res) => res.redirect(req.session?.user ? '/app/' : '/login'))
 app.get('/api/me', reqAuth, (req, res) => {
   const u = req.session.user;
   console.log(`[/api/me] username="${u.username}", role="${u.role}", truckId="${u.truckId}"`);
-  res.json({ username: u.username, role: u.role, truckId: u.truckId });
+  res.json({ username: u.username, role: u.role, truckId: u.truckId, displayName: u.displayName || u.username });
 });
 
 // ── API: PHOTO UPLOAD (Supabase Storage) ────────────────────────────────────
@@ -405,7 +474,7 @@ app.post('/api/upload-photo', reqAuth, async (req, res) => {
 app.get('/api/data', reqAuth, async (req, res) => {
   const u = req.session.user;
   // Self-heal stale PO statuses on every fetch (cheap operation, fixes legacy data)
-  if (u.role === 'manager') {
+  if (u.role !== 'driver') {
     const fixed = reconcilePoStatuses();
     if (fixed.length) {
       console.log(`[/api/data] Reconciled ${fixed.length} stale POs`);
@@ -498,6 +567,7 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
       ticketImage:    l.ticketImage    || '',
       ticketImageUrl: l.ticketImageUrl || '',
       ticketImageAt:  l.ticketImageAt  || '',
+      isPartial:      !!l.isPartial,
       approvalStatus: l.approvalStatus,
       rejectReason: l.rejectReason || '',
       moveHistory:  l.moveHistory || [],
@@ -580,6 +650,12 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     store.loads.push(newLoad);
   });
 
+  logAction(req.session.user, 'created-po', newPo.id, {
+    poNumber: newPo.poNumber,
+    customer: newPo.customer,
+    deliveryDate: newPo.deliveryDate,
+    loadCount: store.loads.filter(l => l.poId === newPo.id).length,
+  });
   await saveData();
   console.log(`[create-PO] DONE. Total POs: ${store.pos.length}, total loads: ${store.loads.length}`);
   res.json({ success: true, po: newPo });
@@ -596,6 +672,11 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   if (req.body.deliveryDate && req.body.deliveryDate !== old.deliveryDate) {
     store.loads.filter(l => l.poId === old.id && !l.locked).forEach(l => l.deliveryDate = req.body.deliveryDate);
   }
+  logAction(req.session.user, 'updated-po', updated.id, {
+    poNumber: updated.poNumber,
+    changes: Object.keys(req.body),
+    dateChanged: req.body.deliveryDate && req.body.deliveryDate !== old.deliveryDate,
+  });
   await saveData();
   res.json({ success: true, po: updated });
 });
@@ -609,8 +690,15 @@ app.delete('/api/pos/:id', reqMgr, async (req, res) => {
   if (linked.some(l => l.approvalStatus === 'approved')) {
     return res.status(403).json({ error: 'Cannot delete — has approved loads. Void individual loads instead.' });
   }
+  const deletedPo = store.pos[idx];
+  const linkedCount = store.loads.filter(l => l.poId === req.params.id).length;
   store.pos.splice(idx, 1);
   store.loads = store.loads.filter(l => l.poId !== req.params.id);
+  logAction(req.session.user, 'deleted-po', req.params.id, {
+    poNumber: deletedPo.poNumber,
+    customer: deletedPo.customer,
+    loadsRemoved: linkedCount,
+  });
   await saveData();
   res.json({ success: true });
 });
@@ -638,12 +726,23 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
   } else {
     // Manager — anything goes
     const updated = { ...l, ...req.body, id: l.id, poId: l.poId };
+    let auditAction = 'updated-load';
+    let auditDetails = { changes: Object.keys(req.body) };
     if (req.body.truckId !== undefined) {
       const t = TRUCKS.find(t => t.id === req.body.truckId);
       updated.driverName = t?.label || '';
       updated.status = req.body.truckId ? 'active' : 'unassigned';
+      // Treat driver change as a separate action type
+      if (req.body.truckId !== l.truckId) {
+        auditAction = 'reassigned-load';
+        auditDetails = {
+          fromDriver: l.driverName || l.truckId || 'Unassigned',
+          toDriver:   updated.driverName || 'Unassigned',
+        };
+      }
     }
     store.loads[idx] = updated;
+    logAction(req.session.user, auditAction, l.id, auditDetails);
   }
   await saveData();
   res.json({ success: true, load: store.loads[idx] });
@@ -656,7 +755,11 @@ app.delete('/api/loads/:id', reqMgr, async (req, res) => {
   if (store.loads[idx].approvalStatus === 'approved') {
     return res.status(403).json({ error: 'Approved loads cannot be deleted (void instead)' });
   }
+  const deleted = store.loads[idx];
   store.loads.splice(idx, 1);
+  logAction(req.session.user, 'deleted-load', deleted.id, {
+    poId: deleted.poId, material: deleted.material, driver: deleted.driverName
+  });
   await saveData();
   res.json({ success: true });
 });
@@ -689,14 +792,33 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
         l.actualYardName = yard.name;
       }
     }
-  } else if (action === 'delivered') {
+  } else if (action === 'delivered' || action === 'incomplete') {
     if (!l.timestamps?.start)         return res.status(400).json({ error: 'Must start trip first' });
     if (!l.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
     if (!l.ticketImage && !l.ticketImageUrl)               return res.status(400).json({ error: 'Ticket photo required' });
     if (!l.pod?.signedBy || (!l.pod.signature && !l.pod.signatureUrl)) return res.status(400).json({ error: 'Customer signature required' });
+
     l.timestamps = { ...l.timestamps, completed: time };
     l.gps        = { ...l.gps, completed: gps || null };
-    l.loadsDelivered = l.loadsAssigned;
+
+    if (action === 'delivered') {
+      // Full delivery — driver is done, all loads done
+      l.loadsDelivered = l.loadsAssigned;
+      l.isPartial = false;
+    } else {
+      // 'incomplete' — driver delivered some but not all. Body must include `delivered` count.
+      const reported = Math.max(0, Math.min(Number(req.body.delivered) || 0, l.loadsAssigned));
+      if (reported <= 0) return res.status(400).json({ error: 'How many loads did you deliver? Enter a number greater than 0.' });
+      if (reported >= l.loadsAssigned) {
+        // Driver picked Incomplete but reported all — treat as full delivery
+        l.loadsDelivered = l.loadsAssigned;
+        l.isPartial = false;
+      } else {
+        l.loadsDelivered = reported;
+        l.isPartial = true;
+      }
+    }
+
     // Auto-submit for approval
     l.approvalStatus = 'submitted';
     l.submittedAt    = new Date().toISOString();
@@ -714,7 +836,7 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
   if (l.approvalStatus !== 'submitted') return res.status(400).json({ error: 'Load not submitted for approval' });
   l.approvalStatus = 'approved';
   l.approvedAt     = new Date().toISOString();
-  l.approvedBy     = req.session.user.username;
+  l.approvedBy     = req.session.user.displayName || req.session.user.username;
   l.status         = 'completed';
   l.completedAt    = new Date().toISOString();
   l.billStatus     = 'ready';
@@ -725,6 +847,15 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
     const remaining = store.loads.filter(x => x.poId === po.id && x.status !== 'completed' && !x.voided);
     if (!remaining.length) { po.status = 'completed'; po.completedAt = new Date().toISOString(); }
   }
+  logAction(req.session.user, 'approved-load', l.id, {
+    poNumber: po?.poNumber || '',
+    customer: po?.customer || '',
+    material: l.material,
+    driver:   l.driverName,
+    delivered: l.loadsDelivered,
+    assigned:  l.loadsAssigned,
+    isPartial: !!l.isPartial,
+  });
   await saveData();
   res.json({ success: true });
 });
@@ -737,6 +868,12 @@ app.post('/api/loads/:id/reject', reqMgr, async (req, res) => {
   l.approvalStatus = 'rejected';
   l.rejectReason   = req.body.reason || 'No reason provided';
   l.locked         = false;  // unlock so driver can fix
+  const po = store.pos.find(p => p.id === l.poId);
+  logAction(req.session.user, 'rejected-load', l.id, {
+    poNumber: po?.poNumber || '',
+    driver:   l.driverName,
+    reason:   l.rejectReason,
+  });
   await saveData();
   res.json({ success: true });
 });
@@ -760,13 +897,21 @@ app.get('/api/ready-to-bill', reqMgr, (req, res) => {
 app.post('/api/loads/bill', reqMgr, async (req, res) => {
   const ids = req.body.loadIds || [];
   let count = 0;
+  const billedIds = [];
   store.loads.forEach(l => {
     if (ids.includes(l.id) && l.approvalStatus === 'approved' && l.billStatus === 'ready') {
       l.billStatus = 'billed';
       l.billedAt   = new Date().toISOString();
+      billedIds.push(l.id);
       count++;
     }
   });
+  if (count > 0) {
+    logAction(req.session.user, 'marked-billed', '', {
+      count,
+      loadIds: billedIds,
+    });
+  }
   await saveData();
   res.json({ success: true, billed: count });
 });
@@ -845,6 +990,18 @@ app.post('/api/loads/move', reqMgr, async (req, res) => {
     }
   }
 
+  // Audit log entry
+  const targetPo = store.pos.find(p => p.id === poId);
+  logAction(req.session.user, 'moved-loads', loadId || poId, {
+    scope,
+    newDate,
+    reason: reason.trim(),
+    poNumber:  targetPo?.poNumber || '',
+    customer:  targetPo?.customer || '',
+    moved:     movable.length,
+    skipped,
+  });
+
   await saveData();
   res.json({
     success: true,
@@ -870,6 +1027,7 @@ app.post('/api/vendors', reqMgr, async (req, res) => {
   const newVendor = { id, name: name.trim(), location: (location || '').trim(), active: true };
   store.vendors.push(newVendor);
   store.vendorPrices[id] = [];
+  logAction(req.session.user, 'created-vendor', id, { name: newVendor.name });
   await saveData();
   res.json({ success: true, vendor: newVendor });
 });
@@ -878,9 +1036,15 @@ app.post('/api/vendors', reqMgr, async (req, res) => {
 app.put('/api/vendors/:id', reqMgr, async (req, res) => {
   const v = store.vendors.find(x => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Not found' });
+  const before = { name: v.name, location: v.location, active: v.active };
   if (req.body.name !== undefined)     v.name = String(req.body.name).trim();
   if (req.body.location !== undefined) v.location = String(req.body.location).trim();
   if (req.body.active !== undefined)   v.active = !!req.body.active;
+  logAction(req.session.user, 'updated-vendor', v.id, {
+    name: v.name,
+    changes: Object.keys(req.body),
+    before,
+  });
   await saveData();
   res.json({ success: true, vendor: v });
 });
@@ -893,8 +1057,10 @@ app.delete('/api/vendors/:id', reqMgr, async (req, res) => {
   // Refuse if any active load uses this vendor
   const inUse = store.loads.some(l => l.vendorId === id && !l.voided);
   if (inUse) return res.status(400).json({ error: 'Cannot delete — there are loads using this vendor. Mark inactive instead.' });
+  const deleted = store.vendors[idx];
   store.vendors.splice(idx, 1);
   delete store.vendorPrices[id];
+  logAction(req.session.user, 'deleted-vendor', id, { name: deleted.name });
   await saveData();
   res.json({ success: true });
 });
@@ -919,6 +1085,12 @@ app.post('/api/vendors/:id/prices', reqMgr, async (req, res) => {
     notes: (notes || '').trim(),
   };
   store.vendorPrices[v.id].push(newPrice);
+  logAction(req.session.user, 'added-price', v.id + ':' + newPrice.id, {
+    vendorName: v.name,
+    material:   newPrice.material,
+    unit:       newPrice.unit,
+    price:      newPrice.price,
+  });
   await saveData();
   res.json({ success: true, price: newPrice });
 });
@@ -929,11 +1101,24 @@ app.put('/api/vendors/:id/prices/:priceId', reqMgr, async (req, res) => {
   if (!list) return res.status(404).json({ error: 'Vendor not found' });
   const p = list.find(x => x.id === req.params.priceId);
   if (!p) return res.status(404).json({ error: 'Price not found' });
+  const v = store.vendors.find(x => x.id === req.params.id);
+  const before = { material: p.material, unit: p.unit, price: p.price, active: p.active };
   if (req.body.material !== undefined) p.material = String(req.body.material).trim();
   if (req.body.unit !== undefined)     p.unit     = String(req.body.unit).trim();
   if (req.body.price !== undefined)    p.price    = Number(req.body.price) || 0;
   if (req.body.active !== undefined)   p.active   = !!req.body.active;
   if (req.body.notes !== undefined)    p.notes    = String(req.body.notes).trim();
+  // Only log price-edits if price actually changed (not on every blur from inline editing)
+  const priceChanged = req.body.price !== undefined && Number(req.body.price) !== before.price;
+  if (priceChanged || req.body.active !== undefined) {
+    logAction(req.session.user, 'edited-price', req.params.id + ':' + p.id, {
+      vendorName: v?.name || req.params.id,
+      material:   p.material,
+      unit:       p.unit,
+      before:     { price: before.price, active: before.active },
+      after:      { price: p.price, active: p.active },
+    });
+  }
   await saveData();
   res.json({ success: true, price: p });
 });
@@ -944,9 +1129,47 @@ app.delete('/api/vendors/:id/prices/:priceId', reqMgr, async (req, res) => {
   if (!list) return res.status(404).json({ error: 'Vendor not found' });
   const idx = list.findIndex(x => x.id === req.params.priceId);
   if (idx === -1) return res.status(404).json({ error: 'Price not found' });
+  const deleted = list[idx];
+  const v = store.vendors.find(x => x.id === req.params.id);
   list.splice(idx, 1);
+  logAction(req.session.user, 'deleted-price', req.params.id + ':' + deleted.id, {
+    vendorName: v?.name || req.params.id,
+    material:   deleted.material,
+    price:      deleted.price,
+  });
   await saveData();
   res.json({ success: true });
+});
+
+// ── API: AUDIT LOG ───────────────────────────────────────────────────────────
+// Filterable: ?user=manager&action=approved-load&since=2026-04-01&until=2026-04-30&limit=200
+app.get('/api/audit-log', reqMgr, (req, res) => {
+  const { user, action, since, until } = req.query;
+  const limit = Math.min(Number(req.query.limit) || 500, 2000);
+
+  let entries = (store.auditLog || []).slice();  // newest last in storage; we'll reverse for display
+
+  if (user)   entries = entries.filter(e => e.user === user);
+  if (action) entries = entries.filter(e => e.action === action);
+  if (since)  entries = entries.filter(e => e.at >= since);
+  if (until)  entries = entries.filter(e => e.at <= (until + 'T23:59:59'));
+
+  // Newest first for display
+  entries.reverse();
+  const total = entries.length;
+  entries = entries.slice(0, limit);
+
+  // Distinct lists for filter dropdowns — show displayName, send username back as filter value
+  const userMap = {};
+  (store.auditLog || []).forEach(e => {
+    if (e.user && !userMap[e.user]) userMap[e.user] = e.displayName || e.user;
+  });
+  const allUsers = Object.entries(userMap)
+    .map(([username, displayName]) => ({ username, displayName }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  const allActions = [...new Set((store.auditLog || []).map(e => e.action))].sort();
+
+  res.json({ entries, total, allUsers, allActions });
 });
 
 // ── API: VENDOR / MATERIAL COSTS (payables — what VBT owes outside vendors) ─
@@ -1206,6 +1429,11 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
     loadCount: billed.length,
     syncedToSheet: sheetSuccess,
   });
+  logAction(req.session.user, 'archived-batch', batchId, {
+    poCount: archivedPos.length,
+    loadCount: billed.length,
+    syncedToSheet: sheetSuccess,
+  });
   // Cap archive log at 50 batches
   if (store.archive.length > 50) store.archive = store.archive.slice(0, 50);
 
@@ -1252,6 +1480,10 @@ app.post('/api/sync', reqMgr, async (req, res) => {
     });
     await writeSheet('Loads', loadRows);
 
+    logAction(req.session.user, 'synced-sheets', '', {
+      pos: store.pos.length,
+      loads: store.loads.length,
+    });
     res.json({ success: true, pos: store.pos.length, loads: store.loads.length });
   } catch (e) {
     console.error('Sync error:', e.message);
