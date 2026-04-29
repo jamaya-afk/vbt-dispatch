@@ -45,6 +45,10 @@ const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'vbt-photos';
 let supabaseEnabled = false;
 let supabase = null;
 
+console.log('[Supabase config] URL:', SUPABASE_URL ? SUPABASE_URL : '(missing)');
+console.log('[Supabase config] KEY:', SUPABASE_KEY ? `[${SUPABASE_KEY.slice(0,8)}...${SUPABASE_KEY.slice(-4)}, len=${SUPABASE_KEY.length}]` : '(missing)');
+console.log('[Supabase config] BUCKET:', SUPABASE_BUCKET);
+
 if (SUPABASE_URL && SUPABASE_KEY) {
   try {
     const { createClient } = require('@supabase/supabase-js');
@@ -70,17 +74,27 @@ function randomKey(len = 16) {
 
 // Upload a base64 image to Supabase, return its public URL
 async function uploadPhoto(kind, dataUrl, loadId) {
-  if (!supabaseEnabled) throw new Error('Supabase not configured');
-  if (!dataUrl || !dataUrl.startsWith('data:')) throw new Error('Invalid image data');
+  console.log(`[uploadPhoto] called: kind=${kind}, loadId=${loadId}, supabaseEnabled=${supabaseEnabled}, bucket=${SUPABASE_BUCKET}`);
 
-  // Parse the data URL
+  if (!supabaseEnabled) {
+    console.log('[uploadPhoto] Supabase not enabled, throwing');
+    throw new Error('Supabase not configured');
+  }
+  if (!dataUrl || !dataUrl.startsWith('data:')) {
+    console.log('[uploadPhoto] Invalid data URL');
+    throw new Error('Invalid image data');
+  }
+
   const match = dataUrl.match(/^data:(image\/[a-z]+);base64,(.+)$/);
-  if (!match) throw new Error('Invalid data URL format');
+  if (!match) {
+    console.log('[uploadPhoto] Bad format, dataUrl starts with:', dataUrl.slice(0, 50));
+    throw new Error('Invalid data URL format');
+  }
   const contentType = match[1];
   const base64 = match[2];
   const buffer = Buffer.from(base64, 'base64');
+  console.log(`[uploadPhoto] parsed ${contentType}, buffer size: ${buffer.length} bytes`);
 
-  // Build a random, unguessable path: tickets/2026/04/LOAD-42-a8f3d2e1.jpg
   const ext = contentType === 'image/png' ? 'png' : 'jpg';
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -88,14 +102,22 @@ async function uploadPhoto(kind, dataUrl, loadId) {
   const folder = (kind === 'signature') ? 'signatures' : 'tickets';
   const path = `${folder}/${yyyy}/${mm}/${loadId || 'unknown'}-${randomKey(16)}.${ext}`;
 
-  const { error } = await supabase.storage
+  console.log(`[uploadPhoto] uploading to: bucket="${SUPABASE_BUCKET}", path="${path}"`);
+
+  const { data: uploadData, error } = await supabase.storage
     .from(SUPABASE_BUCKET)
     .upload(path, buffer, { contentType, upsert: false });
 
-  if (error) throw error;
+  if (error) {
+    console.error('[uploadPhoto] SUPABASE ERROR:', JSON.stringify(error, null, 2));
+    console.error('[uploadPhoto] error.message:', error.message);
+    console.error('[uploadPhoto] error.statusCode:', error.statusCode);
+    throw new Error(`Supabase upload failed: ${error.message || JSON.stringify(error)}`);
+  }
+  console.log('[uploadPhoto] upload succeeded, data:', uploadData);
 
-  // Public bucket — get the public URL
   const { data: urlData } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path);
+  console.log('[uploadPhoto] public URL:', urlData.publicUrl);
   return urlData.publicUrl;
 }
 
