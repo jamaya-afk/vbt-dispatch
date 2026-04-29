@@ -1,7 +1,7 @@
 {
   "name": "vbt-dispatch",
   "version": "2.0.0",
-  "description": "VBT Dispatch — Clean Build",
+  "description": "VBT Dispatch \u2014 Clean Build",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -11,7 +11,8 @@
     "express-session": "1.17.3",
     "googleapis": "140.0.0",
     "pg": "8.11.3",
-    "connect-pg-simple": "9.0.1"
+    "connect-pg-simple": "9.0.1",
+    "@supabase/supabase-js": "^2.43.0"
   },
   "engines": {
     "node": "18.x"

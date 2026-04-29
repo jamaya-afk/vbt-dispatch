@@ -38,6 +38,67 @@ if (process.env.DATABASE_URL) {
 }
 app.use(session(sessionOpts));
 
+// ── SUPABASE STORAGE (for photo uploads — Phase 2) ──────────────────────────
+const SUPABASE_URL    = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY    = process.env.SUPABASE_SERVICE_KEY || '';
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'vbt-photos';
+let supabaseEnabled = false;
+let supabase = null;
+
+if (SUPABASE_URL && SUPABASE_KEY) {
+  try {
+    const { createClient } = require('@supabase/supabase-js');
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
+    supabaseEnabled = true;
+    console.log('✓ Supabase Storage configured (bucket: ' + SUPABASE_BUCKET + ')');
+  } catch (e) {
+    console.error('⚠ Supabase init failed:', e.message);
+  }
+} else {
+  console.log('⚠ Supabase not configured — uploads will fall back to base64-in-database');
+}
+
+// Generate a strong random folder path so public URLs are unguessable
+function randomKey(len = 16) {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let out = '';
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+// Upload a base64 image to Supabase, return its public URL
+async function uploadPhoto(kind, dataUrl, loadId) {
+  if (!supabaseEnabled) throw new Error('Supabase not configured');
+  if (!dataUrl || !dataUrl.startsWith('data:')) throw new Error('Invalid image data');
+
+  // Parse the data URL
+  const match = dataUrl.match(/^data:(image\/[a-z]+);base64,(.+)$/);
+  if (!match) throw new Error('Invalid data URL format');
+  const contentType = match[1];
+  const base64 = match[2];
+  const buffer = Buffer.from(base64, 'base64');
+
+  // Build a random, unguessable path: tickets/2026/04/LOAD-42-a8f3d2e1.jpg
+  const ext = contentType === 'image/png' ? 'png' : 'jpg';
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm   = String(now.getMonth() + 1).padStart(2, '0');
+  const folder = (kind === 'signature') ? 'signatures' : 'tickets';
+  const path = `${folder}/${yyyy}/${mm}/${loadId || 'unknown'}-${randomKey(16)}.${ext}`;
+
+  const { error } = await supabase.storage
+    .from(SUPABASE_BUCKET)
+    .upload(path, buffer, { contentType, upsert: false });
+
+  if (error) throw error;
+
+  // Public bucket — get the public URL
+  const { data: urlData } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path);
+  return urlData.publicUrl;
+}
+
 // ── USERS & TRUCKS ───────────────────────────────────────────────────────────
 const USERS = {
   manager:  { password: process.env.MANAGER_PASS  || 'vbt2025!',   role: 'manager', truckId: null       },
@@ -289,6 +350,35 @@ app.get('/api/me', reqAuth, (req, res) => {
   res.json({ username: u.username, role: u.role, truckId: u.truckId });
 });
 
+// ── API: PHOTO UPLOAD (Supabase Storage) ────────────────────────────────────
+// Body: { kind: 'ticket' | 'signature', loadId, dataUrl }
+// Returns: { url } — the load record then stores this URL instead of base64
+app.post('/api/upload-photo', reqAuth, async (req, res) => {
+  if (!supabaseEnabled) {
+    return res.status(503).json({ error: 'Photo upload service not configured', fallback: true });
+  }
+  const { kind, loadId, dataUrl } = req.body;
+  if (!kind || !dataUrl) return res.status(400).json({ error: 'kind and dataUrl required' });
+  if (!['ticket', 'signature'].includes(kind)) return res.status(400).json({ error: 'Invalid kind' });
+
+  // Driver auth: must own the load they're uploading for
+  if (req.session.user.role === 'driver') {
+    const l = store.loads.find(x => x.id === loadId);
+    if (!l) return res.status(404).json({ error: 'Load not found' });
+    if (l.truckId !== req.session.user.truckId) return res.status(403).json({ error: 'Not your load' });
+    if (l.locked) return res.status(403).json({ error: 'Load is locked' });
+  }
+
+  try {
+    const url = await uploadPhoto(kind, dataUrl, loadId);
+    console.log(`[upload-photo] ${kind} for ${loadId} → ${url}`);
+    res.json({ success: true, url });
+  } catch (e) {
+    console.error('[upload-photo] failed:', e.message);
+    res.status(500).json({ error: 'Upload failed: ' + e.message });
+  }
+});
+
 // ── API: DATA (board, lists, etc.) ──────────────────────────────────────────
 app.get('/api/data', reqAuth, (req, res) => {
   const u = req.session.user;
@@ -375,8 +465,9 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
       deliveryDate: l.deliveryDate,
       timestamps: l.timestamps || {},
       pod: l.pod || {},
-      ticketImage: l.ticketImage || '',
-      ticketImageAt: l.ticketImageAt || '',
+      ticketImage:    l.ticketImage    || '',
+      ticketImageUrl: l.ticketImageUrl || '',
+      ticketImageAt:  l.ticketImageAt  || '',
       approvalStatus: l.approvalStatus,
       rejectReason: l.rejectReason || '',
       moveHistory:  l.moveHistory || [],
@@ -511,6 +602,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     if (req.body.gps)        allowed.gps        = { ...l.gps, ...req.body.gps };
     if (req.body.pod)        allowed.pod        = { ...l.pod, ...req.body.pod };
     if (req.body.ticketImage){ allowed.ticketImage = req.body.ticketImage; allowed.ticketImageAt = new Date().toISOString(); }
+    if (req.body.ticketImageUrl){ allowed.ticketImageUrl = req.body.ticketImageUrl; allowed.ticketImageAt = new Date().toISOString(); allowed.ticketImage = ''; /* clear legacy base64 */ }
     if (req.body.notes !== undefined) allowed.notes = req.body.notes;
     store.loads[idx] = { ...l, ...allowed };
   } else {
@@ -570,8 +662,8 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   } else if (action === 'delivered') {
     if (!l.timestamps?.start)         return res.status(400).json({ error: 'Must start trip first' });
     if (!l.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
-    if (!l.ticketImage)               return res.status(400).json({ error: 'Ticket photo required' });
-    if (!l.pod?.signedBy)             return res.status(400).json({ error: 'Customer signature required' });
+    if (!l.ticketImage && !l.ticketImageUrl)               return res.status(400).json({ error: 'Ticket photo required' });
+    if (!l.pod?.signedBy || (!l.pod.signature && !l.pod.signatureUrl)) return res.status(400).json({ error: 'Customer signature required' });
     l.timestamps = { ...l.timestamps, completed: time };
     l.gps        = { ...l.gps, completed: gps || null };
     l.loadsDelivered = l.loadsAssigned;

@@ -790,6 +790,28 @@ function api(method, url, body) {
     body: body ? JSON.stringify(body) : undefined,
   }).then(r => r.json().then(d => ({ ok: r.ok, status: r.status, ...d })));
 }
+// Upload a base64 image to the server, which forwards to Supabase Storage.
+// Returns { url } or throws on failure.
+// Falls back to embedding base64 if Supabase isn't configured.
+async function uploadPhoto(kind, loadId, dataUrl) {
+  try {
+    const r = await fetch('/api/upload-photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, loadId, dataUrl }),
+    });
+    const d = await r.json();
+    if (r.ok && d.url) return { url: d.url };
+    if (d.fallback) {
+      // Server says Supabase isn't configured — caller should fall back to base64
+      return { fallback: true };
+    }
+    throw new Error(d.error || ('Upload failed: HTTP ' + r.status));
+  } catch (e) {
+    throw e;
+  }
+}
+
 async function loadAll() {
   try {
     const r = await fetch('/api/data');
@@ -1323,8 +1345,10 @@ function openLoadDetail(id) {
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
   html += `</dl>`;
 
-  if (l.ticketImage) html += `<div style="margin-top:12px"><div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Ticket</div><img src="${l.ticketImage}" style="max-width:100%;border-radius:var(--r);border:1px solid var(--bdr)"></div>`;
-  if (l.pod?.signature) html += `<div style="margin-top:12px"><div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Signed by ${l.pod.signedBy}</div><img src="${l.pod.signature}" style="max-width:100%;border-radius:var(--r);border:1px solid var(--bdr);background:#fff"></div>`;
+  const detailTicket = l.ticketImageUrl || l.ticketImage;
+  const detailSig    = l.pod?.signatureUrl || l.pod?.signature;
+  if (detailTicket) html += `<div style="margin-top:12px"><div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Ticket</div><img src="${detailTicket}" style="max-width:100%;border-radius:var(--r);border:1px solid var(--bdr)"></div>`;
+  if (detailSig) html += `<div style="margin-top:12px"><div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Signed by ${l.pod?.signedBy || ''}</div><img src="${detailSig}" style="max-width:100%;border-radius:var(--r);border:1px solid var(--bdr);background:#fff"></div>`;
 
   // Show move history if any
   if (l.moveHistory && l.moveHistory.length) {
@@ -1689,8 +1713,10 @@ function tripCard(l) {
   const isToday = l.deliveryDate === todayStr();
   const started = !!ts.start;
   const atPickup = !!ts.arrivedPickup;
-  const hasImage = !!l.ticketImage;
-  const hasSig = !!(pod.signedBy && pod.signature);
+  const ticketSrc = l.ticketImageUrl || l.ticketImage;
+  const sigSrc = pod.signatureUrl || pod.signature;
+  const hasImage = !!ticketSrc;
+  const hasSig = !!(pod.signedBy && sigSrc);
   const delivered = !!ts.completed;
   const submitted = l.approvalStatus === 'submitted';
   const approved = l.approvalStatus === 'approved';
@@ -1770,7 +1796,7 @@ function tripCard(l) {
           <span>Ticket photo</span>
           <span>${hasImage ? '✓ Uploaded' : '— Missing'}</span>
         </div>
-        ${hasImage ? `<img src="${l.ticketImage}" class="ticket-preview">` : ''}
+        ${hasImage ? `<img src="${ticketSrc}" class="ticket-preview">` : ''}
         <div class="req-check ${hasSig ? 'done' : 'missing'}">
           <span>Customer signature</span>
           <span>${hasSig ? '✓ Signed by ' + pod.signedBy : '— Missing'}</span>
@@ -1911,9 +1937,41 @@ function closeTicket() { document.getElementById('ticket-modal').style.display =
 async function saveTicket() {
   const data = document.getElementById('ticket-preview').dataset.image;
   if (!data || !currentLoadId) return;
-  const d = await api('PUT', '/api/loads/' + currentLoadId, { ticketImage: data });
-  if (d.ok) { closeTicket(); await loadAll(); renderDriver(); toast('Ticket uploaded', 'success'); }
-  else toast(d.error || 'Failed', 'error');
+
+  const btn = document.getElementById('ticket-save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+
+  try {
+    // Try Supabase upload first
+    const uploadResult = await uploadPhoto('ticket', currentLoadId, data);
+    let payload;
+    if (uploadResult.url) {
+      // Save the URL on the load (small string instead of huge base64)
+      payload = { ticketImageUrl: uploadResult.url };
+    } else if (uploadResult.fallback) {
+      // Supabase not configured — use legacy base64 path
+      console.warn('[ticket] Supabase fallback, saving as base64');
+      payload = { ticketImage: data };
+    } else {
+      throw new Error('Upload returned no URL');
+    }
+    const d = await api('PUT', '/api/loads/' + currentLoadId, payload);
+    if (d.ok) {
+      closeTicket();
+      await loadAll();
+      renderDriver();
+      toast('Ticket uploaded', 'success');
+    } else {
+      toast(d.error || 'Failed to save', 'error');
+    }
+  } catch (e) {
+    console.error('[ticket] upload error:', e);
+    toast('Upload failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+  }
 }
 
 // ── SIGNATURE ────────────────────────────────────────────────────────────────
@@ -1964,11 +2022,32 @@ async function saveSig() {
   if (!name) { toast('Customer name required', 'error'); return; }
   if (!sigHasInk) { toast('Please sign on the canvas', 'error'); return; }
   const sig = sigCanvas.toDataURL('image/png');
-  const d = await api('PUT', '/api/loads/' + currentLoadId, {
-    pod: { signedBy: name, signature: sig, signedAt: new Date().toISOString() }
-  });
-  if (d.ok) { closeSig(); await loadAll(); renderDriver(); toast('Signature saved', 'success'); }
-  else toast(d.error || 'Failed', 'error');
+
+  try {
+    const uploadResult = await uploadPhoto('signature', currentLoadId, sig);
+    let podPayload;
+    if (uploadResult.url) {
+      // Saved to Supabase — store URL, no base64
+      podPayload = { signedBy: name, signatureUrl: uploadResult.url, signature: '', signedAt: new Date().toISOString() };
+    } else if (uploadResult.fallback) {
+      console.warn('[sig] Supabase fallback, saving as base64');
+      podPayload = { signedBy: name, signature: sig, signedAt: new Date().toISOString() };
+    } else {
+      throw new Error('Upload returned no URL');
+    }
+    const d = await api('PUT', '/api/loads/' + currentLoadId, { pod: podPayload });
+    if (d.ok) {
+      closeSig();
+      await loadAll();
+      renderDriver();
+      toast('Signature saved', 'success');
+    } else {
+      toast(d.error || 'Failed to save', 'error');
+    }
+  } catch (e) {
+    console.error('[sig] upload error:', e);
+    toast('Upload failed: ' + e.message, 'error');
+  }
 }
 
 // ── APPROVALS ────────────────────────────────────────────────────────────────
@@ -1991,8 +2070,14 @@ function renderApprovals() {
           <div class="am-detail">${l.material} · ${l.loadsDelivered}/${l.loadsAssigned} loads · ${l.driverName}${l.actualYardName ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + l.actualYardName : ''}</div>
         </div>
         <div class="am-thumbs">
-          ${l.ticketImage ? `<img src="${l.ticketImage}" class="am-thumb" onclick="event.stopPropagation();showImage('${l.ticketImage}')" title="Ticket photo">` : '<div class="am-thumb missing">No ticket</div>'}
-          ${pod.signature ? `<img src="${pod.signature}" class="am-thumb" onclick="event.stopPropagation();showImage('${pod.signature}')" title="Signature: ${pod.signedBy}">` : '<div class="am-thumb missing">No sig</div>'}
+          ${(() => {
+            const ts = l.ticketImageUrl || l.ticketImage;
+            return ts ? `<img src="${ts}" class="am-thumb" onclick="event.stopPropagation();showImage('${ts}')" title="Ticket photo">` : '<div class="am-thumb missing">No ticket</div>';
+          })()}
+          ${(() => {
+            const ss = pod.signatureUrl || pod.signature;
+            return ss ? `<img src="${ss}" class="am-thumb" onclick="event.stopPropagation();showImage('${ss}')" title="Signature: ${pod.signedBy}">` : '<div class="am-thumb missing">No sig</div>';
+          })()}
         </div>
         <div class="am-actions">
           <button class="btn danger" onclick="rejectLoad('${l.id}')">Reject</button>
