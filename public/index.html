@@ -87,12 +87,12 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 
 /* ── STATUS-COLORED CARDS (Day + Month views) ── */
 .lcard.is-completed,.mcard.is-completed{
-  background:#e8f7ee;border-color:#9fe4c8;
+  background:#f3edff;border-color:#c4b5fd;
 }
 .lcard.is-completed .lc-customer,.lcard.is-completed .lc-detail,
 .lcard.is-completed .lc-progress span,
-.mcard.is-completed .mcard-cust,.mcard.is-completed .mcard-mat{color:#0d5c3a}
-.lcard.is-completed .lc-po,.mcard.is-completed .mcard-po{color:#0d5c3a}
+.mcard.is-completed .mcard-cust,.mcard.is-completed .mcard-mat{color:#4c1d95}
+.lcard.is-completed .lc-po,.mcard.is-completed .mcard-po{color:#6d28d9}
 
 .lcard.is-overdue,.mcard.is-overdue{
   background:#fde6e6;border-color:#f4a8a8;
@@ -108,7 +108,7 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .lcard.is-active .lc-po,.mcard.is-active .mcard-po{color:#a86109}
 
 /* Status pills */
-.lc-status.is-completed{background:var(--G);color:#fff}
+.lc-status.is-completed{background:#7c3aed;color:#fff}
 .lc-status.is-overdue{background:var(--R);color:#fff}
 .lc-status.is-active{background:var(--A);color:#fff}
 .lc-po{font-size:10px;font-weight:700;color:var(--B);letter-spacing:.04em;margin-bottom:3px}
@@ -156,6 +156,54 @@ body.driver-mode .page-title{color:#fff}
 body.driver-mode .topbar::before{content:'';display:inline-block;width:34px;height:34px;background:url(/app/logo.png) no-repeat center/contain;margin-right:6px;flex-shrink:0}
 body.driver-mode .signout-btn,body.driver-mode .topbar-actions .btn{background:transparent;border-color:rgba(255,255,255,.25);color:#fff}
 body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{border-color:#fca5a5;color:#fca5a5;background:rgba(220,38,38,.15)}
+
+/* Dark-mode toggle button (visible only in driver mode) */
+.drv-darktoggle{padding:7px 12px;background:transparent;border:1.5px solid rgba(255,255,255,.25);border-radius:20px;color:rgba(255,255,255,.9);cursor:pointer;font-family:var(--f);font-size:11px;font-weight:600;display:inline-flex;align-items:center;gap:6px;transition:all .15s}
+.drv-darktoggle:hover{border-color:#fff;color:#fff;background:rgba(255,255,255,.08)}
+.drv-darktoggle svg{width:14px;height:14px;flex-shrink:0}
+
+/* ── DARK MODE for drivers (body.drv-dark) ── */
+body.drv-dark{background:#0a0e1a}
+body.drv-dark.driver-mode .content{background:#0a0e1a}
+body.drv-dark .drv-welcome{background:linear-gradient(135deg,#000 0%,#1a2342 100%)}
+body.drv-dark .trip-card{background:#1a2030;border-color:#2a3447;color:#e2e7f0}
+body.drv-dark .trip-card.is-today{border-color:#60a8f0}
+body.drv-dark .trip-head{background:linear-gradient(135deg,#000 0%,#1a2342 100%)}
+body.drv-dark .trip-info dt{color:#9ba5b7}
+body.drv-dark .trip-info dd{color:#e2e7f0}
+body.drv-dark .trip-info .notes{background:rgba(217,119,6,.12);color:#fcd38a;border-left-color:#a86109}
+body.drv-dark .step{background:#252b3b;color:#9ba5b7}
+body.drv-dark .step.active{background:rgba(96,168,240,.18);color:#7ab5f5}
+body.drv-dark .step.done{background:rgba(124,58,237,.18);color:#c4b5fd}
+body.drv-dark .req-check{background:#252b3b;color:#e2e7f0}
+body.drv-dark .req-check.done{background:rgba(124,58,237,.18);color:#c4b5fd}
+body.drv-dark .req-check.missing{background:rgba(220,38,38,.15);color:#fca5a5}
+body.drv-dark .empty-state{color:#5a6478}
+body.drv-dark .empty-state h3{color:#9ba5b7}
+body.drv-dark .ticket-preview{border-color:#2a3447}
+
+/* Dark mode for driver-side modals */
+body.drv-dark .modal{background:#1a2030;color:#e2e7f0}
+body.drv-dark .modal-head{border-bottom-color:#2a3447}
+body.drv-dark .modal-head h2{color:#fff}
+body.drv-dark .modal-foot{background:#252b3b;border-top-color:#2a3447}
+body.drv-dark .modal-close{background:#252b3b;color:#9ba5b7}
+body.drv-dark .modal-close:hover{background:rgba(220,38,38,.2);color:#fca5a5}
+body.drv-dark .field label{color:#9ba5b7}
+body.drv-dark .field input,body.drv-dark .field select,body.drv-dark .field textarea{background:#252b3b;border-color:#2a3447;color:#e2e7f0}
+body.drv-dark .field input::placeholder{color:#5a6478}
+body.drv-dark .yard-card{background:#252b3b;border-color:#2a3447;color:#e2e7f0}
+body.drv-dark .yard-card:hover{border-color:#60a8f0;background:rgba(96,168,240,.08)}
+body.drv-dark .yard-card.preset{border-color:#5eead4;background:rgba(34,197,94,.08)}
+body.drv-dark .yard-card .yard-name{color:#fff}
+body.drv-dark .yard-card .yard-loc{color:#9ba5b7}
+body.drv-dark .yard-icon{background:#2a3447}
+body.drv-dark #yard-info{background:#252b3b;color:#9ba5b7}
+
+/* Sig canvas stays white so signature is visible */
+body.drv-dark .sig-canvas{background:#fff}
+body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f0}
+
 
 .drv-welcome{padding:18px 20px;background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);color:#fff;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px}
 .drv-greeting{display:flex;align-items:center;gap:12px}
@@ -563,7 +611,7 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
 <div class="modal-bg" id="yard-modal" style="display:none">
   <div class="modal" style="max-width:440px">
     <div class="modal-head">
-      <h2>🏗️ Which yard did you arrive at?</h2>
+      <h2><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg> Which yard did you arrive at?</h2>
       <button class="modal-close" onclick="closeYard()">&#215;</button>
     </div>
     <div class="modal-body">
@@ -580,7 +628,7 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
 <div class="modal-bg" id="reassign-modal" style="display:none">
   <div class="modal" style="max-width:440px">
     <div class="modal-head">
-      <h2>🔄 Reassign Driver</h2>
+      <h2><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Reassign Driver</h2>
       <button class="modal-close" onclick="closeReassign()">&#215;</button>
     </div>
     <div class="modal-body">
@@ -609,7 +657,7 @@ body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{
 <div class="modal-bg" id="move-modal" style="display:none">
   <div class="modal" style="max-width:480px">
     <div class="modal-head">
-      <h2>📅 Move to Another Date</h2>
+      <h2><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Move to Another Date</h2>
       <button class="modal-close" onclick="closeMove()">&#215;</button>
     </div>
     <div class="modal-body">
@@ -788,6 +836,23 @@ function startGPSTracking() {
   }
 }
 
+// ── DRIVER DARK MODE TOGGLE ──────────────────────────────────────────────────
+function toggleDriverDark() {
+  const isDark = document.body.classList.toggle('drv-dark');
+  // Save preference for next visit
+  try { document.cookie = 'drvDark=' + (isDark ? '1' : '0') + ';path=/;max-age=31536000;samesite=lax'; } catch(e){}
+  // Re-render the topbar action area with the new icon
+  goTab(currentTab);
+}
+
+function applyDriverDarkPref() {
+  // Read the cookie and apply on driver mode load
+  try {
+    const m = document.cookie.match(/(?:^|;\s*)drvDark=(\d)/);
+    if (m && m[1] === '1') document.body.classList.add('drv-dark');
+  } catch(e){}
+}
+
 // ── INIT ─────────────────────────────────────────────────────────────────────
 async function init() {
   try {
@@ -806,6 +871,7 @@ async function init() {
 
     if (role === 'driver') {
       document.body.classList.add('driver-mode');
+      applyDriverDarkPref();
       document.getElementById('page-title').textContent = 'My Trips';
       goTab('driver');
     } else {
@@ -838,9 +904,17 @@ function goTab(tab) {
   const actions = document.getElementById('topbar-actions');
   if (role === 'manager' && tab === 'board') {
     actions.innerHTML = `<button class="btn primary" onclick="openNewPO()">+ New PO</button>
-      <button class="btn ghost" onclick="syncSheets()" title="Push to Google Sheets">↑ Sync</button>`;
+      <button class="btn ghost" onclick="syncSheets()" title="Push to Google Sheets"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Sync</button>`;
   } else if (role === 'driver') {
-    actions.innerHTML = `<button class="btn ghost" onclick="location='/logout'">Sign out</button>`;
+    const isDark = document.body.classList.contains('drv-dark');
+    const moonSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+    const sunSvg  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+    actions.innerHTML = `
+      <button class="drv-darktoggle" onclick="toggleDriverDark()" title="${isDark ? 'Switch to light mode' : 'Switch to dark mode'}">
+        ${isDark ? sunSvg : moonSvg}
+        <span>${isDark ? 'Light' : 'Dark'}</span>
+      </button>
+      <button class="btn ghost" onclick="location='/logout'">Sign out</button>`;
   } else {
     actions.innerHTML = '';
   }
@@ -915,7 +989,7 @@ function renderDayBoard() {
     <div class="driver-col unassigned-col">
       <div class="driver-col-head">
         <div>
-          <div class="driver-name" style="color:var(--A)">⚠ Unassigned</div>
+          <div class="driver-name" style="color:var(--A);display:flex;align-items:center;gap:5px"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</div>
           <div class="driver-truck">Drag a card here to unassign</div>
         </div>
         <span class="driver-load-count" style="background:var(--Ad);color:var(--A)">${unas.length}</span>
@@ -959,7 +1033,7 @@ function renderMonthBoard() {
   // Header row
   h += '<thead><tr><th class="day-col">Date</th>';
   trucks.forEach(t => { h += `<th>${t.label}<div style="font-size:10px;font-weight:400;color:var(--txt3)">${t.truckNum}</div></th>`; });
-  h += '<th style="width:90px;color:var(--A)">⚠ Unassigned</th>';
+  h += '<th style="width:90px;color:var(--A)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</th>';
   h += '</tr></thead><tbody>';
 
   for (let d = 1; d <= daysInMonth; d++) {
@@ -1051,13 +1125,13 @@ function loadCard(l) {
     <span class="lc-status ${cardCls}">${status.label}</span>
     <div class="lc-po">${po.poNumber || '—'}${po.jobCode ? ` · <span style="color:var(--txt3);font-weight:600">${po.jobCode}</span>` : ''}</div>
     <div class="lc-customer">${po.customer || ''}</div>
-    <div class="lc-detail">${po.city ? `📍 ${po.city}` : ''}${po.address ? (po.city ? ' · ' : '📍 ') + po.address : ''}</div>
+    <div class="lc-detail">${po.city ? `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> ${po.city}` : ''}${po.address ? (po.city ? ' · ' : '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>' + ' ') + po.address : ''}</div>
     <div class="lc-mat-pill">${l.material} · ${l.loadsAssigned} loads</div>
     <div class="lc-progress">
       <span>${l.loadsDelivered}/${l.loadsAssigned}</span>
       <div class="lc-progress-bar"><div class="lc-progress-fill" style="width:${pct}%"></div></div>
     </div>
-    ${wasMoved ? `<span class="lc-moved-pill" title="Moved from ${fmtDate(lastMove.from)} — ${lastMove.reason}">📅 Moved</span>` : ''}
+    ${wasMoved ? `<span class="lc-moved-pill" title="Moved from ${fmtDate(lastMove.from)} — ${lastMove.reason}"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Moved</span>` : ''}
   </div>`;
 }
 
@@ -1256,15 +1330,15 @@ function openLoadDetail(id) {
   if (l.moveHistory && l.moveHistory.length) {
     html += `<div class="move-history-list">
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt3);font-weight:600;margin-bottom:4px">Move History</div>
-      ${l.moveHistory.map(h => `<div class="move-history-item">📅 <b>${fmtDate(h.from)} → ${fmtDate(h.to)}</b> · ${h.reason} <span style="color:var(--txt3)">— ${h.movedBy}</span></div>`).join('')}
+      ${l.moveHistory.map(h => `<div class="move-history-item"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> <b>${fmtDate(h.from)} → ${fmtDate(h.to)}</b> · ${h.reason} <span style="color:var(--txt3)">— ${h.movedBy}</span></div>`).join('')}
     </div>`;
   }
 
   let actions = '';
   if (role === 'manager') {
     if (!l.locked) {
-      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openReassignModal('single','${l.id}')">🔄 Reassign Driver</button>`;
-      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openMoveModal('single','${l.id}')">📅 Move Date</button>`;
+      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openReassignModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Reassign Driver</button>`;
+      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openMoveModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Move Date</button>`;
     }
     if (!l.approvalStatus || l.approvalStatus === 'pending') {
       actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
@@ -1358,7 +1432,7 @@ function openReassignModal(scope, refId) {
     </div>`;
   }).join('') + `<div class="driver-pick" data-truckid=""
       onclick="selectReassignDriver('', this)">
-      <div class="driver-pick-avatar" style="background:var(--A)">⚠</div>
+      <div class="driver-pick-avatar" style="background:var(--A);color:#fff"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
       <div class="driver-pick-info">
         <div class="driver-pick-name">Unassigned</div>
         <div class="driver-pick-detail">Move to the unassigned column</div>
@@ -1623,14 +1697,14 @@ function tripCard(l) {
   const rejected = l.approvalStatus === 'rejected';
 
   let banner = '';
-  if (rejected) banner = `<div class="banner rejected">⚠ Rejected by manager${l.rejectReason ? ': ' + l.rejectReason : ''} — re-do this trip</div>`;
-  else if (approved) banner = `<div class="banner approved">✓ Approved — trip closed</div>`;
-  else if (submitted) banner = `<div class="banner submitted">⏳ Submitted — waiting for manager approval</div>`;
+  if (rejected) banner = `<div class="banner rejected"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Rejected by manager${l.rejectReason ? ': ' + l.rejectReason : ''} — re-do this trip</div>`;
+  else if (approved) banner = `<div class="banner approved"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg> Approved — trip closed</div>`;
+  else if (submitted) banner = `<div class="banner submitted"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Submitted — waiting for manager approval</div>`;
 
   // If load was moved, show a notice with the most recent move reason
   if (l.moveHistory && l.moveHistory.length) {
     const latest = l.moveHistory[l.moveHistory.length - 1];
-    banner += `<div class="banner" style="background:var(--Ab);color:var(--A);border:1px solid var(--Ad)">📅 Rescheduled from ${fmtDate(latest.from)} — ${latest.reason}</div>`;
+    banner += `<div class="banner" style="background:var(--Ab);color:var(--A);border:1px solid var(--Ad)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Rescheduled from ${fmtDate(latest.from)} — ${latest.reason}</div>`;
   }
 
   const stepCls = (active, done) => done ? 'done' : active ? 'active' : '';
@@ -1676,8 +1750,8 @@ function tripCard(l) {
     <div class="trip-body">
       ${banner}
       <dl class="trip-info">
-        <dt>Pickup</dt><dd>🏗️ ${l.pickupLocation}</dd>
-        <dt>Deliver</dt><dd>📍 ${l.deliveryLocation || l.city}</dd>
+        <dt>Pickup</dt><dd><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg> ${l.pickupLocation}</dd>
+        <dt>Deliver</dt><dd><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> ${l.deliveryLocation || l.city}</dd>
         ${l.jobCode ? `<dt>Job Code</dt><dd><b>${l.jobCode}</b></dd>` : ''}
         <dt>Material</dt><dd>${l.material}</dd>
         <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads</dd>
@@ -1733,10 +1807,10 @@ function openYardPicker(loadId) {
   document.getElementById('yard-list').innerHTML = ordered.map(y => {
     const isSuggestion = suggestedYard && y.id === suggestedYard.id;
     return `<div class="yard-card ${isSuggestion ? 'preset' : ''}" onclick="confirmYard('${y.id}')">
-      <div class="yard-icon">🏗️</div>
+      <div class="yard-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg></div>
       <div style="flex:1">
         <div class="yard-name">${y.name}</div>
-        ${y.location ? `<div class="yard-loc">📍 ${y.location}</div>` : ''}
+        ${y.location ? `<div class="yard-loc"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> ${y.location}</div>` : ''}
         ${isSuggestion ? '<span class="yard-tag">✓ Assigned pickup</span>' : ''}
       </div>
     </div>`;
@@ -1914,7 +1988,7 @@ function renderApprovals() {
         <div class="am-info">
           <div class="am-po">${po.poNumber}</div>
           <div class="am-customer">${po.customer}</div>
-          <div class="am-detail">${l.material} · ${l.loadsDelivered}/${l.loadsAssigned} loads · ${l.driverName}${l.actualYardName ? ' · 🏗️ ' + l.actualYardName : ''}</div>
+          <div class="am-detail">${l.material} · ${l.loadsDelivered}/${l.loadsAssigned} loads · ${l.driverName}${l.actualYardName ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + l.actualYardName : ''}</div>
         </div>
         <div class="am-thumbs">
           ${l.ticketImage ? `<img src="${l.ticketImage}" class="am-thumb" onclick="event.stopPropagation();showImage('${l.ticketImage}')" title="Ticket photo">` : '<div class="am-thumb missing">No ticket</div>'}
@@ -2450,7 +2524,7 @@ async function renderHistory() {
           <h2>Billed Loads (${billed.length})</h2>
           <p>These loads have been billed. Send to Google Sheets to permanently archive them and clear from the app.</p>
         </div>
-        ${billed.length ? `<button class="btn success" onclick="archiveToSheets()">↑ Send to Sheets & Archive</button>` : ''}
+        ${billed.length ? `<button class="btn success" onclick="archiveToSheets()"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Send to Sheets & Archive</button>` : ''}
       </div>`;
 
     if (billed.length === 0) {
@@ -2491,7 +2565,7 @@ async function renderHistory() {
             <div style="font-weight:600">${b.poCount} POs · ${b.loadCount} loads</div>
             <div class="batch-info">${b.batchId} · ${new Date(b.archivedAt).toLocaleString()} · by ${b.archivedBy}</div>
           </div>
-          <span class="batch-status ${b.syncedToSheet ? 'synced' : 'local'}">${b.syncedToSheet ? '✓ Synced to Sheets' : '⚠ Local only'}</span>
+          <span class="batch-status ${b.syncedToSheet ? 'synced' : 'local'}">${b.syncedToSheet ? `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg> Synced to Sheets` : `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Local only`}</span>
         </div>`;
       });
     }
