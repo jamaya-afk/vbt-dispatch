@@ -380,8 +380,16 @@ app.post('/api/upload-photo', reqAuth, async (req, res) => {
 });
 
 // ── API: DATA (board, lists, etc.) ──────────────────────────────────────────
-app.get('/api/data', reqAuth, (req, res) => {
+app.get('/api/data', reqAuth, async (req, res) => {
   const u = req.session.user;
+  // Self-heal stale PO statuses on every fetch (cheap operation, fixes legacy data)
+  if (u.role === 'manager') {
+    const fixed = reconcilePoStatuses();
+    if (fixed.length) {
+      console.log(`[/api/data] Reconciled ${fixed.length} stale POs`);
+      await saveData();
+    }
+  }
   // Build "yards" view (just the active vendors with name + location, for the driver yard picker)
   const yards = store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, location: v.location }));
 
@@ -991,8 +999,45 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
   });
 });
 
+// ── PO STATUS RECONCILIATION ─────────────────────────────────────────────────
+// Walks through every PO and corrects its status based on the actual state of its loads.
+// Returns the list of POs that got fixed.
+function reconcilePoStatuses() {
+  const fixed = [];
+  store.pos.forEach(p => {
+    const linked = store.loads.filter(l => l.poId === p.id && !l.voided);
+    if (linked.length === 0) {
+      // PO has no live loads — leave its status alone
+      return;
+    }
+    const allDone = linked.every(l =>
+      l.status === 'completed' ||
+      l.approvalStatus === 'approved' ||
+      l.billStatus === 'billed'
+    );
+    const correctStatus = allDone
+      ? 'completed'
+      : (p.deliveryDate > todayStr() ? 'scheduled' : 'active');
+
+    if (p.status !== correctStatus) {
+      const before = p.status;
+      p.status = correctStatus;
+      if (correctStatus === 'completed' && !p.completedAt) p.completedAt = new Date().toISOString();
+      fixed.push({ id: p.id, poNumber: p.poNumber, before, after: correctStatus });
+    }
+  });
+  return fixed;
+}
+
 // ── API: REPORTS / FINANCE ───────────────────────────────────────────────────
-app.get('/api/reports', reqMgr, (req, res) => {
+app.get('/api/reports', reqMgr, async (req, res) => {
+  // Self-heal stale PO statuses (POs that should be 'completed' but stuck on 'active')
+  const fixed = reconcilePoStatuses();
+  if (fixed.length) {
+    console.log(`[reports] Reconciled ${fixed.length} stale PO statuses:`, fixed);
+    await saveData();
+  }
+
   // Driver performance
   const driverStats = {};
   TRUCKS.forEach(t => {
