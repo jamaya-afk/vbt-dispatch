@@ -1228,44 +1228,60 @@ async function onDrop(e, truckId) {
 
 // ── PO MODAL ─────────────────────────────────────────────────────────────────
 function openNewPO() {
-  editingPoId = null;
-  document.getElementById('po-modal-title').textContent = 'New Purchase Order';
-  document.getElementById('po-number').value = '';
-  document.getElementById('po-date').value = todayStr();
-  document.getElementById('po-customer').value = '';
-  document.getElementById('po-jobcode').value = '';
-  document.getElementById('po-address').value = '';
-  document.getElementById('po-city').value = '';
-  document.getElementById('po-notes').value = '';
+  try {
+    editingPoId = null;
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+    const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
 
-  // Build vendor dropdown
-  const vSel = document.getElementById('po-vendor');
-  const activeVendors = vendors.filter(v => v.active);
-  vSel.innerHTML = activeVendors.map(v =>
-    `<option value="${v.id}" ${v.id === 'vbt' ? 'selected' : ''}>${v.name}${v.location ? ' — ' + v.location : ''}</option>`
-  ).join('');
+    setText('po-modal-title', 'New Purchase Order');
+    setVal('po-number', '');
+    setVal('po-date', todayStr());
+    setVal('po-customer', '');
+    setVal('po-jobcode', '');
+    setVal('po-address', '');
+    setVal('po-city', '');
+    setVal('po-notes', '');
 
-  // Default first split to use VBT vendor (or whatever's in dropdown)
-  const defaultVendorId = vSel.value || (activeVendors[0]?.id || '');
-  const defaultMats = getVendorMaterials(defaultVendorId);
-  splits = [{
-    truckId: trucks[0]?.id || '',
-    vendorId: defaultVendorId,
-    material: defaultMats[0]?.material || (materials[0] || 'Fill Sand'),
-    unit: defaultMats[0]?.unit || '',
-    loadsAssigned: 1
-  }];
-  renderSplits();
-  document.getElementById('po-modal').style.display = 'flex';
+    // Build vendor dropdown — defensive, fallback to "VBT Yard" if no vendors loaded
+    const vSel = document.getElementById('po-vendor');
+    const activeVendors = (vendors || []).filter(v => v.active);
+    if (vSel) {
+      if (activeVendors.length === 0) {
+        vSel.innerHTML = '<option value="vbt">VBT Yard</option>';
+      } else {
+        vSel.innerHTML = activeVendors.map(v =>
+          `<option value="${v.id}" ${v.id === 'vbt' ? 'selected' : ''}>${v.name}${v.location ? ' — ' + v.location : ''}</option>`
+        ).join('');
+      }
+    }
+
+    // Build a sane default first split
+    const defaultVendorId = vSel?.value || (activeVendors[0]?.id || 'vbt');
+    const defaultMats = (typeof getVendorMaterials === 'function') ? getVendorMaterials(defaultVendorId) : [];
+    splits = [{
+      truckId: (trucks[0]?.id) || '',
+      vendorId: defaultVendorId,
+      material: defaultMats[0]?.material || (materials[0] || 'Fill Sand'),
+      unit: defaultMats[0]?.unit || '',
+      loadsAssigned: 1
+    }];
+    renderSplits();
+    document.getElementById('po-modal').style.display = 'flex';
+  } catch (e) {
+    console.error('[openNewPO] CRASH:', e);
+    toast('Could not open the PO form: ' + e.message, 'error');
+  }
 }
 
 function closePO() { document.getElementById('po-modal').style.display = 'none'; }
 
 function renderSplits() {
-  const wrap = document.getElementById('splits');
-  // After rendering, queue a preview refresh
-  setTimeout(refreshAllPricingPreviews, 50);
-  wrap.innerHTML = splits.map((s, i) => {
+  try {
+    const wrap = document.getElementById('splits');
+    if (!wrap) { console.error('[renderSplits] splits element missing'); return; }
+    // After rendering, queue a preview refresh
+    setTimeout(() => { try { refreshAllPricingPreviews(); } catch(e) { console.warn('[renderSplits] preview failed:', e); } }, 50);
+    wrap.innerHTML = splits.map((s, i) => {
     const vendorMats = getVendorMaterials(s.vendorId);
     // Build the material dropdown from selected vendor's prices, fall back to flat list if vendor has none
     const matOptions = vendorMats.length
@@ -1278,13 +1294,13 @@ function renderSplits() {
           <label>Driver</label>
           <select onchange="splits[${i}].truckId = this.value">
             <option value="">Unassigned</option>
-            ${trucks.map(t => `<option value="${t.id}" ${s.truckId === t.id ? 'selected' : ''}>${t.label} (${t.truckNum})</option>`).join('')}
+            ${(trucks || []).map(t => `<option value="${t.id}" ${s.truckId === t.id ? 'selected' : ''}>${t.label} (${t.truckNum})</option>`).join('')}
           </select>
         </div>
         <div class="field">
           <label>Vendor</label>
           <select onchange="onSplitVendorChange(${i}, this.value)">
-            ${vendors.filter(v => v.active).map(v => `<option value="${v.id}" ${s.vendorId === v.id ? 'selected' : ''}>${v.name}</option>`).join('')}
+            ${(vendors || []).filter(v => v.active).map(v => `<option value="${v.id}" ${s.vendorId === v.id ? 'selected' : ''}>${v.name}</option>`).join('')}
           </select>
         </div>
         <div class="field">
@@ -1301,7 +1317,11 @@ function renderSplits() {
       </div>
       <div id="pricing-preview-${i}" style="margin-top:6px;padding:6px 10px;background:var(--bg);border-radius:var(--r);font-size:11px;color:var(--txt2);min-height:24px"></div>
     </div>`;
-  }).join('');
+    }).join('');
+  } catch (e) {
+    console.error('[renderSplits] CRASH:', e);
+    toast('Could not render load list: ' + e.message, 'error');
+  }
 }
 
 function onSplitVendorChange(i, vendorId) {
@@ -1388,39 +1408,64 @@ function syncSplitDates() {
 }
 
 async function savePO() {
-  const vendorId = document.getElementById('po-vendor').value;
-  const vendorObj = vendors.find(v => v.id === vendorId);
-  const po = {
-    poNumber:        document.getElementById('po-number').value.trim() || null,
-    customer:        document.getElementById('po-customer').value.trim(),
-    job:             document.getElementById('po-customer').value.trim(),
-    jobCode:         document.getElementById('po-jobcode').value.trim(),
-    deliveryDate:    document.getElementById('po-date').value,
-    address:         document.getElementById('po-address').value.trim(),
-    city:            document.getElementById('po-city').value.trim(),
-    pickup:          vendorObj?.name || 'VBT Yard',
-    plannedVendorId: vendorId || 'vbt',
-    notes:           document.getElementById('po-notes').value.trim(),
-  };
-  if (!po.customer) { toast('Customer name required', 'error'); return; }
-  if (!po.deliveryDate) { toast('Delivery date required', 'error'); return; }
-  if (!splits.length || !splits.some(s => s.loadsAssigned > 0)) { toast('Add at least one load', 'error'); return; }
+  console.log('[savePO] starting...');
+  try {
+    // Defensive: get each field with fallback for missing elements
+    const getVal = (id, fallback = '') => {
+      const el = document.getElementById(id);
+      if (!el) { console.warn('[savePO] element missing:', id); return fallback; }
+      return (el.value || '').trim();
+    };
 
-  const validSplits = splits.filter(s => s.loadsAssigned > 0 && s.material).map(s => ({
-    truckId: s.truckId,
-    vendorId: s.vendorId || null,
-    material: s.material,
-    unit: s.unit || '',
-    loadsAssigned: s.loadsAssigned,
-  }));
-  const d = await api('POST', '/api/pos', { po, splits: validSplits });
-  if (d.ok) {
-    toast('PO created', 'success');
-    closePO();
-    await loadAll();
-    renderBoard();
-  } else {
-    toast(d.error || 'Failed', 'error');
+    const vendorId = getVal('po-vendor');
+    const vendorObj = (vendors || []).find(v => v.id === vendorId);
+
+    const po = {
+      poNumber:        getVal('po-number') || null,
+      customer:        getVal('po-customer'),
+      job:             getVal('po-customer'),
+      jobCode:         getVal('po-jobcode'),
+      deliveryDate:    getVal('po-date'),
+      address:         getVal('po-address'),
+      city:            getVal('po-city'),
+      pickup:          vendorObj?.name || 'VBT Yard',
+      plannedVendorId: vendorId || 'vbt',
+      notes:           getVal('po-notes'),
+    };
+    console.log('[savePO] po:', po);
+    console.log('[savePO] splits:', splits);
+
+    if (!po.customer)     { toast('Customer name required', 'error'); return; }
+    if (!po.deliveryDate) { toast('Delivery date required', 'error'); return; }
+    if (!splits.length || !splits.some(s => s.loadsAssigned > 0)) {
+      toast('Add at least one load', 'error');
+      return;
+    }
+
+    const validSplits = splits.filter(s => s.loadsAssigned > 0 && s.material).map(s => ({
+      truckId: s.truckId || null,
+      vendorId: s.vendorId || null,
+      material: s.material,
+      unit: s.unit || '',
+      loadsAssigned: Number(s.loadsAssigned) || 0,
+    }));
+    console.log('[savePO] validSplits:', validSplits);
+
+    const d = await api('POST', '/api/pos', { po, splits: validSplits });
+    console.log('[savePO] response:', d);
+
+    if (d.ok) {
+      toast('PO created', 'success');
+      closePO();
+      await loadAll();
+      renderBoard();
+    } else {
+      toast(d.error || `Save failed (status ${d.status || '?'})`, 'error');
+      console.error('[savePO] Server rejected:', d);
+    }
+  } catch (e) {
+    console.error('[savePO] CRASH:', e);
+    toast('Could not save PO: ' + (e.message || 'unknown error'), 'error');
   }
 }
 

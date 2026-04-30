@@ -707,11 +707,27 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       return;
     }
     const truck = TRUCKS.find(t => t.id === s.truckId);
-    console.log(`[create-PO] Creating load: truckId="${s.truckId}", material="${s.material}", loads=${s.loadsAssigned}, driver="${truck?.label || '(unassigned)'}"`);
+    const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
+    console.log(`[create-PO] Creating load: truckId="${s.truckId}", material="${s.material}", loads=${s.loadsAssigned}, driver="${truck?.label || '(unassigned)'}", vendor="${vendor?.name || '(none)'}"`);
+
+    // Pricing snapshots — locked at PO creation
+    let customerRate = { price: 25, unit: 'ton', isDefault: true };
+    let vendorRate   = { price: 22, unit: 'ton', isDefault: true, isInternal: false };
+    try {
+      customerRate = resolveCustomerRate(newPo.customer, s.material);
+      vendorRate   = resolveVendorRate(s.vendorId, s.material);
+    } catch (e) {
+      console.warn('[create-PO] price resolution failed, using fallback defaults:', e.message);
+    }
+
     const newLoad = {
       id: 'LOAD-' + store.nextLoadId++,
       poId: newPo.id,
       material: s.material,
+      vendorId: s.vendorId || null,
+      vendorName: vendor?.name || '',
+      unit: s.unit || customerRate.unit || 'ton',
+      pricePerUnit: vendorRate.price,
       loadsAssigned: Number(s.loadsAssigned) || 0,
       loadsDelivered: 0,
       truckId: s.truckId || null,
@@ -733,6 +749,15 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       locked: false,
       voided: false,
       notes: '',
+      // Pricing snapshots
+      tonsPerLoad: TONS_PER_LOAD,
+      customerRate: customerRate.price,
+      customerUnit: customerRate.unit,
+      customerRateIsDefault: customerRate.isDefault,
+      vendorRate: vendorRate.price,
+      vendorUnit: vendorRate.unit,
+      vendorRateIsDefault: vendorRate.isDefault,
+      vendorIsInternal: vendorRate.isInternal || false,
     };
     store.loads.push(newLoad);
   });
