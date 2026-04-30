@@ -424,36 +424,43 @@ function computeCost(load) {
 // target: short id reference (loadId, poId, vendorId, batchId, etc.)
 // details: object with anything useful — old/new values, count, reason, etc.
 function logAction(user, action, target, details) {
-  // user may be a session object or just a username string — accept both
-  let username = 'system';
-  let displayName = 'System';
-  let role = '';
-  if (typeof user === 'string') {
-    username = user;
-    const u = USERS[user];
-    displayName = u?.displayName || (user.charAt(0).toUpperCase() + user.slice(1));
-    role = u?.role || '';
-  } else if (user && typeof user === 'object') {
-    username = user.username || 'system';
-    displayName = user.displayName || username;
-    role = user.role || '';
+  try {
+    // user may be a session object or just a username string — accept both
+    let username = 'system';
+    let displayName = 'System';
+    let role = '';
+    if (typeof user === 'string') {
+      username = user;
+      const u = USERS[user];
+      displayName = u?.displayName || (user.charAt(0).toUpperCase() + user.slice(1));
+      role = u?.role || '';
+    } else if (user && typeof user === 'object') {
+      username = user.username || 'system';
+      displayName = user.displayName || username;
+      role = user.role || '';
+    }
+    const entry = {
+      id: 'AUD-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+      at: new Date().toISOString(),
+      user: username,
+      displayName,
+      role,
+      action,
+      target: target || '',
+      details: details || {},
+    };
+    if (!Array.isArray(store.auditLog)) store.auditLog = [];
+    store.auditLog.push(entry);
+    // Cap at 5000 entries; older ones are still in archive batches
+    if (store.auditLog.length > 5000) {
+      store.auditLog = store.auditLog.slice(-5000);
+    }
+    return entry;
+  } catch (e) {
+    // Audit logging must never break the operation it's recording.
+    console.error('[logAction] failed:', e.message, '— action:', action, 'target:', target);
+    return null;
   }
-  const entry = {
-    id: 'AUD-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
-    at: new Date().toISOString(),
-    user: username,
-    displayName,
-    role,
-    action,
-    target: target || '',
-    details: details || {},
-  };
-  store.auditLog.push(entry);
-  // Cap at 5000 entries; older ones are still in archive batches
-  if (store.auditLog.length > 5000) {
-    store.auditLog = store.auditLog.slice(-5000);
-  }
-  return entry;
 }
 
 
@@ -666,6 +673,7 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
 
 // ── API: CREATE PO ──────────────────────────────────────────────────────────
 app.post('/api/pos', reqMgr, async (req, res) => {
+  try {
   const { po, splits } = req.body;
   console.log(`\n[create-PO] Manager creating PO`);
   console.log(`[create-PO] PO data:`, JSON.stringify(po));
@@ -762,15 +770,31 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     store.loads.push(newLoad);
   });
 
-  logAction(req.session.user, 'created-po', newPo.id, {
-    poNumber: newPo.poNumber,
-    customer: newPo.customer,
-    deliveryDate: newPo.deliveryDate,
-    loadCount: store.loads.filter(l => l.poId === newPo.id).length,
-  });
-  await saveData();
+  // Audit logging is best-effort — never let it block PO/load creation
+  try {
+    logAction(req.session.user, 'created-po', newPo.id, {
+      poNumber: newPo.poNumber,
+      customer: newPo.customer,
+      deliveryDate: newPo.deliveryDate,
+      loadCount: store.loads.filter(l => l.poId === newPo.id).length,
+    });
+  } catch (e) {
+    console.error('[create-PO] audit log failed (non-fatal):', e.message);
+  }
+
+  try {
+    await saveData();
+  } catch (e) {
+    console.error('[create-PO] saveData failed:', e.message);
+  }
   console.log(`[create-PO] DONE. Total POs: ${store.pos.length}, total loads: ${store.loads.length}`);
   res.json({ success: true, po: newPo });
+  } catch (err) {
+    console.error('[create-PO] CRASH:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to create PO: ' + (err.message || 'unknown error') });
+    }
+  }
 });
 
 // ── API: UPDATE PO ──────────────────────────────────────────────────────────
