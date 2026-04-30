@@ -153,6 +153,37 @@ const TRUCKS = [
 // Generic fallback materials list (for the "Other" vendor or legacy data)
 const MATERIALS = ['Fill Sand','Gravel','Rock','3/4 Rock','Cold Mix','Recycle Base','Dirt','Base Rock','Other'];
 
+// System constants
+const TONS_PER_LOAD = 25;  // 1 truck load = 25 tons (per business rule from owner)
+
+// System-wide default rates — used as fallback when a customer has no negotiated rate.
+// Editable by admin in the Vendors & Prices → Default Rates tab.
+// Both customer (revenue) and vendor (cost) defaults; per-material.
+const DEFAULT_RATES = {
+  customer: {
+    'Fill Sand':    { unit: 'ton', price: 25 },
+    'Gravel':       { unit: 'ton', price: 25 },
+    'Rock':         { unit: 'ton', price: 25 },
+    '3/4 Rock':     { unit: 'ton', price: 25 },
+    'Cold Mix':     { unit: 'ton', price: 25 },
+    'Recycle Base': { unit: 'ton', price: 25 },
+    'Dirt':         { unit: 'ton', price: 25 },
+    'Base Rock':    { unit: 'ton', price: 25 },
+    'Other':        { unit: 'ton', price: 25 },
+  },
+  vendor: {
+    'Fill Sand':    { unit: 'ton', price: 22 },
+    'Gravel':       { unit: 'ton', price: 22 },
+    'Rock':         { unit: 'ton', price: 22 },
+    '3/4 Rock':     { unit: 'ton', price: 22 },
+    'Cold Mix':     { unit: 'ton', price: 22 },
+    'Recycle Base': { unit: 'ton', price: 22 },
+    'Dirt':         { unit: 'ton', price: 22 },
+    'Base Rock':    { unit: 'ton', price: 22 },
+    'Other':        { unit: 'ton', price: 22 },
+  },
+};
+
 // Default vendors seeded the first time the app runs
 // Each vendor has its own list of materials with unit/price/notes
 const DEFAULT_VENDORS = [
@@ -207,7 +238,9 @@ let store = {
   archive: [],
   vendors: [],          // [{ id, name, location, active }]
   vendorPrices: {},     // { vendorId: [{ id, material, unit, price, active, notes }] }
-  auditLog: [],         // [{ id, at, user, action, target, details }]
+  customerPrices: {},   // { customerNameLower: [{ id, material, unit, price, active, notes }] }
+  defaultRates: null,   // { customer: { mat: { unit, price } }, vendor: { mat: { unit, price } } }
+  auditLog: [],         // [{ id, at, user, displayName, role, action, target, details }]
   nextPoNum: 1001,
   nextLoadId: 1,
 };
@@ -284,6 +317,10 @@ function normalizeStore() {
   if (!store.loads)   store.loads = [];
   if (!store.archive) store.archive = [];
   if (!Array.isArray(store.auditLog)) store.auditLog = [];
+  if (!store.customerPrices || typeof store.customerPrices !== 'object') store.customerPrices = {};
+  if (!store.defaultRates || typeof store.defaultRates !== 'object') {
+    store.defaultRates = JSON.parse(JSON.stringify(DEFAULT_RATES));
+  }
   // ONE-TIME wipe: starting fresh with named user accounts.
   // After first run with auditLogResetV1=true, this block does nothing.
   if (!store.auditLogResetV1) {
@@ -328,6 +365,56 @@ function normalizeStore() {
 }
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
+
+// ── PRICING HELPERS ──────────────────────────────────────────────────────────
+// Customer key uses lowercase for case-insensitive lookup
+function customerKey(name) { return String(name || '').toLowerCase().trim(); }
+
+// Resolve customer rate for a customer + material.
+// Returns { unit, price, isDefault } — isDefault flags when default rate was used (for UI badge)
+function resolveCustomerRate(customer, material) {
+  const key = customerKey(customer);
+  const list = store.customerPrices[key] || [];
+  const found = list.find(p => p.material === material && p.active);
+  if (found) return { unit: found.unit || 'ton', price: Number(found.price) || 0, isDefault: false };
+  // Fallback to system default
+  const def = (store.defaultRates?.customer || {})[material] || (DEFAULT_RATES.customer[material]) || { unit: 'ton', price: 25 };
+  return { unit: def.unit || 'ton', price: Number(def.price) || 0, isDefault: true };
+}
+
+// Resolve vendor rate for a vendor + material.
+// VBT Yard returns 0 (internal inventory).
+function resolveVendorRate(vendorId, material) {
+  if (vendorId === 'vbt') return { unit: 'ton', price: 0, isDefault: false, isInternal: true };
+  const list = store.vendorPrices[vendorId] || [];
+  const found = list.find(p => p.material === material && p.active);
+  if (found) return { unit: found.unit || 'ton', price: Number(found.price) || 0, isDefault: false };
+  const def = (store.defaultRates?.vendor || {})[material] || (DEFAULT_RATES.vendor[material]) || { unit: 'ton', price: 22 };
+  return { unit: def.unit || 'ton', price: Number(def.price) || 0, isDefault: true };
+}
+
+// Compute revenue for a load given its snapshot rates and delivered count
+// Handles unit='load' (price per load) vs unit='ton' (price × tons-per-load × loads delivered)
+function computeRevenue(load) {
+  const rate = Number(load.customerRate) || 0;
+  const unit = load.customerUnit || 'ton';
+  const delivered = Number(load.loadsDelivered) || 0;
+  if (unit === 'load') return rate * delivered;
+  // 'ton' (or anything else): rate × tons per load × loads delivered
+  const tons = Number(load.tonsPerLoad) || TONS_PER_LOAD;
+  return rate * tons * delivered;
+}
+
+// Compute cost for a load given its snapshot vendor rate
+// VBT Yard loads have vendorRate=0 → cost is always 0
+function computeCost(load) {
+  const rate = Number(load.vendorRate) || 0;
+  const unit = load.vendorUnit || 'ton';
+  const delivered = Number(load.loadsDelivered) || 0;
+  if (unit === 'load') return rate * delivered;
+  const tons = Number(load.tonsPerLoad) || TONS_PER_LOAD;
+  return rate * tons * delivered;
+}
 
 // ── AUDIT LOG ────────────────────────────────────────────────────────────────
 // Records every meaningful manager action — used for activity log + future QBO push tracking
@@ -1170,6 +1257,267 @@ app.get('/api/audit-log', reqMgr, (req, res) => {
   const allActions = [...new Set((store.auditLog || []).map(e => e.action))].sort();
 
   res.json({ entries, total, allUsers, allActions });
+});
+
+// ── API: CUSTOMER PRICING ────────────────────────────────────────────────────
+// Get all customer prices (manager+admin)
+app.get('/api/customer-prices', reqMgr, (req, res) => {
+  // Build a sorted list of customers with their price arrays
+  const customers = Object.entries(store.customerPrices || {})
+    .map(([key, prices]) => {
+      // Find display name (capitalized) from existing POs that match this customer key
+      const samplePo = store.pos.find(p => customerKey(p.customer) === key);
+      const displayName = samplePo?.customer || key;
+      return { key, displayName, prices };
+    })
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  // Also list customers from existing POs that don't yet have prices set (for the dropdown)
+  const allPoCustomers = [...new Set(store.pos.map(p => p.customer).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+  res.json({ customers, allPoCustomers, defaultRates: store.defaultRates });
+});
+
+// Add a customer price row
+app.post('/api/customer-prices', reqMgr, async (req, res) => {
+  const { customer, material, unit, price, notes } = req.body;
+  if (!customer || !customer.trim()) return res.status(400).json({ error: 'Customer name required' });
+  if (!material || !material.trim()) return res.status(400).json({ error: 'Material required' });
+
+  const key = customerKey(customer);
+  if (!Array.isArray(store.customerPrices[key])) store.customerPrices[key] = [];
+
+  // Reject duplicates (same material+unit on same customer)
+  if (store.customerPrices[key].some(p => p.material === material.trim() && (p.unit || '') === (unit || ''))) {
+    return res.status(400).json({ error: 'That material already has a price for this customer' });
+  }
+  const newPrice = {
+    id: 'cprice-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+    material: material.trim(),
+    unit: (unit || 'ton').trim(),
+    price: Number(price) || 0,
+    active: true,
+    notes: (notes || '').trim(),
+  };
+  store.customerPrices[key].push(newPrice);
+  logAction(req.session.user, 'added-customer-price', key + ':' + newPrice.id, {
+    customer: customer.trim(), material: newPrice.material, unit: newPrice.unit, price: newPrice.price,
+  });
+  await saveData();
+  res.json({ success: true, price: newPrice, customer: customer.trim() });
+});
+
+// Update a customer price row
+app.put('/api/customer-prices/:customerKey/:priceId', reqMgr, async (req, res) => {
+  const list = store.customerPrices[req.params.customerKey];
+  if (!list) return res.status(404).json({ error: 'Customer not found' });
+  const p = list.find(x => x.id === req.params.priceId);
+  if (!p) return res.status(404).json({ error: 'Price not found' });
+
+  const before = { material: p.material, unit: p.unit, price: p.price, active: p.active };
+  if (req.body.material !== undefined) p.material = String(req.body.material).trim();
+  if (req.body.unit !== undefined)     p.unit     = String(req.body.unit).trim();
+  if (req.body.price !== undefined)    p.price    = Number(req.body.price) || 0;
+  if (req.body.active !== undefined)   p.active   = !!req.body.active;
+  if (req.body.notes !== undefined)    p.notes    = String(req.body.notes).trim();
+
+  const priceChanged = req.body.price !== undefined && Number(req.body.price) !== before.price;
+  if (priceChanged || req.body.active !== undefined) {
+    logAction(req.session.user, 'edited-customer-price', req.params.customerKey + ':' + p.id, {
+      customerKey: req.params.customerKey, material: p.material,
+      before: { price: before.price, active: before.active },
+      after:  { price: p.price, active: p.active },
+    });
+  }
+  await saveData();
+  res.json({ success: true, price: p });
+});
+
+// Delete a customer price row
+app.delete('/api/customer-prices/:customerKey/:priceId', reqMgr, async (req, res) => {
+  const list = store.customerPrices[req.params.customerKey];
+  if (!list) return res.status(404).json({ error: 'Customer not found' });
+  const idx = list.findIndex(x => x.id === req.params.priceId);
+  if (idx === -1) return res.status(404).json({ error: 'Price not found' });
+  const deleted = list[idx];
+  list.splice(idx, 1);
+  // Clean up empty customer entry
+  if (list.length === 0) delete store.customerPrices[req.params.customerKey];
+  logAction(req.session.user, 'deleted-customer-price', req.params.customerKey + ':' + deleted.id, {
+    customerKey: req.params.customerKey, material: deleted.material, price: deleted.price,
+  });
+  await saveData();
+  res.json({ success: true });
+});
+
+// ── API: DEFAULT RATES (admin-only) ─────────────────────────────────────────
+app.get('/api/default-rates', reqMgr, (req, res) => {
+  res.json({ defaultRates: store.defaultRates, materials: MATERIALS });
+});
+
+app.put('/api/default-rates', reqAdmin, async (req, res) => {
+  const { side, material, unit, price } = req.body;  // side: 'customer' | 'vendor'
+  if (!['customer', 'vendor'].includes(side)) return res.status(400).json({ error: 'Invalid side' });
+  if (!material) return res.status(400).json({ error: 'Material required' });
+  if (!store.defaultRates[side]) store.defaultRates[side] = {};
+  const before = store.defaultRates[side][material] ? { ...store.defaultRates[side][material] } : null;
+  store.defaultRates[side][material] = {
+    unit: (unit || 'ton').trim(),
+    price: Number(price) || 0,
+  };
+  logAction(req.session.user, 'edited-default-rate', side + ':' + material, {
+    side, material, before, after: store.defaultRates[side][material],
+  });
+  await saveData();
+  res.json({ success: true, defaultRates: store.defaultRates });
+});
+
+// ── API: PRICING PREVIEW (for PO modal — show rate before saving) ────────────
+// GET /api/pricing-preview?customer=Wilson%20Homes&material=3/4%20Rock&vendorId=vulcan
+app.get('/api/pricing-preview', reqMgr, (req, res) => {
+  const { customer, material, vendorId } = req.query;
+  if (!customer || !material) return res.status(400).json({ error: 'customer and material required' });
+
+  const cust = resolveCustomerRate(customer, material);
+  const vend = resolveVendorRate(vendorId || '', material);
+  const tons = TONS_PER_LOAD;
+
+  // Compute per-load revenue, cost, margin (assuming 1 load, 25 tons)
+  const revPerLoad  = cust.unit === 'load' ? cust.price : cust.price * tons;
+  const costPerLoad = vend.unit === 'load' ? vend.price : vend.price * tons;
+  const marginPerLoad = revPerLoad - costPerLoad;
+
+  res.json({
+    customer: { rate: cust.price, unit: cust.unit, isDefault: cust.isDefault, perLoad: revPerLoad },
+    vendor:   { rate: vend.price, unit: vend.unit, isDefault: vend.isDefault, isInternal: vend.isInternal || false, perLoad: costPerLoad },
+    margin:   { perLoad: marginPerLoad, percent: revPerLoad > 0 ? (marginPerLoad / revPerLoad * 100) : 0 },
+    tonsPerLoad: tons,
+  });
+});
+
+// ── API: PROFITABILITY ───────────────────────────────────────────────────────
+// Returns revenue / cost / margin breakdown by customer, by job code, by load
+// Optional filter: ?month=YYYY-MM (defaults to all-time)
+// Only counts loads that have actually been delivered (loadsDelivered > 0)
+app.get('/api/profitability', reqMgr, (req, res) => {
+  const monthFilter = req.query.month || '';
+
+  // Active store + archived loads — both count for historical profitability
+  const archivedLoads = (store.archive || []).flatMap(b => b.loads || []);
+  const allLoads = [...store.loads, ...archivedLoads];
+  const allPos   = [...store.pos,   ...((store.archive || []).flatMap(b => b.pos || []))];
+
+  let eligible = allLoads.filter(l => {
+    if (l.voided) return false;
+    if (Number(l.loadsDelivered || 0) <= 0) return false;
+    if (monthFilter && !(l.deliveryDate || '').startsWith(monthFilter)) return false;
+    return true;
+  });
+
+  // Aggregations
+  const byCustomer = {};   // { customerKey: { displayName, loads, revenue, cost, margin } }
+  const byJobCode  = {};   // similar but keyed by jobCode (skip blanks)
+  const byVendor   = {};   // { vendorId: { name, loads, revenue, cost, margin, ... } }
+  const topLoads   = [];   // each: { id, poNumber, customer, material, driver, delivered, rev, cost, margin }
+  let grandRev = 0, grandCost = 0, grandLoads = 0;
+
+  eligible.forEach(l => {
+    const po = allPos.find(p => p.id === l.poId) || {};
+    const rev    = computeRevenue(l);
+    const cost   = computeCost(l);
+    const margin = rev - cost;
+
+    grandRev   += rev;
+    grandCost  += cost;
+    grandLoads += Number(l.loadsDelivered) || 0;
+
+    // By customer
+    const custKey = customerKey(po.customer || '');
+    if (custKey) {
+      if (!byCustomer[custKey]) byCustomer[custKey] = { displayName: po.customer, loads: 0, revenue: 0, cost: 0, margin: 0 };
+      byCustomer[custKey].loads   += Number(l.loadsDelivered) || 0;
+      byCustomer[custKey].revenue += rev;
+      byCustomer[custKey].cost    += cost;
+      byCustomer[custKey].margin  += margin;
+    }
+
+    // By job code (only if PO has one)
+    if (po.jobCode) {
+      const jcKey = po.jobCode;
+      if (!byJobCode[jcKey]) byJobCode[jcKey] = { jobCode: po.jobCode, customer: po.customer || '', loads: 0, revenue: 0, cost: 0, margin: 0 };
+      byJobCode[jcKey].loads   += Number(l.loadsDelivered) || 0;
+      byJobCode[jcKey].revenue += rev;
+      byJobCode[jcKey].cost    += cost;
+      byJobCode[jcKey].margin  += margin;
+    }
+
+    // By vendor (where the cost goes — payables)
+    const vId = l.actualYardId || l.vendorId || po.plannedVendorId;
+    if (vId) {
+      const v = store.vendors.find(x => x.id === vId);
+      if (!byVendor[vId]) byVendor[vId] = {
+        name: v?.name || vId,
+        isInternal: vId === 'vbt',
+        loads: 0, revenue: 0, cost: 0, margin: 0
+      };
+      byVendor[vId].loads   += Number(l.loadsDelivered) || 0;
+      byVendor[vId].revenue += rev;
+      byVendor[vId].cost    += cost;
+      byVendor[vId].margin  += margin;
+    }
+
+    // Individual load entry (for top/bottom load lists)
+    topLoads.push({
+      id: l.id,
+      poId: l.poId,
+      poNumber: po.poNumber || '',
+      customer: po.customer || '',
+      jobCode:  po.jobCode  || '',
+      material: l.material,
+      driver:   l.driverName || '',
+      delivered: Number(l.loadsDelivered) || 0,
+      assigned:  Number(l.loadsAssigned)  || 0,
+      isPartial: !!l.isPartial,
+      vendorName: l.actualYardName || l.vendorName || '',
+      vendorIsInternal: vId === 'vbt',
+      deliveryDate: l.deliveryDate || '',
+      revenue: rev,
+      cost,
+      margin,
+      marginPct: rev > 0 ? (margin / rev * 100) : 0,
+    });
+  });
+
+  // Sort top/bottom (top 10 most profitable, bottom 10 least)
+  const sortedByMargin = [...topLoads].sort((a, b) => b.margin - a.margin);
+  const topByMargin = sortedByMargin.slice(0, 10);
+  const bottomByMargin = sortedByMargin.slice(-10).reverse();
+
+  // Available month options for filter
+  const months = [...new Set(allLoads.map(l => (l.deliveryDate || '').slice(0, 7)).filter(Boolean))].sort().reverse();
+
+  res.json({
+    monthFilter,
+    months,
+    grand: {
+      revenue: grandRev,
+      cost: grandCost,
+      margin: grandRev - grandCost,
+      marginPct: grandRev > 0 ? ((grandRev - grandCost) / grandRev * 100) : 0,
+      loads: grandLoads,
+      loadCount: eligible.length,
+    },
+    byCustomer: Object.entries(byCustomer)
+      .map(([k, v]) => ({ key: k, ...v, marginPct: v.revenue > 0 ? (v.margin / v.revenue * 100) : 0 }))
+      .sort((a, b) => b.margin - a.margin),
+    byJobCode: Object.entries(byJobCode)
+      .map(([k, v]) => ({ key: k, ...v, marginPct: v.revenue > 0 ? (v.margin / v.revenue * 100) : 0 }))
+      .sort((a, b) => b.margin - a.margin),
+    byVendor: Object.entries(byVendor)
+      .map(([k, v]) => ({ key: k, ...v, marginPct: v.revenue > 0 ? (v.margin / v.revenue * 100) : 0 }))
+      .sort((a, b) => b.margin - a.margin),
+    topByMargin,
+    bottomByMargin,
+  });
 });
 
 // ── API: VENDOR / MATERIAL COSTS (payables — what VBT owes outside vendors) ─

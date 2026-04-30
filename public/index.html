@@ -579,7 +579,7 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <div class="field"><label>Delivery Date</label><input type="date" id="po-date" onchange="syncSplitDates()"></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>Customer / Job Name</label><input id="po-customer" placeholder="e.g. Wilson Homes"></div>
+        <div class="field"><label>Customer / Job Name</label><input id="po-customer" placeholder="e.g. Wilson Homes" oninput="refreshAllPricingPreviews()"></div>
         <div class="field"><label>Job Code <span style="color:var(--txt3);text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label><input id="po-jobcode" placeholder="e.g. JOB-2024-1138"></div>
       </div>
       <div class="field-row">
@@ -1263,6 +1263,8 @@ function closePO() { document.getElementById('po-modal').style.display = 'none';
 
 function renderSplits() {
   const wrap = document.getElementById('splits');
+  // After rendering, queue a preview refresh
+  setTimeout(refreshAllPricingPreviews, 50);
   wrap.innerHTML = splits.map((s, i) => {
     const vendorMats = getVendorMaterials(s.vendorId);
     // Build the material dropdown from selected vendor's prices, fall back to flat list if vendor has none
@@ -1270,49 +1272,97 @@ function renderSplits() {
       ? vendorMats.map(p => `<option value="${p.material}" data-unit="${p.unit}" data-price="${p.price}" ${s.material === p.material ? 'selected' : ''}>${p.material}${p.unit ? ' (' + p.unit + ')' : ''}${p.price ? ' — $' + p.price : ''}</option>`).join('')
       : materials.map(m => `<option value="${m}" ${s.material === m ? 'selected' : ''}>${m}</option>`).join('');
 
-    return `<div class="split-row with-vendor">
-      <div class="field">
-        <label>Driver</label>
-        <select onchange="splits[${i}].truckId = this.value">
-          <option value="">Unassigned</option>
-          ${trucks.map(t => `<option value="${t.id}" ${s.truckId === t.id ? 'selected' : ''}>${t.label} (${t.truckNum})</option>`).join('')}
-        </select>
+    return `<div class="split-row-wrap" style="background:var(--bg2);border-radius:var(--r);padding:8px;margin-bottom:6px">
+      <div class="split-row with-vendor" style="background:transparent;padding:0;margin-bottom:0">
+        <div class="field">
+          <label>Driver</label>
+          <select onchange="splits[${i}].truckId = this.value">
+            <option value="">Unassigned</option>
+            ${trucks.map(t => `<option value="${t.id}" ${s.truckId === t.id ? 'selected' : ''}>${t.label} (${t.truckNum})</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label>Vendor</label>
+          <select onchange="onSplitVendorChange(${i}, this.value)">
+            ${vendors.filter(v => v.active).map(v => `<option value="${v.id}" ${s.vendorId === v.id ? 'selected' : ''}>${v.name}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label>Material${vendorMats.length === 0 ? ' (no prices set)' : ''}</label>
+          <select onchange="onSplitMaterialChange(${i}, this)">
+            ${matOptions}
+          </select>
+        </div>
+        <div class="field">
+          <label>Loads</label>
+          <input type="number" min="1" value="${s.loadsAssigned}" oninput="splits[${i}].loadsAssigned = Number(this.value) || 0; refreshPricingPreview(${i})">
+        </div>
+        <button class="split-remove" onclick="splits.splice(${i}, 1); renderSplits()" title="Remove">×</button>
       </div>
-      <div class="field">
-        <label>Vendor</label>
-        <select onchange="onSplitVendorChange(${i}, this.value)">
-          ${vendors.filter(v => v.active).map(v => `<option value="${v.id}" ${s.vendorId === v.id ? 'selected' : ''}>${v.name}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field">
-        <label>Material${vendorMats.length === 0 ? ' (no prices set)' : ''}</label>
-        <select onchange="onSplitMaterialChange(${i}, this)">
-          ${matOptions}
-        </select>
-      </div>
-      <div class="field">
-        <label>Loads</label>
-        <input type="number" min="1" value="${s.loadsAssigned}" oninput="splits[${i}].loadsAssigned = Number(this.value) || 0">
-      </div>
-      <button class="split-remove" onclick="splits.splice(${i}, 1); renderSplits()" title="Remove">×</button>
+      <div id="pricing-preview-${i}" style="margin-top:6px;padding:6px 10px;background:var(--bg);border-radius:var(--r);font-size:11px;color:var(--txt2);min-height:24px"></div>
     </div>`;
   }).join('');
 }
 
 function onSplitVendorChange(i, vendorId) {
   splits[i].vendorId = vendorId;
-  // Reset material to first available from new vendor
   const mats = getVendorMaterials(vendorId);
   if (mats.length) {
     splits[i].material = mats[0].material;
     splits[i].unit = mats[0].unit;
   }
   renderSplits();
+  setTimeout(() => refreshAllPricingPreviews(), 50);
 }
 
 function onSplitMaterialChange(i, sel) {
   splits[i].material = sel.value;
   splits[i].unit = sel.options[sel.selectedIndex]?.dataset?.unit || '';
+  refreshPricingPreview(i);
+}
+
+// Fetch and render pricing preview for one split row
+async function refreshPricingPreview(i) {
+  const s = splits[i];
+  const customer = document.getElementById('po-customer')?.value.trim();
+  const el = document.getElementById('pricing-preview-' + i);
+  if (!el) return;
+  if (!customer || !s.material || !s.vendorId) {
+    el.innerHTML = '<span style="color:var(--txt3)">Enter customer name to see margin preview</span>';
+    return;
+  }
+  try {
+    const params = new URLSearchParams({ customer, material: s.material, vendorId: s.vendorId });
+    const r = await fetch('/api/pricing-preview?' + params);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const loads = Number(s.loadsAssigned) || 1;
+    const totalRev   = d.customer.perLoad * loads;
+    const totalCost  = d.vendor.perLoad   * loads;
+    const totalMargin= totalRev - totalCost;
+    const marginColor = totalMargin > 0 ? 'var(--G)' : totalMargin < 0 ? 'var(--R)' : 'var(--txt2)';
+
+    const custBadge = d.customer.isDefault
+      ? '<span style="color:var(--A);font-weight:600;font-size:10px;padding:1px 5px;background:var(--Ab);border:1px solid var(--Ad);border-radius:8px;margin-left:4px">DEFAULT</span>'
+      : '';
+    const vendBadge = d.vendor.isInternal
+      ? '<span style="color:var(--P);font-weight:600;font-size:10px;padding:1px 5px;background:var(--Pb);border:1px solid var(--Pd);border-radius:8px;margin-left:4px">VBT INTERNAL</span>'
+      : (d.vendor.isDefault ? '<span style="color:var(--A);font-weight:600;font-size:10px;padding:1px 5px;background:var(--Ab);border:1px solid var(--Ad);border-radius:8px;margin-left:4px">DEFAULT</span>' : '');
+
+    el.innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center">
+        <span><b style="color:var(--G)">Rev:</b> $${d.customer.rate.toFixed(2)}/${d.customer.unit} → <b>$${totalRev.toFixed(2)}</b>${custBadge}</span>
+        <span><b style="color:var(--R)">Cost:</b> $${d.vendor.rate.toFixed(2)}/${d.vendor.unit} → <b>$${totalCost.toFixed(2)}</b>${vendBadge}</span>
+        <span style="color:${marginColor};font-weight:700">Margin: $${totalMargin.toFixed(2)}${totalRev > 0 ? ' (' + Math.round(totalMargin/totalRev*100) + '%)' : ''}</span>
+        <span style="color:var(--txt3);font-size:10px">${loads} load${loads !== 1 ? 's' : ''} × ${d.tonsPerLoad} tons</span>
+      </div>`;
+  } catch (e) {
+    el.innerHTML = `<span style="color:var(--R);font-size:11px">Could not preview pricing: ${e.message}</span>`;
+  }
+}
+
+function refreshAllPricingPreviews() {
+  splits.forEach((_, i) => refreshPricingPreview(i));
 }
 
 function addSplit() {
@@ -2342,7 +2392,7 @@ async function markBilled() {
 }
 
 // ── VENDORS & PRICING (manager admin) ────────────────────────────────────────
-let vendorSubview = 'prices';  // 'prices' | 'costs'
+let vendorSubview = 'prices';  // 'prices' | 'customers' | 'defaults' | 'costs'
 
 function setVendorSubview(view) {
   vendorSubview = view;
@@ -2358,16 +2408,30 @@ function renderVendors() {
 
   let h = '<div class="vendors-wrap">';
 
-  // Sub-tabs: Prices vs Costs
-  h += `<div style="display:flex;gap:6px;margin-bottom:14px;background:var(--bg2);padding:4px;border-radius:24px;width:fit-content">
-    <button class="view-btn ${vendorSubview === 'prices' ? 'active' : ''}" onclick="setVendorSubview('prices')">📋 Vendor Prices</button>
-    <button class="view-btn ${vendorSubview === 'costs' ? 'active' : ''}" onclick="setVendorSubview('costs')">💰 Material Costs</button>
+  // Sub-tabs
+  h += `<div style="display:flex;gap:6px;margin-bottom:14px;background:var(--bg2);padding:4px;border-radius:24px;width:fit-content;flex-wrap:wrap">
+    <button class="view-btn ${vendorSubview === 'prices' ? 'active' : ''}" onclick="setVendorSubview('prices')">Vendor Prices</button>
+    <button class="view-btn ${vendorSubview === 'customers' ? 'active' : ''}" onclick="setVendorSubview('customers')">Customer Prices</button>
+    ${role === 'admin' ? `<button class="view-btn ${vendorSubview === 'defaults' ? 'active' : ''}" onclick="setVendorSubview('defaults')">Default Rates</button>` : ''}
+    <button class="view-btn ${vendorSubview === 'costs' ? 'active' : ''}" onclick="setVendorSubview('costs')">Material Costs</button>
   </div>`;
 
   if (vendorSubview === 'costs') {
-    h += '</div>';  // close vendors-wrap
+    h += '</div>';
     wrap.innerHTML = h;
     renderMaterialCosts();
+    return;
+  }
+  if (vendorSubview === 'customers') {
+    h += '</div>';
+    wrap.innerHTML = h;
+    renderCustomerPrices();
+    return;
+  }
+  if (vendorSubview === 'defaults') {
+    h += '</div>';
+    wrap.innerHTML = h;
+    renderDefaultRates();
     return;
   }
 
@@ -2452,6 +2516,181 @@ function renderVendors() {
 }
 
 function switchVendorTab(vendorId) { currentVendorTab = vendorId; renderVendors(); }
+
+// ── CUSTOMER PRICES (per-customer negotiated rates) ─────────────────────────
+let customerPricesData = null;
+let openCustomer = null;  // currently expanded customer key
+
+async function renderCustomerPrices() {
+  const wrap = document.getElementById('vendors-content');
+  const subnav = wrap.innerHTML;
+  wrap.innerHTML = subnav + '<div class="empty-state"><p>Loading customer prices...</p></div>';
+
+  try {
+    const r = await fetch('/api/customer-prices');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    customerPricesData = data;
+
+    let h = subnav + '<div style="padding:0 18px 18px">';
+
+    // Add new customer section
+    h += `<div class="vendor-panel" style="margin-bottom:14px">
+      <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:4px">Add price for customer</label>
+          <input list="cust-suggestions" id="new-cp-customer" placeholder="Type or pick a customer name" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
+          <datalist id="cust-suggestions">
+            ${(data.allPoCustomers || []).map(c => `<option value="${c}">`).join('')}
+          </datalist>
+        </div>
+        <div style="width:160px">
+          <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:4px">Material</label>
+          <select id="new-cp-material" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
+            ${materials.map(m => `<option value="${m}">${m}</option>`).join('')}
+          </select>
+        </div>
+        <div style="width:80px">
+          <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:4px">Unit</label>
+          <select id="new-cp-unit" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
+            <option value="ton">ton</option>
+            <option value="load">load</option>
+          </select>
+        </div>
+        <div style="width:90px">
+          <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:4px">Price ($)</label>
+          <input type="number" min="0" step="0.01" id="new-cp-price" placeholder="25" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
+        </div>
+        <button class="btn primary" onclick="addCustomerPrice()">+ Add</button>
+      </div>
+    </div>`;
+
+    if (!data.customers.length) {
+      h += '<div class="vendor-empty" style="background:var(--bg);box-shadow:var(--shadow);padding:30px;text-align:center;color:var(--txt3)">No negotiated customer rates yet. New POs will use the system default rates until you set custom prices here.</div>';
+    } else {
+      data.customers.forEach(c => {
+        h += `<div class="vendor-panel" style="margin-bottom:10px">
+          <div class="vendor-panel-head" style="margin-bottom:10px">
+            <div>
+              <div class="vendor-panel-title" style="font-size:16px">${c.displayName}</div>
+              <div class="vendor-panel-sub">${c.prices.length} price${c.prices.length !== 1 ? 's' : ''} set</div>
+            </div>
+          </div>
+          <table class="price-table">
+            <thead><tr><th>Material</th><th style="width:90px">Unit</th><th style="width:110px">Price</th><th>Notes</th><th style="width:90px">Status</th><th class="col-action"></th></tr></thead>
+            <tbody>
+              ${c.prices.map(p => `<tr class="${p.active ? '' : 'inactive'}" data-pid="${p.id}">
+                <td><input type="text" value="${p.material.replace(/"/g, '&quot;')}" onblur="updateCustomerPrice('${c.key}','${p.id}',{material:this.value})"></td>
+                <td><select onchange="updateCustomerPrice('${c.key}','${p.id}',{unit:this.value})"><option value="ton" ${p.unit === 'ton' ? 'selected' : ''}>ton</option><option value="load" ${p.unit === 'load' ? 'selected' : ''}>load</option></select></td>
+                <td><input type="number" min="0" step="0.01" value="${p.price || 0}" onblur="updateCustomerPrice('${c.key}','${p.id}',{price:Number(this.value)})"></td>
+                <td><input type="text" value="${(p.notes || '').replace(/"/g, '&quot;')}" placeholder="Optional" onblur="updateCustomerPrice('${c.key}','${p.id}',{notes:this.value})"></td>
+                <td><select onchange="updateCustomerPrice('${c.key}','${p.id}',{active:this.value === 'true'})">
+                  <option value="true" ${p.active ? 'selected' : ''}>Active</option>
+                  <option value="false" ${!p.active ? 'selected' : ''}>Inactive</option>
+                </select></td>
+                <td class="col-action"><button class="icon-btn" onclick="deleteCustomerPrice('${c.key}','${p.id}','${p.material.replace(/'/g, "&#39;")}')">&times;</button></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+      });
+    }
+
+    h += '</div>';
+    wrap.innerHTML = h;
+  } catch (e) {
+    wrap.innerHTML = subnav + `<div class="empty-state"><h3>Could not load customer prices</h3><p style="color:var(--R)">${e.message}</p></div>`;
+  }
+}
+
+async function addCustomerPrice() {
+  const customer = document.getElementById('new-cp-customer').value.trim();
+  const material = document.getElementById('new-cp-material').value;
+  const unit = document.getElementById('new-cp-unit').value;
+  const price = Number(document.getElementById('new-cp-price').value) || 0;
+  if (!customer) { toast('Customer name required', 'error'); return; }
+  if (!price || price <= 0) { toast('Enter a price', 'error'); return; }
+  const d = await api('POST', '/api/customer-prices', { customer, material, unit, price });
+  if (d.ok) {
+    toast(`Added ${material} for ${customer}`, 'success');
+    renderCustomerPrices();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+async function updateCustomerPrice(custKey, priceId, patch) {
+  const d = await api('PUT', `/api/customer-prices/${encodeURIComponent(custKey)}/${priceId}`, patch);
+  if (!d.ok) toast(d.error || 'Failed', 'error');
+}
+
+async function deleteCustomerPrice(custKey, priceId, materialName) {
+  if (!confirm(`Remove ${materialName} for this customer?`)) return;
+  const d = await api('DELETE', `/api/customer-prices/${encodeURIComponent(custKey)}/${priceId}`);
+  if (d.ok) {
+    toast('Removed', 'success');
+    renderCustomerPrices();
+  } else toast(d.error || 'Failed', 'error');
+}
+
+// ── DEFAULT RATES (admin-only) ──────────────────────────────────────────────
+async function renderDefaultRates() {
+  const wrap = document.getElementById('vendors-content');
+  const subnav = wrap.innerHTML;
+
+  if (role !== 'admin') {
+    wrap.innerHTML = subnav + '<div class="empty-state"><h3>Admins only</h3><p>Default rates are managed by admins.</p></div>';
+    return;
+  }
+
+  wrap.innerHTML = subnav + '<div class="empty-state"><p>Loading...</p></div>';
+
+  try {
+    const r = await fetch('/api/default-rates');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const rates = data.defaultRates || { customer: {}, vendor: {} };
+
+    let h = subnav + '<div style="padding:0 18px 18px">';
+    h += `<div class="vendor-panel">
+      <div class="vendor-panel-head">
+        <div>
+          <div class="vendor-panel-title">System Default Rates</div>
+          <div class="vendor-panel-sub">Used as fallback when a customer or vendor has no specific price set. Edit cells to update — saves on blur.</div>
+        </div>
+      </div>
+      <table class="price-table">
+        <thead><tr>
+          <th>Material</th>
+          <th style="width:160px;color:var(--G)">Customer Rate (revenue)</th>
+          <th style="width:90px">Unit</th>
+          <th style="width:160px;color:var(--R)">Vendor Rate (cost)</th>
+          <th style="width:90px">Unit</th>
+        </tr></thead>
+        <tbody>
+          ${data.materials.map(m => {
+            const c = rates.customer?.[m] || { unit: 'ton', price: 25 };
+            const v = rates.vendor?.[m]   || { unit: 'ton', price: 22 };
+            return `<tr>
+              <td style="font-weight:600">${m}</td>
+              <td><input type="number" min="0" step="0.01" value="${c.price}" onblur="saveDefaultRate('customer','${m}',{price:Number(this.value),unit:'${c.unit}'})"></td>
+              <td><select onchange="saveDefaultRate('customer','${m}',{price:${c.price},unit:this.value})"><option value="ton" ${c.unit === 'ton' ? 'selected' : ''}>ton</option><option value="load" ${c.unit === 'load' ? 'selected' : ''}>load</option></select></td>
+              <td><input type="number" min="0" step="0.01" value="${v.price}" onblur="saveDefaultRate('vendor','${m}',{price:Number(this.value),unit:'${v.unit}'})"></td>
+              <td><select onchange="saveDefaultRate('vendor','${m}',{price:${v.price},unit:this.value})"><option value="ton" ${v.unit === 'ton' ? 'selected' : ''}>ton</option><option value="load" ${v.unit === 'load' ? 'selected' : ''}>load</option></select></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <div style="margin-top:12px;font-size:11px;color:var(--txt3);font-style:italic">Note: 1 load = 25 tons. So $25/ton means $625 revenue per load delivered.</div>
+    </div></div>`;
+    wrap.innerHTML = h;
+  } catch (e) {
+    wrap.innerHTML = subnav + `<div class="empty-state"><h3>Could not load defaults</h3><p style="color:var(--R)">${e.message}</p></div>`;
+  }
+}
+
+async function saveDefaultRate(side, material, payload) {
+  const d = await api('PUT', '/api/default-rates', { side, material, ...payload });
+  if (!d.ok) toast(d.error || 'Failed', 'error');
+}
 
 // ── MATERIAL COSTS (vendor payables view) ──────────────────────────────────
 let mcMonthFilter = '';
@@ -2629,7 +2868,7 @@ async function deletePriceConfirm(vendorId, priceId, materialName) {
 }
 
 // ── REPORTS / FINANCE ────────────────────────────────────────────────────────
-let reportsSubview = 'overview';  // 'overview' | 'audit'
+let reportsSubview = 'overview';  // 'overview' | 'profit' | 'audit'
 
 function setReportsSubview(v) {
   reportsSubview = v;
@@ -2641,8 +2880,9 @@ async function renderReports() {
 
   // Sub-tab nav
   const subnav = `<div style="padding:14px 18px 0;display:flex;gap:6px">
-    <div style="display:flex;gap:6px;background:var(--bg2);padding:4px;border-radius:24px;width:fit-content">
+    <div style="display:flex;gap:6px;background:var(--bg2);padding:4px;border-radius:24px;width:fit-content;flex-wrap:wrap">
       <button class="view-btn ${reportsSubview === 'overview' ? 'active' : ''}" onclick="setReportsSubview('overview')">Overview</button>
+      <button class="view-btn ${reportsSubview === 'profit' ? 'active' : ''}" onclick="setReportsSubview('profit')">Profitability</button>
       <button class="view-btn ${reportsSubview === 'audit' ? 'active' : ''}" onclick="setReportsSubview('audit')">Activity Log</button>
     </div>
   </div>`;
@@ -2650,6 +2890,11 @@ async function renderReports() {
   if (reportsSubview === 'audit') {
     wrap.innerHTML = subnav + '<div id="audit-wrap"></div>';
     renderAuditLog();
+    return;
+  }
+  if (reportsSubview === 'profit') {
+    wrap.innerHTML = subnav + '<div id="profit-wrap"></div>';
+    renderProfitability();
     return;
   }
 
@@ -2741,6 +2986,194 @@ async function renderReports() {
   } catch (e) {
     wrap.innerHTML = subnav + `<div class="empty-state"><h3>Could not load reports</h3><p style="color:var(--R)">${e.message}</p><button class="btn primary" onclick="renderReports()" style="margin-top:12px">Retry</button></div>`;
   }
+}
+
+// ── PROFITABILITY VIEW ───────────────────────────────────────────────────────
+let profitMonth = '';   // '' = all time
+let profitTab = 'customer';  // 'customer' | 'job' | 'vendor' | 'top' | 'bottom'
+
+async function renderProfitability() {
+  const wrap = document.getElementById('profit-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="empty-state"><p>Loading profitability...</p></div>';
+
+  try {
+    const params = new URLSearchParams();
+    if (profitMonth) params.set('month', profitMonth);
+    const r = await fetch('/api/profitability?' + params);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+
+    let h = '<div class="reports-wrap">';
+
+    // ── Top summary card ──
+    const marginColor = data.grand.margin > 0 ? 'var(--G)' : data.grand.margin < 0 ? 'var(--R)' : 'var(--txt2)';
+    h += `<div style="background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);border-radius:var(--rl);padding:22px 24px;color:#fff;margin-bottom:18px;box-shadow:var(--shadow-md)">
+      <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:14px">
+        <div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.75;margin-bottom:4px;font-weight:600">${profitMonth ? profitMonth : 'All time'} · ${data.grand.loadCount} delivered loads</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:18px;margin-top:8px">
+            <div>
+              <div style="font-size:11px;opacity:.7;text-transform:uppercase;letter-spacing:.05em;font-weight:600">Revenue</div>
+              <div style="font-size:26px;font-weight:700;color:#5eead4">${money(data.grand.revenue)}</div>
+            </div>
+            <div>
+              <div style="font-size:11px;opacity:.7;text-transform:uppercase;letter-spacing:.05em;font-weight:600">Cost</div>
+              <div style="font-size:26px;font-weight:700;color:#fca5a5">${money(data.grand.cost)}</div>
+            </div>
+            <div>
+              <div style="font-size:11px;opacity:.7;text-transform:uppercase;letter-spacing:.05em;font-weight:600">Margin</div>
+              <div style="font-size:26px;font-weight:700;color:${data.grand.margin >= 0 ? '#86efac' : '#fca5a5'}">${money(data.grand.margin)}</div>
+              <div style="font-size:12px;opacity:.8;margin-top:2px">${data.grand.marginPct.toFixed(1)}% margin</div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:10px;text-transform:uppercase;opacity:.7;font-weight:600;display:block;margin-bottom:4px">Filter by month</label>
+          <select onchange="profitMonth = this.value; renderProfitability()" style="padding:7px 10px;border:1px solid rgba(255,255,255,.25);border-radius:var(--r);font-family:var(--f);font-size:13px;background:rgba(255,255,255,.1);color:#fff">
+            <option value="" ${profitMonth === '' ? 'selected' : ''}>All time</option>
+            ${data.months.map(m => `<option value="${m}" ${profitMonth === m ? 'selected' : ''}>${m}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>`;
+
+    // ── Tab nav ──
+    h += `<div style="display:flex;gap:6px;margin-bottom:14px;background:var(--bg2);padding:4px;border-radius:24px;width:fit-content;flex-wrap:wrap">
+      <button class="view-btn ${profitTab === 'customer' ? 'active' : ''}" onclick="setProfitTab('customer')">By Customer</button>
+      <button class="view-btn ${profitTab === 'job' ? 'active' : ''}" onclick="setProfitTab('job')">By Job Code</button>
+      <button class="view-btn ${profitTab === 'vendor' ? 'active' : ''}" onclick="setProfitTab('vendor')">By Vendor</button>
+      <button class="view-btn ${profitTab === 'top' ? 'active' : ''}" onclick="setProfitTab('top')">Top Loads</button>
+      <button class="view-btn ${profitTab === 'bottom' ? 'active' : ''}" onclick="setProfitTab('bottom')">Worst Loads</button>
+    </div>`;
+
+    if (data.grand.loadCount === 0) {
+      h += '<div class="empty-state" style="background:var(--bg);border-radius:var(--rl);box-shadow:var(--shadow);padding:40px"><h3>No delivered loads yet</h3><p>Once drivers start delivering and you approve loads, profitability will show here.</p></div>';
+    } else {
+      // ── Tab body ──
+      if (profitTab === 'customer') {
+        h += renderProfitTable(data.byCustomer, [
+          { label: 'Customer',  key: 'displayName', bold: true },
+          { label: 'Loads',     key: 'loads' },
+          { label: 'Revenue',   money: 'revenue', color: 'var(--G)' },
+          { label: 'Cost',      money: 'cost',    color: 'var(--R)' },
+          { label: 'Margin',    money: 'margin',  marginCol: true },
+          { label: 'Margin %',  pct: 'marginPct', marginCol: true },
+        ]);
+      } else if (profitTab === 'job') {
+        if (data.byJobCode.length === 0) {
+          h += '<div class="empty-state" style="background:var(--bg);border-radius:var(--rl);box-shadow:var(--shadow);padding:40px"><h3>No job codes yet</h3><p>Add a Job Code when creating a PO to track profitability per project.</p></div>';
+        } else {
+          h += renderProfitTable(data.byJobCode, [
+            { label: 'Job Code', key: 'jobCode',  bold: true },
+            { label: 'Customer', key: 'customer' },
+            { label: 'Loads',    key: 'loads' },
+            { label: 'Revenue',  money: 'revenue', color: 'var(--G)' },
+            { label: 'Cost',     money: 'cost',    color: 'var(--R)' },
+            { label: 'Margin',   money: 'margin',  marginCol: true },
+            { label: 'Margin %', pct: 'marginPct', marginCol: true },
+          ]);
+        }
+      } else if (profitTab === 'vendor') {
+        h += `<div style="font-size:11px;color:var(--txt3);margin-bottom:8px;font-style:italic">Includes VBT Yard (internal) — its "cost" is $0 because material is from your own inventory.</div>`;
+        h += renderProfitTable(data.byVendor, [
+          { label: 'Vendor',   key: 'name', bold: true, internalKey: 'isInternal' },
+          { label: 'Loads',    key: 'loads' },
+          { label: 'Revenue',  money: 'revenue', color: 'var(--G)' },
+          { label: 'Cost',     money: 'cost',    color: 'var(--R)' },
+          { label: 'Margin',   money: 'margin',  marginCol: true },
+          { label: 'Margin %', pct: 'marginPct', marginCol: true },
+        ]);
+      } else if (profitTab === 'top' || profitTab === 'bottom') {
+        const list = profitTab === 'top' ? data.topByMargin : data.bottomByMargin;
+        if (list.length === 0) {
+          h += '<div class="empty-state" style="background:var(--bg);border-radius:var(--rl);box-shadow:var(--shadow);padding:30px"><p>No data yet.</p></div>';
+        } else {
+          h += `<table class="report-table">
+            <thead><tr>
+              <th>PO</th><th>Customer</th><th>Material</th><th>Driver</th>
+              <th style="width:60px">Loads</th><th>Vendor</th><th>Date</th>
+              <th style="width:100px;color:var(--G)">Revenue</th>
+              <th style="width:100px;color:var(--R)">Cost</th>
+              <th style="width:100px">Margin</th>
+              <th style="width:70px">%</th>
+            </tr></thead>
+            <tbody>
+              ${list.map(l => {
+                const mc = l.margin > 0 ? 'var(--G)' : l.margin < 0 ? 'var(--R)' : 'var(--txt2)';
+                return `<tr>
+                  <td style="font-weight:600;color:var(--B)">${l.poNumber}${l.jobCode ? ` <span style="color:var(--txt3);font-weight:400">${l.jobCode}</span>` : ''}</td>
+                  <td>${l.customer}</td>
+                  <td>${l.material}${l.isPartial ? ' <span style="color:var(--A);font-size:10px">⚠ partial</span>' : ''}</td>
+                  <td style="font-size:12px">${l.driver}</td>
+                  <td>${l.delivered}/${l.assigned}</td>
+                  <td style="font-size:12px">${l.vendorName}${l.vendorIsInternal ? ' <span style="font-size:9px;color:var(--P);font-weight:700">VBT</span>' : ''}</td>
+                  <td style="font-size:12px;color:var(--txt2)">${fmtDate(l.deliveryDate)}</td>
+                  <td style="font-weight:600;color:var(--G)">${money(l.revenue)}</td>
+                  <td style="color:var(--R)">${money(l.cost)}</td>
+                  <td style="font-weight:700;color:${mc}">${money(l.margin)}</td>
+                  <td style="font-weight:600;color:${mc}">${l.marginPct.toFixed(0)}%</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>`;
+        }
+      }
+    }
+
+    h += '</div>';
+    wrap.innerHTML = h;
+  } catch (e) {
+    wrap.innerHTML = `<div class="empty-state"><h3>Could not load profitability</h3><p style="color:var(--R)">${e.message}</p><button class="btn primary" onclick="renderProfitability()" style="margin-top:12px">Retry</button></div>`;
+  }
+}
+
+function setProfitTab(t) { profitTab = t; renderProfitability(); }
+
+// Generic profit table renderer — handles customer/job/vendor breakdowns
+function renderProfitTable(rows, columns) {
+  if (!rows.length) {
+    return '<div class="empty-state" style="background:var(--bg);border-radius:var(--rl);box-shadow:var(--shadow);padding:30px"><p>No data for this view.</p></div>';
+  }
+  // Totals row
+  const totals = { revenue: 0, cost: 0, margin: 0, loads: 0 };
+  rows.forEach(r => {
+    totals.revenue += r.revenue || 0;
+    totals.cost    += r.cost    || 0;
+    totals.margin  += r.margin  || 0;
+    totals.loads   += r.loads   || 0;
+  });
+  const totalMarginPct = totals.revenue > 0 ? (totals.margin / totals.revenue * 100) : 0;
+
+  let h = `<table class="report-table">
+    <thead><tr>${columns.map(c => `<th style="${c.color ? 'color:' + c.color : ''}">${c.label}</th>`).join('')}</tr></thead>
+    <tbody>
+      ${rows.map(r => {
+        const mc = (r.margin || 0) > 0 ? 'var(--G)' : (r.margin || 0) < 0 ? 'var(--R)' : 'var(--txt2)';
+        return '<tr>' + columns.map(c => {
+          let val;
+          if (c.money) val = `<span style="${c.marginCol ? 'color:' + mc + ';font-weight:700' : c.color ? 'color:' + c.color + ';font-weight:600' : ''}">${money(r[c.money] || 0)}</span>`;
+          else if (c.pct) val = `<span style="${c.marginCol ? 'color:' + mc + ';font-weight:700' : ''}">${(r[c.pct] || 0).toFixed(1)}%</span>`;
+          else val = (r[c.key] !== undefined && r[c.key] !== null ? r[c.key] : '');
+          if (c.bold)        val = `<b>${val}</b>`;
+          if (c.internalKey && r[c.internalKey]) val += ' <span style="font-size:9px;color:var(--P);font-weight:700;background:var(--Pb);padding:1px 6px;border-radius:8px">VBT INTERNAL</span>';
+          return `<td>${val}</td>`;
+        }).join('') + '</tr>';
+      }).join('')}
+      <tr style="background:var(--bg2);font-weight:700;border-top:2px solid var(--bdr2)">
+        <td><b>TOTAL</b></td>
+        ${columns.slice(1).map(c => {
+          if (c.money === 'revenue') return `<td style="color:var(--G)">${money(totals.revenue)}</td>`;
+          if (c.money === 'cost')    return `<td style="color:var(--R)">${money(totals.cost)}</td>`;
+          if (c.money === 'margin')  return `<td style="color:${totals.margin >= 0 ? 'var(--G)' : 'var(--R)'};font-weight:700">${money(totals.margin)}</td>`;
+          if (c.pct === 'marginPct') return `<td style="font-weight:700">${totalMarginPct.toFixed(1)}%</td>`;
+          if (c.key === 'loads')     return `<td>${totals.loads}</td>`;
+          return '<td></td>';
+        }).join('')}
+      </tr>
+    </tbody>
+  </table>`;
+  return h;
 }
 
 // ── ACTIVITY LOG / AUDIT VIEW ────────────────────────────────────────────────
