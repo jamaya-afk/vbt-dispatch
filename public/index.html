@@ -920,7 +920,15 @@ function getBoardDate() {
   d.setDate(d.getDate() + dayOffset);
   return d;
 }
-function ymd(d) { return d.toISOString().slice(0, 10); }
+// Returns a YYYY-MM-DD string for the given Date in the user's LOCAL calendar.
+// CRITICAL: do NOT use d.toISOString().slice(0,10) — that returns the UTC date,
+// which in US timezones rolls over to "tomorrow" any time after late afternoon
+// and causes Day View to filter loads against the wrong calendar day. Loads in
+// the store carry deliveryDate as a local YYYY-MM-DD string (typed by the user
+// in <input type="date">), so the board has to compare against local-date too.
+function ymd(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
 function fmtDate(s) {
   if (!s) return '';
   const d = new Date(s + 'T12:00:00');
@@ -1444,8 +1452,13 @@ function renderMonthBoard() {
 
 function changeMonth(n) { monthOffset += n; renderBoard(); }
 function jumpToDay(dateStr) {
-  // Set dayOffset to land on dateStr
-  const today = new Date(); today.setHours(0,0,0,0);
+  // Set dayOffset to land exactly on dateStr (a YYYY-MM-DD local date string).
+  // Anchor BOTH endpoints at local noon — that way the diff in milliseconds is
+  // an exact integer multiple of 24h (within DST tolerance) and Math.round
+  // doesn't get fooled by a 0.5-day offset like it did when today was anchored
+  // at midnight and target at noon (the old code rounded the wrong way and
+  // landed on the next day).
+  const today = new Date(); today.setHours(12, 0, 0, 0);
   const target = new Date(dateStr + 'T12:00:00');
   dayOffset = Math.round((target - today) / 86400000);
   setBoardView('day');
