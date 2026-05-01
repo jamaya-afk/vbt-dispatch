@@ -2174,6 +2174,8 @@ function tripCard(l) {
   const isToday = l.deliveryDate === todayStr();
   const started = !!ts.start;
   const atPickup = !!ts.arrivedPickup;
+  const isLoaded = !!ts.loadedAt;        // NEW: driver tapped "Loaded / Leaving Yard"
+  const atJobsite = !!ts.arrivedJobsite; // NEW: driver tapped "Arrived at Job Site"
   const ticketSrc = l.ticketImageUrl || l.ticketImage;
   const sigSrc = pod.signatureUrl || pod.signature;
   const hasImage = !!ticketSrc;
@@ -2210,15 +2212,37 @@ function tripCard(l) {
   } else if (started && !atPickup) {
     action = `<button class="trip-action pickup" onclick="openYardPicker('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
-      Arrived at Pickup
+      Arrived at Yard
     </button>
     <div class="action-hint">Tap when you arrive — pick which yard</div>`;
-  } else if (atPickup && !hasImage) {
+  } else if (atPickup && !isLoaded) {
+    action = `<button class="trip-action loaded" style="background:var(--T,#0d9488);color:#fff" onclick="tripAction('${l.loadId}', 'loaded')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+      Loaded / Leaving Yard
+    </button>
+    <div class="action-hint">Tap when you're loaded and rolling out — captures yard service time</div>`;
+  } else if (isLoaded && !atJobsite) {
+    action = `<button class="trip-action jobsite" style="background:var(--I,#4f46e5);color:#fff" onclick="tripAction('${l.loadId}', 'arrived-jobsite')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      Arrived at Job Site
+    </button>
+    <div class="action-hint">Tap when you reach the delivery address</div>`;
+  } else if (atJobsite && !hasImage) {
     action = `<button class="trip-action ticket" onclick="openTicketUpload('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
       Upload Ticket Photo
     </button>
     <div class="action-hint required">Required before delivery</div>`;
+  } else if (atPickup && !hasImage) {
+    // Backward compat: legacy in-flight loads that arrived at pickup before the
+    // Loaded/Jobsite steps existed. Let them jump straight to ticket upload so
+    // they can finish — they just won't contribute Yard Service / Yard→Jobsite
+    // durations to analytics.
+    action = `<button class="trip-action ticket" onclick="openTicketUpload('${l.loadId}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      Upload Ticket Photo
+    </button>
+    <div class="action-hint">Legacy trip — finish without intermediate steps</div>`;
   } else if (hasImage && !hasSig) {
     action = `<button class="trip-action sign" onclick="openSig('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="18 2 22 6 12 16 8 16 8 12 18 2"/></svg>
@@ -2257,8 +2281,10 @@ function tripCard(l) {
       </dl>
       <div class="steps">
         <div class="step ${stepCls(!started && !submitted, started)}">Start${ts.start ? `<span class="step-time">${ts.start}</span>` : ''}</div>
-        <div class="step ${stepCls(started && !atPickup, atPickup)}">Pickup${ts.arrivedPickup ? `<span class="step-time">${ts.arrivedPickup}</span>` : ''}</div>
-        <div class="step ${stepCls(atPickup && !hasImage, hasImage)}">Ticket${hasImage ? '<span class="step-time">✓</span>' : ''}</div>
+        <div class="step ${stepCls(started && !atPickup, atPickup)}">At Yard${ts.arrivedPickup ? `<span class="step-time">${ts.arrivedPickup}</span>` : ''}</div>
+        <div class="step ${stepCls(atPickup && !isLoaded, isLoaded)}">Loaded${ts.loadedAt ? `<span class="step-time">${ts.loadedAt}</span>` : ''}</div>
+        <div class="step ${stepCls(isLoaded && !atJobsite, atJobsite)}">At Job${ts.arrivedJobsite ? `<span class="step-time">${ts.arrivedJobsite}</span>` : ''}</div>
+        <div class="step ${stepCls(atJobsite && !hasImage, hasImage)}">Ticket${hasImage ? '<span class="step-time">✓</span>' : ''}</div>
         <div class="step ${stepCls(hasImage && !hasSig, hasSig)}">Signed${hasSig ? '<span class="step-time">✓</span>' : ''}</div>
         <div class="step ${stepCls(hasSig && !submitted, submitted || delivered)}">Done${ts.completed ? `<span class="step-time">${ts.completed}</span>` : ''}</div>
       </div>
@@ -3230,7 +3256,14 @@ async function deletePriceConfirm(vendorId, priceId, materialName) {
 }
 
 // ── REPORTS / FINANCE ────────────────────────────────────────────────────────
-let reportsSubview = 'overview';  // 'overview' | 'profit' | 'audit'
+let reportsSubview = 'overview';  // 'overview' | 'profit' | 'audit' | 'durations'
+
+// Filters for the Duration Analytics subtab. Mirrors /api/duration-analytics
+// query params 1:1.
+let durationFilters = {
+  from: '', to: '', driver: '', yard: '',
+  customer: '', city: '', material: '', po: '', status: '',
+};
 
 function setReportsSubview(v) {
   reportsSubview = v;
@@ -3245,6 +3278,7 @@ async function renderReports() {
     <div style="display:flex;gap:6px;background:var(--bg2);padding:4px;border-radius:24px;width:fit-content;flex-wrap:wrap">
       <button class="view-btn ${reportsSubview === 'overview' ? 'active' : ''}" onclick="setReportsSubview('overview')">Overview</button>
       <button class="view-btn ${reportsSubview === 'profit' ? 'active' : ''}" onclick="setReportsSubview('profit')">Profitability</button>
+      <button class="view-btn ${reportsSubview === 'durations' ? 'active' : ''}" onclick="setReportsSubview('durations')">Duration Analytics</button>
       <button class="view-btn ${reportsSubview === 'audit' ? 'active' : ''}" onclick="setReportsSubview('audit')">Activity Log</button>
     </div>
   </div>`;
@@ -3257,6 +3291,11 @@ async function renderReports() {
   if (reportsSubview === 'profit') {
     wrap.innerHTML = subnav + '<div id="profit-wrap"></div>';
     renderProfitability();
+    return;
+  }
+  if (reportsSubview === 'durations') {
+    wrap.innerHTML = subnav + '<div id="durations-wrap"></div>';
+    renderDurationAnalytics();
     return;
   }
 
@@ -3536,6 +3575,215 @@ function renderProfitTable(rows, columns) {
     </tbody>
   </table>`;
   return h;
+}
+
+// ── DURATION ANALYTICS ───────────────────────────────────────────────────────
+// Reads driver timestamps and shows where time is being spent. Powered by the
+// /api/duration-analytics endpoint which does all the math server-side.
+
+function setDurationFilter(key, value) { durationFilters[key] = value; renderDurationAnalytics(); }
+function clearDurationFilters() {
+  durationFilters = { from: '', to: '', driver: '', yard: '', customer: '', city: '', material: '', po: '', status: '' };
+  renderDurationAnalytics();
+}
+
+// Format minutes as "1h 23m" / "42 min" / "—" for empty.
+function fmtMin(n) {
+  if (n === null || n === undefined || !isFinite(n)) return '—';
+  const m = Math.round(n);
+  if (m < 60) return m + ' min';
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h}h ${r}m` : `${h}h`;
+}
+
+async function renderDurationAnalytics() {
+  const wrap = document.getElementById('durations-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="empty-state" style="padding:30px"><p>Loading duration analytics…</p></div>';
+
+  // Build options for the filter dropdowns from current data.
+  const customers = [...new Set(pos.map(p => p.customer).filter(Boolean))].sort();
+  const cities    = [...new Set(pos.map(p => p.city).filter(Boolean))].sort();
+  const matsList  = [...new Set(loads.map(l => l.material).filter(Boolean))].sort();
+  const poList    = [...new Set(pos.map(p => p.poNumber).filter(Boolean))].sort();
+  const yardOpts  = (vendors || []).filter(v => v.active).map(v => `<option value="${escapeHtml(v.id)}" ${durationFilters.yard === v.id ? 'selected' : ''}>${escapeHtml(v.name)}</option>`).join('');
+  const drvOpts   = (trucks || []).map(t => `<option value="${escapeHtml(t.id)}" ${durationFilters.driver === t.id ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('');
+  const optList   = (list, sel) => list.map(x => `<option value="${escapeHtml(x)}" ${sel === x ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('');
+
+  const filterBar = `<div style="padding:12px 18px 0">
+    <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;padding:12px 14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:end;box-shadow:var(--shadow)">
+      <div class="field" style="gap:4px"><label>From</label><input type="date" value="${escapeHtml(durationFilters.from)}" onchange="setDurationFilter('from', this.value)"></div>
+      <div class="field" style="gap:4px"><label>To</label><input type="date" value="${escapeHtml(durationFilters.to)}" onchange="setDurationFilter('to', this.value)"></div>
+      <div class="field" style="gap:4px"><label>Driver</label><select onchange="setDurationFilter('driver', this.value)"><option value="">All</option>${drvOpts}</select></div>
+      <div class="field" style="gap:4px"><label>Pickup Yard</label><select onchange="setDurationFilter('yard', this.value)"><option value="">All</option>${yardOpts}</select></div>
+      <div class="field" style="gap:4px"><label>Customer</label><select onchange="setDurationFilter('customer', this.value)"><option value="">All</option>${optList(customers, durationFilters.customer)}</select></div>
+      <div class="field" style="gap:4px"><label>City</label><select onchange="setDurationFilter('city', this.value)"><option value="">All</option>${optList(cities, durationFilters.city)}</select></div>
+      <div class="field" style="gap:4px"><label>Material</label><select onchange="setDurationFilter('material', this.value)"><option value="">All</option>${optList(matsList, durationFilters.material)}</select></div>
+      <div class="field" style="gap:4px"><label>PO #</label><select onchange="setDurationFilter('po', this.value)"><option value="">All</option>${optList(poList, durationFilters.po)}</select></div>
+      <div class="field" style="gap:4px"><label>Status</label><select onchange="setDurationFilter('status', this.value)">
+        <option value="">All</option>
+        <option value="approved" ${durationFilters.status==='approved'?'selected':''}>Approved</option>
+        <option value="submitted" ${durationFilters.status==='submitted'?'selected':''}>Submitted</option>
+        <option value="rejected" ${durationFilters.status==='rejected'?'selected':''}>Rejected</option>
+        <option value="pending" ${durationFilters.status==='pending'?'selected':''}>Pending</option>
+      </select></div>
+      <div style="display:flex;gap:6px;align-items:end;justify-self:end">
+        <button class="btn ghost" onclick="clearDurationFilters()">Reset</button>
+        <button class="btn primary" onclick="exportDurationCsv()">Export CSV</button>
+      </div>
+    </div>
+  </div>`;
+
+  try {
+    const params = new URLSearchParams();
+    Object.entries(durationFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
+    const r = await fetch('/api/duration-analytics?' + params.toString());
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+
+    // Stash the latest payload for CSV export
+    window._lastDurationData = data;
+
+    let h = filterBar;
+
+    // Empty state
+    if (!data.overall.matchedLoads) {
+      h += `<div class="empty-state" style="padding:30px"><h3>No matching loads</h3>
+        <p>No loads match the current filters, or none have driver timestamps recorded yet.</p>
+        <p style="font-size:12px;color:var(--txt3);margin-top:6px">Once drivers tap the new "Loaded / Leaving Yard" and "Arrived at Job Site" steps, those intervals will populate here.</p>
+      </div>`;
+      wrap.innerHTML = h;
+      return;
+    }
+
+    // ── Overall summary cards ──
+    h += `<div style="padding:14px 18px 0">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+        ${durationStatCard('Start → Yard',     data.overall.startToYard,    'var(--B)')}
+        ${durationStatCard('Yard Service',     data.overall.yardService,    'var(--A)', true)}
+        ${durationStatCard('Yard → Job Site',  data.overall.yardToJobsite,  'var(--I,#4f46e5)')}
+        ${durationStatCard('Job Site Service', data.overall.jobsiteService, 'var(--P)')}
+        ${durationStatCard('Total Trip',       data.overall.total,          'var(--G)')}
+      </div>
+      <div style="font-size:11px;color:var(--txt3);margin-top:6px">Across <b>${data.overall.matchedLoads}</b> matching load${data.overall.matchedLoads===1?'':'s'}. Loads missing intermediate timestamps are excluded from the intervals they don't have data for.</div>
+    </div>`;
+
+    // ── Slowest / fastest yards leaderboards ──
+    if (data.slowestYards.length || data.fastestYards.length) {
+      h += `<div style="padding:14px 18px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px">
+        ${leaderboardCard('Slowest Yards', 'avg yard service time', data.slowestYards, 'var(--R)', 'yardService')}
+        ${leaderboardCard('Fastest Yards', 'avg yard service time', data.fastestYards, 'var(--G)', 'yardService')}
+      </div>`;
+    }
+    if (data.slowestJobsites?.length) {
+      h += `<div style="padding:14px 18px 0">
+        ${leaderboardCard('Slowest Job Sites', 'avg on-site service time', data.slowestJobsites, 'var(--P)', 'jobsiteService')}
+      </div>`;
+    }
+
+    // ── Breakdown tables ──
+    h += `<div style="padding:14px 18px 30px;display:flex;flex-direction:column;gap:18px">
+      ${durationGroupTable('By Pickup Yard / Vendor', data.byYard,     'Yard')}
+      ${durationGroupTable('By Customer',             data.byCustomer, 'Customer')}
+      ${durationGroupTable('By Job Code',             data.byJobCode,  'Job Code')}
+      ${durationGroupTable('By Delivery City',        data.byCity,     'City')}
+      ${durationGroupTable('By Material',             data.byMaterial, 'Material')}
+      ${durationGroupTable('By Driver',               data.byDriver,   'Driver')}
+    </div>`;
+
+    wrap.innerHTML = h;
+  } catch (e) {
+    wrap.innerHTML = filterBar + `<div class="empty-state" style="padding:30px"><h3>Could not load duration analytics</h3><p style="color:var(--R)">${escapeHtml(e.message)}</p><button class="btn primary" onclick="renderDurationAnalytics()" style="margin-top:12px">Retry</button></div>`;
+  }
+}
+
+function durationStatCard(label, s, color, highlight) {
+  const ring = highlight ? `box-shadow:0 0 0 2px ${color}40` : '';
+  return `<div class="stat-card" style="padding:12px 14px;${ring}">
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600">${escapeHtml(label)}</div>
+    <div style="font-size:22px;font-weight:700;letter-spacing:-.01em;margin-top:4px;color:${color};font-variant-numeric:tabular-nums">${fmtMin(s.avg)}</div>
+    <div style="font-size:10px;color:var(--txt2);margin-top:2px">avg · median ${fmtMin(s.median)} · p90 ${fmtMin(s.p90)} · n=${s.count}</div>
+  </div>`;
+}
+
+function leaderboardCard(title, subtitle, rows, color, intervalKey) {
+  if (!rows.length) return '';
+  return `<div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden">
+    <div style="padding:12px 14px;border-bottom:1px solid var(--bdr);background:linear-gradient(180deg,#fafbfd,transparent)">
+      <div style="font-size:13px;font-weight:700">${escapeHtml(title)}</div>
+      <div style="font-size:11px;color:var(--txt3);margin-top:2px">${escapeHtml(subtitle)}</div>
+    </div>
+    <div>${rows.map((g, i) => `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--bdr)">
+      <div style="width:22px;height:22px;border-radius:50%;background:${color};color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">${i+1}</div>
+      <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:13px">${escapeHtml(g.label || '')}</div>
+      <div style="font-weight:700;color:${color};font-variant-numeric:tabular-nums">${fmtMin(g[intervalKey].avg)}</div>
+      <div style="font-size:10px;color:var(--txt3);min-width:50px;text-align:right">${g[intervalKey].count} load${g[intervalKey].count===1?'':'s'}</div>
+    </div>`).join('')}</div>
+  </div>`;
+}
+
+function durationGroupTable(title, rows, firstColLabel) {
+  if (!rows || !rows.length) return '';
+  // Sort by yardService avg desc by default (most informative)
+  const sorted = [...rows].sort((a, b) => (b.yardService.avg || -Infinity) - (a.yardService.avg || -Infinity));
+  return `<div>
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:8px;letter-spacing:-.005em">${escapeHtml(title)}</h3>
+    <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:12px;box-shadow:var(--shadow);overflow:auto">
+      <table class="report-table" style="margin:0;border-radius:0;box-shadow:none;font-size:12px">
+        <thead><tr>
+          <th style="text-align:left">${escapeHtml(firstColLabel)}</th>
+          <th>Loads</th>
+          <th>Start→Yard</th>
+          <th style="background:var(--Ab);color:var(--A)">Yard Service</th>
+          <th>Yard→Job</th>
+          <th>Job Site Service</th>
+          <th>Total</th>
+        </tr></thead>
+        <tbody>
+          ${sorted.map(g => `<tr>
+            <td style="font-weight:600">${escapeHtml(g.label || g.key || '')}</td>
+            <td style="font-variant-numeric:tabular-nums">${g.loads}</td>
+            <td>${fmtMin(g.startToYard.avg)}<span style="color:var(--txt3);font-size:10px"> · n=${g.startToYard.count}</span></td>
+            <td style="background:var(--Ab);font-weight:600">${fmtMin(g.yardService.avg)}<span style="color:var(--txt3);font-size:10px;font-weight:400"> · n=${g.yardService.count}</span></td>
+            <td>${fmtMin(g.yardToJobsite.avg)}<span style="color:var(--txt3);font-size:10px"> · n=${g.yardToJobsite.count}</span></td>
+            <td>${fmtMin(g.jobsiteService.avg)}<span style="color:var(--txt3);font-size:10px"> · n=${g.jobsiteService.count}</span></td>
+            <td>${fmtMin(g.total.avg)}<span style="color:var(--txt3);font-size:10px"> · n=${g.total.count}</span></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function exportDurationCsv() {
+  const data = window._lastDurationData;
+  if (!data) { toast('Run a query first', 'error'); return; }
+  const sections = [
+    ['Pickup Yard',  data.byYard],
+    ['Customer',     data.byCustomer],
+    ['Job Code',     data.byJobCode],
+    ['City',         data.byCity],
+    ['Material',     data.byMaterial],
+    ['Driver',       data.byDriver],
+  ];
+  const csvEsc = (s) => `"${String(s == null ? '' : s).replace(/"/g, '""')}"`;
+  const rows = [['Section','Group','Loads','Start→Yard avg','Yard Service avg','Yard→Job avg','Job Site Service avg','Total avg','Yard Service median','Yard Service p90'].map(csvEsc).join(',')];
+  for (const [section, list] of sections) {
+    (list || []).forEach(g => {
+      rows.push([
+        section, g.label || g.key, g.loads,
+        g.startToYard.avg, g.yardService.avg, g.yardToJobsite.avg,
+        g.jobsiteService.avg, g.total.avg,
+        g.yardService.median, g.yardService.p90,
+      ].map(csvEsc).join(','));
+    });
+  }
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `duration-analytics-${todayStr()}.csv`;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
 }
 
 // ── ACTIVITY LOG / AUDIT VIEW ────────────────────────────────────────────────
