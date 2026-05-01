@@ -16,74 +16,165 @@
   --A:#d97706;--Ab:#fff8ed;--Ad:#fcd38a;
   --R:#e05252;--Rb:#fff0f0;--Rd:#f8b4b4;
   --P:#8b5cf6;--Pb:#f5f3ff;--Pd:#ddd6fe;
+  /* New: teal accent for "Ready to Bill" */
+  --T:#0d9488;--Tb:#ecfdf7;--Td:#99f0d8;
+  /* New: indigo / hero gradient anchors */
+  --I:#4f46e5;--Ib:#eef0ff;--Id:#c7d0ff;
+  --hero-grad:linear-gradient(135deg,#0a0e1a 0%,#1a2342 45%,#312e81 100%);
+  --side-grad:linear-gradient(180deg,#0a0e1a 0%,#0f1628 100%);
   --shadow:0 1px 3px rgba(26,32,53,.08), 0 1px 2px rgba(26,32,53,.04);
   --shadow-md:0 4px 12px rgba(26,32,53,.1), 0 2px 4px rgba(26,32,53,.06);
+  --shadow-lg:0 12px 32px rgba(15,22,40,.18), 0 4px 12px rgba(15,22,40,.08);
 }
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden;height:100vh}
 
 /* ── APP SHELL ── */
 .shell{display:flex;height:100vh}
-.sidebar{width:220px;flex-shrink:0;background:var(--bg);border-right:1px solid var(--bdr);display:flex;flex-direction:column}
-.sidebar-brand{padding:18px 16px;background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 100%);min-height:82px;display:flex;align-items:center;justify-content:center}
-.sidebar-brand img{max-width:170px;width:100%}
-.sidebar-nav{flex:1;padding:10px 8px;display:flex;flex-direction:column;gap:2px}
-.nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border:none;background:transparent;border-radius:var(--r);cursor:pointer;font-family:var(--f);font-size:13px;font-weight:500;color:var(--txt2);text-align:left;transition:background .12s;width:100%}
-.nav-item:hover{background:var(--bg2);color:var(--txt)}
-.nav-item.active{background:var(--Bb);color:var(--B);font-weight:600}
-.nav-icon{width:18px;height:18px;flex-shrink:0;opacity:.8}
-.nav-item.active .nav-icon{opacity:1}
-.nav-badge{background:var(--R);color:#fff;font-size:10px;padding:1px 7px;border-radius:20px;font-weight:700;margin-left:auto}
-.sidebar-footer{border-top:1px solid var(--bdr);padding:12px}
-.user-card{display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg2);border-radius:var(--r);margin-bottom:8px}
-.user-avatar{width:32px;height:32px;border-radius:50%;background:var(--B);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
-.user-name{font-size:12px;font-weight:600;color:var(--txt)}
-.user-role{font-size:10px;color:var(--txt3);text-transform:capitalize}
-.signout-btn{width:100%;padding:7px 12px;background:transparent;border:1px solid var(--bdr2);border-radius:var(--r);color:var(--txt2);font-size:12px;cursor:pointer;font-family:var(--f);font-weight:500;transition:all .15s}
-.signout-btn:hover{border-color:var(--R);color:var(--R);background:var(--Rb)}
+.sidebar{width:232px;flex-shrink:0;background:var(--side-grad);border-right:1px solid #1f2742;display:flex;flex-direction:column;color:#cbd2e8}
+.sidebar-brand{padding:22px 16px;background:transparent;min-height:90px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid rgba(255,255,255,.06)}
+.sidebar-brand img{max-width:170px;width:100%;filter:drop-shadow(0 2px 8px rgba(0,0,0,.35))}
+.sidebar-nav{flex:1;padding:14px 10px;display:flex;flex-direction:column;gap:3px}
+.nav-section-label{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:#5b6688;padding:10px 12px 6px;font-weight:600}
+.nav-item{display:flex;align-items:center;gap:11px;padding:10px 12px;border:none;background:transparent;border-radius:var(--r);cursor:pointer;font-family:var(--f);font-size:13px;font-weight:500;color:#a8b1cf;text-align:left;transition:all .15s;width:100%;position:relative}
+.nav-item:hover{background:rgba(255,255,255,.04);color:#fff}
+.nav-item.active{background:linear-gradient(135deg,rgba(79,70,229,.22) 0%,rgba(59,130,246,.18) 100%);color:#fff;font-weight:600;box-shadow:inset 0 0 0 1px rgba(122,140,255,.18)}
+.nav-item.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;background:linear-gradient(180deg,#7a8cff,#4f46e5);border-radius:0 3px 3px 0}
+.nav-icon{width:18px;height:18px;flex-shrink:0;opacity:.7}
+.nav-item:hover .nav-icon,.nav-item.active .nav-icon{opacity:1}
+.nav-badge{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:700;margin-left:auto;box-shadow:0 2px 6px rgba(220,38,38,.4)}
+.sidebar-footer{border-top:1px solid rgba(255,255,255,.06);padding:14px}
+.user-card{display:flex;align-items:center;gap:10px;padding:10px;background:rgba(255,255,255,.04);border-radius:var(--r);margin-bottom:10px;border:1px solid rgba(255,255,255,.05)}
+.user-avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#4f46e5,#3b82f6);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;box-shadow:0 2px 8px rgba(79,70,229,.4)}
+.user-name{font-size:13px;font-weight:600;color:#fff}
+.user-role{font-size:10px;color:#7a8cff;text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+.signout-btn{width:100%;padding:8px 12px;background:transparent;border:1px solid rgba(255,255,255,.12);border-radius:var(--r);color:#a8b1cf;font-size:12px;cursor:pointer;font-family:var(--f);font-weight:500;transition:all .15s}
+.signout-btn:hover{border-color:#fca5a5;color:#fca5a5;background:rgba(220,38,38,.08)}
 
-.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
-.topbar{display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-shrink:0;min-height:54px}
-.page-title{font-size:16px;font-weight:700;letter-spacing:-.01em}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;background:#f6f8fc;background-image:radial-gradient(circle at 0% 0%,rgba(79,70,229,.04),transparent 50%),radial-gradient(circle at 100% 100%,rgba(59,130,246,.03),transparent 50%)}
+.dispatch-hero,.filter-bar,.driver-strip,.board-cols{animation:rise .35s ease both}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.topbar{display:flex;align-items:center;gap:10px;padding:14px 22px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-shrink:0;min-height:62px;box-shadow:0 1px 0 rgba(15,22,40,.02)}
+.page-title{font-size:17px;font-weight:700;letter-spacing:-.015em}
+.page-title-sub{font-size:11px;color:var(--txt3);font-weight:500;margin-top:1px;letter-spacing:.02em}
 .menu-toggle{display:none;background:transparent;border:none;font-size:20px;cursor:pointer;padding:4px 8px}
 .topbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
-.btn{padding:7px 14px;font-size:12px;font-weight:600;border-radius:20px;border:1.5px solid var(--bdr2);background:var(--bg2);color:var(--txt2);cursor:pointer;font-family:var(--f);transition:all .15s;display:inline-flex;align-items:center;gap:5px}
-.btn:hover{border-color:var(--txt);color:var(--txt)}
-.btn.primary{background:var(--B);color:#fff;border-color:var(--B)}
-.btn.primary:hover{background:#2563eb;border-color:#2563eb;color:#fff}
-.btn.success{background:var(--G);color:#fff;border-color:var(--G)}
-.btn.success:hover{background:#0d8a55;color:#fff}
+.btn{padding:8px 16px;font-size:12.5px;font-weight:600;border-radius:22px;border:1.5px solid var(--bdr2);background:var(--bg2);color:var(--txt);cursor:pointer;font-family:var(--f);transition:all .15s;display:inline-flex;align-items:center;gap:6px;letter-spacing:.005em}
+.btn:hover{border-color:var(--txt);color:var(--txt);transform:translateY(-1px)}
+.btn.primary{background:linear-gradient(135deg,#4f46e5,#3b82f6);color:#fff;border-color:transparent;box-shadow:0 2px 10px rgba(79,70,229,.25)}
+.btn.primary:hover{background:linear-gradient(135deg,#4338ca,#2563eb);color:#fff;box-shadow:0 4px 16px rgba(79,70,229,.35)}
+.btn.success{background:linear-gradient(135deg,#16a066,#15803d);color:#fff;border-color:transparent;box-shadow:0 2px 10px rgba(22,160,102,.25)}
+.btn.success:hover{background:linear-gradient(135deg,#0d8a55,#166534);color:#fff;box-shadow:0 4px 16px rgba(22,160,102,.35)}
 .btn.danger{background:var(--Rb);color:var(--R);border-color:var(--Rd)}
-.btn.danger:hover{background:var(--R);color:#fff}
-.btn.ghost{background:transparent;border-color:var(--bdr2)}
+.btn.danger:hover{background:var(--R);color:#fff;border-color:var(--R)}
+.btn.ghost{background:transparent;border-color:var(--bdr2);color:var(--txt2)}
+.btn.ghost:hover{background:var(--bg2);color:var(--txt)}
 
 .content{flex:1;overflow:auto;padding:0}
 .section{display:none}
 .section.active{display:block;min-height:100%}
 
 /* ── BOARD ── */
-.board-header{padding:14px 20px;display:flex;align-items:center;gap:10px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-wrap:wrap}
+.board-header{padding:14px 22px;display:flex;align-items:center;gap:12px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-wrap:wrap}
 .date-nav{display:flex;align-items:center;gap:6px}
-.date-nav button{width:32px;height:32px;border-radius:50%;border:1px solid var(--bdr2);background:var(--bg);cursor:pointer;font-size:14px;color:var(--txt2)}
-.date-nav button:hover{border-color:var(--B);color:var(--B)}
-.date-label{font-size:14px;font-weight:600;min-width:200px;text-align:center}
-.today-btn{font-size:11px;color:var(--B);background:var(--Bb);border:1px solid var(--Bd);padding:4px 10px;border-radius:20px;cursor:pointer;font-family:var(--f);font-weight:500}
+.date-nav button{width:34px;height:34px;border-radius:50%;border:1px solid var(--bdr2);background:var(--bg);cursor:pointer;font-size:15px;color:var(--txt2);transition:all .15s}
+.date-nav button:hover{border-color:var(--I);color:var(--I);background:var(--Ib)}
+.date-label{font-size:14px;font-weight:600;min-width:220px;text-align:center;letter-spacing:-.005em}
+.today-btn{font-size:11px;color:var(--I);background:var(--Ib);border:1px solid var(--Id);padding:5px 12px;border-radius:20px;cursor:pointer;font-family:var(--f);font-weight:600;letter-spacing:.02em}
+.today-btn:hover{background:var(--I);color:#fff;border-color:var(--I)}
+.view-btn{padding:5px 14px;font-size:11px;font-weight:600;background:transparent;border:none;border-radius:20px;cursor:pointer;color:var(--txt2);font-family:var(--f);transition:all .15s}
+.view-btn.active{background:var(--bg);color:var(--txt);box-shadow:0 1px 3px rgba(15,22,40,.12)}
 
-.board{padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;max-width:100%}
-.driver-col{background:var(--bg);border-radius:var(--rl);box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:200px}
-.driver-col.unassigned-col{background:var(--Ab);border:1.5px dashed var(--Ad)}
-.driver-col-head{padding:12px 14px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between}
-.driver-col.unassigned-col .driver-col-head{border-bottom-color:var(--Ad)}
-.driver-name{font-size:13px;font-weight:700}
-.driver-truck{font-size:11px;color:var(--txt3);margin-top:1px}
-.driver-load-count{background:var(--bg2);font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;color:var(--txt2)}
-.driver-col-body{flex:1;padding:10px;display:flex;flex-direction:column;gap:8px;min-height:80px;transition:background .12s}
-.driver-col-body.drop-target{background:var(--Bb)}
+/* ── HERO DISPATCH SUMMARY ── */
+.dispatch-hero{margin:18px 22px 0;background:var(--hero-grad);border-radius:18px;padding:22px 26px;color:#fff;position:relative;overflow:hidden;box-shadow:var(--shadow-lg)}
+.dispatch-hero::before{content:'';position:absolute;top:-60px;right:-60px;width:240px;height:240px;background:radial-gradient(circle,rgba(122,140,255,.35) 0%,transparent 70%);pointer-events:none}
+.dispatch-hero::after{content:'';position:absolute;bottom:-80px;left:30%;width:280px;height:280px;background:radial-gradient(circle,rgba(59,130,246,.18) 0%,transparent 70%);pointer-events:none}
+.hero-row{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap;position:relative;z-index:1}
+.hero-greeting{flex:1;min-width:240px}
+.hero-eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#a8b1cf;font-weight:600;margin-bottom:4px}
+.hero-title{font-size:22px;font-weight:700;letter-spacing:-.02em;margin-bottom:4px}
+.hero-sub{font-size:13px;color:#a8b1cf;font-weight:500;line-height:1.5}
+.hero-date{font-size:13px;color:#cbd2e8;font-weight:600;background:rgba(255,255,255,.08);padding:7px 14px;border-radius:20px;border:1px solid rgba(255,255,255,.1);display:inline-flex;align-items:center;gap:7px}
+.hero-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:18px;position:relative;z-index:1}
+.hero-stat{background:rgba(255,255,255,.06);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.08);border-radius:13px;padding:14px 16px;cursor:pointer;transition:all .18s}
+.hero-stat:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.18);transform:translateY(-1px)}
+.hero-stat.active{background:rgba(122,140,255,.18);border-color:rgba(122,140,255,.55);box-shadow:0 0 0 3px rgba(122,140,255,.18)}
+.hero-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#a8b1cf;font-weight:600;display:flex;align-items:center;gap:6px}
+.hero-stat-num{font-size:26px;font-weight:700;letter-spacing:-.02em;margin-top:4px;color:#fff;font-variant-numeric:tabular-nums}
+.hero-stat-meta{font-size:11px;color:#a8b1cf;margin-top:2px;font-weight:500}
+.hero-stat.alert .hero-stat-num{color:#fca5a5}
+.hero-stat.alert .hero-stat-label::before{content:'';width:6px;height:6px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px rgba(239,68,68,.6);animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+.hero-stat.warn .hero-stat-num{color:#fcd38a}
+.hero-stat.success .hero-stat-num{color:#86efac}
+.hero-stat.bill .hero-stat-num{color:#5eead4}
 
-.lcard{background:var(--bg);border:1px solid var(--bdr);border-radius:var(--r);padding:10px 12px;cursor:grab;box-shadow:var(--shadow);transition:all .15s;position:relative}
-.lcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd)}
-.lcard.dragging{opacity:.5}
+/* ── FILTER BAR ── */
+.filter-bar{margin:14px 22px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px;background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow)}
+.filter-bar-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600;margin-right:4px}
+.filter-bar select,.filter-bar input{padding:7px 11px;font-size:12px;border:1px solid var(--bdr);border-radius:8px;background:var(--bg2);font-family:var(--f);color:var(--txt);font-weight:500;cursor:pointer;transition:all .15s}
+.filter-bar select:hover,.filter-bar input:hover{border-color:var(--Id);background:var(--bg)}
+.filter-bar select:focus,.filter-bar input:focus{outline:none;border-color:var(--I);background:var(--bg);box-shadow:0 0 0 3px var(--Ib)}
+.filter-clear{padding:6px 12px;font-size:11px;font-weight:600;background:transparent;border:1px dashed var(--bdr2);border-radius:8px;color:var(--txt2);cursor:pointer;font-family:var(--f);margin-left:auto}
+.filter-clear:hover{border-color:var(--R);color:var(--R);border-style:solid}
+.filter-result-count{font-size:11px;color:var(--txt3);font-weight:600}
+
+/* ── DRIVER AVAILABILITY STRIP ── */
+.driver-strip{margin:14px 22px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 14px;background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow)}
+.driver-strip-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600;margin-right:6px}
+.driver-chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px 6px 6px;background:var(--bg2);border:1px solid var(--bdr);border-radius:20px;font-size:12px;font-weight:600;color:var(--txt);transition:all .15s;cursor:pointer}
+.driver-chip:hover{border-color:var(--I);transform:translateY(-1px);box-shadow:var(--shadow)}
+.driver-chip.busy{background:linear-gradient(135deg,#fff7ed,#fff8ed);border-color:var(--Ad)}
+.driver-chip.busy .driver-chip-dot{background:linear-gradient(135deg,#f59e0b,#d97706)}
+.driver-chip.heavy{background:linear-gradient(135deg,#fef2f2,#fff0f0);border-color:var(--Rd)}
+.driver-chip.heavy .driver-chip-dot{background:linear-gradient(135deg,#ef4444,#dc2626)}
+.driver-chip.free{background:linear-gradient(135deg,#ecfdf5,#edfaf4);border-color:var(--Gd)}
+.driver-chip.free .driver-chip-dot{background:linear-gradient(135deg,#22c55e,#16a066)}
+.driver-chip.active{outline:2px solid var(--I);outline-offset:1px}
+.driver-chip-dot{width:22px;height:22px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0}
+.driver-chip-name{font-size:12px}
+.driver-chip-count{font-size:10px;background:rgba(15,22,40,.06);color:var(--txt2);padding:1px 7px;border-radius:10px;font-weight:700}
+.driver-chip.heavy .driver-chip-count{background:rgba(220,38,38,.15);color:#dc2626}
+
+.board{padding:0 0 22px;max-width:100%}
+.board-cols{padding:18px 22px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:16px;max-width:100%}
+.driver-col{background:var(--bg);border-radius:16px;box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:220px;border:1px solid var(--bdr);overflow:hidden;transition:all .18s}
+.driver-col:hover{box-shadow:var(--shadow-md)}
+.driver-col.unassigned-col{background:linear-gradient(180deg,#fff8ed,#fff);border:1.5px dashed var(--Ad)}
+.driver-col-head{padding:13px 16px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#fafbfd,transparent)}
+.driver-col.unassigned-col .driver-col-head{border-bottom-color:var(--Ad);background:transparent}
+.driver-name{font-size:13px;font-weight:700;letter-spacing:-.005em;display:flex;align-items:center;gap:7px}
+.driver-name-avatar{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,var(--I),var(--B));color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;box-shadow:0 1px 3px rgba(79,70,229,.25)}
+.driver-truck{font-size:11px;color:var(--txt3);margin-top:2px;letter-spacing:.02em}
+.driver-load-count{background:var(--Ib);font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;color:var(--I);font-variant-numeric:tabular-nums}
+.driver-load-count.heavy{background:var(--Rb);color:var(--R)}
+.driver-load-count.empty{background:var(--bg2);color:var(--txt3)}
+.driver-col-body{flex:1;padding:11px;display:flex;flex-direction:column;gap:9px;min-height:90px;transition:background .12s}
+.driver-col-body.drop-target{background:var(--Ib);box-shadow:inset 0 0 0 2px var(--I)}
+
+.lcard{background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:12px 13px;cursor:grab;box-shadow:var(--shadow);transition:all .18s;position:relative;overflow:hidden}
+.lcard::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--bdr2);transition:all .18s}
+.lcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd);transform:translateY(-1px)}
+.lcard:hover::before{width:4px}
+.lcard.dragging{opacity:.5;transform:rotate(.5deg)}
 .lcard.submitted{border-color:var(--P);background:var(--Pb)}
+.lcard.submitted::before{background:var(--P)}
+.lcard.is-normal::before{background:var(--B)}
+.lcard.is-active::before{background:var(--A)}
+.lcard.is-completed::before{background:var(--P)}
+.lcard.is-overdue::before{background:var(--R)}
+.lcard.is-partial::before{background:#facc15}
+.lc-driver-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--bdr)}
+.lc-driver{font-size:11px;color:var(--txt2);font-weight:600;display:inline-flex;align-items:center;gap:5px}
+.lc-driver-avatar{width:18px;height:18px;border-radius:50%;background:linear-gradient(135deg,var(--I),var(--B));color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.lc-driver.unassigned{color:var(--A)}
+.lc-driver.unassigned .lc-driver-avatar{background:linear-gradient(135deg,#f59e0b,#d97706)}
+.lc-vendor{font-size:10px;color:var(--txt3);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.lc-vendor.internal{color:var(--T)}
+.lcard.is-partial{background:linear-gradient(180deg,#fffbeb,#fff);border-color:#fcd34d}
+.lcard.is-partial .lc-po,.mcard.is-partial .mcard-po{color:#a16207}
+.lcard.is-partial .lc-customer,.lcard.is-partial .lc-detail,.mcard.is-partial .mcard-cust,.mcard.is-partial .mcard-mat{color:#854d0e}
+.lc-status.is-partial{background:linear-gradient(135deg,#facc15,#eab308);color:#fff}
 
 /* ── STATUS-COLORED CARDS (Day + Month views) ── */
 .lcard.is-completed,.mcard.is-completed{
@@ -108,21 +199,24 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .lcard.is-active .lc-po,.mcard.is-active .mcard-po{color:#a86109}
 
 /* Status pills */
-.lc-status.is-completed{background:#7c3aed;color:#fff}
-.lc-status.is-overdue{background:var(--R);color:#fff}
-.lc-status.is-active{background:var(--A);color:#fff}
-.lc-po{font-size:10px;font-weight:700;color:var(--B);letter-spacing:.04em;margin-bottom:3px}
-.lc-customer{font-size:13px;font-weight:600;line-height:1.3;margin-bottom:3px}
-.lc-detail{font-size:11px;color:var(--txt2);margin-bottom:2px}
-.lc-mat-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:20px;background:var(--Bb);color:var(--B);margin-top:4px}
-.lc-progress{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px}
-.lc-progress-bar{flex:1;height:4px;background:var(--bdr);border-radius:4px;overflow:hidden}
-.lc-progress-fill{height:100%;background:var(--G);transition:width .3s}
-.lc-status{position:absolute;top:8px;right:8px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:20px;text-transform:uppercase}
+.lc-status.is-completed{background:linear-gradient(135deg,#8b5cf6,#7c3aed);color:#fff;box-shadow:0 1px 3px rgba(124,58,237,.3)}
+.lc-status.is-overdue{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;box-shadow:0 1px 3px rgba(220,38,38,.3)}
+.lc-status.is-active{background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;box-shadow:0 1px 3px rgba(217,119,6,.3)}
+.lc-status.is-normal{background:var(--Ib);color:var(--I);font-weight:700}
+.lc-po{font-size:10px;font-weight:700;color:var(--I);letter-spacing:.06em;margin-bottom:4px;text-transform:uppercase}
+.lc-customer{font-size:13.5px;font-weight:700;line-height:1.3;margin-bottom:4px;letter-spacing:-.005em;padding-right:80px}
+.lc-detail{font-size:11.5px;color:var(--txt2);margin-bottom:3px;line-height:1.4;font-weight:500}
+.lc-mat-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;background:linear-gradient(135deg,var(--Ib),var(--Bb));color:var(--I);margin-top:5px;letter-spacing:.02em}
+.lc-progress{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;font-weight:600}
+.lc-progress span{color:var(--txt2);font-variant-numeric:tabular-nums;min-width:32px}
+.lc-progress-bar{flex:1;height:5px;background:var(--bg2);border-radius:4px;overflow:hidden;position:relative}
+.lc-progress-fill{height:100%;background:linear-gradient(90deg,var(--G),#22c55e);transition:width .3s;border-radius:4px;box-shadow:0 0 6px rgba(22,160,102,.3)}
+.lc-status{position:absolute;top:10px;right:10px;font-size:9px;font-weight:700;padding:3px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em}
 .lc-status.pending{background:var(--bg2);color:var(--txt2)}
-.lc-status.submitted{background:var(--Pb);color:var(--P)}
-.lc-status.approved{background:var(--Gb);color:var(--G)}
-.lc-status.rejected{background:var(--Rb);color:var(--R)}
+.lc-status.submitted{background:linear-gradient(135deg,var(--Pb),#fff);color:var(--P);box-shadow:inset 0 0 0 1px var(--Pd)}
+.lc-status.approved{background:linear-gradient(135deg,var(--Gb),#fff);color:var(--G);box-shadow:inset 0 0 0 1px var(--Gd)}
+.lc-status.rejected{background:linear-gradient(135deg,var(--Rb),#fff);color:var(--R);box-shadow:inset 0 0 0 1px var(--Rd)}
+.lc-moved-pill{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:20px;background:rgba(15,22,40,.06);color:var(--txt2);text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
 
 .empty-col{padding:20px;text-align:center;color:var(--txt3);font-size:11px;font-style:italic}
 
@@ -365,7 +459,7 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 /* ── VIEW TOGGLE (Day / Month) ── */
 .view-btn{padding:5px 12px;font-size:11px;font-weight:600;color:var(--txt2);background:transparent;border:none;border-radius:18px;cursor:pointer;font-family:var(--f);transition:all .15s}
 .view-btn:hover{color:var(--txt)}
-.view-btn.active{background:var(--B);color:#fff}
+.view-btn.active{background:var(--bg);color:var(--txt);box-shadow:0 1px 3px rgba(15,22,40,.12);font-weight:600}
 
 /* ── MONTH VIEW ── */
 .month-grid{padding:18px}
@@ -462,10 +556,16 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 
 /* ── MOBILE ── */
 @media(max-width:900px){
-  .sidebar{position:fixed;left:-220px;top:0;bottom:0;z-index:100;transition:left .2s;box-shadow:2px 0 12px rgba(0,0,0,.2)}
+  .sidebar{position:fixed;left:-232px;top:0;bottom:0;z-index:100;transition:left .2s;box-shadow:2px 0 12px rgba(0,0,0,.4)}
   .sidebar.open{left:0}
   .menu-toggle{display:block}
   .field-row{grid-template-columns:1fr}
+  .dispatch-hero{margin:14px 14px 0;padding:18px 18px}
+  .filter-bar,.driver-strip{margin:12px 14px 0}
+  .board-cols{padding:14px 14px 0}
+  .hero-row{flex-direction:column;align-items:flex-start}
+  .hero-stats{grid-template-columns:repeat(2,1fr)}
+  .hero-title{font-size:18px}
 }
 
 /* ── SIGNATURE PAD ── */
@@ -759,6 +859,10 @@ let currentVendorTab = null;  // selected vendor in the Vendors screen
 let dayOffset = 0, monthOffset = 0;
 let boardView = 'day';  // 'day' | 'month'
 let currentTab = 'board';
+// Dispatch board filters — applied in renderDayBoard. 'all' / '' means no filter.
+let boardFilters = { driver: '', material: '', customer: '', city: '', status: '', search: '' };
+// "Active" status pulse on the hero summary card; clicking a stat sets this.
+let boardStatusFilter = '';  // '' | 'unassigned' | 'in-progress' | 'pending-approval' | 'ready-to-bill' | 'completed'
 let editingPoId = null;
 let splits = [];
 let currentLoadId = null;  // for ticket/sig modals
@@ -1013,13 +1117,14 @@ function renderDayBoard() {
   const date = getBoardDate();
   const dateStr = ymd(date);
   const isToday = dateStr === todayStr();
+  const me = myDisplayName || (myUsername.charAt(0).toUpperCase() + myUsername.slice(1));
 
   // Header with date nav
   document.getElementById('board-header').innerHTML = `
     <div class="date-nav">
-      <button onclick="changeDay(-1)">‹</button>
+      <button onclick="changeDay(-1)" aria-label="Previous day">‹</button>
       <span class="date-label">${date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</span>
-      <button onclick="changeDay(1)">›</button>
+      <button onclick="changeDay(1)" aria-label="Next day">›</button>
     </div>
     ${!isToday ? `<button class="today-btn" onclick="goToday()">Today</button>` : ''}
     <div style="margin-left:auto;display:flex;gap:4px;background:var(--bg2);padding:3px;border-radius:20px">
@@ -1028,54 +1133,222 @@ function renderDayBoard() {
     </div>
   `;
 
-  // Build board: column per driver + unassigned
-  const board = document.getElementById('board');
-  const cols = [];
+  // All loads scheduled for this day, regardless of filter (used for hero counts)
+  const allDayLoads = loads.filter(l => l.deliveryDate === dateStr && !l.voided);
 
+  // Compute hero stats
+  const stats = computeBoardStats(allDayLoads);
+
+  // Apply filters
+  const filtered = applyBoardFilters(allDayLoads);
+
+  // Build the board layout: HERO → FILTER BAR → DRIVER STRIP → COLUMNS
+  const board = document.getElementById('board');
+  const heroHtml = renderDispatchHero(stats, isToday, date, me);
+  const filterHtml = renderFilterBar(filtered.length, allDayLoads.length);
+  const stripHtml = renderDriverStrip(allDayLoads);
+
+  // Build columns with filtered loads
+  const colHtml = [];
   trucks.forEach(t => {
-    const myLoads = loads.filter(l => l.truckId === t.id && l.deliveryDate === dateStr && !l.voided);
-    const reassignableCount = myLoads.filter(l => !l.locked).length;
-    cols.push(`
+    const myLoads = filtered.filter(l => l.truckId === t.id);
+    const allMyDayLoads = allDayLoads.filter(l => l.truckId === t.id);
+    const reassignableCount = allMyDayLoads.filter(l => !l.locked).length;
+    const initials = (t.label || '?').split(/\s+/).map(s => s.charAt(0)).join('').slice(0,2).toUpperCase();
+    const countCls = allMyDayLoads.length === 0 ? 'empty' : (allMyDayLoads.length >= 5 ? 'heavy' : '');
+    colHtml.push(`
       <div class="driver-col">
         <div class="driver-col-head">
           <div style="flex:1;min-width:0">
-            <div class="driver-name">${t.label}</div>
-            <div class="driver-truck">${t.truckNum}${reassignableCount > 0 ? ` · <a onclick="event.stopPropagation();openReassignModal('all-driver','${t.id}')" style="color:var(--B);cursor:pointer;text-decoration:underline;font-weight:500">Reassign all</a>` : ''}</div>
+            <div class="driver-name"><span class="driver-name-avatar">${initials}</span>${t.label}</div>
+            <div class="driver-truck">${t.truckNum}${reassignableCount > 0 ? ` · <a onclick="event.stopPropagation();openReassignModal('all-driver','${t.id}')" style="color:var(--I);cursor:pointer;text-decoration:underline;font-weight:600">Reassign all</a>` : ''}</div>
           </div>
-          <span class="driver-load-count">${myLoads.length}</span>
+          <span class="driver-load-count ${countCls}">${allMyDayLoads.length}</span>
         </div>
         <div class="driver-col-body" data-truckid="${t.id}"
           ondragover="event.preventDefault();this.classList.add('drop-target')"
           ondragleave="this.classList.remove('drop-target')"
           ondrop="onDrop(event, '${t.id}')">
-          ${myLoads.length ? myLoads.map(l => loadCard(l)).join('') : '<div class="empty-col">No loads</div>'}
+          ${myLoads.length ? myLoads.map(l => loadCard(l)).join('') : (allMyDayLoads.length ? '<div class="empty-col">No loads match the current filter</div>' : '<div class="empty-col">No loads</div>')}
         </div>
       </div>
     `);
   });
 
-  // Unassigned column
-  const unas = loads.filter(l => (!l.truckId || l.truckId === 'unassigned') && l.deliveryDate === dateStr && !l.voided);
-  cols.push(`
+  // Unassigned column — always last, always visible (it's the alert column)
+  const unas = filtered.filter(l => !l.truckId || l.truckId === 'unassigned');
+  const allUnas = allDayLoads.filter(l => !l.truckId || l.truckId === 'unassigned');
+  colHtml.push(`
     <div class="driver-col unassigned-col">
       <div class="driver-col-head">
         <div>
-          <div class="driver-name" style="color:var(--A);display:flex;align-items:center;gap:5px"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</div>
+          <div class="driver-name" style="color:var(--A)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</div>
           <div class="driver-truck">Drag a card here to unassign</div>
         </div>
-        <span class="driver-load-count" style="background:var(--Ad);color:var(--A)">${unas.length}</span>
+        <span class="driver-load-count" style="background:var(--Ad);color:var(--A)">${allUnas.length}</span>
       </div>
       <div class="driver-col-body" data-truckid=""
         ondragover="event.preventDefault();this.classList.add('drop-target')"
         ondragleave="this.classList.remove('drop-target')"
         ondrop="onDrop(event, '')">
-        ${unas.length ? unas.map(l => loadCard(l)).join('') : '<div class="empty-col">No unassigned loads</div>'}
+        ${unas.length ? unas.map(l => loadCard(l)).join('') : (allUnas.length ? '<div class="empty-col">No loads match the current filter</div>' : '<div class="empty-col">No unassigned loads</div>')}
       </div>
     </div>
   `);
 
-  board.innerHTML = cols.join('');
+  board.innerHTML = `${heroHtml}${filterHtml}${stripHtml}<div class="board-cols">${colHtml.join('')}</div>`;
   updateApproveBadge();
+}
+
+// Compute counts of each status bucket for the hero summary card.
+function computeBoardStats(dayLoads) {
+  let unassigned = 0, inProgress = 0, pendingApproval = 0, readyToBill = 0, approved = 0, completed = 0, partial = 0;
+  dayLoads.forEach(l => {
+    if (!l.truckId || l.truckId === 'unassigned') unassigned++;
+    if (l.timestamps?.start && !l.timestamps?.completed && l.approvalStatus !== 'approved' && l.approvalStatus !== 'submitted') inProgress++;
+    if (l.approvalStatus === 'submitted') pendingApproval++;
+    if (l.approvalStatus === 'approved' && l.billStatus !== 'billed') readyToBill++;
+    if (l.approvalStatus === 'approved') approved++;
+    if (l.approvalStatus === 'approved' || l.timestamps?.completed) completed++;
+    if (l.isPartial) partial++;
+  });
+  return { total: dayLoads.length, unassigned, inProgress, pendingApproval, readyToBill, approved, completed, partial };
+}
+
+function renderDispatchHero(stats, isToday, date, displayName) {
+  const greet = isToday
+    ? `Welcome back, ${displayName}`
+    : `${date.toLocaleDateString('en-US', { weekday: 'long' })} dispatch`;
+  const sub = isToday
+    ? `Here's what needs your attention today.`
+    : `Schedule for ${date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}.`;
+  const dateLabel = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+
+  const stat = (key, label, num, meta, cls = '') => `
+    <div class="hero-stat ${cls} ${boardStatusFilter === key ? 'active' : ''}" onclick="setBoardStatusFilter('${key}')">
+      <div class="hero-stat-label">${label}</div>
+      <div class="hero-stat-num">${num}</div>
+      <div class="hero-stat-meta">${meta}</div>
+    </div>`;
+
+  return `<div class="dispatch-hero">
+    <div class="hero-row">
+      <div class="hero-greeting">
+        <div class="hero-eyebrow">Dispatch Command Center</div>
+        <div class="hero-title">${greet}</div>
+        <div class="hero-sub">${sub}</div>
+      </div>
+      <div class="hero-date"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ${dateLabel}</div>
+    </div>
+    <div class="hero-stats">
+      ${stat('', 'All Loads', stats.total, `${trucks.length} drivers on shift`)}
+      ${stat('unassigned', 'Unassigned', stats.unassigned, stats.unassigned ? 'Needs assignment' : 'All assigned', stats.unassigned ? 'alert' : '')}
+      ${stat('in-progress', 'In Progress', stats.inProgress, stats.inProgress ? 'On the road' : 'None active', stats.inProgress ? 'warn' : '')}
+      ${stat('pending-approval', 'Pending Approval', stats.pendingApproval, stats.pendingApproval ? 'Awaiting review' : 'All clear', stats.pendingApproval ? 'warn' : '')}
+      ${stat('ready-to-bill', 'Ready to Bill', stats.readyToBill, stats.readyToBill ? 'Approved & locked' : 'Nothing queued', 'bill')}
+      ${stat('completed', 'Completed', stats.completed, stats.completed ? 'Finished today' : 'None yet', 'success')}
+    </div>
+  </div>`;
+}
+
+function renderFilterBar(visible, total) {
+  const customers = [...new Set(pos.map(p => p.customer).filter(Boolean))].sort();
+  const cities = [...new Set(pos.map(p => p.city).filter(Boolean))].sort();
+  const mats = [...new Set(loads.map(l => l.material).filter(Boolean))].sort();
+  const opt = (val, list) => list.map(x => `<option value="${escapeHtml(x)}" ${val === x ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('');
+  const driverOpts = trucks.map(t => `<option value="${t.id}" ${boardFilters.driver === t.id ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('');
+  const hasAny = boardFilters.driver || boardFilters.material || boardFilters.customer || boardFilters.city || boardFilters.search || boardStatusFilter;
+  const visMeta = hasAny ? `${visible} of ${total} loads` : '';
+  return `<div class="filter-bar">
+    <span class="filter-bar-label">Filter</span>
+    <input type="text" placeholder="Search PO / customer / job…" value="${escapeHtml(boardFilters.search || '')}" oninput="setBoardFilter('search', this.value)" style="min-width:180px">
+    <select onchange="setBoardFilter('driver', this.value)">
+      <option value="">All drivers</option>
+      ${driverOpts}
+      <option value="__unassigned__" ${boardFilters.driver === '__unassigned__' ? 'selected' : ''}>Unassigned only</option>
+    </select>
+    <select onchange="setBoardFilter('material', this.value)">
+      <option value="">All materials</option>
+      ${opt(boardFilters.material, mats)}
+    </select>
+    <select onchange="setBoardFilter('customer', this.value)">
+      <option value="">All customers</option>
+      ${opt(boardFilters.customer, customers)}
+    </select>
+    <select onchange="setBoardFilter('city', this.value)">
+      <option value="">All cities</option>
+      ${opt(boardFilters.city, cities)}
+    </select>
+    <span class="filter-result-count">${visMeta}</span>
+    ${hasAny ? `<button class="filter-clear" onclick="clearBoardFilters()">Clear filters</button>` : ''}
+  </div>`;
+}
+
+function renderDriverStrip(allDayLoads) {
+  if (!trucks.length) return '';
+  const chips = trucks.map(t => {
+    const cnt = allDayLoads.filter(l => l.truckId === t.id).length;
+    const cls = cnt === 0 ? 'free' : (cnt >= 5 ? 'heavy' : 'busy');
+    const initials = (t.label || '?').split(/\s+/).map(s => s.charAt(0)).join('').slice(0,2).toUpperCase();
+    const active = boardFilters.driver === t.id ? 'active' : '';
+    return `<button type="button" class="driver-chip ${cls} ${active}" onclick="toggleDriverFilter('${t.id}')" title="${escapeHtml(t.label)} — ${cnt} load${cnt===1?'':'s'}">
+      <span class="driver-chip-dot">${initials}</span>
+      <span class="driver-chip-name">${escapeHtml(t.label)}</span>
+      <span class="driver-chip-count">${cnt}</span>
+    </button>`;
+  }).join('');
+  return `<div class="driver-strip">
+    <span class="driver-strip-label">Driver Availability</span>
+    ${chips}
+  </div>`;
+}
+
+function setBoardFilter(key, value) {
+  boardFilters[key] = value;
+  // Clear hero status filter when driver/material/customer/city changes (treat them as separate axes)
+  renderDayBoard();
+}
+function toggleDriverFilter(truckId) {
+  boardFilters.driver = boardFilters.driver === truckId ? '' : truckId;
+  renderDayBoard();
+}
+function clearBoardFilters() {
+  boardFilters = { driver: '', material: '', customer: '', city: '', status: '', search: '' };
+  boardStatusFilter = '';
+  renderDayBoard();
+}
+function setBoardStatusFilter(key) {
+  boardStatusFilter = (boardStatusFilter === key) ? '' : key;
+  renderDayBoard();
+}
+function applyBoardFilters(dayLoads) {
+  return dayLoads.filter(l => {
+    const po = pos.find(p => p.id === l.poId) || {};
+    if (boardFilters.driver) {
+      if (boardFilters.driver === '__unassigned__') {
+        if (l.truckId && l.truckId !== 'unassigned') return false;
+      } else if (l.truckId !== boardFilters.driver) return false;
+    }
+    if (boardFilters.material && l.material !== boardFilters.material) return false;
+    if (boardFilters.customer && (po.customer || '') !== boardFilters.customer) return false;
+    if (boardFilters.city && (po.city || '') !== boardFilters.city) return false;
+    if (boardFilters.search) {
+      const q = boardFilters.search.toLowerCase();
+      const hay = [po.poNumber, po.customer, po.jobCode, po.address, po.city, l.material, l.driverName].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    if (boardStatusFilter) {
+      if (boardStatusFilter === 'unassigned' && (l.truckId && l.truckId !== 'unassigned')) return false;
+      if (boardStatusFilter === 'in-progress' && !(l.timestamps?.start && !l.timestamps?.completed && l.approvalStatus !== 'approved' && l.approvalStatus !== 'submitted')) return false;
+      if (boardStatusFilter === 'pending-approval' && l.approvalStatus !== 'submitted') return false;
+      if (boardStatusFilter === 'ready-to-bill' && !(l.approvalStatus === 'approved' && l.billStatus !== 'billed')) return false;
+      if (boardStatusFilter === 'completed' && !(l.approvalStatus === 'approved' || l.timestamps?.completed)) return false;
+    }
+    return true;
+  });
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
 
 // ── MONTH BOARD ──
@@ -1100,7 +1373,7 @@ function renderMonthBoard() {
     </div>
   `;
 
-  let h = '<div class="month-grid"><table>';
+  let h = '<div class="month-grid" style="padding:18px 22px"><table>';
   // Header row
   h += '<thead><tr><th class="day-col">Date</th>';
   trucks.forEach(t => { h += `<th>${t.label}<div style="font-size:10px;font-weight:400;color:var(--txt3)">${t.truckNum}</div></th>`; });
@@ -1187,6 +1460,30 @@ function loadCard(l) {
   const wasMoved = l.moveHistory && l.moveHistory.length > 0;
   const lastMove = wasMoved ? l.moveHistory[l.moveHistory.length - 1] : null;
 
+  // Driver chip — initials avatar + name (or Unassigned)
+  let driverHtml;
+  if (l.truckId && l.driverName) {
+    const initials = l.driverName.split(/\s+/).map(s => s.charAt(0)).join('').slice(0,2).toUpperCase();
+    driverHtml = `<span class="lc-driver"><span class="lc-driver-avatar">${initials}</span>${escapeHtml(l.driverName)}</span>`;
+  } else {
+    driverHtml = `<span class="lc-driver unassigned"><span class="lc-driver-avatar">!</span>Unassigned</span>`;
+  }
+
+  // Vendor / pickup yard chip — VBT Yard rendered as INTERNAL
+  let vendorHtml = '';
+  const pickupName = l.vendorName || po.pickup || '';
+  if (pickupName) {
+    const isInternal = (l.vendorId === 'vbt') || /vbt/i.test(pickupName);
+    vendorHtml = `<span class="lc-vendor ${isInternal ? 'internal' : ''}">${isInternal ? 'VBT Yard' : escapeHtml(pickupName)}</span>`;
+  }
+
+  // City / address line
+  const pinSvg = `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;display:inline-block;vertical-align:-1px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`;
+  let routeHtml = '';
+  if (po.city || po.address) {
+    routeHtml = `<div class="lc-detail">${pinSvg} ${escapeHtml([po.city, po.address].filter(Boolean).join(' · '))}</div>`;
+  }
+
   return `<div class="lcard ${cardCls}"
     draggable="${(role === 'manager' || role === 'admin') && !l.locked ? 'true' : 'false'}"
     data-loadid="${l.id}"
@@ -1194,15 +1491,22 @@ function loadCard(l) {
     ondragend="this.classList.remove('dragging')"
     onclick="openLoadDetail('${l.id}')">
     <span class="lc-status ${cardCls}">${status.label}</span>
-    <div class="lc-po">${po.poNumber || '—'}${po.jobCode ? ` · <span style="color:var(--txt3);font-weight:600">${po.jobCode}</span>` : ''}</div>
-    <div class="lc-customer">${po.customer || ''}</div>
-    <div class="lc-detail">${po.city ? `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> ${po.city}` : ''}${po.address ? (po.city ? ' · ' : '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>' + ' ') + po.address : ''}</div>
-    <div class="lc-mat-pill">${l.material} · ${l.loadsAssigned} loads</div>
+    <div class="lc-po">${escapeHtml(po.poNumber || '—')}${po.jobCode ? ` · <span style="color:var(--txt3);font-weight:600">${escapeHtml(po.jobCode)}</span>` : ''}</div>
+    <div class="lc-customer">${escapeHtml(po.customer || '')}</div>
+    ${routeHtml}
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:5px">
+      <span class="lc-mat-pill">${escapeHtml(l.material)} · ${l.loadsAssigned} load${l.loadsAssigned===1?'':'s'}</span>
+      ${vendorHtml}
+      ${wasMoved ? `<span class="lc-moved-pill" title="Moved from ${fmtDate(lastMove.from)} — ${lastMove.reason}"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:11px;height:11px;display:inline-block;vertical-align:-1px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Moved</span>` : ''}
+    </div>
     <div class="lc-progress">
       <span>${l.loadsDelivered}/${l.loadsAssigned}</span>
       <div class="lc-progress-bar"><div class="lc-progress-fill" style="width:${pct}%"></div></div>
+      <span style="min-width:34px;text-align:right">${pct}%</span>
     </div>
-    ${wasMoved ? `<span class="lc-moved-pill" title="Moved from ${fmtDate(lastMove.from)} — ${lastMove.reason}"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Moved</span>` : ''}
+    <div class="lc-driver-row">
+      ${driverHtml}
+    </div>
   </div>`;
 }
 
