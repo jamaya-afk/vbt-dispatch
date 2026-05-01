@@ -901,7 +901,12 @@ app.delete('/api/loads/:id', reqMgr, async (req, res) => {
 });
 
 // ── API: DRIVER TRIP ACTIONS ────────────────────────────────────────────────
-// action: 'start-trip' | 'arrived-pickup' | 'delivered'
+// action: 'start-trip' | 'arrived-pickup' | 'loaded' | 'arrived-jobsite' | 'delivered' | 'incomplete'
+// Each step records BOTH a human-readable display string in `timestamps.{step}`
+// (e.g. "02:34 PM" — same format the existing UI prints) AND an ISO-8601
+// instant in `isoStamps.{step}`. The display string is what the driver/admin
+// sees on the trip card; the ISO is what duration analytics use for math
+// (display strings drop the date and break across midnight).
 app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const u = req.session.user;
   const idx = store.loads.findIndex(l => l.id === req.params.id);
@@ -911,15 +916,21 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   if (l.locked) return res.status(403).json({ error: 'Load is locked' });
 
   const { action, gps } = req.body;
-  const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' });
+  const now = new Date();
+  const time = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' });
+  const iso  = now.toISOString();
+  // Helper: stamp a step on both objects
+  const stamp = (key) => {
+    l.timestamps = { ...l.timestamps, [key]: time };
+    l.isoStamps  = { ...l.isoStamps,  [key]: iso };
+    l.gps        = { ...l.gps,        [key]: gps || null };
+  };
 
   if (action === 'start-trip') {
-    l.timestamps = { ...l.timestamps, start: time };
-    l.gps        = { ...l.gps, start: gps || null };
+    stamp('start');
   } else if (action === 'arrived-pickup') {
     if (!l.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
-    l.timestamps = { ...l.timestamps, arrivedPickup: time };
-    l.gps        = { ...l.gps, arrivedPickup: gps || null };
+    stamp('arrivedPickup');
     // Driver can confirm which yard they actually arrived at
     if (req.body.yardId) {
       const yard = store.vendors.find(y => y.id === req.body.yardId);
@@ -928,14 +939,20 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
         l.actualYardName = yard.name;
       }
     }
+  } else if (action === 'loaded') {
+    // Loaded / Leaving Yard — closes the "yard service" interval used by analytics
+    if (!l.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
+    stamp('loadedAt');
+  } else if (action === 'arrived-jobsite') {
+    if (!l.timestamps?.loadedAt) return res.status(400).json({ error: 'Must mark loaded / leaving yard first' });
+    stamp('arrivedJobsite');
   } else if (action === 'delivered' || action === 'incomplete') {
     if (!l.timestamps?.start)         return res.status(400).json({ error: 'Must start trip first' });
     if (!l.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
     if (!l.ticketImage && !l.ticketImageUrl)               return res.status(400).json({ error: 'Ticket photo required' });
     if (!l.pod?.signedBy || (!l.pod.signature && !l.pod.signatureUrl)) return res.status(400).json({ error: 'Customer signature required' });
 
-    l.timestamps = { ...l.timestamps, completed: time };
-    l.gps        = { ...l.gps, completed: gps || null };
+    stamp('completed');
 
     if (action === 'delivered') {
       // Full delivery — driver is done, all loads done
@@ -959,6 +976,8 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     l.approvalStatus = 'submitted';
     l.submittedAt    = new Date().toISOString();
     l.locked         = true;  // immutable until manager approves/rejects
+  } else {
+    return res.status(400).json({ error: 'Unknown action: ' + action });
   }
   await saveData();
   res.json({ success: true, load: l });
@@ -1440,6 +1459,206 @@ app.get('/api/pricing-preview', reqMgr, (req, res) => {
     vendor:   { rate: vend.price, unit: vend.unit, isDefault: vend.isDefault, isInternal: vend.isInternal || false, perLoad: costPerLoad },
     margin:   { perLoad: marginPerLoad, percent: revPerLoad > 0 ? (marginPerLoad / revPerLoad * 100) : 0 },
     tonsPerLoad: tons,
+  });
+});
+
+// ── API: DURATION ANALYTICS ──────────────────────────────────────────────────
+// Computes average duration breakdowns from driver timestamps. Used by Admin to
+// see which yards/jobsites/materials/drivers are eating the most time.
+//
+// Five duration intervals per load (all in MINUTES, only included when both
+// endpoints are recorded):
+//   startToYard      = arrivedPickup  - start
+//   yardService      = loadedAt       - arrivedPickup    ← key for yard ranking
+//   yardToJobsite    = arrivedJobsite - loadedAt
+//   jobsiteService   = completed      - arrivedJobsite
+//   total            = completed      - start
+//
+// Filters (all optional, all combinable):
+//   ?from=YYYY-MM-DD   only loads with deliveryDate >= from
+//   ?to=YYYY-MM-DD     only loads with deliveryDate <= to
+//   ?driver=truckId    only loads dispatched to that driver
+//   ?yard=vendorId     only loads where ACTUAL yard (or planned vendor) matches
+//   ?customer=name     case-insensitive exact match against po.customer
+//   ?city=name         case-insensitive exact match against po.city
+//   ?material=name     exact match against load.material
+//   ?po=poNumber       exact match against po.poNumber
+//   ?status=...        approval status (approved | submitted | rejected | pending)
+//
+// Returns aggregations grouped by yard, customer, jobcode, city, material,
+// driver — each with avg / median / p90 / count / min / max minutes for every
+// duration interval. Also returns slowest/fastest yard leaderboards on the
+// yardService interval.
+app.get('/api/duration-analytics', reqMgr, (req, res) => {
+  const { from, to, driver, yard, customer, city, material, po, status } = req.query;
+
+  // Pull from active store + archive so historical months still count
+  const archivedLoads = (store.archive || []).flatMap(b => b.loads || []);
+  const allLoads = [...store.loads, ...archivedLoads];
+  const lcEq = (a, b) => String(a || '').toLowerCase().trim() === String(b || '').toLowerCase().trim();
+
+  // Apply filters
+  const matched = allLoads.filter(l => {
+    if (l.voided) return false;
+    const poRow = store.pos.find(p => p.id === l.poId)
+              || (store.archive || []).flatMap(b => b.pos || []).find(p => p.id === l.poId)
+              || {};
+    if (from && (l.deliveryDate || '') < from) return false;
+    if (to   && (l.deliveryDate || '') > to)   return false;
+    if (driver   && l.truckId !== driver)                                 return false;
+    if (yard     && (l.actualYardId || l.vendorId) !== yard)              return false;
+    if (customer && !lcEq(poRow.customer, customer))                      return false;
+    if (city     && !lcEq(poRow.city, city))                              return false;
+    if (material && l.material !== material)                              return false;
+    if (po       && poRow.poNumber !== po)                                return false;
+    if (status   && (l.approvalStatus || 'pending') !== status)           return false;
+    return true;
+  });
+
+  // Compute per-load durations in minutes. Returns null when an interval can't
+  // be computed (missing endpoint).
+  const durationsForLoad = (l) => {
+    const iso = l.isoStamps || {};
+    const ts  = l.timestamps || {};
+    const baseDate = l.deliveryDate || '';
+
+    // Get a Date for a step. Prefer the ISO stamp (accurate). Fall back to
+    // parsing the display string against the load's deliveryDate, which is
+    // best-effort for legacy loads (pre-isoStamps).
+    const at = (key) => {
+      if (iso[key]) return new Date(iso[key]);
+      if (ts[key] && baseDate) {
+        // ts[key] looks like "02:34 PM" — combine with the load's date
+        const m = String(ts[key]).match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+        if (m) {
+          let h = Number(m[1]); const mn = Number(m[2]); const ap = (m[3] || '').toUpperCase();
+          if (ap === 'PM' && h < 12) h += 12;
+          if (ap === 'AM' && h === 12) h = 0;
+          return new Date(`${baseDate}T${String(h).padStart(2,'0')}:${String(mn).padStart(2,'0')}:00`);
+        }
+      }
+      return null;
+    };
+
+    const diff = (a, b) => {
+      if (!a || !b) return null;
+      let d = (b - a) / 60000;  // ms → minutes
+      // If the trip rolled past midnight using legacy display-only stamps, b may
+      // appear earlier than a — add a day. Only do this for legacy fallback;
+      // ISO stamps don't have this issue.
+      if (d < 0 && d > -1440 && !iso[Object.keys(iso)[0]]) d += 1440;
+      return d > 0 ? Math.round(d * 10) / 10 : null;  // drop nonsensical negatives
+    };
+
+    const start          = at('start');
+    const arrivedPickup  = at('arrivedPickup');
+    const loadedAt       = at('loadedAt');
+    const arrivedJobsite = at('arrivedJobsite');
+    const completed      = at('completed');
+
+    return {
+      startToYard:    diff(start, arrivedPickup),
+      yardService:    diff(arrivedPickup, loadedAt),
+      yardToJobsite:  diff(loadedAt, arrivedJobsite),
+      jobsiteService: diff(arrivedJobsite, completed),
+      total:          diff(start, completed),
+    };
+  };
+
+  // Aggregate helper — given a list of numbers, compute count/avg/median/p90/min/max
+  const stats = (nums) => {
+    const xs = nums.filter(n => typeof n === 'number' && isFinite(n));
+    if (!xs.length) return { count: 0, avg: null, median: null, p90: null, min: null, max: null };
+    const sorted = [...xs].sort((a, b) => a - b);
+    const sum = xs.reduce((s, x) => s + x, 0);
+    const pct = (p) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+    return {
+      count: xs.length,
+      avg:    Math.round(sum / xs.length * 10) / 10,
+      median: pct(0.5),
+      p90:    pct(0.9),
+      min:    sorted[0],
+      max:    sorted[sorted.length - 1],
+    };
+  };
+
+  // Group loads by an arbitrary key fn, returning aggregations per group + per
+  // duration interval.
+  const groupBy = (keyFn, labelFn = (k) => k) => {
+    const buckets = new Map();
+    matched.forEach(l => {
+      const k = keyFn(l);
+      if (!k) return;  // skip loads with no group identity (e.g. no driver)
+      if (!buckets.has(k)) buckets.set(k, []);
+      buckets.get(k).push(durationsForLoad(l));
+    });
+    const out = [];
+    for (const [k, arr] of buckets.entries()) {
+      out.push({
+        key: k,
+        label: labelFn(k),
+        loads: arr.length,
+        startToYard:    stats(arr.map(d => d.startToYard)),
+        yardService:    stats(arr.map(d => d.yardService)),
+        yardToJobsite:  stats(arr.map(d => d.yardToJobsite)),
+        jobsiteService: stats(arr.map(d => d.jobsiteService)),
+        total:          stats(arr.map(d => d.total)),
+      });
+    }
+    return out;
+  };
+
+  const yardLabel = (id) => {
+    const v = store.vendors.find(x => x.id === id);
+    return v ? v.name : id;
+  };
+  const truckLabel = (id) => {
+    const TRUCKS = [
+      { id: 'beryle', label: 'Beryle' }, { id: 'matthew', label: 'Matthew' },
+      { id: 'rigo', label: 'Rigo' }, { id: 'leonardo', label: 'Leonardo' },
+      { id: 'carlos', label: 'Carlos' },
+    ];
+    const t = TRUCKS.find(x => x.id === id);
+    return t ? t.label : id;
+  };
+
+  const poFor = (l) =>
+    store.pos.find(p => p.id === l.poId)
+    || (store.archive || []).flatMap(b => b.pos || []).find(p => p.id === l.poId)
+    || {};
+
+  const byYard     = groupBy(l => l.actualYardId || l.vendorId, yardLabel);
+  const byCustomer = groupBy(l => poFor(l).customer || '', x => x);
+  const byJobCode  = groupBy(l => poFor(l).jobCode  || '', x => x || '(no job code)');
+  const byCity     = groupBy(l => poFor(l).city     || '', x => x || '(no city)');
+  const byMaterial = groupBy(l => l.material || '', x => x);
+  const byDriver   = groupBy(l => l.truckId || '',  truckLabel);
+
+  // Slowest / fastest yards on yard service time (only yards with ≥3 loads
+  // for stat stability)
+  const yardsWithEnough = byYard.filter(g => g.yardService.count >= 3);
+  const slowestYards = [...yardsWithEnough].sort((a, b) => (b.yardService.avg || 0) - (a.yardService.avg || 0)).slice(0, 5);
+  const fastestYards = [...yardsWithEnough].sort((a, b) => (a.yardService.avg || 0) - (b.yardService.avg || 0)).slice(0, 5);
+  const slowestJobsites = byCustomer
+    .filter(g => g.jobsiteService.count >= 3)
+    .sort((a, b) => (b.jobsiteService.avg || 0) - (a.jobsiteService.avg || 0))
+    .slice(0, 5);
+
+  // Overall summary on the matched set
+  const all = matched.map(durationsForLoad);
+  const overall = {
+    matchedLoads: matched.length,
+    startToYard:    stats(all.map(d => d.startToYard)),
+    yardService:    stats(all.map(d => d.yardService)),
+    yardToJobsite:  stats(all.map(d => d.yardToJobsite)),
+    jobsiteService: stats(all.map(d => d.jobsiteService)),
+    total:          stats(all.map(d => d.total)),
+  };
+
+  res.json({
+    overall,
+    byYard, byCustomer, byJobCode, byCity, byMaterial, byDriver,
+    slowestYards, fastestYards, slowestJobsites,
   });
 });
 
