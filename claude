@@ -1,0 +1,72 @@
+# Using a direct prompt
+- name: Run Claude Code with direct prompt
+  uses: anthropics/claude-code-base-action@beta
+  with:
+    prompt: "Your prompt here"
+    allowed_tools: "Bash(git:*),View,GlobTool,GrepTool,BatchTool"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# Or using a prompt from a file
+- name: Run Claude Code with prompt file
+  uses: anthropics/claude-code-base-action@beta
+  with:
+    prompt_file: "/path/to/prompt.txt"
+    allowed_tools: "Bash(git:*),View,GlobTool,GrepTool,BatchTool"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# Or limiting the conversation turns
+- name: Run Claude Code with limited turns
+  uses: anthropics/claude-code-base-action@beta
+  with:
+    prompt: "Your prompt here"
+    allowed_tools: "Bash(git:*),View,GlobTool,GrepTool,BatchTool"
+    max_turns: "5" # Limit conversation to 5 turns
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# Using custom system prompts
+- name: Run Claude Code with custom system prompt
+  uses: anthropics/claude-code-base-action@beta
+  with:
+    prompt: "Build a REST API"
+    system_prompt: "You are a senior backend engineer. Focus on security, performance, and maintainability."
+    allowed_tools: "Bash(git:*),View,GlobTool,GrepTool,BatchTool"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# Or appending to the default system prompt
+- name: Run Claude Code with appended system prompt
+  uses: anthropics/claude-code-base-action@beta
+  with:
+    prompt: "Create a database schema"
+    append_system_prompt: "After writing code, be sure to code review yourself."
+    allowed_tools: "Bash(git:*),View,GlobTool,GrepTool,BatchTool"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# Using custom environment variables
+- name: Run Claude Code with custom environment variables
+  uses: anthropics/claude-code-base-action@beta
+  with:
+    prompt: "Deploy to staging environment"
+    claude_env: |
+      ENVIRONMENT: staging
+      API_URL: https://api-staging.example.com
+      DEBUG: true
+    allowed_tools: "Bash(git:*),View,GlobTool,GrepTool,BatchTool"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# Using fallback model for handling API errors
+- name: Run Claude Code with fallback model
+  uses: anthropics/claude-code-base-action@beta
+  with:
+    prompt: "Review and fix TypeScript errors"
+    model: "claude-opus-4-1-20250805"
+    fallback_model: "claude-sonnet-4-20250514"
+    allowed_tools: "Bash(git:*),View,GlobTool,GrepTool,BatchTool"
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# Using OAuth token instead of API key
+- name: Run Claude Code with OAuth token
+  uses: anthropics/claude-code-base-action@beta
+  with:
+    prompt: "Update dependencies"
+    allowed_tools: "Bash(git:*),View,GlobTool,GrepTool,BatchTool"
+    claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
