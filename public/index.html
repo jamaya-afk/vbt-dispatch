@@ -247,7 +247,7 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 body.driver-mode .sidebar{display:none}
 body.driver-mode .topbar{background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 100%);border-bottom:none;color:#fff}
 body.driver-mode .page-title{color:#fff}
-body.driver-mode .topbar::before{content:'';display:inline-block;width:34px;height:34px;background:url(/app/logo.png) no-repeat center/contain;margin-right:6px;flex-shrink:0}
+body.driver-mode .topbar::before{content:'';display:inline-block;width:46px;height:46px;background:url(/app/logo-sidebar.png) no-repeat center/contain;margin-right:10px;flex-shrink:0;filter:drop-shadow(0 2px 6px rgba(0,0,0,.5))}
 body.driver-mode .signout-btn,body.driver-mode .topbar-actions .btn{background:transparent;border-color:rgba(255,255,255,.25);color:#fff}
 body.driver-mode .signout-btn:hover,body.driver-mode .topbar-actions .btn:hover{border-color:#fca5a5;color:#fca5a5;background:rgba(220,38,38,.15)}
 
@@ -583,7 +583,7 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 <div class="shell">
   <!-- SIDEBAR -->
   <aside class="sidebar" id="sidebar">
-    <div class="sidebar-brand"><img src="/app/logo.png" alt="VBC"></div>
+    <div class="sidebar-brand"><img src="/app/logo-sidebar.png" alt="Valley Best Trucking"></div>
     <nav class="sidebar-nav">
       <button class="nav-item active" data-tab="board" onclick="goTab('board')">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
