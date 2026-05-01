@@ -973,7 +973,7 @@ function goTab(tab) {
 
   // Update topbar actions
   const actions = document.getElementById('topbar-actions');
-  if (role === 'manager' && tab === 'board') {
+  if ((role === 'manager' || role === 'admin') && tab === 'board') {
     actions.innerHTML = `<button class="btn primary" onclick="openNewPO()">+ New PO</button>
       <button class="btn ghost" onclick="syncSheets()" title="Push to Google Sheets"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Sync</button>`;
   } else if (role === 'driver') {
@@ -1188,7 +1188,7 @@ function loadCard(l) {
   const lastMove = wasMoved ? l.moveHistory[l.moveHistory.length - 1] : null;
 
   return `<div class="lcard ${cardCls}"
-    draggable="${role === 'manager' && !l.locked ? 'true' : 'false'}"
+    draggable="${(role === 'manager' || role === 'admin') && !l.locked ? 'true' : 'false'}"
     data-loadid="${l.id}"
     ondragstart="onDragStart(event, '${l.id}')"
     ondragend="this.classList.remove('dragging')"
@@ -1503,7 +1503,7 @@ function openLoadDetail(id) {
   }
 
   let actions = '';
-  if (role === 'manager') {
+  if (role === 'manager' || role === 'admin') {
     if (!l.locked) {
       actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openReassignModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Reassign Driver</button>`;
       actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openMoveModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Move Date</button>`;
