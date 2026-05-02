@@ -900,13 +900,68 @@ app.delete('/api/loads/:id', reqMgr, async (req, res) => {
   res.json({ success: true });
 });
 
+// ── PER-TRIP HELPERS ────────────────────────────────────────────────────────
+// A "load" is a manager-assigned bundle of N truck trips between yard and
+// jobsite. Each individual yard→jobsite cycle is a "trip" and gets its own
+// timestamps inside `load.trips[]`. The top-level `timestamps` object on the
+// load mirrors the CURRENT trip's progress so existing UI/code (board status,
+// step tracker, single-trip analytics) keeps working.
+//
+// Schema:
+//   load.trips = [
+//     { tripNum: 1, timestamps: {start, arrivedPickup, loadedAt, arrivedJobsite, completed},
+//                   isoStamps:  {same fields, ISO instants},
+//                   gps:        {same fields, lat/lng objects} },
+//     { tripNum: 2, ... },
+//     ...
+//   ]
+//
+// Migration: a legacy load that has top-level `timestamps` but no `trips[]`
+// gets its existing stamps moved into trips[0] the first time it's touched.
+function ensureTripsMigrated(load) {
+  if (Array.isArray(load.trips) && load.trips.length) return;
+  load.trips = [];
+  const ts = load.timestamps || {};
+  const iso = load.isoStamps || {};
+  const gps = load.gps || {};
+  if (ts.start || ts.arrivedPickup || ts.loadedAt || ts.arrivedJobsite || ts.completed) {
+    load.trips.push({
+      tripNum: 1,
+      timestamps: { ...ts },
+      isoStamps:  { ...iso },
+      gps:        { ...gps },
+    });
+  }
+}
+
+// Index of the trip currently in progress (latest trip without `completed`).
+// Returns load.trips.length if all existing trips are complete (= where a new
+// trip would go).
+function activeTripIdx(load) {
+  ensureTripsMigrated(load);
+  for (let i = load.trips.length - 1; i >= 0; i--) {
+    if (!load.trips[i].timestamps?.completed) return i;
+  }
+  return load.trips.length;
+}
+
 // ── API: DRIVER TRIP ACTIONS ────────────────────────────────────────────────
-// action: 'start-trip' | 'arrived-pickup' | 'loaded' | 'arrived-jobsite' | 'delivered' | 'incomplete'
-// Each step records BOTH a human-readable display string in `timestamps.{step}`
-// (e.g. "02:34 PM" — same format the existing UI prints) AND an ISO-8601
-// instant in `isoStamps.{step}`. The display string is what the driver/admin
-// sees on the trip card; the ISO is what duration analytics use for math
-// (display strings drop the date and break across midnight).
+// Per-trip flow: each trip is one yard→jobsite cycle. A load with
+// loadsAssigned=5 means the driver does 5 trips. Each trip captures all five
+// timestamps; analytics and the load detail timeline see them individually.
+//
+// Action sequence per trip:
+//   start-trip → arrived-pickup → loaded → arrived-jobsite → trip-complete
+//
+// After each trip-complete:
+//   - If loadsDelivered < loadsAssigned: driver sees "Trip N of M complete"
+//     and a "Start Trip N+1" button which calls start-trip for the next trip.
+//   - If loadsDelivered === loadsAssigned: driver sees "All trips complete —
+//     upload ticket + signature → submit" which goes through the existing
+//     ticket / signature flow and then calls `delivered` to lock & submit.
+//
+// `incomplete` is for "I'm stopping early" — driver submits with a partial
+// count of loads delivered.
 app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const u = req.session.user;
   const idx = store.loads.findIndex(l => l.id === req.params.id);
@@ -919,63 +974,122 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const now = new Date();
   const time = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' });
   const iso  = now.toISOString();
-  // Helper: stamp a step on both objects
-  const stamp = (key) => {
-    l.timestamps = { ...l.timestamps, [key]: time };
-    l.isoStamps  = { ...l.isoStamps,  [key]: iso };
-    l.gps        = { ...l.gps,        [key]: gps || null };
+
+  // Get (or create) the trip this action applies to. `delivered` /
+  // `incomplete` are load-level finalizers — they don't need an active trip.
+  const isFinalizer = (action === 'delivered' || action === 'incomplete');
+  // Guard: don't allow starting more trips than the assigned count
+  if (action === 'start-trip' && (l.loadsDelivered || 0) >= l.loadsAssigned) {
+    return res.status(400).json({ error: 'All assigned loads already delivered — submit when ready' });
+  }
+  const tripIdx = activeTripIdx(l);
+  let trip = l.trips[tripIdx];
+  if (!trip && action === 'start-trip') {
+    // Starting a fresh trip — create it
+    trip = { tripNum: tripIdx + 1, timestamps: {}, isoStamps: {}, gps: {} };
+    l.trips[tripIdx] = trip;
+    // If this is trip ≥ 2, reset top-level intermediate stamps so the step
+    // tracker shows the new trip from a clean state. The previous trip's
+    // data lives in trips[tripIdx - 1] and is preserved.
+    if (trip.tripNum > 1) {
+      l.timestamps = {};
+      l.isoStamps  = {};
+    }
+  } else if (!trip && isFinalizer && l.trips.length) {
+    // All trips done — finalizer references the most recent trip for any
+    // last-second `completed` stamp logic below.
+    trip = l.trips[l.trips.length - 1];
+  }
+  if (!trip) {
+    // No trip at all and not starting one — caller is out of sequence
+    return res.status(400).json({ error: 'No active trip — press Start Trip to begin' });
+  }
+
+  // Helper: stamp a step on the active trip AND mirror to top-level for
+  // backward compat (so existing UI/board/status code keeps working).
+  const stampBoth = (key) => {
+    trip.timestamps = { ...trip.timestamps, [key]: time };
+    trip.isoStamps  = { ...trip.isoStamps,  [key]: iso };
+    trip.gps        = { ...trip.gps,        [key]: gps || null };
+    l.timestamps    = { ...l.timestamps,    [key]: time };
+    l.isoStamps     = { ...l.isoStamps,     [key]: iso };
+    l.gps           = { ...l.gps,           [key]: gps || null };
   };
 
   if (action === 'start-trip') {
-    stamp('start');
+    stampBoth('start');
   } else if (action === 'arrived-pickup') {
-    if (!l.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
-    stamp('arrivedPickup');
-    // Driver can confirm which yard they actually arrived at
+    if (!trip.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
+    stampBoth('arrivedPickup');
     if (req.body.yardId) {
       const yard = store.vendors.find(y => y.id === req.body.yardId);
       if (yard) {
         l.actualYardId   = yard.id;
         l.actualYardName = yard.name;
+        // Stamp the yard onto this trip too so per-trip analytics know which
+        // yard each trip used (a driver could rotate yards across trips).
+        trip.actualYardId   = yard.id;
+        trip.actualYardName = yard.name;
       }
     }
   } else if (action === 'loaded') {
-    // Loaded / Leaving Yard — closes the "yard service" interval used by analytics
-    if (!l.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
-    stamp('loadedAt');
+    if (!trip.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
+    stampBoth('loadedAt');
   } else if (action === 'arrived-jobsite') {
-    if (!l.timestamps?.loadedAt) return res.status(400).json({ error: 'Must mark loaded / leaving yard first' });
-    stamp('arrivedJobsite');
+    if (!trip.timestamps?.loadedAt) return res.status(400).json({ error: 'Must mark loaded / leaving yard first' });
+    stampBoth('arrivedJobsite');
+  } else if (action === 'trip-complete') {
+    // Ends the current trip. Increments loadsDelivered. Does NOT submit for
+    // approval — that's the `delivered` action below, which fires only after
+    // the LAST trip's ticket + signature are captured.
+    if (!trip.timestamps?.arrivedJobsite) return res.status(400).json({ error: 'Must mark arrived at job site first' });
+    if (trip.timestamps?.completed)        return res.status(400).json({ error: 'Trip already complete' });
+    stampBoth('completed');
+    l.loadsDelivered = (l.loadsDelivered || 0) + 1;
+    // If that was the LAST trip, also stamp the load-level "completed" so the
+    // existing board/status code recognizes the load as ready-to-submit.
+    if (l.loadsDelivered >= l.loadsAssigned) {
+      l.allTripsDone = true;
+    }
   } else if (action === 'delivered' || action === 'incomplete') {
-    if (!l.timestamps?.start)         return res.status(400).json({ error: 'Must start trip first' });
-    if (!l.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
-    if (!l.ticketImage && !l.ticketImageUrl)               return res.status(400).json({ error: 'Ticket photo required' });
-    if (!l.pod?.signedBy || (!l.pod.signature && !l.pod.signatureUrl)) return res.status(400).json({ error: 'Customer signature required' });
+    // Final submission — collect ticket + signature, lock and submit for approval.
+    if (!l.ticketImage && !l.ticketImageUrl)
+      return res.status(400).json({ error: 'Ticket photo required' });
+    if (!l.pod?.signedBy || (!l.pod.signature && !l.pod.signatureUrl))
+      return res.status(400).json({ error: 'Customer signature required' });
 
-    stamp('completed');
-
-    if (action === 'delivered') {
-      // Full delivery — driver is done, all loads done
-      l.loadsDelivered = l.loadsAssigned;
-      l.isPartial = false;
-    } else {
-      // 'incomplete' — driver delivered some but not all. Body must include `delivered` count.
-      const reported = Math.max(0, Math.min(Number(req.body.delivered) || 0, l.loadsAssigned));
+    if (action === 'incomplete') {
+      // Driver is stopping early — close the active trip if it's mid-cycle but
+      // not yet completed. Then accept the partial count.
+      if (!trip.timestamps?.completed && trip.timestamps?.arrivedJobsite) {
+        stampBoth('completed');
+        l.loadsDelivered = (l.loadsDelivered || 0) + 1;
+      }
+      const reported = Math.max(0, Math.min(Number(req.body.delivered) || l.loadsDelivered || 0, l.loadsAssigned));
       if (reported <= 0) return res.status(400).json({ error: 'How many loads did you deliver? Enter a number greater than 0.' });
-      if (reported >= l.loadsAssigned) {
-        // Driver picked Incomplete but reported all — treat as full delivery
+      l.loadsDelivered = reported;
+      l.isPartial = (reported < l.loadsAssigned);
+    } else {
+      // 'delivered' — backward compat with the single-trip flow: if the active
+      // trip hasn't been closed via trip-complete yet, close it now and count
+      // it. This also means a load with loadsAssigned=1 keeps its old
+      // "ticket → sig → submit" UX without needing a separate "Confirm Drop".
+      if (!trip.timestamps?.completed && trip.timestamps?.arrivedJobsite) {
+        stampBoth('completed');
+        l.loadsDelivered = (l.loadsDelivered || 0) + 1;
+      }
+      if (l.loadsDelivered >= l.loadsAssigned) {
         l.loadsDelivered = l.loadsAssigned;
         l.isPartial = false;
       } else {
-        l.loadsDelivered = reported;
+        // Submitting before all trips done with no incomplete count — treat as partial
         l.isPartial = true;
       }
     }
 
-    // Auto-submit for approval
     l.approvalStatus = 'submitted';
     l.submittedAt    = new Date().toISOString();
-    l.locked         = true;  // immutable until manager approves/rejects
+    l.locked         = true;
   } else {
     return res.status(400).json({ error: 'Unknown action: ' + action });
   }

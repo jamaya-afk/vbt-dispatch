@@ -1806,6 +1806,114 @@ function openLoadDetail(id) {
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
   html += `</dl>`;
 
+  // ── Per-trip timeline ──
+  // Shows every yard→jobsite cycle the driver completed, with all 5 timestamps
+  // and the computed duration of each interval. Backward-compat: if the load
+  // has top-level timestamps but no trips[] (legacy single-trip), show those
+  // as a single trip 1.
+  let _trips = Array.isArray(l.trips) && l.trips.length ? l.trips : [];
+  if (!_trips.length && (l.timestamps?.start || l.timestamps?.completed)) {
+    _trips = [{ tripNum: 1, timestamps: { ...(l.timestamps || {}) }, isoStamps: { ...(l.isoStamps || {}) } }];
+  }
+  if (_trips.length) {
+    const fmtMins = (a, b) => {
+      if (!a || !b) return '—';
+      const da = new Date(a), db = new Date(b);
+      let m = Math.round((db - da) / 60000);
+      if (m < 0 && m > -1440) m += 1440;
+      if (m <= 0) return '—';
+      if (m < 60) return m + ' min';
+      const h = Math.floor(m / 60), r = m % 60;
+      return r ? `${h}h ${r}m` : `${h}h`;
+    };
+    const yardName = l.actualYardName || (l.vendorName) || '';
+    html += `<div style="margin-top:14px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:6px">Trip Timeline ${_trips.length > 1 ? `· ${_trips.filter(t=>t.timestamps?.completed).length}/${_trips.length} delivered` : ''}</div>`;
+    _trips.forEach((t, i) => {
+      const ts = t.timestamps || {};
+      const iso = t.isoStamps || {};
+      const isoOrTs = (k) => iso[k] || ts[k] || null;
+      // For duration math prefer ISO; if not present, fall back to display string + load.deliveryDate
+      const at = (k) => {
+        if (iso[k]) return iso[k];
+        if (ts[k] && l.deliveryDate) {
+          const m = String(ts[k]).match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+          if (m) {
+            let h = Number(m[1]); const mn = Number(m[2]); const ap = (m[3]||'').toUpperCase();
+            if (ap === 'PM' && h < 12) h += 12;
+            if (ap === 'AM' && h === 12) h = 0;
+            return `${l.deliveryDate}T${String(h).padStart(2,'0')}:${String(mn).padStart(2,'0')}:00`;
+          }
+        }
+        return null;
+      };
+      const startA = at('start'), pickA = at('arrivedPickup'), loadA = at('loadedAt');
+      const jobA = at('arrivedJobsite'), doneA = at('completed');
+      const isOpen = !ts.completed;
+      html += `<div style="background:${isOpen ? '#fff8ed' : 'var(--bg2)'};border:1px solid ${isOpen ? '#fcd38a' : 'var(--bdr)'};border-radius:10px;padding:10px 12px;margin-bottom:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div style="font-weight:700;font-size:13px">Load ${t.tripNum || (i+1)}${_trips.length>1 ? ` of ${_trips.length}` : ''}${isOpen ? ' · in progress' : ''}</div>
+          <div style="font-size:11px;color:var(--txt3);font-weight:600">${(t.actualYardName || yardName) ? '@ ' + escapeHtml(t.actualYardName || yardName) : ''}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;font-size:10px">
+          ${[
+            ['Start',     ts.start,          'var(--B)'],
+            ['At Yard',   ts.arrivedPickup,  'var(--A)'],
+            ['Loaded',    ts.loadedAt,       'var(--T,#0d9488)'],
+            ['At Job',    ts.arrivedJobsite, 'var(--I,#4f46e5)'],
+            ['Drop',      ts.completed,      'var(--G)'],
+          ].map(([lbl,v,c]) => `<div style="text-align:center;padding:4px 2px;background:${v?'var(--bg)':'transparent'};border-radius:6px;border:1px solid ${v?c+'40':'var(--bdr)'}">
+            <div style="text-transform:uppercase;letter-spacing:.04em;color:var(--txt3);font-weight:600">${lbl}</div>
+            <div style="font-weight:700;color:${v?c:'var(--txt3)'};font-size:11px;margin-top:1px">${v || '—'}</div>
+          </div>`).join('')}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;font-size:10px;color:var(--txt2);margin-top:4px;padding:0 2px">
+          <div style="text-align:right">→ ${fmtMins(startA, pickA)}</div>
+          <div style="text-align:right">→ ${fmtMins(pickA, loadA)}</div>
+          <div style="text-align:right">→ ${fmtMins(loadA, jobA)}</div>
+          <div style="text-align:right">→ ${fmtMins(jobA, doneA)}</div>
+          <div style="text-align:right;font-weight:700;color:var(--txt)">total: ${fmtMins(startA, doneA)}</div>
+        </div>
+      </div>`;
+    });
+    // Aggregate footer when there are multiple trips
+    if (_trips.length > 1) {
+      const intervals = ['startToYard','yardService','yardToJobsite','jobsiteService','total'];
+      const labels    = ['Start→Yard','Yard Service','Yard→Job','Job Service','Total'];
+      const stats = { startToYard:[], yardService:[], yardToJobsite:[], jobsiteService:[], total:[] };
+      const _isoOrFallback = (t, k) => {
+        if (t.isoStamps && t.isoStamps[k]) return t.isoStamps[k];
+        const ts = t.timestamps || {};
+        if (ts[k] && l.deliveryDate) {
+          const m = String(ts[k]).match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+          if (m) {
+            let h = Number(m[1]); const mn = Number(m[2]); const ap = (m[3]||'').toUpperCase();
+            if (ap === 'PM' && h < 12) h += 12;
+            if (ap === 'AM' && h === 12) h = 0;
+            return `${l.deliveryDate}T${String(h).padStart(2,'0')}:${String(mn).padStart(2,'0')}:00`;
+          }
+        }
+        return null;
+      };
+      const _diff = (a,b) => { if(!a||!b) return null; let m=(new Date(b)-new Date(a))/60000; if(m<0&&m>-1440) m+=1440; return m>0?m:null; };
+      _trips.forEach(t => {
+        stats.startToYard.push(_diff(_isoOrFallback(t,'start'), _isoOrFallback(t,'arrivedPickup')));
+        stats.yardService.push(_diff(_isoOrFallback(t,'arrivedPickup'), _isoOrFallback(t,'loadedAt')));
+        stats.yardToJobsite.push(_diff(_isoOrFallback(t,'loadedAt'), _isoOrFallback(t,'arrivedJobsite')));
+        stats.jobsiteService.push(_diff(_isoOrFallback(t,'arrivedJobsite'), _isoOrFallback(t,'completed')));
+        stats.total.push(_diff(_isoOrFallback(t,'start'), _isoOrFallback(t,'completed')));
+      });
+      const avg = (xs) => { const f = xs.filter(x => typeof x==='number' && isFinite(x)); return f.length ? Math.round(f.reduce((s,x)=>s+x,0)/f.length) : null; };
+      const avgFmt = (xs) => { const a = avg(xs); return a==null ? '—' : (a < 60 ? a+' min' : `${Math.floor(a/60)}h ${a%60}m`); };
+      html += `<div style="background:linear-gradient(135deg,#eef0ff,#fff);border:1px solid var(--Id,#c7d0ff);border-radius:10px;padding:10px 12px;margin-top:4px">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#4f46e5;font-weight:700;margin-bottom:5px">Per-trip averages</div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;font-size:11px">
+          ${intervals.map((k,i) => `<div style="text-align:center"><div style="color:var(--txt3);font-size:9px;text-transform:uppercase;font-weight:600">${labels[i]}</div><div style="font-weight:700;font-variant-numeric:tabular-nums">${avgFmt(stats[k])}</div></div>`).join('')}
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
   const detailTicket = l.ticketImageUrl || l.ticketImage;
   const detailSig    = l.pod?.signatureUrl || l.pod?.signature;
   if (detailTicket) html += `<div style="margin-top:12px"><div style="font-size:11px;color:var(--txt3);text-transform:uppercase;font-weight:600;margin-bottom:4px">Ticket</div><img src="${detailTicket}" style="max-width:100%;border-radius:var(--r);border:1px solid var(--bdr)"></div>`;
@@ -2169,21 +2277,45 @@ async function renderDriverContent(dispatch, welcome, wrap) {
 }
 
 function tripCard(l) {
-  const ts = l.timestamps || {};
+  // Per-trip state. `trips[]` is the source of truth; if a legacy load lacks
+  // it but has top-level timestamps, treat those as a single trip 1 for
+  // display only (the server migrates to a real trips[] entry on next action).
+  const trips = Array.isArray(l.trips) && l.trips.length
+    ? l.trips
+    : ((l.timestamps?.start || l.timestamps?.arrivedPickup || l.timestamps?.completed)
+        ? [{ tripNum: 1, timestamps: { ...(l.timestamps || {}) }, isoStamps: { ...(l.isoStamps || {}) } }]
+        : []);
+  const totalTrips = Math.max(1, Number(l.loadsAssigned) || 1);
+  const tripsDone = trips.filter(t => t.timestamps?.completed).length;
+  // Active trip = in-progress trip OR (if none in progress and more remain) a
+  // not-yet-started slot. Used to drive the step-button rendering for the CURRENT trip only.
+  const activeTripIdx = (() => {
+    for (let i = trips.length - 1; i >= 0; i--) {
+      if (!trips[i].timestamps?.completed) return i;
+    }
+    return trips.length;
+  })();
+  const activeTrip = trips[activeTripIdx] || { tripNum: tripsDone + 1, timestamps: {} };
+  const ats = activeTrip.timestamps || {};
+  const ts = ats;  // alias used by the step-tracker code below — drives display of the CURRENT trip
   const pod = l.pod || {};
   const isToday = l.deliveryDate === todayStr();
-  const started = !!ts.start;
-  const atPickup = !!ts.arrivedPickup;
-  const isLoaded = !!ts.loadedAt;        // NEW: driver tapped "Loaded / Leaving Yard"
-  const atJobsite = !!ts.arrivedJobsite; // NEW: driver tapped "Arrived at Job Site"
+  const started = !!ats.start;
+  const atPickup = !!ats.arrivedPickup;
+  const isLoaded = !!ats.loadedAt;
+  const atJobsite = !!ats.arrivedJobsite;
+  const tripCompleted = !!ats.completed;
   const ticketSrc = l.ticketImageUrl || l.ticketImage;
   const sigSrc = pod.signatureUrl || pod.signature;
   const hasImage = !!ticketSrc;
   const hasSig = !!(pod.signedBy && sigSrc);
-  const delivered = !!ts.completed;
+  const delivered = !!l.timestamps?.completed;
   const submitted = l.approvalStatus === 'submitted';
   const approved = l.approvalStatus === 'approved';
   const rejected = l.approvalStatus === 'rejected';
+  // Multi-trip: are we between trips waiting for "Start Load N+1"?
+  const allTripsDone = (l.loadsDelivered || 0) >= totalTrips;
+  const betweenTrips = !submitted && !allTripsDone && tripCompleted;
 
   let banner = '';
   if (rejected) banner = `<div class="banner rejected"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Rejected by manager${l.rejectReason ? ': ' + l.rejectReason : ''} — re-do this trip</div>`;
@@ -2202,11 +2334,69 @@ function tripCard(l) {
 
   const stepCls = (active, done) => done ? 'done' : active ? 'active' : '';
 
+  // ── Per-trip cycle banner: shows progress for multi-trip loads ──
+  let tripBanner = '';
+  if (totalTrips > 1 && !approved && !submitted) {
+    if (allTripsDone) {
+      tripBanner = `<div class="banner" style="background:linear-gradient(135deg,#ecfdf5,#fff);color:#065f46;border:1px solid #a7f3d0;font-weight:700">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg>
+        All ${totalTrips} loads delivered — finish with ticket, signature & submit
+      </div>`;
+    } else if (betweenTrips) {
+      const next = (l.loadsDelivered || 0) + 1;
+      tripBanner = `<div class="banner" style="background:linear-gradient(135deg,#eef0ff,#fff);color:#3730a3;border:1px solid #c7d0ff;font-weight:600">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg>
+        Load ${l.loadsDelivered} of ${totalTrips} complete — ready for load ${next}
+      </div>`;
+    } else {
+      // Mid-trip — show which trip we're on
+      const cur = (l.loadsDelivered || 0) + 1;
+      tripBanner = `<div class="banner" style="background:rgba(79,70,229,.06);color:#3730a3;border:1px solid rgba(79,70,229,.2);font-weight:600;font-size:11px">
+        Load ${cur} of ${totalTrips} — ${l.loadsDelivered || 0} delivered so far
+      </div>`;
+    }
+  }
+
   let action = '';
-  if (!started && !submitted) {
+  if (allTripsDone && !hasImage && !submitted) {
+    // All trips done — collect ticket, signature, submit
+    action = `<button class="trip-action ticket" onclick="openTicketUpload('${l.loadId}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      Upload Ticket Photo
+    </button>
+    <div class="action-hint required">Required before delivery — covers all ${totalTrips} loads</div>`;
+  } else if (allTripsDone && hasImage && !hasSig && !submitted) {
+    action = `<button class="trip-action sign" onclick="openSig('${l.loadId}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="18 2 22 6 12 16 8 16 8 12 18 2"/></svg>
+      Customer Signature
+    </button>
+    <div class="action-hint required">Required before delivery</div>`;
+  } else if (allTripsDone && hasSig && !submitted) {
+    action = `<div style="display:flex;gap:8px;margin-bottom:8px">
+      <button class="trip-action incomplete" style="flex:1;background:var(--A);color:#fff" onclick="openIncompleteDialog('${l.loadId}', ${totalTrips})">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        Adjust Count
+      </button>
+      <button class="trip-action complete" style="flex:1" onclick="tripAction('${l.loadId}', 'delivered')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><polyline points="20 6 9 17 4 12"/></svg>
+        Submit (${totalTrips})
+      </button>
+    </div>
+    <div class="action-hint">All ${totalTrips} loads delivered. Tap Submit to send for approval.</div>`;
+  } else if (betweenTrips) {
+    // Between trips — show "Start Load N+1"
+    const next = (l.loadsDelivered || 0) + 1;
     action = `<button class="trip-action start" onclick="tripAction('${l.loadId}', 'start-trip')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      Start Trip
+      Start Load ${next} of ${totalTrips}
+    </button>
+    <div class="action-hint">Heading back to the yard for the next load</div>
+    ${totalTrips > 1 && (l.loadsDelivered || 0) > 0 ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${l.loadsDelivered} of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips})}">Stop early — submit ${l.loadsDelivered} as incomplete</button>` : ''}`;
+  } else if (!started && !submitted) {
+    // Brand-new load, never started — same as "Start Load 1"
+    action = `<button class="trip-action start" onclick="tripAction('${l.loadId}', 'start-trip')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      ${totalTrips > 1 ? `Start Load 1 of ${totalTrips}` : 'Start Trip'}
     </button>
     <div class="action-hint">GPS and time captured automatically</div>`;
   } else if (started && !atPickup) {
@@ -2227,42 +2417,50 @@ function tripCard(l) {
       Arrived at Job Site
     </button>
     <div class="action-hint">Tap when you reach the delivery address</div>`;
-  } else if (atJobsite && !hasImage) {
+  } else if (atJobsite && totalTrips > 1) {
+    // Multi-trip: confirm this trip's drop, then either start next trip or
+    // move on to ticket+sig if this was the last.
+    const isLast = (l.loadsDelivered || 0) + 1 >= totalTrips;
+    action = `<button class="trip-action complete" onclick="tripAction('${l.loadId}', 'trip-complete')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      Confirm Drop — Load ${(l.loadsDelivered || 0) + 1} of ${totalTrips}
+    </button>
+    <div class="action-hint">${isLast ? `Last load — next you'll upload ticket and signature` : `Then drive back to start load ${(l.loadsDelivered || 0) + 2}`}</div>`;
+  } else if (atJobsite && totalTrips === 1 && !hasImage) {
+    // Single-trip load (legacy/simple case): straight to ticket
     action = `<button class="trip-action ticket" onclick="openTicketUpload('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
       Upload Ticket Photo
     </button>
     <div class="action-hint required">Required before delivery</div>`;
   } else if (atPickup && !hasImage) {
-    // Backward compat: legacy in-flight loads that arrived at pickup before the
-    // Loaded/Jobsite steps existed. Let them jump straight to ticket upload so
-    // they can finish — they just won't contribute Yard Service / Yard→Jobsite
-    // durations to analytics.
+    // Backward compat for legacy in-flight loads that pre-date the Loaded/JobSite steps
     action = `<button class="trip-action ticket" onclick="openTicketUpload('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
       Upload Ticket Photo
     </button>
     <div class="action-hint">Legacy trip — finish without intermediate steps</div>`;
-  } else if (hasImage && !hasSig) {
+  } else if (hasImage && !hasSig && totalTrips === 1) {
     action = `<button class="trip-action sign" onclick="openSig('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="18 2 22 6 12 16 8 16 8 12 18 2"/></svg>
       Customer Signature
     </button>
     <div class="action-hint required">Required before delivery</div>`;
-  } else if (hasSig && !submitted) {
-    // Two buttons: Incomplete (partial delivery) and Complete (full delivery)
+  } else if (hasSig && totalTrips === 1 && !submitted) {
     action = `<div style="display:flex;gap:8px;margin-bottom:8px">
-      <button class="trip-action incomplete" style="flex:1;background:var(--A);color:#fff" onclick="openIncompleteDialog('${l.loadId}', ${l.loadsAssigned})">
+      <button class="trip-action incomplete" style="flex:1;background:var(--A);color:#fff" onclick="openIncompleteDialog('${l.loadId}', ${totalTrips})">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
         Incomplete
       </button>
       <button class="trip-action complete" style="flex:1" onclick="tripAction('${l.loadId}', 'delivered')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><polyline points="20 6 9 17 4 12"/></svg>
-        Complete (${l.loadsAssigned})
+        Submit
       </button>
     </div>
-    <div class="action-hint">All ${l.loadsAssigned} loads delivered? Tap Complete. Couldn't finish all? Tap Incomplete.</div>`;
+    <div class="action-hint">All set? Tap Submit. Delivered less than expected? Tap Incomplete.</div>`;
   }
+  // Prepend the multi-trip banner so it sits above the action button
+  action = tripBanner + action;
 
   return `<div class="trip-card ${isToday ? 'is-today' : ''}">
     <div class="trip-head">
@@ -2279,13 +2477,14 @@ function tripCard(l) {
         <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads</dd>
         ${l.notes ? `<dt>Notes</dt><dd class="notes">${l.notes}</dd>` : ''}
       </dl>
+      ${totalTrips > 1 ? `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600;margin-bottom:6px">Current load · <b style="color:var(--I,#4f46e5)">${(l.loadsDelivered || 0) + (allTripsDone ? 0 : 1)}</b> of ${totalTrips} · ${l.loadsDelivered || 0} delivered</div>` : ''}
       <div class="steps">
         <div class="step ${stepCls(!started && !submitted, started)}">Start${ts.start ? `<span class="step-time">${ts.start}</span>` : ''}</div>
         <div class="step ${stepCls(started && !atPickup, atPickup)}">At Yard${ts.arrivedPickup ? `<span class="step-time">${ts.arrivedPickup}</span>` : ''}</div>
         <div class="step ${stepCls(atPickup && !isLoaded, isLoaded)}">Loaded${ts.loadedAt ? `<span class="step-time">${ts.loadedAt}</span>` : ''}</div>
         <div class="step ${stepCls(isLoaded && !atJobsite, atJobsite)}">At Job${ts.arrivedJobsite ? `<span class="step-time">${ts.arrivedJobsite}</span>` : ''}</div>
-        <div class="step ${stepCls(atJobsite && !hasImage, hasImage)}">Ticket${hasImage ? '<span class="step-time">✓</span>' : ''}</div>
-        <div class="step ${stepCls(hasImage && !hasSig, hasSig)}">Signed${hasSig ? '<span class="step-time">✓</span>' : ''}</div>
+        <div class="step ${stepCls(atJobsite && !tripCompleted && totalTrips>1, tripCompleted)}">${totalTrips>1 ? 'Drop' : 'Ticket'}${tripCompleted ? `<span class="step-time">${ats.completed}</span>` : (totalTrips===1 && hasImage ? '<span class="step-time">✓</span>' : '')}</div>
+        <div class="step ${stepCls(allTripsDone && !hasImage, hasImage)}">${totalTrips>1 ? 'Final Ticket' : 'Signed'}${(totalTrips>1 ? hasImage : hasSig) ? '<span class="step-time">✓</span>' : ''}</div>
         <div class="step ${stepCls(hasSig && !submitted, submitted || delivered)}">Done${ts.completed ? `<span class="step-time">${ts.completed}</span>` : ''}</div>
       </div>
       ${action}
