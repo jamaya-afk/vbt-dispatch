@@ -238,6 +238,7 @@ let store = {
   archive: [],
   vendors: [],          // [{ id, name, location, active }]
   vendorPrices: {},     // { vendorId: [{ id, material, unit, price, active, notes }] }
+  customers: [],        // [{ id, name, code, address, city, phone, email, notes, active, createdAt }]
   customerPrices: {},   // { customerNameLower: [{ id, material, unit, price, active, notes }] }
   defaultRates: null,   // { customer: { mat: { unit, price } }, vendor: { mat: { unit, price } } }
   auditLog: [],         // [{ id, at, user, displayName, role, action, target, details }]
@@ -361,6 +362,47 @@ function normalizeStore() {
   });
   store.pos.forEach(p => {
     if (!p.materials) p.materials = [];
+  });
+
+  // Customer master list — backfill from existing PO customer names so the
+  // dropdown is populated on first deploy. This runs only when there's no
+  // master list yet; once it exists, manager edits via /api/customers stay.
+  if (!Array.isArray(store.customers)) store.customers = [];
+  if (store.customers.length === 0 && store.pos.length > 0) {
+    const seen = new Map();  // lowercased name → preserve first-seen casing
+    store.pos.forEach(p => {
+      const name = (p.customer || '').trim();
+      if (!name) return;
+      const k = name.toLowerCase();
+      if (!seen.has(k)) seen.set(k, name);
+    });
+    seen.forEach((name) => {
+      // Sample address/city from the most recent PO that uses this name
+      const sample = store.pos.slice().reverse().find(p =>
+        (p.customer || '').toLowerCase().trim() === name.toLowerCase()
+      ) || {};
+      store.customers.push({
+        id: 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+        name,
+        code: '',
+        address: sample.address || '',
+        city: sample.city || '',
+        phone: '',
+        email: '',
+        notes: '',
+        active: true,
+        createdAt: new Date().toISOString(),
+      });
+    });
+    if (store.customers.length) {
+      console.log(`[normalize] Seeded customer master with ${store.customers.length} entries from existing POs`);
+    }
+  }
+  // Make sure customers all have required fields (in case loaded from older shape)
+  store.customers.forEach(c => {
+    if (!c.id) c.id = 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
+    if (c.active === undefined) c.active = true;
+    if (!c.createdAt) c.createdAt = new Date().toISOString();
   });
 }
 
@@ -591,6 +633,7 @@ app.get('/api/data', reqAuth, async (req, res) => {
     yards,
     vendors: store.vendors,
     vendorPrices: store.vendorPrices,
+    customers: store.customers || [],
     pos: store.pos,
     loads: store.loads
   });
@@ -680,12 +723,39 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   console.log(`[create-PO] Splits received:`, JSON.stringify(splits));
   if (!po?.customer || !po?.deliveryDate) return res.status(400).json({ error: 'Customer and date required' });
 
+  // If a customerId was supplied, use its canonical name (defends against the
+  // client sending stale text). If only a name was supplied, look it up in
+  // the master; if it doesn't exist, auto-add it so the master stays in sync.
+  if (!Array.isArray(store.customers)) store.customers = [];
+  let resolvedCustomer = String(po.customer || '').trim();
+  if (po.customerId) {
+    const c = store.customers.find(x => x.id === po.customerId);
+    if (c) resolvedCustomer = c.name;
+  } else {
+    const lc = resolvedCustomer.toLowerCase();
+    const existing = store.customers.find(x => String(x.name || '').toLowerCase().trim() === lc);
+    if (existing) {
+      resolvedCustomer = existing.name;  // canonicalize spelling
+    } else if (resolvedCustomer) {
+      // Auto-add to the master. Use the address/city from this PO as initial fields.
+      const newCust = {
+        id: 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+        name: resolvedCustomer,
+        code: '', address: po.address || '', city: po.city || '',
+        phone: '', email: '', notes: '',
+        active: true, createdAt: new Date().toISOString(),
+      };
+      store.customers.push(newCust);
+      console.log(`[create-PO] Auto-added customer to master: "${resolvedCustomer}"`);
+    }
+  }
+
   const poNumber = po.poNumber || `PO-${store.nextPoNum++}`;
   const newPo = {
     id: 'PO-' + Date.now(),
     poNumber,
-    customer:        po.customer || '',
-    job:             po.job || po.customer || '',
+    customer:        resolvedCustomer,
+    job:             po.job || resolvedCustomer,
     jobCode:         po.jobCode || '',                                 // optional customer job code
     address:         po.address || '',
     city:            po.city || '',
@@ -1439,6 +1509,136 @@ app.get('/api/audit-log', reqMgr, (req, res) => {
   const allActions = [...new Set((store.auditLog || []).map(e => e.action))].sort();
 
   res.json({ entries, total, allUsers, allActions });
+});
+
+// ── API: CUSTOMER MASTER ────────────────────────────────────────────────────
+// The Customer Master is the canonical list of customers used as a dropdown
+// when creating POs. This prevents typos that fragment a single real customer
+// into multiple billing/pricing/report entries (e.g. "ABC Concrete" vs
+// "A.B.C Concrete" vs "ABC Conrete"). On first deploy normalizeStore()
+// backfills the master from distinct customer names already used on POs.
+//
+// Note: Customer pricing in store.customerPrices is still keyed by
+// customerKey(name). That stays the same — the dropdown just enforces a
+// consistent name spelling so no two records collide.
+
+app.get('/api/customers', reqMgr, (req, res) => {
+  const customers = (store.customers || []).slice().sort((a, b) =>
+    String(a.name || '').localeCompare(String(b.name || ''))
+  );
+  // Annotate each with usage stats so the admin UI can show "5 POs · 2 prices"
+  const annotated = customers.map(c => {
+    const lc = String(c.name || '').toLowerCase().trim();
+    const poCount = store.pos.filter(p => String(p.customer || '').toLowerCase().trim() === lc).length;
+    const priceCount = (store.customerPrices?.[lc] || []).length;
+    return { ...c, poCount, priceCount };
+  });
+  res.json({ customers: annotated });
+});
+
+app.post('/api/customers', reqMgr, async (req, res) => {
+  const { name, code, address, city, phone, email, notes } = req.body;
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return res.status(400).json({ error: 'Customer name required' });
+  // Reject duplicates (case-insensitive). This is the whole point of the master.
+  const lc = trimmed.toLowerCase();
+  if ((store.customers || []).some(c => String(c.name || '').toLowerCase().trim() === lc)) {
+    return res.status(400).json({ error: 'A customer with that name already exists' });
+  }
+  const newCust = {
+    id: 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+    name: trimmed,
+    code:    String(code    || '').trim(),
+    address: String(address || '').trim(),
+    city:    String(city    || '').trim(),
+    phone:   String(phone   || '').trim(),
+    email:   String(email   || '').trim(),
+    notes:   String(notes   || '').trim(),
+    active:  true,
+    createdAt: new Date().toISOString(),
+  };
+  store.customers.push(newCust);
+  logAction(req.session.user, 'created-customer', newCust.id, { name: newCust.name });
+  await saveData();
+  res.json({ success: true, customer: newCust });
+});
+
+app.put('/api/customers/:id', reqMgr, async (req, res) => {
+  const c = (store.customers || []).find(x => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Customer not found' });
+  const oldName = c.name;
+  const newName = req.body.name !== undefined ? String(req.body.name).trim() : c.name;
+  // If the name is being changed, refuse if the new name collides with another customer
+  if (newName.toLowerCase() !== c.name.toLowerCase()) {
+    if ((store.customers || []).some(x => x.id !== c.id && String(x.name || '').toLowerCase().trim() === newName.toLowerCase())) {
+      return res.status(400).json({ error: 'Another customer already has that name' });
+    }
+    if (!newName) return res.status(400).json({ error: 'Customer name required' });
+  }
+  // Apply changes
+  c.name = newName;
+  if (req.body.code    !== undefined) c.code    = String(req.body.code    || '').trim();
+  if (req.body.address !== undefined) c.address = String(req.body.address || '').trim();
+  if (req.body.city    !== undefined) c.city    = String(req.body.city    || '').trim();
+  if (req.body.phone   !== undefined) c.phone   = String(req.body.phone   || '').trim();
+  if (req.body.email   !== undefined) c.email   = String(req.body.email   || '').trim();
+  if (req.body.notes   !== undefined) c.notes   = String(req.body.notes   || '').trim();
+  if (req.body.active  !== undefined) c.active  = !!req.body.active;
+  // If the name changed, propagate to existing POs and re-key any pricing.
+  // POs store the customer NAME (so all the existing pricing/billing/reports
+  // code works unchanged), and pricing tables key by lowercased name. So a
+  // rename has to update both: rewrite po.customer on every PO, and re-key
+  // store.customerPrices.
+  if (newName !== oldName) {
+    let renamed = 0;
+    store.pos.forEach(p => {
+      if (String(p.customer || '').toLowerCase().trim() === oldName.toLowerCase().trim()) {
+        p.customer = newName;
+        if (p.job === oldName) p.job = newName;
+        renamed++;
+      }
+    });
+    // Loads cache the customer via po.customer at render time, but archives
+    // store snapshots. Update those too for consistency.
+    (store.archive || []).forEach(b => {
+      (b.pos || []).forEach(p => {
+        if (String(p.customer || '').toLowerCase().trim() === oldName.toLowerCase().trim()) {
+          p.customer = newName;
+          if (p.job === oldName) p.job = newName;
+        }
+      });
+    });
+    // Re-key customerPrices
+    const oldKey = oldName.toLowerCase().trim();
+    const newKey = newName.toLowerCase().trim();
+    if (oldKey !== newKey && store.customerPrices?.[oldKey]) {
+      store.customerPrices[newKey] = (store.customerPrices[newKey] || []).concat(store.customerPrices[oldKey]);
+      delete store.customerPrices[oldKey];
+    }
+    logAction(req.session.user, 'renamed-customer', c.id, { from: oldName, to: newName, posUpdated: renamed });
+  } else {
+    logAction(req.session.user, 'updated-customer', c.id, { name: c.name, changes: Object.keys(req.body) });
+  }
+  await saveData();
+  res.json({ success: true, customer: c });
+});
+
+app.delete('/api/customers/:id', reqMgr, async (req, res) => {
+  const idx = (store.customers || []).findIndex(x => x.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Customer not found' });
+  const c = store.customers[idx];
+  // Refuse if this customer is referenced by any non-archived POs.
+  const lc = String(c.name || '').toLowerCase().trim();
+  const linkedPos = store.pos.filter(p => String(p.customer || '').toLowerCase().trim() === lc).length;
+  if (linkedPos > 0) {
+    return res.status(403).json({ error: `Cannot delete — ${linkedPos} active PO${linkedPos===1?'':'s'} reference this customer. Mark inactive instead.` });
+  }
+  store.customers.splice(idx, 1);
+  // Drop pricing rows tied to this customer
+  if (store.customerPrices?.[lc]) delete store.customerPrices[lc];
+  logAction(req.session.user, 'deleted-customer', c.id, { name: c.name });
+  await saveData();
+  res.json({ success: true });
 });
 
 // ── API: CUSTOMER PRICING ────────────────────────────────────────────────────
