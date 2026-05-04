@@ -679,7 +679,11 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <div class="field"><label>Delivery Date</label><input type="date" id="po-date" onchange="syncSplitDates()"></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>Customer / Job Name</label><input id="po-customer" placeholder="e.g. Wilson Homes" oninput="refreshAllPricingPreviews()"></div>
+        <div class="field" style="position:relative">
+          <label>Customer <span style="color:var(--txt3);text-transform:none;letter-spacing:0;font-weight:400">(pick from list — typos cause billing/pricing errors)</span></label>
+          <input id="po-customer" placeholder="Type to search…" autocomplete="off" oninput="onPoCustomerInput(this.value)" onfocus="onPoCustomerFocus()" onblur="setTimeout(()=>{document.getElementById('po-customer-suggest')?.remove();}, 180)">
+          <input type="hidden" id="po-customer-id">
+        </div>
         <div class="field"><label>Job Code <span style="color:var(--txt3);text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label><input id="po-jobcode" placeholder="e.g. JOB-2024-1138"></div>
       </div>
       <div class="field-row">
@@ -983,6 +987,7 @@ async function loadAll() {
     yards = d.yards || [];
     vendors = d.vendors || [];
     vendorPrices = d.vendorPrices || {};
+    customers = d.customers || [];
     pos = d.pos || [];
     loads = d.loads || [];
     console.log('[loadAll] trucks:', trucks.length, 'materials:', materials.length, 'pos:', pos.length, 'loads:', loads.length);
@@ -1554,6 +1559,7 @@ function openNewPO() {
     setVal('po-number', '');
     setVal('po-date', todayStr());
     setVal('po-customer', '');
+    setVal('po-customer-id', '');
     setVal('po-jobcode', '');
     setVal('po-address', '');
     setVal('po-city', '');
@@ -1720,6 +1726,111 @@ function getVendorMaterials(vendorId) {
   return (vendorPrices[vendorId] || []).filter(p => p.active);
 }
 
+// ── PO modal customer typeahead ──
+// Replaces the free-text customer input with a dropdown of saved customers.
+// On focus or input change, render a suggestion list anchored to the input.
+// Selecting an item fills the name + sets the hidden customer id; "+ Add new"
+// opens the customer master form pre-filled with whatever was typed.
+function onPoCustomerFocus() {
+  const input = document.getElementById('po-customer');
+  if (!input) return;
+  renderPoCustomerSuggest(input.value);
+}
+function onPoCustomerInput(value) {
+  // Typing invalidates any prior selection — clear the hidden id
+  const idEl = document.getElementById('po-customer-id');
+  if (idEl) idEl.value = '';
+  // If the typed value exactly matches a master entry, lock to that id
+  const match = (customers || []).find(c => String(c.name || '').toLowerCase().trim() === String(value || '').toLowerCase().trim());
+  if (match && idEl) idEl.value = match.id;
+  renderPoCustomerSuggest(value);
+  refreshAllPricingPreviews();
+}
+function renderPoCustomerSuggest(query) {
+  document.getElementById('po-customer-suggest')?.remove();
+  const input = document.getElementById('po-customer');
+  if (!input) return;
+  const q = String(query || '').toLowerCase().trim();
+  const list = (customers || []).filter(c => c.active !== false);
+  const matches = q
+    ? list.filter(c => [c.name, c.code, c.city].filter(Boolean).join(' ').toLowerCase().includes(q))
+    : list.slice(0, 25);  // show recent on focus with empty query
+  matches.sort((a,b) => String(a.name||'').localeCompare(String(b.name||'')));
+  const exact = matches.some(c => String(c.name||'').toLowerCase().trim() === q);
+
+  const ul = document.createElement('div');
+  ul.id = 'po-customer-suggest';
+  ul.style.cssText = 'position:absolute;top:100%;left:0;right:0;margin-top:4px;background:var(--bg);border:1px solid var(--bdr);border-radius:var(--r);box-shadow:var(--shadow-md);max-height:280px;overflow-y:auto;z-index:300';
+  let html = '';
+  if (matches.length) {
+    html += matches.slice(0, 50).map(c => `
+      <div onmousedown="event.preventDefault();pickPoCustomer('${c.id}')" style="padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--bdr);font-size:13px"
+           onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='var(--bg)'">
+        <div style="font-weight:600">${escapeHtml(c.name)}${c.code ? ` <span style="color:var(--txt3);font-size:11px;font-weight:500">· ${escapeHtml(c.code)}</span>` : ''}</div>
+        ${(c.city || c.address) ? `<div style="font-size:11px;color:var(--txt3);margin-top:1px">${escapeHtml([c.city, c.address].filter(Boolean).join(' · '))}</div>` : ''}
+      </div>
+    `).join('');
+  }
+  // Always show "Add new" — pre-fills with whatever's typed
+  if (q && !exact) {
+    html += `<div onmousedown="event.preventDefault();addNewCustomerFromPoForm()" style="padding:11px 12px;cursor:pointer;background:var(--Ib,#eef0ff);color:var(--I,#4f46e5);font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add "${escapeHtml(query)}" as a new customer
+    </div>`;
+  } else if (!q) {
+    html += `<div onmousedown="event.preventDefault();addNewCustomerFromPoForm()" style="padding:11px 12px;cursor:pointer;background:var(--Ib,#eef0ff);color:var(--I,#4f46e5);font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add a new customer…
+    </div>`;
+  }
+  if (!matches.length && q && !exact) {
+    html = `<div style="padding:10px 12px;color:var(--txt3);font-size:12px">No matches for "${escapeHtml(query)}"</div>` + html;
+  }
+  ul.innerHTML = html;
+  input.parentElement.appendChild(ul);
+}
+function pickPoCustomer(id) {
+  const c = (customers || []).find(x => x.id === id);
+  if (!c) return;
+  document.getElementById('po-customer').value = c.name;
+  document.getElementById('po-customer-id').value = c.id;
+  // Auto-fill address/city if blank — the manager can override
+  if (c.address && !document.getElementById('po-address').value) document.getElementById('po-address').value = c.address;
+  if (c.city    && !document.getElementById('po-city').value)    document.getElementById('po-city').value    = c.city;
+  document.getElementById('po-customer-suggest')?.remove();
+  refreshAllPricingPreviews();
+}
+async function addNewCustomerFromPoForm() {
+  const typed = document.getElementById('po-customer').value.trim();
+  document.getElementById('po-customer-suggest')?.remove();
+  // Open the customer master modal pre-filled with the typed name and the
+  // address/city already on the PO (so dispatcher doesn't re-enter).
+  openCustomerMasterForm({
+    id: '',
+    name: typed,
+    address: document.getElementById('po-address').value || '',
+    city:    document.getElementById('po-city').value || '',
+    code: '', phone: '', email: '', notes: '', active: true,
+  });
+  // After saveCustomerMaster runs, the PO modal stays open. We hook the modal
+  // close so we can pick the freshly-created customer back into the PO field.
+  const watcher = setInterval(async () => {
+    const stillOpen = document.querySelector('.modal-bg[style*="z-index: 260"]');
+    if (stillOpen) return;
+    clearInterval(watcher);
+    // Refresh the customer list from server, then pick the newest matching by name
+    try {
+      const r = await fetch('/api/customers');
+      if (r.ok) {
+        const d = await r.json();
+        customers = d.customers || customers;
+        const byName = (customers || []).find(c => String(c.name||'').toLowerCase().trim() === typed.toLowerCase());
+        if (byName) pickPoCustomer(byName.id);
+      }
+    } catch (_) {}
+  }, 200);
+}
+
 function syncSplitDates() {
   // Date is on PO level only — splits don't have their own dates
 }
@@ -1737,10 +1848,20 @@ async function savePO() {
     const vendorId = getVal('po-vendor');
     const vendorObj = (vendors || []).find(v => v.id === vendorId);
 
+    // Resolve the customer the user picked from the dropdown — prefer the
+    // hidden customer-id field (set when they pick from the list) so the
+    // server can canonicalize the spelling.
+    const typedName = getVal('po-customer');
+    const pickedId  = getVal('po-customer-id');
+    const matchByName = (customers || []).find(c => String(c.name||'').toLowerCase().trim() === typedName.toLowerCase());
+    const customerId = pickedId || matchByName?.id || null;
+    const customerName = (customerId && (customers || []).find(c => c.id === customerId)?.name) || typedName;
+
     const po = {
       poNumber:        getVal('po-number') || null,
-      customer:        getVal('po-customer'),
-      job:             getVal('po-customer'),
+      customerId:      customerId,
+      customer:        customerName,
+      job:             customerName,
       jobCode:         getVal('po-jobcode'),
       deliveryDate:    getVal('po-date'),
       address:         getVal('po-address'),
@@ -2979,7 +3100,10 @@ async function markBilled() {
 }
 
 // ── VENDORS & PRICING (manager admin) ────────────────────────────────────────
-let vendorSubview = 'prices';  // 'prices' | 'customers' | 'defaults' | 'costs'
+let vendorSubview = 'prices';  // 'prices' | 'master' | 'customers' | 'defaults' | 'costs'
+// Customer master list — populated by /api/data and refreshed by the Customers tab.
+// `customers` is also a top-level global so the PO modal dropdown can read it.
+let customers = [];
 
 function setVendorSubview(view) {
   vendorSubview = view;
@@ -2998,11 +3122,18 @@ function renderVendors() {
   // Sub-tabs
   h += `<div style="display:flex;gap:6px;margin-bottom:14px;background:var(--bg2);padding:4px;border-radius:24px;width:fit-content;flex-wrap:wrap">
     <button class="view-btn ${vendorSubview === 'prices' ? 'active' : ''}" onclick="setVendorSubview('prices')">Vendor Prices</button>
+    <button class="view-btn ${vendorSubview === 'master' ? 'active' : ''}" onclick="setVendorSubview('master')">Customers</button>
     <button class="view-btn ${vendorSubview === 'customers' ? 'active' : ''}" onclick="setVendorSubview('customers')">Customer Prices</button>
     ${role === 'admin' ? `<button class="view-btn ${vendorSubview === 'defaults' ? 'active' : ''}" onclick="setVendorSubview('defaults')">Default Rates</button>` : ''}
     <button class="view-btn ${vendorSubview === 'costs' ? 'active' : ''}" onclick="setVendorSubview('costs')">Material Costs</button>
   </div>`;
 
+  if (vendorSubview === 'master') {
+    h += '</div>';
+    wrap.innerHTML = h;
+    renderCustomerMaster();
+    return;
+  }
   if (vendorSubview === 'costs') {
     h += '</div>';
     wrap.innerHTML = h;
@@ -3107,6 +3238,162 @@ function switchVendorTab(vendorId) { currentVendorTab = vendorId; renderVendors(
 // ── CUSTOMER PRICES (per-customer negotiated rates) ─────────────────────────
 let customerPricesData = null;
 let openCustomer = null;  // currently expanded customer key
+
+// ── CUSTOMER MASTER ──────────────────────────────────────────────────────────
+// CRUD interface for the canonical customer list. Adding/renaming customers
+// here propagates to all POs and pricing tables (server handles the rename).
+let customerMasterFilter = '';
+
+async function renderCustomerMaster() {
+  const wrap = document.getElementById('vendors-content');
+  let h = wrap.innerHTML;  // already has the sub-nav rendered
+  h += `<div style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <input id="cmaster-search" type="text" placeholder="Search by name, code, or city…" value="${escapeHtml(customerMasterFilter)}" oninput="customerMasterFilter=this.value;rerenderCustomerMasterList()" style="flex:1;min-width:240px;padding:9px 13px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px;background:var(--bg)">
+    <button class="btn primary" onclick="openCustomerMasterForm()">+ Add Customer</button>
+  </div>
+  <div id="cmaster-wrap"></div>`;
+  wrap.innerHTML = h;
+
+  try {
+    const r = await fetch('/api/customers');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    customers = data.customers || [];
+    rerenderCustomerMasterList();
+  } catch (e) {
+    document.getElementById('cmaster-wrap').innerHTML =
+      `<div class="empty-state" style="padding:30px"><h3>Could not load customers</h3><p style="color:var(--R)">${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+function rerenderCustomerMasterList() {
+  const wrap = document.getElementById('cmaster-wrap');
+  if (!wrap) return;
+  const q = customerMasterFilter.toLowerCase();
+  const filtered = (customers || []).filter(c => {
+    if (!q) return true;
+    return [c.name, c.code, c.city, c.address, c.phone, c.email]
+      .filter(Boolean).join(' ').toLowerCase().includes(q);
+  });
+  if (!filtered.length) {
+    wrap.innerHTML = customers.length
+      ? `<div class="empty-state" style="padding:24px"><p>No customers match <b>${escapeHtml(customerMasterFilter)}</b>.</p></div>`
+      : `<div class="empty-state" style="padding:24px"><h3>No customers yet</h3><p>Click <b>+ Add Customer</b> above to create the first one.</p></div>`;
+    return;
+  }
+  let h = `<div style="background:var(--bg);border-radius:var(--rl);box-shadow:var(--shadow);overflow:auto">
+    <table class="report-table" style="margin:0;border-radius:0;box-shadow:none">
+      <thead><tr>
+        <th style="text-align:left">Name</th>
+        <th>Code</th>
+        <th>City</th>
+        <th>Phone</th>
+        <th style="text-align:right">POs</th>
+        <th style="text-align:right">Prices</th>
+        <th>Status</th>
+        <th></th>
+      </tr></thead>
+      <tbody>`;
+  filtered.sort((a, b) => String(a.name||'').localeCompare(String(b.name||'')));
+  filtered.forEach(c => {
+    h += `<tr style="${c.active === false ? 'opacity:.55' : ''}">
+      <td style="font-weight:600">${escapeHtml(c.name)}</td>
+      <td style="color:var(--txt2);font-size:11px">${escapeHtml(c.code || '—')}</td>
+      <td>${escapeHtml(c.city || '—')}</td>
+      <td style="font-size:11px">${escapeHtml(c.phone || '—')}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600">${c.poCount || 0}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${c.priceCount || 0}</td>
+      <td><span style="font-size:10px;padding:2px 8px;border-radius:20px;background:${c.active===false?'var(--Rb)':'var(--Gb)'};color:${c.active===false?'var(--R)':'var(--G)'};font-weight:600;text-transform:uppercase;letter-spacing:.04em">${c.active===false ? 'inactive' : 'active'}</span></td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn ghost" style="padding:4px 10px;font-size:11px" onclick='openCustomerMasterForm(${JSON.stringify(c).replace(/'/g, "&apos;")})'>Edit</button>
+        ${c.poCount > 0
+          ? `<button class="btn ghost" style="padding:4px 10px;font-size:11px" onclick="toggleCustomerActive('${c.id}', ${c.active === false})">${c.active === false ? 'Reactivate' : 'Mark inactive'}</button>`
+          : `<button class="btn danger" style="padding:4px 10px;font-size:11px" onclick="deleteCustomer('${c.id}','${escapeHtml(c.name).replace(/'/g, "&apos;")}')">Delete</button>`}
+      </td>
+    </tr>`;
+  });
+  h += `</tbody></table></div>
+    <div style="font-size:11px;color:var(--txt3);margin-top:8px">Renaming a customer here updates every PO that references them. Customers with active POs cannot be deleted — mark them inactive instead.</div>`;
+  wrap.innerHTML = h;
+}
+
+function openCustomerMasterForm(existing) {
+  const c = existing || { id: '', name: '', code: '', address: '', city: '', phone: '', email: '', notes: '', active: true };
+  const isEdit = !!c.id;
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.style.zIndex = 260;
+  bg.innerHTML = `<div class="modal" style="max-width:520px">
+    <div class="modal-head"><h2>${isEdit ? 'Edit Customer' : 'Add Customer'}</h2>
+      <button class="modal-close" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>Customer name *</label><input id="cm-name" value="${escapeHtml(c.name)}" placeholder="e.g. Wilson Homes"></div>
+        <div class="field"><label>Customer code</label><input id="cm-code" value="${escapeHtml(c.code || '')}" placeholder="optional · e.g. WIL-001"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Address</label><input id="cm-address" value="${escapeHtml(c.address || '')}"></div>
+        <div class="field"><label>City</label><input id="cm-city" value="${escapeHtml(c.city || '')}"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Phone</label><input id="cm-phone" value="${escapeHtml(c.phone || '')}"></div>
+        <div class="field"><label>Email</label><input id="cm-email" value="${escapeHtml(c.email || '')}"></div>
+      </div>
+      <div class="field"><label>Notes</label><textarea id="cm-notes" placeholder="Optional internal notes (account contact, billing instructions, etc.)">${escapeHtml(c.notes || '')}</textarea></div>
+      ${isEdit ? `<div class="field" style="flex-direction:row;gap:6px;align-items:center"><input type="checkbox" id="cm-active" ${c.active !== false ? 'checked' : ''} style="width:auto;margin:0"><label for="cm-active" style="text-transform:none;letter-spacing:0;font-weight:500;color:var(--txt)">Active (uncheck to hide from PO dropdown without deleting)</label></div>` : ''}
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="this.closest('.modal-bg').remove()">Cancel</button>
+      <button class="btn primary" onclick="saveCustomerMaster('${c.id}')">${isEdit ? 'Save changes' : 'Add customer'}</button>
+    </div>
+  </div>`;
+  document.body.appendChild(bg);
+  setTimeout(() => document.getElementById('cm-name').focus(), 50);
+}
+
+async function saveCustomerMaster(existingId) {
+  const v = (id) => (document.getElementById(id)?.value || '').trim();
+  const name = v('cm-name');
+  if (!name) { toast('Customer name is required', 'error'); return; }
+  const body = {
+    name,
+    code:    v('cm-code'),
+    address: v('cm-address'),
+    city:    v('cm-city'),
+    phone:   v('cm-phone'),
+    email:   v('cm-email'),
+    notes:   v('cm-notes'),
+  };
+  const activeEl = document.getElementById('cm-active');
+  if (activeEl) body.active = activeEl.checked;
+  let d;
+  if (existingId) {
+    d = await api('PUT', '/api/customers/' + existingId, body);
+  } else {
+    d = await api('POST', '/api/customers', body);
+  }
+  if (d.ok) {
+    toast(existingId ? 'Customer updated' : 'Customer added', 'success');
+    document.querySelector('.modal-bg[style*="z-index: 260"]')?.remove();
+    await loadAll();
+    renderCustomerMaster();
+  } else {
+    toast(d.error || 'Failed', 'error');
+  }
+}
+
+async function deleteCustomer(id, name) {
+  if (!confirm(`Delete customer "${name}"?\n\nThis only works if no POs reference them. Otherwise mark as inactive.`)) return;
+  const d = await api('DELETE', '/api/customers/' + id);
+  if (d.ok) { toast('Customer deleted', 'success'); await loadAll(); renderCustomerMaster(); }
+  else toast(d.error || 'Failed', 'error');
+}
+
+async function toggleCustomerActive(id, makeActive) {
+  const d = await api('PUT', '/api/customers/' + id, { active: makeActive });
+  if (d.ok) { toast(makeActive ? 'Customer reactivated' : 'Customer marked inactive', 'success'); await loadAll(); renderCustomerMaster(); }
+  else toast(d.error || 'Failed', 'error');
+}
 
 async function renderCustomerPrices() {
   const wrap = document.getElementById('vendors-content');
