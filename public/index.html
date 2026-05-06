@@ -3346,7 +3346,7 @@ async function renderQuickBooks() {
   const cfg = r.config || {};
   const conn = r.connection || {};
   const isConnected = conn.status === 'connected' && !!conn.realmId;
-  const isAdmin = role === 'admin';
+  const isAdmin = role === 'admin' || role === 'manager';
 
   const statusBadge = isConnected
     ? `<span style="background:#e3f6e9;color:#0a8a3a;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">Connected</span>`
@@ -3458,7 +3458,7 @@ function renderVendors() {
     <button class="view-btn ${vendorSubview === 'prices' ? 'active' : ''}" onclick="setVendorSubview('prices')">Vendor Prices</button>
     <button class="view-btn ${vendorSubview === 'master' ? 'active' : ''}" onclick="setVendorSubview('master')">Customers</button>
     <button class="view-btn ${vendorSubview === 'customers' ? 'active' : ''}" onclick="setVendorSubview('customers')">Customer Prices</button>
-    ${role === 'admin' ? `<button class="view-btn ${vendorSubview === 'defaults' ? 'active' : ''}" onclick="setVendorSubview('defaults')">Default Rates</button>` : ''}
+    ${(role === 'admin' || role === 'manager') ? `<button class="view-btn ${vendorSubview === 'defaults' ? 'active' : ''}" onclick="setVendorSubview('defaults')">Default Rates</button>` : ''}
     <button class="view-btn ${vendorSubview === 'costs' ? 'active' : ''}" onclick="setVendorSubview('costs')">Material Costs</button>
   </div>`;
 

@@ -544,7 +544,12 @@ function logAction(user, action, target, details) {
 // ── AUTH ─────────────────────────────────────────────────────────────────────
 function reqAuth(req, res, next) { if (req.session?.user) return next(); res.redirect('/login'); }
 function reqMgr(req, res, next)   { const r = req.session?.user?.role; if (r === 'admin' || r === 'manager') return next(); res.status(403).json({ error: 'Office access required' }); }
-function reqAdmin(req, res, next) { if (req.session?.user?.role === 'admin') return next(); res.status(403).json({ error: 'Admin access required' }); }
+// Manager and admin are treated as equivalent permission levels.
+function reqAdmin(req, res, next) {
+  const r = req.session?.user?.role;
+  if (r === 'admin' || r === 'manager') return next();
+  res.status(403).json({ error: 'Admin access required' });
+}
 
 app.get('/healthz', (req, res) => res.json({ ok: true, hasDb: !!process.env.DATABASE_URL, time: new Date().toISOString() }));
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
