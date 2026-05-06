@@ -3358,10 +3358,27 @@ async function renderQuickBooks() {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
           <div>
             <div style="font-size:18px;font-weight:700;margin-bottom:4px">QuickBooks Online</div>
-            <div style="font-size:13px;color:var(--txt2)">${cfg.configured ? `Environment: <strong>${cfg.environment || 'sandbox'}</strong> · Redirect: <code style="font-size:11px">${cfg.redirectUri || ''}</code>` : '<span style="color:#b42318">QB_CLIENT_ID / QB_CLIENT_SECRET / QB_REDIRECT_URI not set</span>'}</div>
+            <div style="font-size:13px;color:var(--txt2)">Environment: <strong>${cfg.environment || 'sandbox'}</strong></div>
           </div>
           <div>${statusBadge}</div>
         </div>
+
+        ${!cfg.configured ? `
+          <div style="margin-top:14px;padding:12px 14px;background:#fff8ec;border:1px solid #fcd34d;border-radius:10px;font-size:13px">
+            <strong>Missing environment variables.</strong> Set all three in Railway → Variables, then redeploy:
+            <pre style="margin:8px 0 0;font-size:12px;line-height:1.7;background:none;border:none;padding:0">QB_CLIENT_ID=&lt;from Intuit Developer → Keys &amp; OAuth&gt;\nQB_CLIENT_SECRET=&lt;from Intuit Developer → Keys &amp; OAuth&gt;\nQB_REDIRECT_URI=https://YOUR-DOMAIN/api/quickbooks/callback</pre>
+          </div>
+        ` : `
+          <div style="margin-top:14px;padding:12px 14px;background:var(--bg2);border:1px solid var(--bdr);border-radius:10px">
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--txt3);margin-bottom:6px">Redirect URI — paste this EXACTLY into Intuit Developer → Keys &amp; OAuth → Redirect URIs</div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <code id="qb-redirect-uri" style="font-size:13px;background:var(--bg);border:1px solid var(--bdr);padding:6px 10px;border-radius:6px;user-select:all;flex:1;min-width:0;overflow-x:auto;white-space:nowrap">${escapeHtml(cfg.redirectUri || '')}</code>
+              <button class="btn ghost" style="flex-shrink:0" onclick="copyRedirectUri()">Copy</button>
+            </div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:6px">Common mismatches: trailing slash, http vs https, www vs no-www, extra space. Intuit compares byte-for-byte.</div>
+          </div>
+        `}
+
         ${isConnected ? `
           <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;font-size:13px">
             <div><span style="color:var(--txt3);font-size:11px;text-transform:uppercase;letter-spacing:.04em">Realm</span><div style="font-family:monospace">${conn.realmId}</div></div>
@@ -3424,6 +3441,14 @@ async function renderQbLog() {
       </tr>`).join('')}
     </tbody>
   </table>`;
+}
+
+function copyRedirectUri() {
+  const el = document.getElementById('qb-redirect-uri');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent.trim()).then(() => toast('Redirect URI copied', 'success')).catch(() => {
+    const r = prompt('Copy this URI and paste it exactly into Intuit Developer → Redirect URIs:', el.textContent.trim());
+  });
 }
 
 async function qbDisconnect() {
