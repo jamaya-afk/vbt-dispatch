@@ -42,3 +42,57 @@ Sync writes two tabs:
 - **Loads** — all individual load records with status/approval/billing
 
 Sync replaces the contents — it doesn't append. Run as needed.
+
+## QuickBooks Online Integration
+
+Approved loads can be batched and sent to QuickBooks as customer invoices
+(receivables) and vendor bills (payables). Loads only enter QuickBooks after
+admin approval AND an explicit "Send to QuickBooks" click; nothing is synced
+automatically.
+
+### Workflow
+
+1. Driver completes load → manager approves → load is locked and lands in **Ready to Bill**.
+2. In **Ready to Bill**, filter by month / customer / city / PO / material / driver, select approved loads.
+3. Click **Preview Invoice** to see how loads will be grouped (one invoice per customer + PO + jobsite).
+4. Click **Send to QuickBooks**. The app:
+   - Finds or creates the customer in QuickBooks.
+   - Creates one invoice per group, with line items grouped by material.
+   - Includes PO number, jobsite, delivery date range, and internal batch ID in the memo.
+   - Saves the QuickBooks invoice ID + number back into our database.
+   - Attaches ticket photos and customer signatures to the QuickBooks invoice.
+   - Marks the loads `sent_to_quickbooks` so they cannot be re-billed.
+5. View, retry failed sends, or void batches in **Ready to Bill → Billing Batches**.
+
+Approved/sent loads are locked from deletion. Mistakes use **Void** (which
+reverses the local lock and optionally voids the invoice in QB) — never delete.
+
+### Setup
+
+1. Register an Intuit Developer app at https://developer.intuit.com.
+2. In the QuickBooks tab (admin only), click **Connect QuickBooks** to start OAuth.
+3. After authorization, the realmId / refresh token are stored encrypted.
+
+### Environment variables
+
+```
+QB_CLIENT_ID         # from Intuit Developer Keys & OAuth tab
+QB_CLIENT_SECRET     # from Intuit Developer Keys & OAuth tab
+QB_REDIRECT_URI      # e.g. https://your-domain/api/quickbooks/callback
+QB_ENVIRONMENT       # 'sandbox' (default) or 'production'
+QB_SCOPES            # default: com.intuit.quickbooks.accounting
+QB_DEFAULT_ITEM_NAME # invoice line item ref, default 'Services'
+QB_MINOR_VERSION     # QB API minor version, default 70
+QB_ENCRYPTION_KEY    # passphrase used to AES-256-GCM encrypt stored tokens
+```
+
+`QB_REDIRECT_URI` must match exactly what is registered in the Intuit
+Developer dashboard for the chosen environment. Test in sandbox first; flip
+`QB_ENVIRONMENT=production` after the integration is verified.
+
+### Sync Log
+
+Every QuickBooks request (customer create/match, invoice create, attachment,
+bill create, OAuth connect/disconnect) is recorded with timestamp, related
+load IDs, batch ID, QB entity ID, status, and the user who triggered it. View
+in **QuickBooks → Sync Log**.
