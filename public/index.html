@@ -610,6 +610,11 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
         <span>Vendors & Prices</span>
       </button>
+      <button class="nav-item" data-tab="quickbooks" onclick="goTab('quickbooks')" id="nav-quickbooks">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0v6a2.5 2.5 0 0 1-5 0"/></svg>
+        <span>QuickBooks</span>
+        <span class="nav-badge" id="qb-status-dot" style="display:none">●</span>
+      </button>
     </nav>
     <div class="sidebar-footer">
       <div class="user-card">
@@ -648,6 +653,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <!-- VENDORS & PRICES -->
       <div class="section" id="sec-vendors">
         <div id="vendors-content"></div>
+      </div>
+      <!-- QUICKBOOKS -->
+      <div class="section" id="sec-quickbooks">
+        <div id="quickbooks-content"></div>
       </div>
       <!-- HISTORY -->
       <div class="section" id="sec-history">
@@ -807,6 +816,21 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 </div>
 
 <!-- SIGNATURE MODAL -->
+<!-- QUICKBOOKS INVOICE PREVIEW MODAL -->
+<div class="modal-bg" id="qb-preview-modal" style="display:none">
+  <div class="modal" style="max-width:720px">
+    <div class="modal-head">
+      <h2>Invoice Preview</h2>
+      <button class="modal-close" onclick="closeQbPreview()">&#215;</button>
+    </div>
+    <div class="modal-body" id="qb-preview-body" style="max-height:60vh;overflow:auto"></div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeQbPreview()">Cancel</button>
+      <button class="btn primary" id="qb-preview-confirm">Send to QuickBooks</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="sig-modal" style="display:none">
   <div class="modal">
     <div class="modal-head">
@@ -991,9 +1015,26 @@ async function loadAll() {
     pos = d.pos || [];
     loads = d.loads || [];
     console.log('[loadAll] trucks:', trucks.length, 'materials:', materials.length, 'pos:', pos.length, 'loads:', loads.length);
+    if (role !== 'driver') refreshQbStatusBadge();
   } catch (e) {
     console.error('loadAll error:', e);
   }
+}
+
+async function refreshQbStatusBadge() {
+  try {
+    const r = await fetch('/api/quickbooks/status');
+    if (!r.ok) return;
+    const d = await r.json();
+    const badge = document.getElementById('qb-status-dot');
+    if (!badge) return;
+    const connected = d?.connection?.status === 'connected';
+    badge.style.display = '';
+    badge.textContent = connected ? '●' : '○';
+    badge.title = connected ? `Connected to QuickBooks (${d.connection.environment})` : 'QuickBooks not connected';
+    badge.style.background = 'transparent';
+    badge.style.color = connected ? '#0a8a3a' : '#b42318';
+  } catch (e) { /* ignore */ }
 }
 
 // ── GPS TRACKING (background, drivers only) ─────────────────────────────────
@@ -1083,6 +1124,7 @@ function goTab(tab) {
   if (tab === 'history')  { document.getElementById('sec-history').classList.add('active'); document.getElementById('page-title').textContent = 'History'; renderHistory(); }
   if (tab === 'reports')  { document.getElementById('sec-reports').classList.add('active'); document.getElementById('page-title').textContent = 'Reports'; renderReports(); }
   if (tab === 'vendors')  { document.getElementById('sec-vendors').classList.add('active'); document.getElementById('page-title').textContent = 'Vendors & Prices'; renderVendors(); }
+  if (tab === 'quickbooks'){ document.getElementById('sec-quickbooks').classList.add('active'); document.getElementById('page-title').textContent = 'QuickBooks'; renderQuickBooks(); }
   if (tab === 'driver')   { document.getElementById('sec-driver').classList.add('active'); document.getElementById('page-title').textContent = 'My Trips'; renderDriver(); }
 
   const navBtn = document.querySelector(`[data-tab="${tab}"]`);
@@ -3012,28 +3054,61 @@ async function rejectLoad(id) {
 }
 
 // ── BILLING ──────────────────────────────────────────────────────────────────
-let billFilters = { month: '', material: '', truckId: '' };
+let billFilters = { month: '', material: '', truckId: '', customer: '', city: '', poNumber: '' };
 let billSelected = new Set();
+let billSubview = 'ready';   // 'ready' | 'batches'
+let billCachedItems = [];    // last server response for client-side filtering
 
 function renderBilling() {
-  // Build filter bar
-  const months = [...new Set(loads.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready').map(l => (l.deliveryDate || '').slice(0, 7)))].sort().reverse();
   document.getElementById('bill-filters').innerHTML = `
-    <select class="bill-filter" onchange="billFilters.month=this.value;loadBilling()">
-      <option value="">All months</option>
-      ${months.map(m => `<option value="${m}" ${billFilters.month === m ? 'selected' : ''}>${m}</option>`).join('')}
-    </select>
-    <select class="bill-filter" onchange="billFilters.material=this.value;loadBilling()">
-      <option value="">All materials</option>
-      ${materials.map(m => `<option value="${m}" ${billFilters.material === m ? 'selected' : ''}>${m}</option>`).join('')}
-    </select>
-    <select class="bill-filter" onchange="billFilters.truckId=this.value;loadBilling()">
-      <option value="">All drivers</option>
-      ${trucks.map(t => `<option value="${t.id}" ${billFilters.truckId === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}
-    </select>
-    <span style="flex:1"></span>
-    <button class="btn primary" onclick="markBilled()" id="mark-billed-btn" disabled>Mark ${billSelected.size} as Billed</button>
+    <div style="display:flex;gap:6px;background:var(--bg2);padding:3px;border-radius:20px;margin-right:auto">
+      <button class="view-btn ${billSubview === 'ready' ? 'active' : ''}" onclick="setBillSubview('ready')">Ready to Bill</button>
+      <button class="view-btn ${billSubview === 'batches' ? 'active' : ''}" onclick="setBillSubview('batches')">Billing Batches</button>
+    </div>
   `;
+  if (billSubview === 'ready')   return renderBillReady();
+  if (billSubview === 'batches') return renderBillBatches();
+}
+
+function setBillSubview(v) { billSubview = v; billSelected.clear(); renderBilling(); }
+
+function renderBillReady() {
+  const monthsAll = [...new Set(loads.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready' && !l.voided && !l.billingBatchId).map(l => (l.deliveryDate || '').slice(0, 7)))].sort().reverse();
+  const customersAll = [...new Set(pos.map(p => p.customer).filter(Boolean))].sort();
+  const citiesAll    = [...new Set(pos.map(p => p.city).filter(Boolean))].sort();
+  const posAll       = [...new Set(pos.map(p => p.poNumber).filter(Boolean))].sort();
+  document.getElementById('bill-filters').insertAdjacentHTML('beforeend', `
+    <div style="width:100%;display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+      <select class="bill-filter" onchange="billFilters.month=this.value;loadBilling()">
+        <option value="">All months</option>
+        ${monthsAll.map(m => `<option value="${m}" ${billFilters.month === m ? 'selected' : ''}>${m}</option>`).join('')}
+      </select>
+      <select class="bill-filter" onchange="billFilters.customer=this.value;loadBilling()">
+        <option value="">All customers</option>
+        ${customersAll.map(c => `<option value="${c}" ${billFilters.customer === c ? 'selected' : ''}>${c}</option>`).join('')}
+      </select>
+      <select class="bill-filter" onchange="billFilters.city=this.value;loadBilling()">
+        <option value="">All cities</option>
+        ${citiesAll.map(c => `<option value="${c}" ${billFilters.city === c ? 'selected' : ''}>${c}</option>`).join('')}
+      </select>
+      <select class="bill-filter" onchange="billFilters.poNumber=this.value;loadBilling()">
+        <option value="">All POs</option>
+        ${posAll.map(p => `<option value="${p}" ${billFilters.poNumber === p ? 'selected' : ''}>${p}</option>`).join('')}
+      </select>
+      <select class="bill-filter" onchange="billFilters.material=this.value;loadBilling()">
+        <option value="">All materials</option>
+        ${materials.map(m => `<option value="${m}" ${billFilters.material === m ? 'selected' : ''}>${m}</option>`).join('')}
+      </select>
+      <select class="bill-filter" onchange="billFilters.truckId=this.value;loadBilling()">
+        <option value="">All drivers</option>
+        ${trucks.map(t => `<option value="${t.id}" ${billFilters.truckId === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}
+      </select>
+      <span style="flex:1"></span>
+      <button class="btn ghost" onclick="previewInvoice()" id="preview-bill-btn" disabled>Preview Invoice</button>
+      <button class="btn primary" onclick="sendSelectedToQuickBooks()" id="send-qb-btn" disabled>Send to QuickBooks</button>
+      <button class="btn ghost" onclick="markBilled()" id="mark-billed-btn" disabled title="Manual: mark billed without QuickBooks (use only if billing outside QB)">Mark Billed (manual)</button>
+    </div>
+  `);
   loadBilling();
 }
 
@@ -3044,11 +3119,19 @@ async function loadBilling() {
   if (billFilters.truckId)  params.set('truckId', billFilters.truckId);
   const r = await fetch('/api/ready-to-bill?' + params);
   const d = await r.json();
-  const items = d.items || [];
+  let items = d.items || [];
+  // Apply client-side filters (server doesn't know about customer/city/po)
+  if (billFilters.customer) items = items.filter(l => l.customer === billFilters.customer);
+  if (billFilters.city)     items = items.filter(l => l.city === billFilters.city);
+  if (billFilters.poNumber) items = items.filter(l => l.poNumber === billFilters.poNumber);
+  // Already-batched loads shouldn't appear here, but defensive:
+  items = items.filter(l => !l.billingBatchId);
+  billCachedItems = items;
 
   const wrap = document.getElementById('bill-list');
   if (!items.length) {
     wrap.innerHTML = `<div class="empty-state"><h3>No loads ready to bill</h3><p>Approve loads from the Approvals tab to add them here.</p></div>`;
+    refreshBillButtons();
     return;
   }
   wrap.innerHTML = `<table class="bill-table">
@@ -3070,12 +3153,20 @@ async function loadBilling() {
       </tr>`).join('')}
     </tbody>
   </table>`;
+  refreshBillButtons();
+}
+
+function refreshBillButtons() {
+  const n = billSelected.size;
+  const set = (id, label) => { const el = document.getElementById(id); if (el) { el.disabled = n === 0; el.textContent = label; } };
+  set('preview-bill-btn',  n ? `Preview Invoice (${n})` : 'Preview Invoice');
+  set('send-qb-btn',       n ? `Send ${n} to QuickBooks` : 'Send to QuickBooks');
+  set('mark-billed-btn',   n ? `Mark ${n} Billed (manual)` : 'Mark Billed (manual)');
 }
 
 function toggleBillSelect(id, checked) {
   if (checked) billSelected.add(id); else billSelected.delete(id);
-  document.getElementById('mark-billed-btn').disabled = billSelected.size === 0;
-  document.getElementById('mark-billed-btn').textContent = `Mark ${billSelected.size} as Billed`;
+  refreshBillButtons();
 }
 
 function toggleAllBill(checked) {
@@ -3083,13 +3174,12 @@ function toggleAllBill(checked) {
     cb.checked = checked;
     if (checked) billSelected.add(cb.dataset.id); else billSelected.delete(cb.dataset.id);
   });
-  document.getElementById('mark-billed-btn').disabled = billSelected.size === 0;
-  document.getElementById('mark-billed-btn').textContent = `Mark ${billSelected.size} as Billed`;
+  refreshBillButtons();
 }
 
 async function markBilled() {
   if (!billSelected.size) return;
-  if (!confirm(`Mark ${billSelected.size} load(s) as billed? This is permanent.`)) return;
+  if (!confirm(`Mark ${billSelected.size} load(s) as billed (manual, NOT sent to QuickBooks)?`)) return;
   const d = await api('POST', '/api/loads/bill', { loadIds: [...billSelected] });
   if (d.ok) {
     toast(`Marked ${d.billed} as billed`, 'success');
@@ -3097,6 +3187,250 @@ async function markBilled() {
     await loadAll();
     renderBilling();
   } else toast(d.error || 'Failed', 'error');
+}
+
+// ── PREVIEW + SEND TO QB ────────────────────────────────────────────────────
+async function previewInvoice() {
+  if (!billSelected.size) return;
+  const d = await api('POST', '/api/billing-batches/preview', { loadIds: [...billSelected] });
+  if (!d.ok) return toast(d.error || 'Preview failed', 'error');
+  showInvoicePreviewModal(d.groups, false);
+}
+
+async function sendSelectedToQuickBooks() {
+  if (!billSelected.size) return;
+  const d = await api('POST', '/api/billing-batches/preview', { loadIds: [...billSelected] });
+  if (!d.ok) return toast(d.error || 'Preview failed', 'error');
+  showInvoicePreviewModal(d.groups, true);
+}
+
+function showInvoicePreviewModal(groups, allowSend) {
+  const modal = document.getElementById('qb-preview-modal');
+  const total = groups.reduce((s, g) => s + g.totalAmount, 0);
+  document.getElementById('qb-preview-body').innerHTML = `
+    <p style="margin:0 0 14px;color:var(--txt2);font-size:13px">${groups.length} invoice${groups.length === 1 ? '' : 's'} will be created in QuickBooks · Total <strong style="color:var(--txt)">$${total.toFixed(2)}</strong></p>
+    ${groups.map((g, i) => `
+      <div style="border:1px solid var(--bdr);border-radius:var(--rl);padding:14px;margin-bottom:10px;background:var(--bg)">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+          <div>
+            <div style="font-weight:700;font-size:15px">${g.customer || '(no customer)'}</div>
+            <div style="font-size:12px;color:var(--txt2);margin-top:2px">PO ${g.poNumber || '—'}${g.jobCode ? ' · Job ' + g.jobCode : ''}${g.city ? ' · ' + g.city : ''}</div>
+            <div style="font-size:12px;color:var(--txt2);margin-top:1px">${g.deliveryStart}${g.deliveryEnd && g.deliveryEnd !== g.deliveryStart ? ' to ' + g.deliveryEnd : ''} · ${g.totalLoads} load${g.totalLoads === 1 ? '' : 's'}</div>
+          </div>
+          <div style="font-weight:700;font-size:18px">$${g.totalAmount.toFixed(2)}</div>
+        </div>
+        <table style="width:100%;font-size:13px;border-top:1px solid var(--bdr);border-collapse:collapse">
+          ${g.lineItems.map(ln => `<tr>
+            <td style="padding:6px 0">${ln.description}</td>
+            <td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums">$${ln.amount.toFixed(2)}</td>
+          </tr>`).join('')}
+        </table>
+      </div>
+    `).join('')}
+  `;
+  document.getElementById('qb-preview-confirm').style.display = allowSend ? '' : 'none';
+  document.getElementById('qb-preview-confirm').onclick = () => confirmCreateAndSend([...billSelected]);
+  modal.style.display = 'flex';
+}
+
+function closeQbPreview() {
+  document.getElementById('qb-preview-modal').style.display = 'none';
+}
+
+async function confirmCreateAndSend(loadIds) {
+  document.getElementById('qb-preview-confirm').disabled = true;
+  document.getElementById('qb-preview-confirm').textContent = 'Creating batches…';
+  const create = await api('POST', '/api/billing-batches', { loadIds });
+  if (!create.ok) {
+    document.getElementById('qb-preview-confirm').disabled = false;
+    document.getElementById('qb-preview-confirm').textContent = 'Send to QuickBooks';
+    return toast(create.error || 'Failed to create batches', 'error');
+  }
+  const batches = create.batches || [];
+  let okCount = 0, failCount = 0;
+  for (const b of batches) {
+    document.getElementById('qb-preview-confirm').textContent = `Sending ${okCount + failCount + 1}/${batches.length}…`;
+    const r = await api('POST', `/api/billing-batches/${b.id}/send`, {});
+    if (r.ok) okCount++; else failCount++;
+  }
+  closeQbPreview();
+  billSelected.clear();
+  await loadAll();
+  if (failCount === 0) {
+    toast(`Sent ${okCount} invoice${okCount === 1 ? '' : 's'} to QuickBooks`, 'success');
+  } else if (okCount === 0) {
+    toast(`All ${failCount} invoice(s) failed — see Billing Batches`, 'error');
+  } else {
+    toast(`${okCount} sent · ${failCount} failed — see Billing Batches`, 'error');
+  }
+  setBillSubview('batches');
+}
+
+// ── BILLING BATCHES VIEW ────────────────────────────────────────────────────
+async function renderBillBatches() {
+  const wrap = document.getElementById('bill-list');
+  wrap.innerHTML = `<div style="padding:20px;text-align:center;color:var(--txt2)">Loading…</div>`;
+  const r = await api('GET', '/api/billing-batches');
+  const items = r.items || [];
+  if (!items.length) {
+    wrap.innerHTML = `<div class="empty-state"><h3>No billing batches yet</h3><p>Create batches by selecting approved loads in the Ready to Bill tab and clicking Send to QuickBooks.</p></div>`;
+    return;
+  }
+  const statusBadge = (s) => {
+    const map = {
+      'ready_to_bill':       { c: '#5b6478', bg: '#eef1f6', t: 'Ready' },
+      'syncing':             { c: '#1f6feb', bg: '#e7f0ff', t: 'Syncing…' },
+      'sent_to_quickbooks':  { c: '#0a8a3a', bg: '#e3f6e9', t: 'Sent to QB' },
+      'failed':              { c: '#b42318', bg: '#fee4e2', t: 'Failed' },
+      'voided':              { c: '#71717a', bg: '#f4f4f5', t: 'Voided' },
+    };
+    const m = map[s] || map.ready_to_bill;
+    return `<span style="background:${m.bg};color:${m.c};padding:3px 9px;border-radius:10px;font-size:11px;font-weight:600">${m.t}</span>`;
+  };
+  wrap.innerHTML = `<table class="bill-table">
+    <thead><tr>
+      <th>Batch</th><th>Customer</th><th>PO</th><th>Loads</th><th>Total</th><th>Status</th><th>QB Invoice #</th><th>Created</th><th></th>
+    </tr></thead>
+    <tbody>
+      ${items.map(b => `<tr>
+        <td style="font-family:monospace;font-size:11px;color:var(--txt2)">${b.id}</td>
+        <td>${b.customer}</td>
+        <td>${b.poNumber || '—'}</td>
+        <td>${b.totalLoads}</td>
+        <td style="font-variant-numeric:tabular-nums">$${(Number(b.totalAmount)||0).toFixed(2)}</td>
+        <td>${statusBadge(b.syncStatus)}${b.errorMessage ? `<div style="font-size:11px;color:#b42318;margin-top:3px;max-width:240px;white-space:normal">${escapeHtml(b.errorMessage)}</div>` : ''}</td>
+        <td>${b.qbInvoiceNumber || '—'}</td>
+        <td style="font-size:11px;color:var(--txt2)">${b.createdAt ? new Date(b.createdAt).toLocaleString() : ''}</td>
+        <td>
+          ${b.syncStatus === 'failed' ? `<button class="btn ghost" onclick="retryBatch('${b.id}')">Retry</button>` : ''}
+          ${b.syncStatus === 'ready_to_bill' ? `<button class="btn primary" onclick="sendBatch('${b.id}')">Send</button>` : ''}
+          ${(b.syncStatus === 'sent_to_quickbooks' || b.syncStatus === 'failed') ? `<button class="btn ghost" onclick="voidBatch('${b.id}')">Void</button>` : ''}
+        </td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+async function sendBatch(id) {
+  const r = await api('POST', `/api/billing-batches/${id}/send`, {});
+  if (r.ok) toast('Sent to QuickBooks', 'success'); else toast(r.error || 'Failed', 'error');
+  renderBillBatches();
+}
+
+async function retryBatch(id) {
+  await api('POST', `/api/billing-batches/${id}/retry`, {});
+  const r = await api('POST', `/api/billing-batches/${id}/send`, {});
+  if (r.ok) toast('Sent to QuickBooks', 'success'); else toast(r.error || 'Retry failed', 'error');
+  renderBillBatches();
+}
+
+async function voidBatch(id) {
+  const reason = prompt('Reason for voiding this batch (required)?');
+  if (!reason || !reason.trim()) return;
+  const voidInQb = confirm('Also void the invoice in QuickBooks?\n\nOK = Void in QuickBooks. Cancel = Only mark voided locally.');
+  const r = await api('POST', `/api/billing-batches/${id}/void`, { reason: reason.trim(), voidInQuickBooks: voidInQb });
+  if (r.ok) toast('Batch voided', 'success'); else toast(r.error || 'Failed', 'error');
+  await loadAll();
+  renderBillBatches();
+}
+
+// ── QUICKBOOKS SETTINGS + SYNC LOG ─────────────────────────────────────────
+async function renderQuickBooks() {
+  const wrap = document.getElementById('quickbooks-content');
+  wrap.innerHTML = `<div style="padding:20px;color:var(--txt2)">Loading…</div>`;
+  const r = await api('GET', '/api/quickbooks/status');
+  if (!r.ok) {
+    wrap.innerHTML = `<div style="padding:20px;color:var(--R)">${r.error || 'Failed to load QuickBooks status'}</div>`;
+    return;
+  }
+  const cfg = r.config || {};
+  const conn = r.connection || {};
+  const isConnected = conn.status === 'connected' && !!conn.realmId;
+  const isAdmin = role === 'admin';
+
+  const statusBadge = isConnected
+    ? `<span style="background:#e3f6e9;color:#0a8a3a;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">Connected</span>`
+    : `<span style="background:#fee4e2;color:#b42318;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">Not connected</span>`;
+
+  wrap.innerHTML = `
+    <div style="padding:18px 22px;display:grid;gap:16px;max-width:980px">
+      <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;padding:18px;box-shadow:var(--shadow)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+          <div>
+            <div style="font-size:18px;font-weight:700;margin-bottom:4px">QuickBooks Online</div>
+            <div style="font-size:13px;color:var(--txt2)">${cfg.configured ? `Environment: <strong>${cfg.environment || 'sandbox'}</strong> · Redirect: <code style="font-size:11px">${cfg.redirectUri || ''}</code>` : '<span style="color:#b42318">QB_CLIENT_ID / QB_CLIENT_SECRET / QB_REDIRECT_URI not set</span>'}</div>
+          </div>
+          <div>${statusBadge}</div>
+        </div>
+        ${isConnected ? `
+          <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;font-size:13px">
+            <div><span style="color:var(--txt3);font-size:11px;text-transform:uppercase;letter-spacing:.04em">Realm</span><div style="font-family:monospace">${conn.realmId}</div></div>
+            <div><span style="color:var(--txt3);font-size:11px;text-transform:uppercase;letter-spacing:.04em">Environment</span><div>${conn.environment || cfg.environment}</div></div>
+            <div><span style="color:var(--txt3);font-size:11px;text-transform:uppercase;letter-spacing:.04em">Connected</span><div>${conn.connectedAt ? new Date(conn.connectedAt).toLocaleString() : '—'} ${conn.connectedBy ? 'by ' + conn.connectedBy : ''}</div></div>
+            <div><span style="color:var(--txt3);font-size:11px;text-transform:uppercase;letter-spacing:.04em">Token expires</span><div>${conn.accessExpiresAt ? new Date(conn.accessExpiresAt).toLocaleString() : '—'}</div></div>
+          </div>
+          ${conn.lastError ? `<div style="margin-top:10px;padding:10px;background:#fee4e2;color:#b42318;border-radius:8px;font-size:12px">${escapeHtml(conn.lastError)}</div>` : ''}
+        ` : ''}
+        <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+          ${isAdmin && cfg.configured && !isConnected ? `<a class="btn primary" href="/api/quickbooks/connect">Connect QuickBooks</a>` : ''}
+          ${isAdmin && isConnected ? `<button class="btn ghost" onclick="qbDisconnect()">Disconnect</button>` : ''}
+          ${!isAdmin && !isConnected ? `<span style="font-size:12px;color:var(--txt3)">Ask an admin to connect QuickBooks.</span>` : ''}
+        </div>
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;padding:18px;box-shadow:var(--shadow)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div style="font-size:15px;font-weight:700">Sync Log</div>
+          <div style="display:flex;gap:6px">
+            <select id="qb-log-status" class="bill-filter" onchange="renderQbLog()">
+              <option value="">All</option>
+              <option value="success">Success</option>
+              <option value="error">Error</option>
+            </select>
+            <button class="btn ghost" onclick="renderQbLog()">Refresh</button>
+          </div>
+        </div>
+        <div id="qb-log-list" style="max-height:480px;overflow:auto"></div>
+      </div>
+    </div>
+  `;
+  renderQbLog();
+}
+
+async function renderQbLog() {
+  const status = document.getElementById('qb-log-status')?.value || '';
+  const list = document.getElementById('qb-log-list');
+  if (!list) return;
+  list.innerHTML = `<div style="padding:14px;color:var(--txt2)">Loading…</div>`;
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  params.set('limit', '200');
+  const r = await api('GET', '/api/qb-sync-log?' + params);
+  const items = r.items || [];
+  if (!items.length) { list.innerHTML = `<div style="padding:14px;color:var(--txt3);font-size:13px">No sync activity yet.</div>`; return; }
+  list.innerHTML = `<table class="bill-table">
+    <thead><tr><th>When</th><th>Action</th><th>Entity</th><th>QB ID</th><th>Status</th><th>Detail</th><th>User</th></tr></thead>
+    <tbody>
+      ${items.map(e => `<tr>
+        <td style="font-size:11px;color:var(--txt2);white-space:nowrap">${new Date(e.at).toLocaleString()}</td>
+        <td style="font-family:monospace;font-size:11px">${e.actionType}</td>
+        <td>${e.qbEntityType || '—'}</td>
+        <td style="font-family:monospace;font-size:11px">${e.qbEntityId || '—'}</td>
+        <td>${e.responseStatus === 'error'
+          ? `<span style="color:#b42318;font-weight:600">Error</span>`
+          : `<span style="color:#0a8a3a;font-weight:600">OK</span>`}</td>
+        <td style="font-size:12px;max-width:340px">${escapeHtml(e.errorMessage || e.requestSummary || '')}</td>
+        <td style="font-size:11px;color:var(--txt2)">${e.user || '—'}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+async function qbDisconnect() {
+  if (!confirm('Disconnect from QuickBooks? Existing batches and invoice history are kept; new sends will require reconnecting.')) return;
+  const r = await api('POST', '/api/quickbooks/disconnect');
+  if (r.ok) { toast('Disconnected', 'success'); renderQuickBooks(); }
+  else toast(r.error || 'Failed', 'error');
 }
 
 // ── VENDORS & PRICING (manager admin) ────────────────────────────────────────

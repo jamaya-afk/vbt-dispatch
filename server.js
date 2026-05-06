@@ -4,6 +4,7 @@ const express = require('express');
 const session = require('express-session');
 const path = require('path');
 const fs = require('fs');
+const qb = require('./qb');
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
@@ -403,6 +404,40 @@ function normalizeStore() {
     if (!c.id) c.id = 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
     if (c.active === undefined) c.active = true;
     if (!c.createdAt) c.createdAt = new Date().toISOString();
+    if (!('qbCustomerId' in c)) c.qbCustomerId = '';
+  });
+  store.vendors.forEach(v => {
+    if (!('qbVendorId' in v)) v.qbVendorId = '';
+  });
+
+  // ── QuickBooks state ───────────────────────────────────────────────────────
+  if (!store.qbConnection || typeof store.qbConnection !== 'object') {
+    store.qbConnection = {
+      status: 'disconnected',
+      environment: '',
+      realmId: '',
+      accessTokenEnc: '',
+      refreshTokenEnc: '',
+      accessExpiresAt: '',
+      refreshExpiresAt: '',
+      connectedAt: '',
+      connectedBy: '',
+      lastError: '',
+      lastSyncAt: '',
+    };
+  }
+  if (!Array.isArray(store.billingBatches)) store.billingBatches = [];
+  if (!Array.isArray(store.qbSyncLog))      store.qbSyncLog = [];
+  if (!Array.isArray(store.vendorBills))    store.vendorBills = [];
+
+  // Backfill load fields used by billing batches
+  store.loads.forEach(l => {
+    if (!('billingBatchId' in l))      l.billingBatchId = '';
+    if (!('qbInvoiceId' in l))         l.qbInvoiceId = '';
+    if (!('qbInvoiceNumber' in l))     l.qbInvoiceNumber = '';
+    if (!('sentToQuickBooksAt' in l))  l.sentToQuickBooksAt = '';
+    if (!('vendorBillId' in l))        l.vendorBillId = '';
+    if (!('qbBillId' in l))            l.qbBillId = '';
   });
 }
 
@@ -961,6 +996,9 @@ app.delete('/api/loads/:id', reqMgr, async (req, res) => {
   if (store.loads[idx].approvalStatus === 'approved') {
     return res.status(403).json({ error: 'Approved loads cannot be deleted (void instead)' });
   }
+  if (store.loads[idx].billingBatchId || store.loads[idx].qbInvoiceId) {
+    return res.status(403).json({ error: 'Load is in a billing batch — void the batch instead of deleting' });
+  }
   const deleted = store.loads[idx];
   store.loads.splice(idx, 1);
   logAction(req.session.user, 'deleted-load', deleted.id, {
@@ -1253,6 +1291,738 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
   }
   await saveData();
   res.json({ success: true, billed: count });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QUICKBOOKS ONLINE INTEGRATION
+// ═══════════════════════════════════════════════════════════════════════════
+// Loads only enter QB after admin approval AND an explicit "Send to QuickBooks"
+// click on a billing batch. Approved loads are locked from deletion; if a batch
+// is wrong, it is voided (not deleted), and a correction batch may be created.
+
+function genId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+}
+
+function logQbSync(entry) {
+  try {
+    const e = {
+      id: genId('QBL'),
+      at: new Date().toISOString(),
+      actionType: entry.actionType,
+      relatedLoadIds: entry.relatedLoadIds || [],
+      relatedBatchId: entry.relatedBatchId || '',
+      qbEntityType: entry.qbEntityType || '',
+      qbEntityId: entry.qbEntityId || '',
+      requestSummary: entry.requestSummary || '',
+      responseStatus: entry.responseStatus || 'success',  // success | error
+      statusCode: entry.statusCode || 0,
+      errorMessage: entry.errorMessage || '',
+      user: entry.user || '',
+    };
+    if (!Array.isArray(store.qbSyncLog)) store.qbSyncLog = [];
+    store.qbSyncLog.push(e);
+    if (store.qbSyncLog.length > 5000) store.qbSyncLog = store.qbSyncLog.slice(-5000);
+    return e;
+  } catch (err) {
+    console.error('[logQbSync] failed:', err.message);
+    return null;
+  }
+}
+
+// Group selected approved loads into one billing batch per (customer, PO, jobsite, week-range).
+// Returns { groups: [{ key, customer, poNumber, ..., loadIds, lineItems, total }] }
+function buildBillingGroups(loadIds) {
+  const out = new Map();
+  for (const id of loadIds) {
+    const l = store.loads.find(x => x.id === id);
+    if (!l) continue;
+    if (l.approvalStatus !== 'approved') continue;
+    if (l.billStatus !== 'ready') continue;
+    if (l.voided) continue;
+    if (l.billingBatchId) continue;  // already in a batch
+    const po = store.pos.find(p => p.id === l.poId) || {};
+    const key = [
+      (po.customer || '').toLowerCase().trim(),
+      po.poNumber || '',
+      (po.address || '').toLowerCase().trim(),
+      (po.city || '').toLowerCase().trim(),
+    ].join('|');
+    if (!out.has(key)) {
+      out.set(key, {
+        key,
+        customer: po.customer || '',
+        poNumber: po.poNumber || '',
+        poId: po.id || '',
+        jobCode: po.jobCode || '',
+        address: po.address || '',
+        city: po.city || '',
+        loads: [],
+      });
+    }
+    out.get(key).loads.push({ load: l, po });
+  }
+
+  const groups = [];
+  for (const g of out.values()) {
+    const dates = g.loads.map(x => x.load.deliveryDate).filter(Boolean).sort();
+    const ticketImages   = [];
+    const signatureImages = [];
+    const approvalStamps = [];
+    const loadIdsInGroup = [];
+
+    // Group line items by material+unit+rate (so different rates don't collapse)
+    const lineMap = new Map();
+    for (const { load, po } of g.loads) {
+      loadIdsInGroup.push(load.id);
+      const rev = computeRevenue(load);
+      const tons = (Number(load.tonsPerLoad) || TONS_PER_LOAD) * (Number(load.loadsDelivered) || 0);
+      const unit = load.customerUnit || 'ton';
+      const rate = Number(load.customerRate) || 0;
+      const lk = `${load.material}|${unit}|${rate}`;
+      if (!lineMap.has(lk)) {
+        lineMap.set(lk, {
+          material: load.material,
+          unit, rate,
+          loads: 0, tons: 0, amount: 0,
+          loadIds: [],
+        });
+      }
+      const ln = lineMap.get(lk);
+      ln.loads += Number(load.loadsDelivered) || 0;
+      ln.tons  += tons;
+      ln.amount += rev;
+      ln.loadIds.push(load.id);
+
+      if (load.ticketImageUrl) ticketImages.push({ loadId: load.id, url: load.ticketImageUrl });
+      else if (load.ticketImage) ticketImages.push({ loadId: load.id, dataUrl: true });
+      if (load.pod?.signature) signatureImages.push({ loadId: load.id, dataUrl: true });
+      if (load.approvedAt) approvalStamps.push({ loadId: load.id, at: load.approvedAt, by: load.approvedBy });
+    }
+
+    const lineItems = [...lineMap.values()].map(ln => ({
+      ...ln,
+      description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}`
+        + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/load)`),
+    }));
+    const totalAmount = lineItems.reduce((s, ln) => s + ln.amount, 0);
+    const totalLoads  = lineItems.reduce((s, ln) => s + ln.loads, 0);
+    const totalTons   = lineItems.reduce((s, ln) => s + ln.tons, 0);
+
+    groups.push({
+      key: g.key,
+      customer: g.customer,
+      poNumber: g.poNumber,
+      poId: g.poId,
+      jobCode: g.jobCode,
+      address: g.address,
+      city: g.city,
+      deliveryStart: dates[0] || '',
+      deliveryEnd: dates[dates.length - 1] || '',
+      loadIds: loadIdsInGroup,
+      totalLoads, totalTons, totalAmount,
+      lineItems,
+      ticketImages, signatureImages, approvalStamps,
+    });
+  }
+  return groups;
+}
+
+// ── QB CONNECTION ENDPOINTS ──────────────────────────────────────────────────
+// Status (no token data) — visible to managers so they know if billing will work.
+app.get('/api/quickbooks/status', reqMgr, (req, res) => {
+  const cfg = qb.configSummary();
+  const c = store.qbConnection || {};
+  res.json({
+    config: cfg,
+    connection: {
+      status: c.status || 'disconnected',
+      environment: c.environment || cfg.environment,
+      realmId: c.realmId || '',
+      connectedAt: c.connectedAt || '',
+      connectedBy: c.connectedBy || '',
+      accessExpiresAt: c.accessExpiresAt || '',
+      refreshExpiresAt: c.refreshExpiresAt || '',
+      lastError: c.lastError || '',
+      lastSyncAt: c.lastSyncAt || '',
+    },
+  });
+});
+
+// Begin OAuth — admin only. Stores random state in session and redirects.
+app.get('/api/quickbooks/connect', reqAdmin, (req, res) => {
+  if (!qb.isConfigured()) {
+    return res.status(400).send('QuickBooks not configured. Set QB_CLIENT_ID, QB_CLIENT_SECRET, and QB_REDIRECT_URI.');
+  }
+  const state = require('crypto').randomBytes(24).toString('hex');
+  req.session.qbOauthState = state;
+  req.session.qbOauthUser  = req.session.user.username;
+  res.redirect(qb.buildAuthUrl(state));
+});
+
+// OAuth callback — Intuit redirects here with code, state, and realmId.
+app.get('/api/quickbooks/callback', reqAuth, async (req, res) => {
+  try {
+    const { code, state, realmId, error, error_description } = req.query;
+    if (error) {
+      logQbSync({ actionType: 'oauth_connect', responseStatus: 'error', errorMessage: `${error}: ${error_description || ''}`, user: req.session.user?.username });
+      return res.status(400).send(`QuickBooks authorization failed: ${error_description || error}`);
+    }
+    if (!code || !state || !realmId) {
+      return res.status(400).send('Missing code/state/realmId from QuickBooks callback.');
+    }
+    if (state !== req.session.qbOauthState) {
+      return res.status(400).send('OAuth state mismatch — please try connecting again.');
+    }
+    if (req.session.user.role !== 'admin') {
+      return res.status(403).send('Only an admin can complete QuickBooks setup.');
+    }
+    const tok = await qb.exchangeCodeForToken(code);
+    const conn = store.qbConnection;
+    qb.applyTokenToConnection(conn, tok);
+    conn.realmId = String(realmId);
+    conn.environment = qb.QB_ENVIRONMENT;
+    conn.connectedAt = new Date().toISOString();
+    conn.connectedBy = req.session.user.username;
+    conn.lastError = '';
+    delete req.session.qbOauthState;
+
+    logQbSync({ actionType: 'oauth_connect', qbEntityType: 'Realm', qbEntityId: String(realmId), user: req.session.user.username, requestSummary: `Connected to ${qb.QB_ENVIRONMENT}` });
+    logAction(req.session.user, 'qb-connected', String(realmId), { environment: qb.QB_ENVIRONMENT });
+    await saveData();
+    res.send(`<html><body style="font-family:system-ui;padding:40px;text-align:center">
+      <h2 style="color:#0a8a3a">QuickBooks connected</h2>
+      <p>Realm: <code>${realmId}</code> · Environment: <strong>${qb.QB_ENVIRONMENT}</strong></p>
+      <p><a href="/app/">Return to dispatch</a></p>
+      <script>setTimeout(()=>{location.href='/app/#qb-settings'},1500)</script>
+    </body></html>`);
+  } catch (e) {
+    console.error('[qb callback]', e);
+    logQbSync({ actionType: 'oauth_connect', responseStatus: 'error', errorMessage: e.message, user: req.session.user?.username });
+    res.status(500).send(`QuickBooks connect failed: ${e.message}`);
+  }
+});
+
+app.post('/api/quickbooks/disconnect', reqAdmin, async (req, res) => {
+  const conn = store.qbConnection;
+  try {
+    if (conn.refreshTokenEnc) {
+      const refresh = qb.decrypt(conn.refreshTokenEnc);
+      await qb.revokeToken(refresh).catch(() => {});
+    }
+  } finally {
+    conn.status = 'disconnected';
+    conn.realmId = '';
+    conn.accessTokenEnc = '';
+    conn.refreshTokenEnc = '';
+    conn.accessExpiresAt = '';
+    conn.refreshExpiresAt = '';
+    conn.connectedAt = '';
+    conn.connectedBy = '';
+    conn.lastError = '';
+    logQbSync({ actionType: 'oauth_disconnect', user: req.session.user.username });
+    logAction(req.session.user, 'qb-disconnected', '', {});
+    await saveData();
+    res.json({ success: true });
+  }
+});
+
+// ── BILLING BATCH ENDPOINTS ─────────────────────────────────────────────────
+// Preview groups for a selection without persisting anything
+app.post('/api/billing-batches/preview', reqMgr, (req, res) => {
+  const ids = req.body?.loadIds || [];
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'loadIds required' });
+  const groups = buildBillingGroups(ids);
+  if (!groups.length) return res.status(400).json({ error: 'No eligible loads to bill (must be approved, ready, and not yet in a batch)' });
+  res.json({ groups });
+});
+
+// Create batch records from a selection. Marks loads with billingBatchId so they
+// can't be reused. Does NOT call QuickBooks yet — that happens on /send.
+app.post('/api/billing-batches', reqMgr, async (req, res) => {
+  const ids = req.body?.loadIds || [];
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'loadIds required' });
+  const groups = buildBillingGroups(ids);
+  if (!groups.length) return res.status(400).json({ error: 'No eligible loads to bill' });
+
+  const created = [];
+  const now = new Date().toISOString();
+  for (const g of groups) {
+    const batchId = genId('BB');
+    const batch = {
+      id: batchId,
+      customer: g.customer,
+      poNumber: g.poNumber,
+      poId: g.poId,
+      jobCode: g.jobCode,
+      address: g.address,
+      city: g.city,
+      deliveryStart: g.deliveryStart,
+      deliveryEnd: g.deliveryEnd,
+      loadIds: g.loadIds,
+      totalLoads: g.totalLoads,
+      totalTons: g.totalTons,
+      totalAmount: g.totalAmount,
+      lineItems: g.lineItems,
+      ticketImageRefs: g.ticketImages,
+      signatureImageRefs: g.signatureImages,
+      approvalStamps: g.approvalStamps,
+      qbCustomerId: '',
+      qbInvoiceId: '',
+      qbInvoiceNumber: '',
+      qbDocNumber: '',
+      attachmentIds: [],
+      syncStatus: 'ready_to_bill',
+      errorMessage: '',
+      createdAt: now,
+      createdBy: req.session.user.username,
+      sentAt: '', sentBy: '',
+      voidedAt: '', voidedBy: '', voidReason: '',
+    };
+    store.billingBatches.push(batch);
+    // Mark loads as part of this batch (lock against duplicate billing)
+    for (const lid of g.loadIds) {
+      const l = store.loads.find(x => x.id === lid);
+      if (l) l.billingBatchId = batchId;
+    }
+    created.push(batch);
+  }
+  logAction(req.session.user, 'created-billing-batches', '', {
+    count: created.length, batchIds: created.map(b => b.id), totalLoads: created.reduce((s, b) => s + b.totalLoads, 0),
+  });
+  await saveData();
+  res.json({ success: true, batches: created });
+});
+
+// List billing batches with filters
+app.get('/api/billing-batches', reqMgr, (req, res) => {
+  const f = req.query;
+  let items = [...(store.billingBatches || [])];
+  if (f.status)   items = items.filter(b => b.syncStatus === f.status);
+  if (f.customer) items = items.filter(b => (b.customer || '').toLowerCase().includes(String(f.customer).toLowerCase()));
+  if (f.poNumber) items = items.filter(b => (b.poNumber || '').toLowerCase().includes(String(f.poNumber).toLowerCase()));
+  if (f.month)    items = items.filter(b => (b.deliveryStart || '').startsWith(f.month));
+  if (f.city)     items = items.filter(b => (b.city || '').toLowerCase().includes(String(f.city).toLowerCase()));
+  items.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  res.json({ items });
+});
+
+app.get('/api/billing-batches/:id', reqMgr, (req, res) => {
+  const b = store.billingBatches.find(x => x.id === req.params.id);
+  if (!b) return res.status(404).json({ error: 'Batch not found' });
+  // Enrich with load detail so the UI can show full ticket/signature URLs
+  const loads = b.loadIds.map(lid => store.loads.find(l => l.id === lid)).filter(Boolean).map(l => ({
+    id: l.id,
+    deliveryDate: l.deliveryDate,
+    material: l.material,
+    loadsDelivered: l.loadsDelivered,
+    driverName: l.driverName,
+    ticketImageUrl: l.ticketImageUrl || '',
+    podSignatureUrl: l.pod?.signatureUrl || '',
+    qbInvoiceId: l.qbInvoiceId,
+    qbInvoiceNumber: l.qbInvoiceNumber,
+  }));
+  res.json({ batch: b, loads });
+});
+
+// Send a batch to QuickBooks: ensures customer exists, creates invoice, attaches
+// ticket photos + signatures, writes IDs back to the batch and each load.
+app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
+  const b = store.billingBatches.find(x => x.id === req.params.id);
+  if (!b) return res.status(404).json({ error: 'Batch not found' });
+  if (b.syncStatus === 'sent_to_quickbooks' && b.qbInvoiceId) {
+    return res.status(400).json({ error: `Already sent (invoice ${b.qbInvoiceNumber || b.qbInvoiceId})` });
+  }
+  if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Cannot send a voided batch' });
+  const conn = store.qbConnection;
+  if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks not connected' });
+
+  b.syncStatus = 'syncing';
+  b.errorMessage = '';
+  await saveData();
+
+  const user = req.session.user.username;
+  try {
+    // 1. Find or create customer in QB and remember the mapping
+    const localCust = store.customers.find(c => (c.name || '').toLowerCase().trim() === (b.customer || '').toLowerCase().trim());
+    let qbCustomerId = localCust?.qbCustomerId || '';
+    if (!qbCustomerId) {
+      const lookup = await qb.findOrCreateCustomer(conn, {
+        name: b.customer,
+        address: b.address,
+        city: b.city,
+        phone: localCust?.phone || '',
+        email: localCust?.email || '',
+      });
+      qbCustomerId = lookup.customer?.Id;
+      if (!qbCustomerId) throw new Error('QuickBooks did not return a customer ID');
+      if (localCust) localCust.qbCustomerId = qbCustomerId;
+      logQbSync({
+        actionType: lookup.created ? 'create_customer' : 'find_customer',
+        relatedBatchId: b.id,
+        qbEntityType: 'Customer',
+        qbEntityId: qbCustomerId,
+        requestSummary: `${lookup.created ? 'Created' : 'Matched'} customer "${b.customer}"`,
+        user,
+      });
+    }
+    b.qbCustomerId = qbCustomerId;
+
+    // 2. Build invoice memo with PO + job + dates + batch ID
+    const memoParts = [];
+    if (b.poNumber)      memoParts.push(`PO ${b.poNumber}`);
+    if (b.jobCode)       memoParts.push(`Job ${b.jobCode}`);
+    if (b.address)       memoParts.push(b.address + (b.city ? `, ${b.city}` : ''));
+    if (b.deliveryStart) memoParts.push(b.deliveryStart === b.deliveryEnd ? b.deliveryStart : `${b.deliveryStart} to ${b.deliveryEnd}`);
+    memoParts.push(`Batch ${b.id}`);
+    const memo = memoParts.join(' · ');
+
+    // 3. Create invoice
+    const invoice = await qb.createInvoice(conn, {
+      qbCustomerId,
+      lines: b.lineItems.map(ln => ({
+        description: ln.description,
+        quantity: ln.unit === 'ton' ? ln.tons : ln.loads,
+        amount: ln.amount,
+      })),
+      memo,
+      privateNote: `VBT Dispatch billing batch ${b.id}. PO ${b.poNumber}. Loads: ${b.loadIds.join(', ')}`,
+      docNumber: b.poNumber ? String(b.poNumber).slice(0, 21) : undefined,
+      txnDate: b.deliveryEnd || b.deliveryStart || undefined,
+    });
+    if (!invoice?.Id) throw new Error('QuickBooks did not return an invoice ID');
+    b.qbInvoiceId = invoice.Id;
+    b.qbInvoiceNumber = invoice.DocNumber || '';
+    b.qbDocNumber = invoice.DocNumber || '';
+    b.sentAt = new Date().toISOString();
+    b.sentBy = user;
+    b.syncStatus = 'sent_to_quickbooks';
+
+    logQbSync({
+      actionType: 'create_invoice',
+      relatedBatchId: b.id,
+      relatedLoadIds: b.loadIds,
+      qbEntityType: 'Invoice',
+      qbEntityId: invoice.Id,
+      requestSummary: `Invoice ${invoice.DocNumber || invoice.Id} for ${b.customer} — $${b.totalAmount.toFixed(2)}`,
+      user,
+    });
+
+    // 4. Mark loads as sent
+    for (const lid of b.loadIds) {
+      const l = store.loads.find(x => x.id === lid);
+      if (l) {
+        l.qbInvoiceId = invoice.Id;
+        l.qbInvoiceNumber = invoice.DocNumber || '';
+        l.sentToQuickBooksAt = b.sentAt;
+        l.billStatus = 'billed';
+        l.billedAt = b.sentAt;
+      }
+    }
+    conn.lastSyncAt = b.sentAt;
+
+    // Save before attempting attachments — if attachments fail we still have a valid invoice.
+    await saveData();
+
+    // 5. Attach supporting documents (best-effort; failures are logged but don't fail the send)
+    const attachmentIds = [];
+    for (const ref of (b.ticketImageRefs || [])) {
+      if (!ref.url) continue;  // skip base64-only legacy
+      try {
+        const { buffer, contentType } = await qb.fetchRemoteAsBuffer(ref.url);
+        const ext = (contentType.split('/')[1] || 'jpg').split(';')[0];
+        const att = await qb.attachToEntity(conn, {
+          entityType: 'Invoice',
+          entityId: invoice.Id,
+          fileName: `ticket-${ref.loadId}.${ext}`,
+          contentType,
+          buffer,
+          includeOnSend: true,
+        });
+        if (att?.Id) attachmentIds.push({ kind: 'ticket', loadId: ref.loadId, qbAttachableId: att.Id });
+        logQbSync({ actionType: 'attach_file', relatedBatchId: b.id, relatedLoadIds: [ref.loadId], qbEntityType: 'Invoice', qbEntityId: invoice.Id, requestSummary: `ticket-${ref.loadId}`, user });
+      } catch (e) {
+        logQbSync({ actionType: 'attach_file', relatedBatchId: b.id, relatedLoadIds: [ref.loadId], qbEntityType: 'Invoice', qbEntityId: invoice.Id, responseStatus: 'error', errorMessage: e.message, user });
+      }
+    }
+    // Also attach signatures stored as remote URL on the load (pod.signatureUrl)
+    for (const ref of (b.signatureImageRefs || [])) {
+      const l = store.loads.find(x => x.id === ref.loadId);
+      const url = l?.pod?.signatureUrl;
+      if (!url) continue;
+      try {
+        const { buffer, contentType } = await qb.fetchRemoteAsBuffer(url);
+        const ext = (contentType.split('/')[1] || 'png').split(';')[0];
+        const att = await qb.attachToEntity(conn, {
+          entityType: 'Invoice',
+          entityId: invoice.Id,
+          fileName: `signature-${ref.loadId}.${ext}`,
+          contentType,
+          buffer,
+          includeOnSend: true,
+        });
+        if (att?.Id) attachmentIds.push({ kind: 'signature', loadId: ref.loadId, qbAttachableId: att.Id });
+        logQbSync({ actionType: 'attach_file', relatedBatchId: b.id, relatedLoadIds: [ref.loadId], qbEntityType: 'Invoice', qbEntityId: invoice.Id, requestSummary: `signature-${ref.loadId}`, user });
+      } catch (e) {
+        logQbSync({ actionType: 'attach_file', relatedBatchId: b.id, relatedLoadIds: [ref.loadId], qbEntityType: 'Invoice', qbEntityId: invoice.Id, responseStatus: 'error', errorMessage: e.message, user });
+      }
+    }
+    b.attachmentIds = attachmentIds;
+    logAction(req.session.user, 'sent-to-quickbooks', b.id, {
+      invoiceId: invoice.Id, invoiceNumber: invoice.DocNumber, amount: b.totalAmount, loads: b.loadIds.length,
+    });
+    await saveData();
+    res.json({ success: true, batch: b });
+  } catch (e) {
+    console.error('[qb send]', e);
+    b.syncStatus = 'failed';
+    b.errorMessage = e.message;
+    if (store.qbConnection) store.qbConnection.lastError = e.message;
+    logQbSync({
+      actionType: 'create_invoice',
+      relatedBatchId: b.id,
+      relatedLoadIds: b.loadIds,
+      responseStatus: 'error',
+      errorMessage: e.message,
+      statusCode: e.statusCode || 0,
+      user,
+    });
+    await saveData();
+    res.status(500).json({ error: e.message, batch: b });
+  }
+});
+
+// Void a batch — reverses our local lock so a corrected batch can be created.
+// Optionally also voids the QB invoice (default true if it was sent).
+app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
+  const b = store.billingBatches.find(x => x.id === req.params.id);
+  if (!b) return res.status(404).json({ error: 'Batch not found' });
+  if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Already voided' });
+  const reason = (req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Reason required' });
+
+  const conn = store.qbConnection;
+  let qbVoided = false;
+  if (b.qbInvoiceId && conn?.status === 'connected' && req.body?.voidInQuickBooks !== false) {
+    try {
+      await qb.voidInvoice(conn, b.qbInvoiceId);
+      qbVoided = true;
+      logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, requestSummary: reason, user: req.session.user.username });
+    } catch (e) {
+      logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, responseStatus: 'error', errorMessage: e.message, user: req.session.user.username });
+      return res.status(500).json({ error: `Failed to void in QuickBooks: ${e.message}` });
+    }
+  }
+
+  b.syncStatus = 'voided';
+  b.voidedAt = new Date().toISOString();
+  b.voidedBy = req.session.user.username;
+  b.voidReason = reason;
+
+  // Free the loads so a corrected batch can be created. Loads themselves are
+  // NOT deleted — they keep their approved/locked status and full audit trail.
+  for (const lid of b.loadIds) {
+    const l = store.loads.find(x => x.id === lid);
+    if (l) {
+      l.billingBatchId = '';
+      l.billStatus = 'ready';     // back to ready-to-bill so a corrected batch can pick it up
+      l.qbInvoiceId = '';
+      l.qbInvoiceNumber = '';
+      l.sentToQuickBooksAt = '';
+      l.billedAt = '';
+    }
+  }
+  logAction(req.session.user, 'voided-billing-batch', b.id, { reason, qbVoided, loads: b.loadIds.length });
+  await saveData();
+  res.json({ success: true, batch: b, qbVoided });
+});
+
+// Retry a failed send (same logic as /send; allowed when status === 'failed')
+app.post('/api/billing-batches/:id/retry', reqMgr, async (req, res) => {
+  const b = store.billingBatches.find(x => x.id === req.params.id);
+  if (!b) return res.status(404).json({ error: 'Batch not found' });
+  if (b.syncStatus !== 'failed') return res.status(400).json({ error: 'Only failed batches can be retried' });
+  // Reset and forward to /send via internal redirect-style call
+  b.syncStatus = 'ready_to_bill';
+  b.errorMessage = '';
+  await saveData();
+  // Re-issue a request to /send by calling the handler directly is tricky; the
+  // simpler approach is to have the client POST to /send after /retry. So just
+  // confirm reset and let the client trigger /send.
+  res.json({ success: true, batch: b });
+});
+
+// ── VENDOR BILLS (PAYABLES) ─────────────────────────────────────────────────
+function buildVendorBillGroups(loadIds) {
+  const out = new Map();
+  for (const id of loadIds) {
+    const l = store.loads.find(x => x.id === id);
+    if (!l) continue;
+    if (l.approvalStatus !== 'approved') continue;
+    if (l.voided) continue;
+    if (l.vendorBillId) continue;  // already in a bill
+    const vendorId = l.vendorId || l.yardId || '';
+    if (!vendorId || vendorId === 'vbt') continue;  // skip internal yard
+    const v = store.vendors.find(x => x.id === vendorId);
+    if (!v) continue;
+    const key = vendorId;
+    if (!out.has(key)) out.set(key, { vendorId, vendor: v, loads: [] });
+    out.get(key).loads.push(l);
+  }
+  const groups = [];
+  for (const g of out.values()) {
+    const dates = g.loads.map(l => l.deliveryDate).filter(Boolean).sort();
+    const lineMap = new Map();
+    let total = 0;
+    const loadIds = [];
+    for (const l of g.loads) {
+      loadIds.push(l.id);
+      const cost = computeCost(l);
+      total += cost;
+      const lk = `${l.material}|${l.vendorUnit || 'ton'}|${l.vendorRate || 0}`;
+      if (!lineMap.has(lk)) {
+        lineMap.set(lk, { material: l.material, unit: l.vendorUnit || 'ton', rate: Number(l.vendorRate) || 0, loads: 0, tons: 0, amount: 0, loadIds: [] });
+      }
+      const ln = lineMap.get(lk);
+      ln.loads += Number(l.loadsDelivered) || 0;
+      ln.tons  += (Number(l.tonsPerLoad) || TONS_PER_LOAD) * (Number(l.loadsDelivered) || 0);
+      ln.amount += cost;
+      ln.loadIds.push(l.id);
+    }
+    const lineItems = [...lineMap.values()].map(ln => ({
+      ...ln,
+      description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}` + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/load)`),
+    }));
+    groups.push({
+      vendorId: g.vendorId,
+      vendorName: g.vendor.name,
+      deliveryStart: dates[0] || '',
+      deliveryEnd: dates[dates.length - 1] || '',
+      loadIds,
+      totalAmount: total,
+      lineItems,
+    });
+  }
+  return groups;
+}
+
+app.post('/api/vendor-bills/preview', reqMgr, (req, res) => {
+  const ids = req.body?.loadIds || [];
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'loadIds required' });
+  const groups = buildVendorBillGroups(ids);
+  if (!groups.length) return res.status(400).json({ error: 'No eligible vendor costs (loads must be approved, vendor must be external)' });
+  res.json({ groups });
+});
+
+app.post('/api/vendor-bills', reqMgr, async (req, res) => {
+  const ids = req.body?.loadIds || [];
+  const groups = buildVendorBillGroups(ids);
+  if (!groups.length) return res.status(400).json({ error: 'No eligible vendor costs' });
+  const created = [];
+  const now = new Date().toISOString();
+  for (const g of groups) {
+    const bill = {
+      id: genId('VB'),
+      vendorId: g.vendorId,
+      vendorName: g.vendorName,
+      deliveryStart: g.deliveryStart,
+      deliveryEnd: g.deliveryEnd,
+      loadIds: g.loadIds,
+      totalAmount: g.totalAmount,
+      lineItems: g.lineItems,
+      qbVendorId: '', qbBillId: '', qbDocNumber: '',
+      syncStatus: 'ready',
+      errorMessage: '',
+      createdAt: now,
+      createdBy: req.session.user.username,
+      sentAt: '', sentBy: '',
+    };
+    store.vendorBills.push(bill);
+    for (const lid of g.loadIds) {
+      const l = store.loads.find(x => x.id === lid);
+      if (l) l.vendorBillId = bill.id;
+    }
+    created.push(bill);
+  }
+  logAction(req.session.user, 'created-vendor-bills', '', { count: created.length, billIds: created.map(b => b.id) });
+  await saveData();
+  res.json({ success: true, bills: created });
+});
+
+app.get('/api/vendor-bills', reqMgr, (req, res) => {
+  const f = req.query;
+  let items = [...(store.vendorBills || [])];
+  if (f.status)   items = items.filter(b => b.syncStatus === f.status);
+  if (f.vendorId) items = items.filter(b => b.vendorId === f.vendorId);
+  if (f.month)    items = items.filter(b => (b.deliveryStart || '').startsWith(f.month));
+  items.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  res.json({ items });
+});
+
+app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
+  const b = store.vendorBills.find(x => x.id === req.params.id);
+  if (!b) return res.status(404).json({ error: 'Bill not found' });
+  if (b.syncStatus === 'sent' && b.qbBillId) return res.status(400).json({ error: 'Already sent' });
+  const conn = store.qbConnection;
+  if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks not connected' });
+  const user = req.session.user.username;
+  b.syncStatus = 'syncing'; b.errorMessage = ''; await saveData();
+  try {
+    const localVendor = store.vendors.find(v => v.id === b.vendorId);
+    let qbVendorId = localVendor?.qbVendorId || '';
+    if (!qbVendorId) {
+      const lookup = await qb.findOrCreateVendor(conn, { name: b.vendorName });
+      qbVendorId = lookup.vendor?.Id;
+      if (!qbVendorId) throw new Error('QuickBooks did not return a vendor ID');
+      if (localVendor) localVendor.qbVendorId = qbVendorId;
+      logQbSync({ actionType: lookup.created ? 'create_vendor' : 'find_vendor', relatedBatchId: b.id, qbEntityType: 'Vendor', qbEntityId: qbVendorId, requestSummary: `${lookup.created ? 'Created' : 'Matched'} vendor "${b.vendorName}"`, user });
+    }
+    b.qbVendorId = qbVendorId;
+
+    const memo = `VBT Dispatch vendor bill ${b.id} · ${b.deliveryStart}${b.deliveryEnd && b.deliveryEnd !== b.deliveryStart ? ' to ' + b.deliveryEnd : ''} · Loads: ${b.loadIds.join(', ')}`;
+    const bill = await qb.createBill(conn, {
+      qbVendorId,
+      lines: b.lineItems.map(ln => ({ description: ln.description, amount: ln.amount })),
+      memo,
+      docNumber: b.id.slice(0, 21),
+      txnDate: b.deliveryEnd || b.deliveryStart || undefined,
+    });
+    if (!bill?.Id) throw new Error('QuickBooks did not return a bill ID');
+    b.qbBillId = bill.Id;
+    b.qbDocNumber = bill.DocNumber || '';
+    b.syncStatus = 'sent';
+    b.sentAt = new Date().toISOString();
+    b.sentBy = user;
+    for (const lid of b.loadIds) {
+      const l = store.loads.find(x => x.id === lid);
+      if (l) l.qbBillId = bill.Id;
+    }
+    logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Bill', qbEntityId: bill.Id, requestSummary: `Bill for ${b.vendorName} — $${b.totalAmount.toFixed(2)}`, user });
+    logAction(req.session.user, 'sent-vendor-bill', b.id, { qbBillId: bill.Id, vendor: b.vendorName, amount: b.totalAmount });
+    await saveData();
+    res.json({ success: true, bill: b });
+  } catch (e) {
+    console.error('[vendor bill send]', e);
+    b.syncStatus = 'failed';
+    b.errorMessage = e.message;
+    logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, responseStatus: 'error', errorMessage: e.message, statusCode: e.statusCode || 0, user });
+    await saveData();
+    res.status(500).json({ error: e.message, bill: b });
+  }
+});
+
+// ── QB SYNC LOG ─────────────────────────────────────────────────────────────
+app.get('/api/qb-sync-log', reqMgr, (req, res) => {
+  const f = req.query || {};
+  let items = [...(store.qbSyncLog || [])];
+  if (f.status)     items = items.filter(e => e.responseStatus === f.status);
+  if (f.actionType) items = items.filter(e => e.actionType === f.actionType);
+  if (f.batchId)    items = items.filter(e => e.relatedBatchId === f.batchId);
+  if (f.loadId)     items = items.filter(e => (e.relatedLoadIds || []).includes(f.loadId));
+  items.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  // Cap to most recent 500 entries unless `limit` is set
+  const limit = Math.min(parseInt(f.limit || '500', 10) || 500, 5000);
+  res.json({ items: items.slice(0, limit) });
 });
 
 // ── API: MOVE LOADS TO A NEW DATE ────────────────────────────────────────────
