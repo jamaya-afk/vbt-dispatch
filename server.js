@@ -7,7 +7,10 @@ const fs = require('fs');
 const qb = require('./qb');
 
 const app = express();
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({
+  limit: '25mb',
+  verify: (req, _res, buf) => { if (req.path === '/api/stripe/webhook') req.rawBody = buf; },
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
@@ -600,6 +603,103 @@ app.post('/login', (req, res) => {
 
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
 
+// ── SIGNUP ────────────────────────────────────────────────────────────────────
+const SIGNUP_STYLE = `
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 50%,#0a0e1a 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;color:#fff}
+.card{background:rgba(255,255,255,.05);backdrop-filter:blur(20px);border-radius:18px;border:1px solid rgba(255,255,255,.1);padding:40px 36px;width:100%;max-width:420px;box-shadow:0 8px 40px rgba(0,0,0,.4)}
+h2{font-size:18px;font-weight:700;margin-bottom:6px;text-align:center}
+.sub{font-size:12px;color:rgba(255,255,255,.45);text-align:center;margin-bottom:28px}
+label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.55);display:block;margin-bottom:6px;font-weight:600}
+input{width:100%;padding:11px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;font-size:14px;font-family:inherit;margin-bottom:14px;color:#fff;background:rgba(255,255,255,.05)}
+input:focus{outline:none;border-color:#60a8f0;background:rgba(255,255,255,.08)}
+input::placeholder{color:rgba(255,255,255,.3)}
+button{width:100%;padding:12px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:4px}
+button:hover{box-shadow:0 8px 24px rgba(59,130,246,.4)}
+.err{color:#fca5a5;font-size:12px;margin-bottom:16px;background:rgba(220,38,38,.12);padding:10px 14px;border-radius:8px;border:1px solid rgba(220,38,38,.3);text-align:center}
+.login-link{font-size:11px;color:rgba(255,255,255,.4);text-align:center;margin-top:20px}
+.login-link a{color:#60a8f0;text-decoration:none}
+`;
+
+app.get('/signup', (req, res) => {
+  if (req.session?.user) return res.redirect('/app/');
+  const err = req.query.error ? `<p class="err">${decodeURIComponent(req.query.error)}</p>` : '';
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Create Account — VBT Dispatch</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>${SIGNUP_STYLE}</style></head><body><div class="card">
+  <h2>Create your account</h2>
+  <p class="sub">14-day free trial · no credit card required</p>
+  ${err}
+  <form method="POST" action="/signup">
+    <label>Company Name</label><input name="companyName" placeholder="e.g. Acme Trucking" required>
+    <label>Your Username</label><input name="username" autocapitalize="none" autocorrect="off" placeholder="admin" required>
+    <label>Password</label><input name="password" type="password" placeholder="at least 8 characters" required>
+    <label>Confirm Password</label><input name="passwordConfirm" type="password" placeholder="repeat password" required>
+    <button type="submit">Create account &amp; start free trial</button>
+  </form>
+  <p class="login-link">Already have an account? <a href="/login">Sign in</a></p>
+</div></body></html>`);
+});
+
+app.post('/signup', async (req, res) => {
+  if (!pg) return res.redirect('/signup?error=' + encodeURIComponent('Database not available'));
+  const { companyName, username, password, passwordConfirm } = req.body;
+  const name     = String(companyName || '').trim();
+  const uname    = String(username || '').toLowerCase().trim();
+  const pass     = String(password || '');
+  const passConf = String(passwordConfirm || '');
+
+  const errRedirect = msg => res.redirect('/signup?error=' + encodeURIComponent(msg));
+
+  if (!name)  return errRedirect('Company name is required');
+  if (!uname) return errRedirect('Username is required');
+  if (pass.length < 8) return errRedirect('Password must be at least 8 characters');
+  if (pass !== passConf) return errRedirect('Passwords do not match');
+  if (!/^[a-z0-9_.-]+$/.test(uname)) return errRedirect('Username may only contain letters, numbers, _ . -');
+
+  // Build a URL-safe slug from the company name
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
+             + '-' + Date.now().toString(36);
+  const companyId = slug;
+
+  try {
+    // Check if slug/company already exists
+    const existing = await pg.query('SELECT 1 FROM companies WHERE slug = $1', [slug]);
+    if (existing.rows.length) return errRedirect('Company name already taken — please choose another');
+
+    const trialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    await pg.query(`
+      INSERT INTO companies (id, name, slug, active, plan, subscription_status, current_period_end, trial_ends_at)
+      VALUES ($1, $2, $3, true, 'trial', 'trialing', $4, $4)
+    `, [companyId, name, slug, trialEnd]);
+
+    const userId = `user-${companyId}-${uname}`;
+    await pg.query(`
+      INSERT INTO users (id, company_id, username, password, role, display_name, active)
+      VALUES ($1, $2, $3, $4, 'admin', $5, true)
+    `, [userId, companyId, uname, pass, uname.charAt(0).toUpperCase() + uname.slice(1)]);
+
+    // Initialize in-memory store for new company
+    stores[companyId] = makeEmptyStore();
+    normalizeStore(stores[companyId]);
+    await saveCompanyStore(companyId);
+
+    req.session.user = {
+      username: uname,
+      role: 'admin',
+      truckId: null,
+      displayName: uname.charAt(0).toUpperCase() + uname.slice(1),
+      companyId,
+    };
+    console.log(`[SIGNUP] New company created: "${companyId}" (slug: ${slug}), admin: "${uname}"`);
+    res.redirect('/app/');
+  } catch (e) {
+    console.error('[SIGNUP] error:', e.message);
+    res.redirect('/signup?error=' + encodeURIComponent('Something went wrong — please try again'));
+  }
+});
+
 // Static + protected app shell
 app.use('/app', reqAuth, express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
 app.get(['/app', '/app/'], reqAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
@@ -611,6 +711,200 @@ app.get('/api/me', reqAuth, (req, res) => {
   console.log(`[/api/me] username="${u.username}", role="${u.role}", truckId="${u.truckId}"`);
   res.json({ username: u.username, role: u.role, truckId: u.truckId, displayName: u.displayName || u.username });
 });
+
+// ── API: SUBSCRIPTION STATUS ─────────────────────────────────────────────────
+app.get('/api/subscription-status', reqAuth, async (req, res) => {
+  const cid = req.session.user.companyId;
+  const sub = await getSubscriptionStatus(cid);
+  const isActive  = sub.status === 'active' || sub.status === 'trialing';
+  const notExpired = !sub.periodEnd || sub.periodEnd > new Date();
+  const daysLeft = sub.periodEnd
+    ? Math.max(0, Math.ceil((sub.periodEnd - new Date()) / 86400000))
+    : null;
+  res.json({
+    active: isActive && notExpired,
+    status: sub.status,
+    periodEnd: sub.periodEnd,
+    daysLeft,
+    stripeEnabled: !!stripe,
+  });
+});
+
+// ── API: STRIPE — CHECKOUT SESSION ──────────────────────────────────────────
+app.post('/api/stripe/checkout', reqAuth, reqMgr, async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'Stripe not configured' });
+  if (!STRIPE_PRICE_ID) return res.status(503).json({ error: 'STRIPE_PRICE_ID not set' });
+  const cid = req.session.user.companyId;
+  try {
+    const companyRow = await pg.query('SELECT * FROM companies WHERE id = $1', [cid]);
+    const company = companyRow.rows[0];
+
+    let customerId = company?.stripe_customer_id || '';
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        name: company?.name || cid,
+        metadata: { company_id: cid },
+      });
+      customerId = customer.id;
+      await pg.query('UPDATE companies SET stripe_customer_id = $1 WHERE id = $2', [customerId, cid]);
+      invalidateSubscriptionCache(cid);
+    }
+
+    const appUrl = `${req.protocol}://${req.get('host')}`;
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      mode: 'subscription',
+      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
+      success_url: STRIPE_SUCCESS_URL.startsWith('http') ? STRIPE_SUCCESS_URL : appUrl + STRIPE_SUCCESS_URL,
+      cancel_url:  STRIPE_CANCEL_URL.startsWith('http')  ? STRIPE_CANCEL_URL  : appUrl + STRIPE_CANCEL_URL,
+      metadata: { company_id: cid },
+    });
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error('[stripe/checkout] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── API: STRIPE — CUSTOMER PORTAL ───────────────────────────────────────────
+app.post('/api/stripe/portal', reqAuth, reqMgr, async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'Stripe not configured' });
+  const cid = req.session.user.companyId;
+  try {
+    const companyRow = await pg.query('SELECT stripe_customer_id FROM companies WHERE id = $1', [cid]);
+    const customerId = companyRow.rows[0]?.stripe_customer_id;
+    if (!customerId) return res.status(400).json({ error: 'No Stripe customer on file — subscribe first' });
+    const appUrl = `${req.protocol}://${req.get('host')}`;
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: appUrl + '/app/',
+    });
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error('[stripe/portal] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── API: STRIPE — WEBHOOK ────────────────────────────────────────────────────
+// Stripe sends raw JSON; we captured req.rawBody via express.json verify callback.
+app.post('/api/stripe/webhook', async (req, res) => {
+  if (!stripe) return res.status(200).send('ok'); // no-op if Stripe not configured
+  const sig = req.headers['stripe-signature'];
+  if (!sig || !STRIPE_WEBHOOK_SECRET) {
+    console.error('[stripe/webhook] missing signature or secret');
+    return res.status(400).send('Webhook signature missing');
+  }
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.rawBody, sig, STRIPE_WEBHOOK_SECRET);
+  } catch (e) {
+    console.error('[stripe/webhook] signature verification failed:', e.message);
+    return res.status(400).send(`Webhook signature error: ${e.message}`);
+  }
+
+  const obj = event.data.object;
+  const companyId = obj.metadata?.company_id;
+
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        // Session completed; subscription is now active. The subscription.updated
+        // event will also fire, but update here too for immediate effect.
+        const subId = obj.subscription;
+        const custId = obj.customer;
+        const cid = obj.metadata?.company_id;
+        if (cid && subId) {
+          const sub = await stripe.subscriptions.retrieve(subId);
+          await pg.query(`
+            UPDATE companies SET
+              stripe_customer_id     = $1,
+              stripe_subscription_id = $2,
+              subscription_status    = $3,
+              current_period_end     = to_timestamp($4),
+              plan                   = 'monthly'
+            WHERE id = $5
+          `, [custId, subId, sub.status, sub.current_period_end, cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] checkout.session.completed → company "${cid}" status="${sub.status}"`);
+        }
+        break;
+      }
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated': {
+        const cid = companyId || await companyIdFromCustomer(obj.customer);
+        if (cid) {
+          await pg.query(`
+            UPDATE companies SET
+              stripe_subscription_id = $1,
+              subscription_status    = $2,
+              current_period_end     = to_timestamp($3),
+              plan                   = CASE WHEN plan = 'internal' THEN 'internal' ELSE 'monthly' END
+            WHERE id = $4
+          `, [obj.id, obj.status, obj.current_period_end, cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] ${event.type} → company "${cid}" status="${obj.status}"`);
+        }
+        break;
+      }
+      case 'customer.subscription.deleted': {
+        const cid = companyId || await companyIdFromCustomer(obj.customer);
+        if (cid) {
+          await pg.query(`
+            UPDATE companies SET subscription_status = 'canceled', current_period_end = now()
+            WHERE id = $1 AND plan != 'internal'
+          `, [cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] subscription.deleted → company "${cid}" canceled`);
+        }
+        break;
+      }
+      case 'invoice.payment_failed': {
+        const custId = obj.customer;
+        const cid = companyId || await companyIdFromCustomer(custId);
+        if (cid) {
+          await pg.query(`
+            UPDATE companies SET subscription_status = 'past_due'
+            WHERE id = $1 AND plan != 'internal'
+          `, [cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] invoice.payment_failed → company "${cid}" past_due`);
+        }
+        break;
+      }
+      case 'invoice.paid': {
+        const custId = obj.customer;
+        const cid = companyId || await companyIdFromCustomer(custId);
+        if (cid) {
+          await pg.query(`
+            UPDATE companies SET subscription_status = 'active'
+            WHERE id = $1 AND subscription_status = 'past_due'
+          `, [cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] invoice.paid → company "${cid}" active`);
+        }
+        break;
+      }
+      default:
+        // Unhandled event type — ignore
+        break;
+    }
+  } catch (e) {
+    console.error(`[stripe/webhook] handler error for ${event.type}:`, e.message);
+    // Still return 200 so Stripe doesn't retry unnecessarily for handler bugs
+  }
+
+  res.json({ received: true });
+});
+
+async function companyIdFromCustomer(stripeCustomerId) {
+  if (!stripeCustomerId || !pg) return null;
+  try {
+    const r = await pg.query('SELECT id FROM companies WHERE stripe_customer_id = $1 LIMIT 1', [stripeCustomerId]);
+    return r.rows[0]?.id || null;
+  } catch { return null; }
+}
 
 // ── API: PHOTO UPLOAD (Supabase Storage) ────────────────────────────────────
 // Body: { kind: 'ticket' | 'signature', loadId, dataUrl }
