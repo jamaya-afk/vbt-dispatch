@@ -2808,14 +2808,14 @@ async function listDriversFromDb(companyId) {
 }
 
 // GET /api/fleet — admins only. Returns trucks + drivers.
-app.get('/api/fleet', reqAdmin, async (req, res) => {
+app.get('/api/fleet', reqMgr, async (req, res) => {
   const cid = req.session.user.companyId || DEFAULT_COMPANY_ID;
   const drivers = await listDriversFromDb(cid);
   res.json({ trucks: store.trucks, drivers });
 });
 
 // ── Trucks CRUD ──
-app.post('/api/trucks', reqAdmin, async (req, res) => {
+app.post('/api/trucks', reqMgr, async (req, res) => {
   const { id, label, truckNum } = req.body || {};
   const cleanId = String(id || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
   if (!cleanId)  return res.status(400).json({ error: 'id is required (e.g. "truck-7")' });
@@ -2831,7 +2831,7 @@ app.post('/api/trucks', reqAdmin, async (req, res) => {
   res.json({ ok: true, truck });
 });
 
-app.put('/api/trucks/:id', reqAdmin, async (req, res) => {
+app.put('/api/trucks/:id', reqMgr, async (req, res) => {
   const truck = store.trucks.find(t => t.id === req.params.id);
   if (!truck) return res.status(404).json({ error: 'Truck not found' });
   const before = { ...truck };
@@ -2843,7 +2843,7 @@ app.put('/api/trucks/:id', reqAdmin, async (req, res) => {
   res.json({ ok: true, truck });
 });
 
-app.delete('/api/trucks/:id', reqAdmin, async (req, res) => {
+app.delete('/api/trucks/:id', reqMgr, async (req, res) => {
   const idx = store.trucks.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Truck not found' });
   // Refuse to hard-delete if any non-voided load references this truck —
@@ -2862,7 +2862,7 @@ app.delete('/api/trucks/:id', reqAdmin, async (req, res) => {
 });
 
 // ── Drivers CRUD (writes the users table) ──
-app.post('/api/drivers', reqAdmin, async (req, res) => {
+app.post('/api/drivers', reqMgr, async (req, res) => {
   if (!pg) return res.status(503).json({ error: 'Database not available' });
   const { username, password, displayName, truckId } = req.body || {};
   const uname = String(username || '').toLowerCase().trim();
@@ -2893,7 +2893,7 @@ app.post('/api/drivers', reqAdmin, async (req, res) => {
   }
 });
 
-app.put('/api/drivers/:username', reqAdmin, async (req, res) => {
+app.put('/api/drivers/:username', reqMgr, async (req, res) => {
   if (!pg) return res.status(503).json({ error: 'Database not available' });
   const cid = req.session.user.companyId || DEFAULT_COMPANY_ID;
   const uname = String(req.params.username || '').toLowerCase();
@@ -2924,7 +2924,7 @@ app.put('/api/drivers/:username', reqAdmin, async (req, res) => {
   }
 });
 
-app.delete('/api/drivers/:username', reqAdmin, async (req, res) => {
+app.delete('/api/drivers/:username', reqMgr, async (req, res) => {
   if (!pg) return res.status(503).json({ error: 'Database not available' });
   const cid = req.session.user.companyId || DEFAULT_COMPANY_ID;
   const uname = String(req.params.username || '').toLowerCase();

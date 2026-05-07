@@ -1104,13 +1104,14 @@ async function init() {
     document.getElementById('userrole').textContent = roleLabel;
     document.getElementById('avatar').textContent = (myDisplayName.charAt(0) || '?').toUpperCase();
 
-    await loadAll();
-
-    // Admin-only tab: Drivers & Trucks
-    if (role === 'admin') {
+    // Drivers & Trucks tab: admin + manager. Unhide BEFORE loadAll() so a
+    // network blip doesn't hide the tab from someone who's allowed to see it.
+    if (role === 'admin' || role === 'manager') {
       const navFleet = document.getElementById('nav-fleet');
       if (navFleet) navFleet.style.display = '';
     }
+
+    await loadAll();
 
     if (role === 'driver') {
       document.body.classList.add('driver-mode');
@@ -4903,9 +4904,9 @@ async function loadFleet() {
 }
 
 async function renderFleet() {
-  if (role !== 'admin') {
+  if (role !== 'admin' && role !== 'manager') {
     document.getElementById('fleet-content').innerHTML =
-      `<div style="padding:30px;background:var(--bg);border:1px solid var(--bdr);border-radius:14px;text-align:center;color:var(--txt2)">Admin access required.</div>`;
+      `<div style="padding:30px;background:var(--bg);border:1px solid var(--bdr);border-radius:14px;text-align:center;color:var(--txt2)">Admin or manager access required.</div>`;
     return;
   }
   await loadFleet();
