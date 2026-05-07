@@ -3732,10 +3732,28 @@ async function saveCustomerMaster(existingId) {
 }
 
 async function deleteCustomer(id, name) {
-  if (!confirm(`Delete customer "${name}"?\n\nThis only works if no POs reference them. Otherwise mark as inactive.`)) return;
-  const d = await api('DELETE', '/api/customers/' + id);
-  if (d.ok) { toast('Customer deleted', 'success'); await loadAll(); renderCustomerMaster(); }
-  else toast(d.error || 'Failed', 'error');
+  if (!confirm(`Delete customer "${name}"?`)) return;
+  let d = await api('DELETE', '/api/customers/' + id);
+  // Server returns 409 + requiresCascade when this customer still has POs.
+  // Offer the cascade option (also deletes those POs + their loads). The
+  // server still refuses if any of those loads are already approved.
+  if (!d.ok && d.requiresCascade) {
+    const msg = `${name} has ${d.linkedPos} PO${d.linkedPos===1?'':'s'} and ${d.linkedLoads} load${d.linkedLoads===1?'':'s'}.\n\n`
+      + `Also DELETE those POs and loads?\n\n`
+      + `(Approved loads are protected — if any are approved, this will fail and you'll need to void them first.)`;
+    if (!confirm(msg)) return;
+    d = await api('DELETE', '/api/customers/' + id + '?cascade=1');
+  }
+  if (d.ok) {
+    const extra = d.cascadedPos
+      ? ` (and ${d.cascadedPos} PO${d.cascadedPos===1?'':'s'} / ${d.cascadedLoads} load${d.cascadedLoads===1?'':'s'})`
+      : '';
+    toast('Customer deleted' + extra, 'success');
+    await loadAll();
+    renderCustomerMaster();
+  } else {
+    toast(d.error || 'Failed', 'error');
+  }
 }
 
 async function toggleCustomerActive(id, makeActive) {

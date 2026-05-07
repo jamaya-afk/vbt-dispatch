@@ -3082,18 +3082,52 @@ app.delete('/api/customers/:id', reqMgr, async (req, res) => {
   const idx = (store.customers || []).findIndex(x => x.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Customer not found' });
   const c = store.customers[idx];
-  // Refuse if this customer is referenced by any non-archived POs.
   const lc = String(c.name || '').toLowerCase().trim();
-  const linkedPos = store.pos.filter(p => String(p.customer || '').toLowerCase().trim() === lc).length;
-  if (linkedPos > 0) {
-    return res.status(403).json({ error: `Cannot delete — ${linkedPos} active PO${linkedPos===1?'':'s'} reference this customer. Mark inactive instead.` });
+  const cascade = req.query.cascade === '1';
+
+  const linkedPos   = store.pos.filter(p => String(p.customer || '').toLowerCase().trim() === lc);
+  const linkedPoIds = new Set(linkedPos.map(p => p.id));
+  const linkedLoads = store.loads.filter(l => linkedPoIds.has(l.poId));
+
+  if (linkedPos.length > 0 && !cascade) {
+    // Without cascade, refuse. Tell the client what's blocking and let it
+    // re-call with ?cascade=1 if the user confirms.
+    return res.status(409).json({
+      error: `${linkedPos.length} PO${linkedPos.length===1?'':'s'} reference this customer.`,
+      linkedPos:   linkedPos.length,
+      linkedLoads: linkedLoads.length,
+      requiresCascade: true,
+    });
   }
+
+  if (cascade && linkedLoads.some(l => l.approvalStatus === 'approved')) {
+    // Even cascade refuses to wipe real billing data. The user has to void
+    // approved loads individually first.
+    return res.status(403).json({
+      error: 'Cannot delete — at least one linked load is already approved. Void approved loads first.',
+    });
+  }
+
+  // Wipe linked POs + their loads, then the customer.
+  if (cascade && linkedPos.length) {
+    store.pos   = store.pos.filter(p => !linkedPoIds.has(p.id));
+    store.loads = store.loads.filter(l => !linkedPoIds.has(l.poId));
+    logAction(req.session.user, 'cascade-deleted-pos', c.id, {
+      customer: c.name,
+      poCount: linkedPos.length,
+      loadCount: linkedLoads.length,
+    });
+  }
+
   store.customers.splice(idx, 1);
-  // Drop pricing rows tied to this customer
   if (store.customerPrices?.[lc]) delete store.customerPrices[lc];
-  logAction(req.session.user, 'deleted-customer', c.id, { name: c.name });
+  logAction(req.session.user, 'deleted-customer', c.id, {
+    name: c.name,
+    cascadedPos:   cascade ? linkedPos.length   : 0,
+    cascadedLoads: cascade ? linkedLoads.length : 0,
+  });
   await saveData();
-  res.json({ success: true });
+  res.json({ success: true, cascadedPos: cascade ? linkedPos.length : 0, cascadedLoads: cascade ? linkedLoads.length : 0 });
 });
 
 // ── API: CUSTOMER PRICING ────────────────────────────────────────────────────
