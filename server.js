@@ -381,6 +381,19 @@ async function seedDefaultCompanyAndUsers() {
       ON CONFLICT (id) DO NOTHING
     `, [DEFAULT_COMPANY_ID, DEFAULT_COMPANY_NAME, DEFAULT_COMPANY_SLUG]);
 
+    // Only seed the legacy USERS map on a brand-new database. After a
+    // reset (scripts/reset-app.js) the admin rows still exist, so this
+    // skips and the hardcoded drivers stay deleted instead of silently
+    // re-appearing on the next boot.
+    const userCount = await pg.query(
+      'SELECT COUNT(*)::int AS c FROM users WHERE company_id = $1',
+      [DEFAULT_COMPANY_ID]
+    );
+    if (userCount.rows[0].c > 0) {
+      console.log(`✓ Default company "${DEFAULT_COMPANY_ID}" already has ${userCount.rows[0].c} user(s) — skipping legacy seed`);
+      return;
+    }
+
     for (const [uname, u] of Object.entries(USERS)) {
       const userId = `user-${DEFAULT_COMPANY_ID}-${uname}`;
       await pg.query(`
@@ -760,9 +773,12 @@ app.post('/login', async (req, res) => {
     }
   }
 
-  // 2) Legacy fallback: hardcoded VBT users (still works if seed hasn't run).
+  // 2) Legacy fallback: ADMIN ONLY. Drivers / managers must come through
+  //    the database. Otherwise after running scripts/reset-app.js the
+  //    hardcoded drivers (beryle/matthew/rigo/leonardo/carlos) could still
+  //    log in via these baked-in credentials, defeating the reset.
   const u = USERS[cleanName];
-  if (!u || u.password !== password) {
+  if (!u || u.role !== 'admin' || u.password !== password) {
     console.log(`[LOGIN] FAILED: username="${cleanName}"`);
     return res.redirect('/login?error=1');
   }
@@ -773,7 +789,7 @@ app.post('/login', async (req, res) => {
     displayName: u.displayName || (cleanName.charAt(0).toUpperCase() + cleanName.slice(1)),
     companyId:   DEFAULT_COMPANY_ID,
   };
-  console.log(`[LOGIN] SUCCESS (legacy): username="${cleanName}", role="${u.role}"`);
+  console.log(`[LOGIN] SUCCESS (legacy admin): username="${cleanName}"`);
   res.redirect('/app/');
 });
 
