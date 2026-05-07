@@ -13,6 +13,20 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true }));
 
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// Hard-fail at boot in production if DATABASE_URL is missing — we never want
+// to silently fall back to data.json on a Railway deploy and lose data.
+if (IS_PROD && !process.env.DATABASE_URL) {
+  console.error('FATAL: DATABASE_URL is required in production.');
+  process.exit(1);
+}
+
+// Feature flag: until per-company stores ship in Phase 2, keep public signup
+// disabled so a new company can't log in and accidentally see the existing
+// shared VBT data.
+const SIGNUP_ENABLED = process.env.ENABLE_SIGNUP === 'true';
+
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
 const sessionOpts = {
   secret: process.env.SESSION_SECRET || 'vbt-2025-secret',
@@ -49,6 +63,39 @@ const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'vbt-photos';
 let supabaseEnabled = false;
 let supabase = null;
 
+// ── STRIPE (Phase 5 — disabled for now) ─────────────────────────────────────
+// The Stripe checkout / portal / webhook routes were merged before the
+// multi-tenant foundation that they depend on. They're left in place so the
+// merge history reads cleanly, but they're behind these stubs so a
+// ReferenceError can't crash a request handler. Stripe re-enables in Phase 5.
+let stripe = null;
+const STRIPE_PRICE_ID       = process.env.STRIPE_PRICE_ID || '';
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
+const STRIPE_SUCCESS_URL    = process.env.STRIPE_SUCCESS_URL || '/app/';
+const STRIPE_CANCEL_URL     = process.env.STRIPE_CANCEL_URL  || '/app/';
+async function getSubscriptionStatus(_companyId) {
+  // Until Stripe is wired up, every authenticated company is treated as
+  // an active internal account so the dispatch UI keeps working.
+  return { status: 'active', periodEnd: null };
+}
+function invalidateSubscriptionCache(_companyId) { /* no-op until Phase 5 */ }
+
+// Per-company stores land in Phase 2. Declared here so /signup and any
+// stragglers don't ReferenceError when they touch it.
+let stores = {};
+function makeEmptyStore() {
+  return {
+    pos: [], loads: [], archive: [],
+    vendors: [], vendorPrices: {},
+    customers: [], customerPrices: {},
+    defaultRates: null,
+    auditLog: [],
+    nextPoNum: 1001,
+    nextLoadId: 1,
+  };
+}
+async function saveCompanyStore(_companyId) { /* no-op until Phase 2 */ }
+
 console.log('[Supabase config] URL:', SUPABASE_URL ? SUPABASE_URL : '(missing)');
 console.log('[Supabase config] KEY:', SUPABASE_KEY ? `[${SUPABASE_KEY.slice(0,8)}...${SUPABASE_KEY.slice(-4)}, len=${SUPABASE_KEY.length}]` : '(missing)');
 console.log('[Supabase config] BUCKET:', SUPABASE_BUCKET);
@@ -65,7 +112,7 @@ if (SUPABASE_URL && SUPABASE_KEY) {
     console.error('⚠ Supabase init failed:', e.message);
   }
 } else {
-  console.log('⚠ Supabase not configured — uploads will fall back to base64-in-database');
+  console.log('⚠ Supabase not configured — photo uploads will be rejected (no DB/file fallback by design)');
 }
 
 // Generate a strong random folder path so public URLs are unguessable
@@ -250,9 +297,21 @@ let store = {
   nextLoadId: 1,
 };
 
+// Default company every legacy VBT record belongs to. Phase 2 will add real
+// per-company stores; for now, every existing PO/load/customer is logically
+// owned by this company.
+const DEFAULT_COMPANY_ID   = 'vbt';
+const DEFAULT_COMPANY_NAME = 'Valley Best Trucking';
+const DEFAULT_COMPANY_SLUG = 'vbt';
+
 async function initPg() {
   if (!process.env.DATABASE_URL) {
-    console.warn('⚠ No DATABASE_URL — using file storage (data resets on redeploy!)');
+    if (IS_PROD) {
+      // Caught earlier at boot, but defensively re-fail here.
+      console.error('FATAL: DATABASE_URL is required in production.');
+      process.exit(1);
+    }
+    console.warn('⚠ No DATABASE_URL — dev mode, using file storage (data resets on redeploy!)');
     return;
   }
   try {
@@ -268,10 +327,72 @@ async function initPg() {
     }
     await pg.query('SELECT 1');
     await pg.query(`CREATE TABLE IF NOT EXISTS dispatch_data (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+
+    // Multi-tenant scaffolding tables. Created here so Phase 2 (per-company
+    // stores) can layer on without another migration step.
+    await pg.query(`
+      CREATE TABLE IF NOT EXISTS companies (
+        id                      TEXT PRIMARY KEY,
+        name                    TEXT NOT NULL,
+        slug                    TEXT NOT NULL UNIQUE,
+        active                  BOOLEAN NOT NULL DEFAULT true,
+        plan                    TEXT NOT NULL DEFAULT 'trial',
+        subscription_status     TEXT NOT NULL DEFAULT 'trialing',
+        stripe_customer_id      TEXT,
+        stripe_subscription_id  TEXT,
+        current_period_end      TIMESTAMPTZ,
+        trial_ends_at           TIMESTAMPTZ,
+        created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await pg.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id            TEXT PRIMARY KEY,
+        company_id    TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        username      TEXT NOT NULL,
+        password      TEXT NOT NULL,
+        role          TEXT NOT NULL,
+        truck_id      TEXT,
+        display_name  TEXT,
+        active        BOOLEAN NOT NULL DEFAULT true,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (company_id, username)
+      )
+    `);
     console.log('✓ Postgres connected');
   } catch (e) {
     console.error('✗ Postgres connection failed:', e.message);
+    if (IS_PROD) {
+      console.error('FATAL: cannot start without database in production.');
+      process.exit(1);
+    }
     pg = null;
+  }
+}
+
+// Idempotent: seed the default VBT company + migrate the hardcoded USERS map
+// into the users table. Run after initPg(). Safe to call on every boot.
+async function seedDefaultCompanyAndUsers() {
+  if (!pg) return;
+  try {
+    await pg.query(`
+      INSERT INTO companies (id, name, slug, active, plan, subscription_status)
+      VALUES ($1, $2, $3, true, 'internal', 'active')
+      ON CONFLICT (id) DO NOTHING
+    `, [DEFAULT_COMPANY_ID, DEFAULT_COMPANY_NAME, DEFAULT_COMPANY_SLUG]);
+
+    for (const [uname, u] of Object.entries(USERS)) {
+      const userId = `user-${DEFAULT_COMPANY_ID}-${uname}`;
+      await pg.query(`
+        INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+        ON CONFLICT (company_id, username) DO NOTHING
+      `, [userId, DEFAULT_COMPANY_ID, uname, u.password, u.role, u.truckId || null, u.displayName || uname]);
+    }
+    console.log(`✓ Seeded default company "${DEFAULT_COMPANY_ID}" + ${Object.keys(USERS).length} legacy users`);
+  } catch (e) {
+    console.error('✗ Seed default company/users failed:', e.message);
+    // Don't crash — legacy hardcoded login will still work.
   }
 }
 
@@ -288,8 +409,9 @@ async function loadData() {
       }
     } catch (e) { console.error('PG read error:', e.message); }
   }
-  // File fallback
-  if (fs.existsSync(DATA_FILE)) {
+  // File fallback — DEV ONLY. In production we hard-fail above instead of
+  // silently using ephemeral disk that resets on every Railway redeploy.
+  if (!IS_PROD && fs.existsSync(DATA_FILE)) {
     try {
       store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
       normalizeStore();
@@ -307,11 +429,14 @@ async function saveData() {
         "INSERT INTO dispatch_data(key,value) VALUES('store',$1) ON CONFLICT(key) DO UPDATE SET value=$1",
         [j]
       );
+      return;
     } catch (e) {
       console.error('PG write error:', e.message);
-      try { fs.writeFileSync(DATA_FILE, j); } catch (fe) {}
+      // In prod, never fall back to local disk — the next deploy will wipe it.
+      if (IS_PROD) throw e;
     }
-  } else {
+  }
+  if (!IS_PROD) {
     try { fs.writeFileSync(DATA_FILE, j); } catch (e) {}
   }
 }
@@ -549,7 +674,15 @@ function reqAuth(req, res, next) { if (req.session?.user) return next(); res.red
 function reqMgr(req, res, next)   { const r = req.session?.user?.role; if (r === 'admin' || r === 'manager') return next(); res.status(403).json({ error: 'Office access required' }); }
 function reqAdmin(req, res, next) { if (req.session?.user?.role === 'admin') return next(); res.status(403).json({ error: 'Admin access required' }); }
 
-app.get('/healthz', (req, res) => res.json({ ok: true, hasDb: !!process.env.DATABASE_URL, time: new Date().toISOString() }));
+app.get('/healthz', (req, res) => res.json({
+  ok: true,
+  hasDb: !!process.env.DATABASE_URL,
+  pgConnected: !!pg,
+  supabaseEnabled,
+  signupEnabled: SIGNUP_ENABLED,
+  prod: IS_PROD,
+  time: new Date().toISOString(),
+}));
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
 
 app.get('/login', (req, res) => {
@@ -583,21 +716,50 @@ button:hover{box-shadow:0 8px 24px rgba(59,130,246,.4)}
 </div></body></html>`);
 });
 
-app.post('/login', (req, res) => {
+app.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const cleanName = username?.toLowerCase().trim();
+  if (!cleanName || !password) return res.redirect('/login?error=1');
+
+  // 1) DB-backed users (seeded for VBT, plus any future signup companies).
+  if (pg) {
+    try {
+      const r = await pg.query(
+        'SELECT id, company_id, username, password, role, truck_id, display_name, active FROM users WHERE username = $1',
+        [cleanName]
+      );
+      const dbUser = r.rows.find(row => row.active && row.password === password);
+      if (dbUser) {
+        req.session.user = {
+          username:    dbUser.username,
+          role:        dbUser.role,
+          truckId:     dbUser.truck_id,
+          displayName: dbUser.display_name || dbUser.username,
+          companyId:   dbUser.company_id,
+        };
+        console.log(`[LOGIN] SUCCESS (db): username="${dbUser.username}", company="${dbUser.company_id}", role="${dbUser.role}"`);
+        return res.redirect('/app/');
+      }
+    } catch (e) {
+      console.error('[LOGIN] DB lookup error:', e.message);
+      // fall through to hardcoded users
+    }
+  }
+
+  // 2) Legacy fallback: hardcoded VBT users (still works if seed hasn't run).
   const u = USERS[cleanName];
   if (!u || u.password !== password) {
     console.log(`[LOGIN] FAILED: username="${cleanName}"`);
     return res.redirect('/login?error=1');
   }
   req.session.user = {
-    username: cleanName,
-    role: u.role,
-    truckId: u.truckId,
+    username:    cleanName,
+    role:        u.role,
+    truckId:     u.truckId,
     displayName: u.displayName || (cleanName.charAt(0).toUpperCase() + cleanName.slice(1)),
+    companyId:   DEFAULT_COMPANY_ID,
   };
-  console.log(`[LOGIN] SUCCESS: username="${cleanName}", role="${u.role}", displayName="${u.displayName}"`);
+  console.log(`[LOGIN] SUCCESS (legacy): username="${cleanName}", role="${u.role}"`);
   res.redirect('/app/');
 });
 
@@ -643,6 +805,11 @@ app.get('/signup', (req, res) => {
 });
 
 app.post('/signup', async (req, res) => {
+  if (!SIGNUP_ENABLED) {
+    return res.redirect('/signup?error=' + encodeURIComponent(
+      'Signup is invite-only right now. Email us to request access.'
+    ));
+  }
   if (!pg) return res.redirect('/signup?error=' + encodeURIComponent('Database not available'));
   const { companyName, username, password, passwordConfirm } = req.body;
   const name     = String(companyName || '').trim();
@@ -708,8 +875,14 @@ app.get('/', (req, res) => res.redirect(req.session?.user ? '/app/' : '/login'))
 // ── API: WHO AM I ────────────────────────────────────────────────────────────
 app.get('/api/me', reqAuth, (req, res) => {
   const u = req.session.user;
-  console.log(`[/api/me] username="${u.username}", role="${u.role}", truckId="${u.truckId}"`);
-  res.json({ username: u.username, role: u.role, truckId: u.truckId, displayName: u.displayName || u.username });
+  console.log(`[/api/me] username="${u.username}", role="${u.role}", company="${u.companyId || ''}"`);
+  res.json({
+    username:    u.username,
+    role:        u.role,
+    truckId:     u.truckId,
+    displayName: u.displayName || u.username,
+    companyId:   u.companyId || DEFAULT_COMPANY_ID,
+  });
 });
 
 // ── API: SUBSCRIPTION STATUS ─────────────────────────────────────────────────
@@ -3507,6 +3680,7 @@ async function writeSheet(tab, rows) {
 const PORT = process.env.PORT || 3000;
 (async () => {
   await initPg();
+  await seedDefaultCompanyAndUsers();
   await loadData();
   app.listen(PORT, () => {
     console.log(`VBT Dispatch on port ${PORT}`);
