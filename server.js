@@ -417,8 +417,12 @@ async function loadData() {
       normalizeStore();
       console.log(`✓ Loaded from file: ${store.pos.length} POs`);
       if (pg) { await saveData(); console.log('✓ Migrated file data to Postgres'); }
+      return;
     } catch (e) { console.warn('File read error:', e.message); }
   }
+  // Nothing loaded — still normalize so the seed defaults (trucks, vendors,
+  // etc.) populate even on a brand-new database.
+  normalizeStore();
 }
 
 async function saveData() {
@@ -474,6 +478,16 @@ function normalizeStore() {
   }
   if (!store.nextPoNum)  store.nextPoNum = 1001;
   if (!store.nextLoadId) store.nextLoadId = 1;
+
+  // Trucks: seeded from the legacy TRUCKS constant on first boot, then
+  // edited via the Fleet admin UI. Each truck's id is also the driver's
+  // username for backward compatibility with existing loads.
+  if (!Array.isArray(store.trucks) || store.trucks.length === 0) {
+    store.trucks = JSON.parse(JSON.stringify(TRUCKS));
+  }
+  store.trucks.forEach(t => {
+    if (t.active === undefined) t.active = true;
+  });
 
   store.loads.forEach(l => {
     if (!l.timestamps)     l.timestamps = {};
@@ -1126,11 +1140,12 @@ app.get('/api/data', reqAuth, async (req, res) => {
     const myLoads = store.loads.filter(l => l.truckId === u.truckId && !l.voided);
     const myPoIds = new Set(myLoads.map(l => l.poId));
     const myPos = store.pos.filter(p => myPoIds.has(p.id));
-    return res.json({ trucks: TRUCKS, materials: MATERIALS, yards, pos: myPos, loads: myLoads });
+    return res.json({ trucks: store.trucks.filter(t => t.active !== false), materials: MATERIALS, yards, pos: myPos, loads: myLoads });
   }
   // Manager sees full vendor data
   res.json({
-    trucks: TRUCKS,
+    trucks: store.trucks,
+    drivers: listDrivers(),
     materials: MATERIALS,
     yards,
     vendors: store.vendors,
@@ -1286,7 +1301,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       console.log(`[create-PO] SKIPPING split — missing material or loadsAssigned:`, JSON.stringify(s));
       return;
     }
-    const truck = TRUCKS.find(t => t.id === s.truckId);
+    const truck = store.trucks.find(t => t.id === s.truckId);
     const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
     console.log(`[create-PO] Creating load: truckId="${s.truckId}", material="${s.material}", loads=${s.loadsAssigned}, driver="${truck?.label || '(unassigned)'}", vendor="${vendor?.name || '(none)'}"`);
 
@@ -1437,7 +1452,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     let auditAction = 'updated-load';
     let auditDetails = { changes: Object.keys(req.body) };
     if (req.body.truckId !== undefined) {
-      const t = TRUCKS.find(t => t.id === req.body.truckId);
+      const t = store.trucks.find(t => t.id === req.body.truckId);
       updated.driverName = t?.label || '';
       updated.status = req.body.truckId ? 'active' : 'unassigned';
       // Treat driver change as a separate action type
@@ -2748,6 +2763,193 @@ app.get('/api/audit-log', reqMgr, (req, res) => {
   res.json({ entries, total, allUsers, allActions });
 });
 
+// ── API: FLEET (Drivers + Trucks admin) ──────────────────────────────────────
+// Drivers live in the `users` table (companies/users seeded in initPg).
+// Trucks live in the JSON store. Both share an id (the driver's username) so
+// existing loads and history stay valid when drivers/trucks are renamed.
+
+// Helper: list all driver-role users for the active company. Falls back to
+// the legacy hardcoded USERS map when the DB isn't reachable so the dispatch
+// board never goes blank.
+function listDrivers() {
+  // Hardcoded legacy fallback used when DB lookup fails.
+  return Object.entries(USERS)
+    .filter(([, u]) => u.role === 'driver')
+    .map(([username, u]) => ({
+      username,
+      role: u.role,
+      truckId: u.truckId || username,
+      displayName: u.displayName || username,
+      active: true,
+    }));
+}
+
+async function listDriversFromDb(companyId) {
+  if (!pg) return listDrivers();
+  try {
+    const r = await pg.query(
+      `SELECT username, role, truck_id, display_name, active
+         FROM users
+        WHERE company_id = $1 AND role = 'driver'
+        ORDER BY display_name`,
+      [companyId]
+    );
+    return r.rows.map(row => ({
+      username:    row.username,
+      role:        row.role,
+      truckId:     row.truck_id || row.username,
+      displayName: row.display_name || row.username,
+      active:      row.active !== false,
+    }));
+  } catch (e) {
+    console.error('[listDriversFromDb] failed:', e.message);
+    return listDrivers();
+  }
+}
+
+// GET /api/fleet — admins only. Returns trucks + drivers.
+app.get('/api/fleet', reqMgr, async (req, res) => {
+  const cid = req.session.user.companyId || DEFAULT_COMPANY_ID;
+  const drivers = await listDriversFromDb(cid);
+  res.json({ trucks: store.trucks, drivers });
+});
+
+// ── Trucks CRUD ──
+app.post('/api/trucks', reqMgr, async (req, res) => {
+  const { id, label, truckNum } = req.body || {};
+  const cleanId = String(id || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
+  if (!cleanId)  return res.status(400).json({ error: 'id is required (e.g. "truck-7")' });
+  if (!label)    return res.status(400).json({ error: 'label is required (driver display name)' });
+  if (!truckNum) return res.status(400).json({ error: 'truckNum is required (e.g. "Truck #7")' });
+  if (store.trucks.some(t => t.id === cleanId)) {
+    return res.status(409).json({ error: 'A truck with that id already exists' });
+  }
+  const truck = { id: cleanId, label: String(label).trim(), truckNum: String(truckNum).trim(), active: true };
+  store.trucks.push(truck);
+  await saveData();
+  logAction(req.session.user, 'created-truck', cleanId, { truck });
+  res.json({ ok: true, truck });
+});
+
+app.put('/api/trucks/:id', reqMgr, async (req, res) => {
+  const truck = store.trucks.find(t => t.id === req.params.id);
+  if (!truck) return res.status(404).json({ error: 'Truck not found' });
+  const before = { ...truck };
+  if (req.body.label    !== undefined) truck.label    = String(req.body.label).trim();
+  if (req.body.truckNum !== undefined) truck.truckNum = String(req.body.truckNum).trim();
+  if (req.body.active   !== undefined) truck.active   = !!req.body.active;
+  await saveData();
+  logAction(req.session.user, 'updated-truck', truck.id, { before, after: truck });
+  res.json({ ok: true, truck });
+});
+
+app.delete('/api/trucks/:id', reqMgr, async (req, res) => {
+  const idx = store.trucks.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Truck not found' });
+  // Refuse to hard-delete if any non-voided load references this truck —
+  // historical attribution would break. Soft-disable instead.
+  const inUse = store.loads.some(l => l.truckId === req.params.id && !l.voided);
+  if (inUse) {
+    store.trucks[idx].active = false;
+    await saveData();
+    logAction(req.session.user, 'disabled-truck', req.params.id, { reason: 'in-use' });
+    return res.json({ ok: true, softDeleted: true });
+  }
+  const removed = store.trucks.splice(idx, 1)[0];
+  await saveData();
+  logAction(req.session.user, 'deleted-truck', req.params.id, { removed });
+  res.json({ ok: true });
+});
+
+// ── Drivers CRUD (writes the users table) ──
+app.post('/api/drivers', reqMgr, async (req, res) => {
+  if (!pg) return res.status(503).json({ error: 'Database not available' });
+  const { username, password, displayName, truckId } = req.body || {};
+  const uname = String(username || '').toLowerCase().trim();
+  if (!uname || !/^[a-z0-9_.-]+$/.test(uname)) {
+    return res.status(400).json({ error: 'username must be lowercase letters/numbers/_.-' });
+  }
+  if (!password || String(password).length < 4) {
+    return res.status(400).json({ error: 'password must be at least 4 characters' });
+  }
+  const cid    = req.session.user.companyId || DEFAULT_COMPANY_ID;
+  const userId = `user-${cid}-${uname}`;
+  const tId    = String(truckId || uname);
+  const dName  = String(displayName || '').trim() || (uname.charAt(0).toUpperCase() + uname.slice(1));
+  try {
+    const existing = await pg.query('SELECT 1 FROM users WHERE company_id=$1 AND username=$2', [cid, uname]);
+    if (existing.rows.length) return res.status(409).json({ error: 'username already exists' });
+    await pg.query(
+      `INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
+       VALUES ($1, $2, $3, $4, 'driver', $5, $6, true)`,
+      [userId, cid, uname, password, tId, dName]
+    );
+    logAction(req.session.user, 'created-driver', uname, { displayName: dName, truckId: tId });
+    const drivers = await listDriversFromDb(cid);
+    res.json({ ok: true, drivers });
+  } catch (e) {
+    console.error('[POST /api/drivers]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/drivers/:username', reqMgr, async (req, res) => {
+  if (!pg) return res.status(503).json({ error: 'Database not available' });
+  const cid = req.session.user.companyId || DEFAULT_COMPANY_ID;
+  const uname = String(req.params.username || '').toLowerCase();
+  const { displayName, truckId, password, active } = req.body || {};
+  const sets = [];
+  const vals = [];
+  let i = 1;
+  if (displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(displayName).trim()); }
+  if (truckId     !== undefined) { sets.push(`truck_id     = $${i++}`); vals.push(String(truckId)); }
+  if (active      !== undefined) { sets.push(`active       = $${i++}`); vals.push(!!active); }
+  if (password    !== undefined && String(password).length >= 4) {
+    sets.push(`password = $${i++}`); vals.push(String(password));
+  }
+  if (!sets.length) return res.status(400).json({ error: 'no fields to update' });
+  vals.push(cid, uname);
+  try {
+    const r = await pg.query(
+      `UPDATE users SET ${sets.join(', ')} WHERE company_id = $${i++} AND username = $${i++} RETURNING username`,
+      vals
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
+    logAction(req.session.user, 'updated-driver', uname, { fields: Object.keys(req.body || {}) });
+    const drivers = await listDriversFromDb(cid);
+    res.json({ ok: true, drivers });
+  } catch (e) {
+    console.error('[PUT /api/drivers]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/drivers/:username', reqMgr, async (req, res) => {
+  if (!pg) return res.status(503).json({ error: 'Database not available' });
+  const cid = req.session.user.companyId || DEFAULT_COMPANY_ID;
+  const uname = String(req.params.username || '').toLowerCase();
+  // Soft-delete by default so any historical loads keep their driver
+  // attribution. Hard delete only when ?hard=1 and the driver has no loads.
+  try {
+    if (req.query.hard === '1') {
+      const inUse = store.loads.some(l => l.truckId === uname && !l.voided);
+      if (inUse) return res.status(409).json({ error: 'driver has loads — disable instead of deleting' });
+      const r = await pg.query('DELETE FROM users WHERE company_id=$1 AND username=$2', [cid, uname]);
+      if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
+      logAction(req.session.user, 'deleted-driver', uname, {});
+    } else {
+      const r = await pg.query('UPDATE users SET active=false WHERE company_id=$1 AND username=$2', [cid, uname]);
+      if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
+      logAction(req.session.user, 'disabled-driver', uname, {});
+    }
+    const drivers = await listDriversFromDb(cid);
+    res.json({ ok: true, drivers });
+  } catch (e) {
+    console.error('[DELETE /api/drivers]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── API: CUSTOMER MASTER ────────────────────────────────────────────────────
 // The Customer Master is the canonical list of customers used as a dropdown
 // when creating POs. This prevents typos that fragment a single real customer
@@ -3164,12 +3366,7 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     return v ? v.name : id;
   };
   const truckLabel = (id) => {
-    const TRUCKS = [
-      { id: 'beryle', label: 'Beryle' }, { id: 'matthew', label: 'Matthew' },
-      { id: 'rigo', label: 'Rigo' }, { id: 'leonardo', label: 'Leonardo' },
-      { id: 'carlos', label: 'Carlos' },
-    ];
-    const t = TRUCKS.find(x => x.id === id);
+    const t = store.trucks.find(x => x.id === id);
     return t ? t.label : id;
   };
 
@@ -3452,7 +3649,7 @@ app.get('/api/reports', reqMgr, async (req, res) => {
 
   // Driver performance
   const driverStats = {};
-  TRUCKS.forEach(t => {
+  store.trucks.forEach(t => {
     const tLoads = store.loads.filter(l => l.truckId === t.id && !l.voided);
     driverStats[t.id] = {
       label: t.label,
