@@ -3656,9 +3656,8 @@ function rerenderCustomerMasterList() {
       <td><span style="font-size:10px;padding:2px 8px;border-radius:20px;background:${c.active===false?'var(--Rb)':'var(--Gb)'};color:${c.active===false?'var(--R)':'var(--G)'};font-weight:600;text-transform:uppercase;letter-spacing:.04em">${c.active===false ? 'inactive' : 'active'}</span></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn ghost" style="padding:4px 10px;font-size:11px" onclick='openCustomerMasterForm(${JSON.stringify(c).replace(/'/g, "&apos;")})'>Edit</button>
-        ${c.poCount > 0
-          ? `<button class="btn ghost" style="padding:4px 10px;font-size:11px" onclick="toggleCustomerActive('${c.id}', ${c.active === false})">${c.active === false ? 'Reactivate' : 'Mark inactive'}</button>`
-          : `<button class="btn danger" style="padding:4px 10px;font-size:11px" onclick="deleteCustomer('${c.id}','${escapeHtml(c.name).replace(/'/g, "&apos;")}')">Delete</button>`}
+        <button class="btn ghost" style="padding:4px 10px;font-size:11px" onclick="toggleCustomerActive('${c.id}', ${c.active === false})">${c.active === false ? 'Reactivate' : 'Mark inactive'}</button>
+        <button class="btn danger" style="padding:4px 10px;font-size:11px" onclick="deleteCustomer('${c.id}','${escapeHtml(c.name).replace(/'/g, "&apos;")}')">Delete</button>
       </td>
     </tr>`;
   });
