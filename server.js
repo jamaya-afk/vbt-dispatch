@@ -15,6 +15,9 @@ app.use(express.json({ limit: '25mb', verify: (req, res, buf) => { req.rawBody =
 app.use(express.urlencoded({ extended: true }));
 
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
+if (!process.env.SESSION_SECRET) {
+  console.warn('⚠ SECURITY: SESSION_SECRET not set — using a known default. Set it before going multi-tenant!');
+}
 const sessionOpts = {
   secret: process.env.SESSION_SECRET || 'vbt-2025-secret',
   resave: false, saveUninitialized: false,
