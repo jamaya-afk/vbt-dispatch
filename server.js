@@ -6,8 +6,12 @@ const path = require('path');
 const fs = require('fs');
 const qb = require('./qb');
 
+const saas = require('./saas');
+const { AsyncLocalStorage } = require('async_hooks');
+
 const app = express();
-app.use(express.json({ limit: '25mb' }));
+// rawBody is kept for Stripe webhook signature verification
+app.use(express.json({ limit: '25mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
 
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
@@ -38,6 +42,13 @@ if (process.env.DATABASE_URL) {
   }
 }
 app.use(session(sessionOpts));
+
+// Bind every request to its organization's data store (multi-tenant).
+// Must come right after session middleware so req.session.user is available.
+app.use((req, res, next) => {
+  const orgId = req.session?.user?.orgId || 'default';
+  tenantALS.run({ orgId }, next);
+});
 
 // ── SUPABASE STORAGE (for photo uploads — Phase 2) ──────────────────────────
 const SUPABASE_URL    = process.env.SUPABASE_URL || '';
@@ -230,22 +241,76 @@ const DEFAULT_VENDOR_PRICES = {
   other: []
 };
 
-// ── DATA STORE — Postgres primary, file backup ───────────────────────────────
+// ── DATA STORE — Postgres primary, file backup, MULTI-TENANT ─────────────────
+// Each organization gets its own isolated store object, persisted under key
+// 'store' (legacy default org) or 'store:<orgId>'. All existing code keeps
+// referencing `store`; a Proxy forwards every access to the store of the org
+// bound to the current request via AsyncLocalStorage.
 const DATA_FILE = path.join(__dirname, 'data.json');
+const ORGS_FILE = path.join(__dirname, 'data-orgs.json');
 let pg = null;
-let store = {
-  pos: [],
-  loads: [],
-  archive: [],
-  vendors: [],          // [{ id, name, location, active }]
-  vendorPrices: {},     // { vendorId: [{ id, material, unit, price, active, notes }] }
-  customers: [],        // [{ id, name, code, address, city, phone, email, notes, active, createdAt }]
-  customerPrices: {},   // { customerNameLower: [{ id, material, unit, price, active, notes }] }
-  defaultRates: null,   // { customer: { mat: { unit, price } }, vendor: { mat: { unit, price } } }
-  auditLog: [],         // [{ id, at, user, displayName, role, action, target, details }]
-  nextPoNum: 1001,
-  nextLoadId: 1,
-};
+
+const tenantALS = new AsyncLocalStorage();
+const stores = new Map();              // orgId → store object
+let orgsIndex = saas.emptyIndex();     // { orgs: [...], users: [...] }
+
+function defaultStoreShape() {
+  return {
+    pos: [],
+    loads: [],
+    archive: [],
+    vendors: [],          // [{ id, name, location, active }]
+    vendorPrices: {},     // { vendorId: [{ id, material, unit, price, active, notes }] }
+    customers: [],        // [{ id, name, code, address, city, phone, email, notes, active, createdAt }]
+    customerPrices: {},   // { customerNameLower: [{ id, material, unit, price, active, notes }] }
+    defaultRates: null,   // { customer: { mat: { unit, price } }, vendor: { mat: { unit, price } } }
+    auditLog: [],         // [{ id, at, user, displayName, role, action, target, details }]
+    auditLogResetV1: true,
+    nextPoNum: 1001,
+    nextLoadId: 1,
+  };
+}
+
+function currentOrgId() { return tenantALS.getStore()?.orgId || 'default'; }
+function currentStore() {
+  const id = currentOrgId();
+  if (!stores.has(id)) stores.set(id, defaultStoreShape());
+  return stores.get(id);
+}
+function runInOrg(orgId, fn) { return tenantALS.run({ orgId }, fn); }
+
+const store = new Proxy({}, {
+  get: (t, p) => currentStore()[p],
+  set: (t, p, v) => { currentStore()[p] = v; return true; },
+  has: (t, p) => p in currentStore(),
+  deleteProperty: (t, p) => { delete currentStore()[p]; return true; },
+  ownKeys: () => Reflect.ownKeys(currentStore()),
+  getOwnPropertyDescriptor: (t, p) => Object.getOwnPropertyDescriptor(currentStore(), p),
+});
+
+function getOrg(orgId) { return orgsIndex.orgs.find(o => o.id === orgId) || null; }
+
+function ensureDefaultOrg() {
+  if (!getOrg('default')) {
+    orgsIndex.orgs.push({
+      id: 'default',
+      name: process.env.COMPANY_NAME || 'Valley Best Trucking',
+      createdAt: new Date().toISOString(),
+      stripeCustomerId: '', stripeSubscriptionId: '',
+      subscriptionStatus: 'active',   // legacy install is grandfathered
+      trialEndsAt: '', plan: 'legacy',
+    });
+  }
+}
+
+// Trucks/drivers are org-specific. The default org keeps the hardcoded list;
+// new orgs derive trucks from their driver user accounts.
+function getTrucks() {
+  if (currentOrgId() === 'default') return TRUCKS;
+  return orgsIndex.users
+    .filter(u => u.orgId === currentOrgId() && u.role === 'driver' && u.active)
+    .map(u => ({ id: u.truckId, label: u.displayName, truckNum: u.truckNum || '' }));
+}
 
 async function initPg() {
   if (!process.env.DATABASE_URL) {
@@ -273,44 +338,73 @@ async function initPg() {
 }
 
 async function loadData() {
-  // Postgres first
+  // Postgres first — load the org index plus every org's store in one query
   if (pg) {
     try {
-      const r = await pg.query("SELECT value FROM dispatch_data WHERE key='store'");
-      if (r.rows.length) {
-        store = JSON.parse(r.rows[0].value);
-        normalizeStore();
-        console.log(`✓ Loaded from Postgres: ${store.pos.length} POs, ${store.loads.length} loads`);
-        return;
+      const r = await pg.query("SELECT key, value FROM dispatch_data WHERE key='store' OR key LIKE 'store:%' OR key='orgs_index'");
+      for (const row of r.rows) {
+        try {
+          if (row.key === 'orgs_index') { orgsIndex = JSON.parse(row.value); continue; }
+          const orgId = row.key === 'store' ? 'default' : row.key.slice('store:'.length);
+          stores.set(orgId, JSON.parse(row.value));
+        } catch (e) { console.error(`PG parse error for ${row.key}:`, e.message); }
       }
     } catch (e) { console.error('PG read error:', e.message); }
   }
-  // File fallback
-  if (fs.existsSync(DATA_FILE)) {
+  // File fallback (default org + org index)
+  if (!stores.has('default') && fs.existsSync(DATA_FILE)) {
     try {
-      store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      normalizeStore();
-      console.log(`✓ Loaded from file: ${store.pos.length} POs`);
-      if (pg) { await saveData(); console.log('✓ Migrated file data to Postgres'); }
+      stores.set('default', JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+      console.log('✓ Loaded default org from file');
+      if (pg) { await runInOrg('default', () => saveData()); console.log('✓ Migrated file data to Postgres'); }
     } catch (e) { console.warn('File read error:', e.message); }
   }
+  if ((!orgsIndex.orgs || !orgsIndex.orgs.length) && fs.existsSync(ORGS_FILE)) {
+    try { orgsIndex = JSON.parse(fs.readFileSync(ORGS_FILE, 'utf8')); } catch (e) {}
+  }
+  if (!stores.has('default')) stores.set('default', defaultStoreShape());
+  if (!orgsIndex || !Array.isArray(orgsIndex.orgs))  orgsIndex = saas.emptyIndex();
+  if (!Array.isArray(orgsIndex.users)) orgsIndex.users = [];
+  ensureDefaultOrg();
+  for (const orgId of stores.keys()) runInOrg(orgId, () => normalizeStore());
+  const d = stores.get('default');
+  console.log(`✓ Loaded ${stores.size} org store(s), ${orgsIndex.orgs.length} org(s), ${orgsIndex.users.length} SaaS user(s) — default org: ${d.pos.length} POs, ${d.loads.length} loads`);
 }
 
+// Persists the CURRENT org's store (call inside a request / runInOrg context)
 async function saveData() {
-  const j = JSON.stringify(store);
+  const orgId = currentOrgId();
+  const key = orgId === 'default' ? 'store' : `store:${orgId}`;
+  const j = JSON.stringify(currentStore());
   if (pg) {
     try {
       await pg.query(
-        "INSERT INTO dispatch_data(key,value) VALUES('store',$1) ON CONFLICT(key) DO UPDATE SET value=$1",
-        [j]
+        'INSERT INTO dispatch_data(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=$2',
+        [key, j]
       );
     } catch (e) {
       console.error('PG write error:', e.message);
-      try { fs.writeFileSync(DATA_FILE, j); } catch (fe) {}
+      if (orgId === 'default') { try { fs.writeFileSync(DATA_FILE, j); } catch (fe) {} }
     }
-  } else {
+  } else if (orgId === 'default') {
     try { fs.writeFileSync(DATA_FILE, j); } catch (e) {}
+  } else {
+    try { fs.writeFileSync(path.join(__dirname, `data-${orgId}.json`), j); } catch (e) {}
   }
+}
+
+async function saveOrgsIndex() {
+  const j = JSON.stringify(orgsIndex);
+  if (pg) {
+    try {
+      await pg.query(
+        "INSERT INTO dispatch_data(key,value) VALUES('orgs_index',$1) ON CONFLICT(key) DO UPDATE SET value=$1",
+        [j]
+      );
+      return;
+    } catch (e) { console.error('PG write error (orgs_index):', e.message); }
+  }
+  try { fs.writeFileSync(ORGS_FILE, j); } catch (e) {}
 }
 
 // Ensure all loads have required fields (backward compat for old data)
@@ -581,6 +675,7 @@ button:hover{box-shadow:0 8px 24px rgba(59,130,246,.4)}
     <label>Password</label><input name="password" type="password" autocomplete="current-password">
     <button type="submit">Sign in</button>
   </form>
+  <div class="footer" style="margin-top:18px"><a href="/signup" style="color:#60a8f0;text-decoration:none;font-size:12px">New company? Create an account →</a></div>
   <div class="footer">Authorized access only</div>
 </div></body></html>`);
 });
@@ -588,6 +683,17 @@ button:hover{box-shadow:0 8px 24px rgba(59,130,246,.4)}
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
   const cleanName = username?.toLowerCase().trim();
+  // 1) SaaS accounts (any organization)
+  const su = orgsIndex.users.find(x => x.username === cleanName && x.active);
+  if (su && saas.verifyPassword(password, su.passHash)) {
+    req.session.user = {
+      username: su.username, role: su.role, truckId: su.truckId,
+      displayName: su.displayName, orgId: su.orgId, userId: su.id,
+    };
+    console.log(`[LOGIN] SaaS SUCCESS: ${cleanName} (org ${su.orgId}, role ${su.role})`);
+    return res.redirect('/app/');
+  }
+  // 2) Legacy hardcoded users → default org
   const u = USERS[cleanName];
   if (!u || u.password !== password) {
     console.log(`[LOGIN] FAILED: username="${cleanName}"`);
@@ -598,9 +704,74 @@ app.post('/login', (req, res) => {
     role: u.role,
     truckId: u.truckId,
     displayName: u.displayName || (cleanName.charAt(0).toUpperCase() + cleanName.slice(1)),
+    orgId: 'default',
   };
   console.log(`[LOGIN] SUCCESS: username="${cleanName}", role="${u.role}", displayName="${u.displayName}"`);
   res.redirect('/app/');
+});
+
+// ── SIGNUP (multi-tenant self-serve) ─────────────────────────────────────────
+app.get('/signup', (req, res) => {
+  const err = req.query.error ? `<p class="err">${String(req.query.error).slice(0, 200)}</p>` : '';
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Create your company — Dispatch</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 50%,#0a0e1a 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;color:#fff}
+.card{background:rgba(255,255,255,.05);backdrop-filter:blur(20px);border-radius:18px;border:1px solid rgba(255,255,255,.1);padding:40px 36px;width:100%;max-width:440px;box-shadow:0 8px 40px rgba(0,0,0,.4)}
+h1{font-size:20px;text-align:center;margin-bottom:6px}
+.sub{font-size:12px;color:rgba(255,255,255,.5);text-align:center;margin-bottom:22px}
+label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.55);display:block;margin-bottom:6px;font-weight:600}
+input{width:100%;padding:11px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;font-size:14px;font-family:inherit;margin-bottom:14px;color:#fff;background:rgba(255,255,255,.05)}
+input:focus{outline:none;border-color:#60a8f0;background:rgba(255,255,255,.08)}
+button{width:100%;padding:12px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:8px}
+.err{color:#fca5a5;font-size:12px;margin-bottom:16px;background:rgba(220,38,38,.12);padding:10px 14px;border-radius:8px;border:1px solid rgba(220,38,38,.3);text-align:center}
+.footer{font-size:11px;color:rgba(255,255,255,.4);text-align:center;margin-top:20px}
+.footer a{color:#60a8f0;text-decoration:none}
+</style></head><body><div class="card">
+  <h1>Create your company account</h1>
+  <div class="sub">Dispatch, deliveries, billing &amp; QuickBooks — free ${saas.TRIAL_DAYS}-day trial, no card required</div>
+  ${err}
+  <form method="POST" action="/signup">
+    <label>Company name</label><input name="company" required placeholder="Acme Trucking LLC">
+    <label>Your name</label><input name="name" required placeholder="Jane Smith">
+    <label>Email (your login)</label><input name="email" type="email" required autocapitalize="none" placeholder="jane@acmetrucking.com">
+    <label>Password</label><input name="password" type="password" required minlength="8" placeholder="At least 8 characters">
+    <button type="submit">Create account</button>
+  </form>
+  <div class="footer">Already have an account? <a href="/login">Sign in</a></div>
+</div></body></html>`);
+});
+
+app.post('/signup', async (req, res) => {
+  try {
+    const company = String(req.body.company || '').trim();
+    const name    = String(req.body.name || '').trim();
+    const email   = String(req.body.email || '').toLowerCase().trim();
+    const password = String(req.body.password || '');
+    if (!company || !name || !email || !password) return res.redirect('/signup?error=' + encodeURIComponent('All fields are required'));
+    if (password.length < 8) return res.redirect('/signup?error=' + encodeURIComponent('Password must be at least 8 characters'));
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.redirect('/signup?error=' + encodeURIComponent('Enter a valid email'));
+    if (orgsIndex.users.some(u => u.username === email) || USERS[email]) {
+      return res.redirect('/signup?error=' + encodeURIComponent('That email is already registered'));
+    }
+    const org = saas.newOrg(company);
+    const user = saas.newUser(org.id, { username: email, password, displayName: name, role: 'admin' });
+    orgsIndex.orgs.push(org);
+    orgsIndex.users.push(user);
+    await saveOrgsIndex();
+    // Initialize the new org's empty store
+    await runInOrg(org.id, async () => { normalizeStore(); await saveData(); });
+    req.session.user = {
+      username: user.username, role: 'admin', truckId: null,
+      displayName: user.displayName, orgId: org.id, userId: user.id,
+    };
+    console.log(`[SIGNUP] New org "${company}" (${org.id}) by ${email}`);
+    res.redirect('/app/');
+  } catch (e) {
+    console.error('[signup]', e);
+    res.redirect('/signup?error=' + encodeURIComponent('Signup failed — try again'));
+  }
 });
 
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
@@ -613,9 +784,26 @@ app.get('/', (req, res) => res.redirect(req.session?.user ? '/app/' : '/login'))
 // ── API: WHO AM I ────────────────────────────────────────────────────────────
 app.get('/api/me', reqAuth, (req, res) => {
   const u = req.session.user;
-  console.log(`[/api/me] username="${u.username}", role="${u.role}", truckId="${u.truckId}"`);
-  res.json({ username: u.username, role: u.role, truckId: u.truckId, displayName: u.displayName || u.username });
+  const org = getOrg(u.orgId || 'default');
+  res.json({
+    username: u.username, role: u.role, truckId: u.truckId,
+    displayName: u.displayName || u.username,
+    orgId: u.orgId || 'default',
+    orgName: org?.name || '',
+    subscriptionStatus: org?.subscriptionStatus || 'none',
+    trialEndsAt: org?.trialEndsAt || '',
+    hasAccess: saas.orgHasAccess(org),
+    stripeConfigured: saas.stripeConfigured(),
+    isLegacyOrg: (u.orgId || 'default') === 'default',
+  });
 });
+
+// Block org data access when the subscription lapsed (legacy org always passes)
+function reqActiveOrg(req, res, next) {
+  const org = getOrg(req.session?.user?.orgId || 'default');
+  if (saas.orgHasAccess(org)) return next();
+  res.status(402).json({ error: 'subscription_required', message: 'Your trial has ended. Subscribe to keep using the app.' });
+}
 
 // ── API: PHOTO UPLOAD (Supabase Storage) ────────────────────────────────────
 // Body: { kind: 'ticket' | 'signature', loadId, dataUrl }
@@ -647,7 +835,7 @@ app.post('/api/upload-photo', reqAuth, async (req, res) => {
 });
 
 // ── API: DATA (board, lists, etc.) ──────────────────────────────────────────
-app.get('/api/data', reqAuth, async (req, res) => {
+app.get('/api/data', reqAuth, reqActiveOrg, async (req, res) => {
   const u = req.session.user;
   // Self-heal stale PO statuses on every fetch (cheap operation, fixes legacy data)
   if (u.role !== 'driver') {
@@ -664,11 +852,11 @@ app.get('/api/data', reqAuth, async (req, res) => {
     const myLoads = store.loads.filter(l => l.truckId === u.truckId && !l.voided);
     const myPoIds = new Set(myLoads.map(l => l.poId));
     const myPos = store.pos.filter(p => myPoIds.has(p.id));
-    return res.json({ trucks: TRUCKS, materials: MATERIALS, yards, pos: myPos, loads: myLoads });
+    return res.json({ trucks: getTrucks(), materials: MATERIALS, yards, pos: myPos, loads: myLoads });
   }
   // Manager sees full vendor data
   res.json({
-    trucks: TRUCKS,
+    trucks: getTrucks(),
     materials: MATERIALS,
     yards,
     vendors: store.vendors,
@@ -824,7 +1012,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       console.log(`[create-PO] SKIPPING split — missing material or loadsAssigned:`, JSON.stringify(s));
       return;
     }
-    const truck = TRUCKS.find(t => t.id === s.truckId);
+    const truck = getTrucks().find(t => t.id === s.truckId);
     const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
     console.log(`[create-PO] Creating load: truckId="${s.truckId}", material="${s.material}", loads=${s.loadsAssigned}, driver="${truck?.label || '(unassigned)'}", vendor="${vendor?.name || '(none)'}"`);
 
@@ -975,7 +1163,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     let auditAction = 'updated-load';
     let auditDetails = { changes: Object.keys(req.body) };
     if (req.body.truckId !== undefined) {
-      const t = TRUCKS.find(t => t.id === req.body.truckId);
+      const t = getTrucks().find(t => t.id === req.body.truckId);
       updated.driverName = t?.label || '';
       updated.status = req.body.truckId ? 'active' : 'unassigned';
       // Treat driver change as a separate action type
@@ -2990,7 +3178,7 @@ app.get('/api/reports', reqMgr, async (req, res) => {
 
   // Driver performance
   const driverStats = {};
-  TRUCKS.forEach(t => {
+  getTrucks().forEach(t => {
     const tLoads = store.loads.filter(l => l.truckId === t.id && !l.voided);
     driverStats[t.id] = {
       label: t.label,
@@ -3213,6 +3401,147 @@ async function writeSheet(tab, rows) {
     requestBody: { values: rows },
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SAAS: BILLING (Stripe) + TEAM MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+app.get('/api/billing/status', reqAuth, (req, res) => {
+  const org = getOrg(req.session.user.orgId || 'default');
+  if (!org) return res.status(404).json({ error: 'Organization not found' });
+  res.json({
+    orgId: org.id, orgName: org.name,
+    subscriptionStatus: org.subscriptionStatus,
+    trialEndsAt: org.trialEndsAt,
+    hasAccess: saas.orgHasAccess(org),
+    stripeConfigured: saas.stripeConfigured(),
+    hasStripeCustomer: !!org.stripeCustomerId,
+    isLegacyOrg: org.id === 'default',
+  });
+});
+
+app.post('/api/billing/checkout', reqMgr, async (req, res) => {
+  try {
+    const org = getOrg(req.session.user.orgId || 'default');
+    if (!org) return res.status(404).json({ error: 'Organization not found' });
+    if (org.id === 'default') return res.status(400).json({ error: 'Legacy install does not need a subscription' });
+    if (!saas.stripeConfigured()) return res.status(400).json({ error: 'Stripe not configured (STRIPE_SECRET_KEY / STRIPE_PRICE_ID)' });
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const sess = await saas.createCheckoutSession(org, req.session.user.username, baseUrl);
+    res.json({ url: sess.url });
+  } catch (e) {
+    console.error('[billing/checkout]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/billing/portal', reqMgr, async (req, res) => {
+  try {
+    const org = getOrg(req.session.user.orgId || 'default');
+    if (!org?.stripeCustomerId) return res.status(400).json({ error: 'No billing account yet — subscribe first' });
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const sess = await saas.createPortalSession(org, baseUrl);
+    res.json({ url: sess.url });
+  } catch (e) {
+    console.error('[billing/portal]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Stripe webhook — signature-verified against the raw body. Keeps local
+// subscription state in sync with Stripe (the source of truth for billing).
+app.post('/api/stripe/webhook', async (req, res) => {
+  let event;
+  try {
+    event = saas.verifyWebhookSignature(req.rawBody, req.headers['stripe-signature']);
+  } catch (e) {
+    console.error('[stripe webhook] verification failed:', e.message);
+    return res.status(400).json({ error: e.message });
+  }
+  try {
+    const obj = event.data?.object || {};
+    if (event.type === 'checkout.session.completed') {
+      const orgId = obj.client_reference_id || obj.metadata?.orgId;
+      const org = getOrg(orgId);
+      if (org) {
+        org.stripeCustomerId = obj.customer || org.stripeCustomerId;
+        org.stripeSubscriptionId = obj.subscription || org.stripeSubscriptionId;
+        org.subscriptionStatus = 'active';
+        await saveOrgsIndex();
+        console.log(`[stripe] org ${orgId} subscribed (sub ${org.stripeSubscriptionId})`);
+      }
+    } else if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+      const org = orgsIndex.orgs.find(o => o.stripeSubscriptionId === obj.id || o.id === obj.metadata?.orgId);
+      if (org) {
+        org.subscriptionStatus = event.type === 'customer.subscription.deleted' ? 'canceled' : (obj.status || 'active');
+        if (obj.id && !org.stripeSubscriptionId) org.stripeSubscriptionId = obj.id;
+        await saveOrgsIndex();
+        console.log(`[stripe] org ${org.id} subscription → ${org.subscriptionStatus}`);
+      }
+    }
+    res.json({ received: true });
+  } catch (e) {
+    console.error('[stripe webhook] handler error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── TEAM MANAGEMENT (per-org users) ─────────────────────────────────────────
+app.get('/api/org/users', reqMgr, (req, res) => {
+  const orgId = req.session.user.orgId || 'default';
+  if (orgId === 'default') {
+    // Legacy org: read-only view of the hardcoded accounts
+    return res.json({
+      readOnly: true,
+      users: Object.entries(USERS).map(([username, u]) => ({
+        id: username, username, displayName: u.displayName, role: u.role,
+        truckId: u.truckId, truckNum: (TRUCKS.find(t => t.id === u.truckId) || {}).truckNum || '', active: true,
+      })),
+    });
+  }
+  res.json({
+    readOnly: false,
+    users: orgsIndex.users.filter(u => u.orgId === orgId).map(u => ({
+      id: u.id, username: u.username, displayName: u.displayName, role: u.role,
+      truckId: u.truckId, truckNum: u.truckNum || '', active: u.active, createdAt: u.createdAt,
+    })),
+  });
+});
+
+app.post('/api/org/users', reqMgr, async (req, res) => {
+  const orgId = req.session.user.orgId || 'default';
+  if (orgId === 'default') return res.status(400).json({ error: 'Legacy install users are managed in code/env' });
+  const { displayName, username, password, role, truckNum } = req.body || {};
+  const uname = String(username || '').toLowerCase().trim();
+  if (!displayName || !uname || !password) return res.status(400).json({ error: 'Name, login, and password are required' });
+  if (String(password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  if (orgsIndex.users.some(u => u.username === uname) || USERS[uname]) return res.status(400).json({ error: 'That login is already taken' });
+  const user = saas.newUser(orgId, { username: uname, password, displayName, role: role === 'driver' ? 'driver' : 'admin', truckNum });
+  orgsIndex.users.push(user);
+  await saveOrgsIndex();
+  logAction(req.session.user, 'added-team-member', user.id, { username: uname, role: user.role });
+  await saveData();
+  res.json({ success: true, user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role, truckId: user.truckId, truckNum: user.truckNum, active: true } });
+});
+
+app.put('/api/org/users/:id', reqMgr, async (req, res) => {
+  const orgId = req.session.user.orgId || 'default';
+  const u = orgsIndex.users.find(x => x.id === req.params.id && x.orgId === orgId);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  if (req.body.displayName !== undefined) u.displayName = String(req.body.displayName).trim();
+  if (req.body.truckNum !== undefined)    u.truckNum = String(req.body.truckNum).trim();
+  if (req.body.active !== undefined) {
+    if (u.id === req.session.user.userId && req.body.active === false) return res.status(400).json({ error: "You can't deactivate yourself" });
+    u.active = !!req.body.active;
+  }
+  if (req.body.password) {
+    if (String(req.body.password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    u.passHash = saas.hashPassword(req.body.password);
+  }
+  await saveOrgsIndex();
+  logAction(req.session.user, 'updated-team-member', u.id, { username: u.username, changes: Object.keys(req.body) });
+  await saveData();
+  res.json({ success: true });
+});
 
 // ── STARTUP ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;

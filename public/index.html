@@ -610,6 +610,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
         <span>Vendors & Prices</span>
       </button>
+      <button class="nav-item" data-tab="company" onclick="goTab('company')" id="nav-company">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>Company & Billing</span>
+      </button>
       <button class="nav-item" data-tab="quickbooks" onclick="goTab('quickbooks')" id="nav-quickbooks">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0v6a2.5 2.5 0 0 1-5 0"/></svg>
         <span>QuickBooks</span>
@@ -657,6 +661,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <!-- QUICKBOOKS -->
       <div class="section" id="sec-quickbooks">
         <div id="quickbooks-content"></div>
+      </div>
+      <!-- COMPANY & BILLING -->
+      <div class="section" id="sec-company">
+        <div id="company-content"></div>
       </div>
       <!-- HISTORY -->
       <div class="section" id="sec-history">
@@ -1001,6 +1009,7 @@ async function uploadPhoto(kind, loadId, dataUrl) {
 async function loadAll() {
   try {
     const r = await fetch('/api/data');
+    if (r.status === 402) { showPaywall(); return; }
     if (!r.ok) {
       console.error('loadAll: /api/data returned', r.status);
       return;
@@ -1125,6 +1134,7 @@ function goTab(tab) {
   if (tab === 'reports')  { document.getElementById('sec-reports').classList.add('active'); document.getElementById('page-title').textContent = 'Reports'; renderReports(); }
   if (tab === 'vendors')  { document.getElementById('sec-vendors').classList.add('active'); document.getElementById('page-title').textContent = 'Vendors & Prices'; renderVendors(); }
   if (tab === 'quickbooks'){ document.getElementById('sec-quickbooks').classList.add('active'); document.getElementById('page-title').textContent = 'QuickBooks'; renderQuickBooks(); }
+  if (tab === 'company')  { document.getElementById('sec-company').classList.add('active'); document.getElementById('page-title').textContent = 'Company & Billing'; renderCompany(); }
   if (tab === 'driver')   { document.getElementById('sec-driver').classList.add('active'); document.getElementById('page-title').textContent = 'My Trips'; renderDriver(); }
 
   const navBtn = document.querySelector(`[data-tab="${tab}"]`);
@@ -3441,6 +3451,138 @@ async function renderQbLog() {
       </tr>`).join('')}
     </tbody>
   </table>`;
+}
+
+// ── COMPANY & BILLING (SaaS) ─────────────────────────────────────────────────
+async function renderCompany() {
+  const wrap = document.getElementById('company-content');
+  wrap.innerHTML = `<div style="padding:20px;color:var(--txt2)">Loading…</div>`;
+  const [bill, team] = await Promise.all([
+    api('GET', '/api/billing/status'),
+    api('GET', '/api/org/users'),
+  ]);
+  const subBadge = (s, access) => {
+    if (s === 'active') return `<span style="background:#e3f6e9;color:#0a8a3a;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">Active</span>`;
+    if (s === 'trialing') return `<span style="background:#e7f0ff;color:#1f6feb;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">Trial</span>`;
+    if (s === 'past_due') return `<span style="background:#fff8ec;color:#b45309;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">Past due</span>`;
+    return `<span style="background:#fee4e2;color:#b42318;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">${access ? s : 'Expired'}</span>`;
+  };
+  const trialNote = bill.subscriptionStatus === 'trialing' && bill.trialEndsAt
+    ? `<div style="font-size:12px;color:var(--txt2);margin-top:4px">Trial ends ${new Date(bill.trialEndsAt).toLocaleDateString()} (${Math.max(0, Math.ceil((new Date(bill.trialEndsAt) - Date.now()) / 86400000))} days left)</div>` : '';
+
+  wrap.innerHTML = `
+    <div style="padding:18px 22px;display:grid;gap:16px;max-width:980px">
+      <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;padding:18px;box-shadow:var(--shadow)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+          <div>
+            <div style="font-size:18px;font-weight:700">${escapeHtml(bill.orgName || 'My Company')}</div>
+            ${bill.isLegacyOrg
+              ? `<div style="font-size:12px;color:var(--txt2);margin-top:4px">Original install — no subscription required</div>`
+              : trialNote}
+          </div>
+          <div>${bill.isLegacyOrg ? '' : subBadge(bill.subscriptionStatus, bill.hasAccess)}</div>
+        </div>
+        ${!bill.isLegacyOrg ? `
+          <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+            ${bill.stripeConfigured
+              ? (bill.subscriptionStatus === 'active'
+                  ? `<button class="btn ghost" onclick="openBillingPortal()">Manage billing</button>`
+                  : `<button class="btn primary" onclick="startCheckout()">Subscribe</button>${bill.hasStripeCustomer ? `<button class="btn ghost" onclick="openBillingPortal()">Billing portal</button>` : ''}`)
+              : `<span style="font-size:12px;color:var(--txt3)">Payments not configured yet (set STRIPE_SECRET_KEY, STRIPE_PRICE_ID, STRIPE_WEBHOOK_SECRET).</span>`}
+          </div>` : ''}
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;padding:18px;box-shadow:var(--shadow)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div style="font-size:15px;font-weight:700">Team</div>
+          ${team.readOnly ? `<span style="font-size:12px;color:var(--txt3)">Managed in server config</span>` : ''}
+        </div>
+        <table class="bill-table">
+          <thead><tr><th>Name</th><th>Login</th><th>Role</th><th>Truck #</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            ${(team.users || []).map(u => `<tr style="${u.active === false ? 'opacity:.5' : ''}">
+              <td style="font-weight:600">${escapeHtml(u.displayName)}</td>
+              <td style="font-family:monospace;font-size:12px">${escapeHtml(u.username)}</td>
+              <td>${u.role === 'driver' ? 'Driver' : 'Admin'}</td>
+              <td>${escapeHtml(u.truckNum || '—')}</td>
+              <td>${u.active === false ? 'Inactive' : 'Active'}</td>
+              <td>${team.readOnly ? '' : `
+                <button class="btn ghost" style="padding:4px 10px;font-size:11px" onclick="resetMemberPassword('${u.id}')">Reset PW</button>
+                ${u.active === false
+                  ? `<button class="btn ghost" style="padding:4px 10px;font-size:11px" onclick="setMemberActive('${u.id}', true)">Reactivate</button>`
+                  : `<button class="btn ghost" style="padding:4px 10px;font-size:11px" onclick="setMemberActive('${u.id}', false)">Deactivate</button>`}`}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        ${!team.readOnly ? `
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--bdr)">
+            <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--txt2);margin-bottom:8px">Add team member</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">
+              <input id="tm-name" class="bill-filter" placeholder="Full name">
+              <input id="tm-login" class="bill-filter" placeholder="Email / login" autocapitalize="none">
+              <input id="tm-pass" class="bill-filter" type="password" placeholder="Password (8+ chars)">
+              <select id="tm-role" class="bill-filter"><option value="driver">Driver</option><option value="admin">Admin</option></select>
+              <input id="tm-truck" class="bill-filter" placeholder="Truck # (drivers)">
+              <button class="btn primary" onclick="addTeamMember()">Add</button>
+            </div>
+          </div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+async function addTeamMember() {
+  const body = {
+    displayName: document.getElementById('tm-name').value.trim(),
+    username:    document.getElementById('tm-login').value.trim(),
+    password:    document.getElementById('tm-pass').value,
+    role:        document.getElementById('tm-role').value,
+    truckNum:    document.getElementById('tm-truck').value.trim(),
+  };
+  const r = await api('POST', '/api/org/users', body);
+  if (r.ok) { toast('Team member added', 'success'); await loadAll(); renderCompany(); }
+  else toast(r.error || 'Failed', 'error');
+}
+
+async function setMemberActive(id, active) {
+  if (!active && !confirm('Deactivate this member? They will no longer be able to sign in.')) return;
+  const r = await api('PUT', '/api/org/users/' + id, { active });
+  if (r.ok) { toast(active ? 'Reactivated' : 'Deactivated', 'success'); await loadAll(); renderCompany(); }
+  else toast(r.error || 'Failed', 'error');
+}
+
+async function resetMemberPassword(id) {
+  const pw = prompt('New password (at least 8 characters):');
+  if (!pw) return;
+  const r = await api('PUT', '/api/org/users/' + id, { password: pw });
+  if (r.ok) toast('Password updated', 'success'); else toast(r.error || 'Failed', 'error');
+}
+
+async function startCheckout() {
+  const r = await api('POST', '/api/billing/checkout', {});
+  if (r.ok && r.url) location.href = r.url;
+  else toast(r.error || 'Checkout failed', 'error');
+}
+
+async function openBillingPortal() {
+  const r = await api('POST', '/api/billing/portal', {});
+  if (r.ok && r.url) location.href = r.url;
+  else toast(r.error || 'Portal failed', 'error');
+}
+
+function showPaywall() {
+  const isAdmin = role === 'admin' || role === 'manager';
+  document.querySelector('.content').innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:center;min-height:60vh;padding:20px">
+      <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:16px;padding:36px;max-width:440px;text-align:center;box-shadow:var(--shadow)">
+        <div style="font-size:40px;margin-bottom:10px">⏳</div>
+        <h2 style="margin-bottom:8px">Your trial has ended</h2>
+        <p style="color:var(--txt2);font-size:14px;margin-bottom:20px">Your data is safe. Subscribe to pick up right where you left off.</p>
+        ${isAdmin
+          ? `<button class="btn primary" style="font-size:14px;padding:12px 28px" onclick="startCheckout()">Subscribe now</button>`
+          : `<p style="font-size:13px;color:var(--txt3)">Ask your company admin to renew the subscription.</p>`}
+      </div>
+    </div>`;
 }
 
 function copyRedirectUri() {

@@ -4,3 +4,5 @@ data.json
 .DS_Store
 *.log
 .env
+data-orgs.json
+data-org*.json
