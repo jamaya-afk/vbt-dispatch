@@ -1,35 +1,6 @@
 # VBT Dispatch
 
-Clean rebuild — focused on the essentials. Now multi-tenant: any trucking /
-material-hauling company can sign up at `/signup`, get an isolated workspace
-with a free trial, manage their own team, and subscribe via Stripe.
-
-## Multi-tenant SaaS
-
-- **Signup** at `/signup` creates an organization + admin account (scrypt-hashed
-  passwords). Each org's data is fully isolated (own POs, loads, vendors,
-  customers, pricing, QuickBooks connection, audit log).
-- **Team** — admins add drivers/admins in **Company & Billing**; drivers get
-  their own truck identity automatically.
-- **Billing** — free trial (`TRIAL_DAYS`, default 14), then Stripe Checkout
-  subscription. Expired orgs hit a paywall (HTTP 402); data is never deleted.
-- The original VBT install lives on as the grandfathered `default` org with the
-  legacy hardcoded logins below — nothing changes for existing users.
-
-### Stripe env vars
-
-```
-STRIPE_SECRET_KEY      # sk_live_... or sk_test_...
-STRIPE_PRICE_ID        # recurring price (e.g. price_123) for the subscription
-STRIPE_WEBHOOK_SECRET  # whsec_... for /api/stripe/webhook
-APP_BASE_URL           # e.g. https://your-domain (used in checkout redirects)
-TRIAL_DAYS             # optional, default 14
-COMPANY_NAME           # optional display name for the legacy default org
-```
-
-Point a Stripe webhook at `POST /api/stripe/webhook` with events:
-`checkout.session.completed`, `customer.subscription.updated`,
-`customer.subscription.deleted`.
+Clean rebuild — focused on the essentials.
 
 ## What it does
 
