@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>VBT Dispatch</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -566,7 +566,52 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   .hero-row{flex-direction:column;align-items:flex-start}
   .hero-stats{grid-template-columns:repeat(2,1fr)}
   .hero-title{font-size:18px}
+  .topbar{flex-wrap:wrap}
+  /* A driver has no sidebar, so the hamburger is a dead button for them */
+  body.driver-mode .menu-toggle{display:none}
 }
+
+/* ── MOBILE PHONE (dispatcher on a jobsite) ────────────────────────────────
+   Mobile dispatch is a first-class Valley Best requirement, not a fallback.
+   Two things matter most on a phone: nothing may overflow sideways, and every
+   control the dispatcher taps must be big enough to hit while standing in a
+   yard. 44px is the minimum reliable touch target. */
+@media(max-width:600px){
+  /* Wide tables scroll inside themselves instead of dragging the whole page */
+  .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
+  .bill-table{min-width:720px}
+
+  /* Touch targets — every one of these measured under 44px before this block */
+  .btn,.view-btn,.today-btn,.filter-clear,.signout-btn,.vendor-tab,
+  .bill-filter,.filter-bar select,.filter-bar input{min-height:44px}
+  .btn,.view-btn{padding-left:16px;padding-right:16px}
+  .date-nav button,.menu-toggle,.modal-close,.split-remove{min-width:44px;min-height:44px}
+  .nav-item{min-height:48px}
+  .bill-table input[type=checkbox]{width:24px;height:24px}
+  .bill-table td,.bill-table th{padding:14px 12px}
+
+  /* Stop the filter walls from pushing the board below the fold */
+  .filter-bar,.bill-filters{gap:6px;padding:8px 10px}
+  .filter-bar select,.bill-filter{flex:1 1 44%;min-width:0}
+
+  /* Cards get real tap feedback (manager side had hover-only affordances) */
+  .lcard:active{transform:scale(.99)}
+  .lcard{cursor:pointer}
+}
+
+/* iOS dynamic browser chrome clips the last row with plain 100vh */
+@supports(height:100dvh){
+  body,.shell{height:100dvh}
+}
+
+/* Tap-to-assign on a load card — the touch-safe path. Drag-and-drop does not
+   fire on iOS/Android, so this is the only way to reassign from a phone. */
+.lc-assign-btn{margin-left:auto;flex-shrink:0;padding:7px 14px;min-height:34px;font-size:11.5px;font-weight:700;
+  border:1.5px solid var(--B);background:var(--Bb,#e7f0ff);color:var(--B);border-radius:20px;cursor:pointer;
+  font-family:var(--f);letter-spacing:.02em;transition:all .15s}
+.lc-assign-btn:hover{background:var(--B);color:#fff}
+.lc-assign-btn:active{transform:scale(.97)}
+@media(max-width:600px){.lc-assign-btn{min-height:44px;padding:10px 18px;font-size:13px}}
 
 /* ── SIGNATURE PAD ── */
 .sig-canvas{width:100%;height:200px;background:#fff;border:2px solid var(--bdr);border-radius:var(--r);touch-action:none;cursor:crosshair}
@@ -1238,7 +1283,7 @@ function renderDayBoard() {
       <div class="driver-col-head">
         <div>
           <div class="driver-name" style="color:var(--A)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</div>
-          <div class="driver-truck">Drag a card here to unassign</div>
+          <div class="driver-truck">Tap Assign on a load — or drag a card here to unassign</div>
         </div>
         <span class="driver-load-count" style="background:var(--Ad);color:var(--A)">${allUnas.length}</span>
       </div>
@@ -1566,6 +1611,9 @@ function loadCard(l) {
     </div>
     <div class="lc-driver-row">
       ${driverHtml}
+      ${(role === 'manager' || role === 'admin') && !l.locked
+        ? `<button class="lc-assign-btn" onclick="event.stopPropagation();openReassignModal('single','${l.id}')" title="Assign or change driver">${l.truckId && l.truckId !== 'unassigned' ? 'Reassign' : 'Assign'}</button>`
+        : ''}
     </div>
   </div>`;
 }
@@ -3134,7 +3182,7 @@ async function loadBilling() {
     refreshBillButtons();
     return;
   }
-  wrap.innerHTML = `<table class="bill-table">
+  wrap.innerHTML = `<div class="table-scroll"><table class="bill-table">
     <thead><tr>
       <th><input type="checkbox" id="bill-all" onchange="toggleAllBill(this.checked)"></th>
       <th>PO</th><th>Customer</th><th>City</th><th>Material</th><th>Loads</th><th>Driver</th><th>Date</th><th>Approved</th>
@@ -3152,7 +3200,7 @@ async function loadBilling() {
         <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}</td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
   refreshBillButtons();
 }
 
@@ -3287,7 +3335,7 @@ async function renderBillBatches() {
     const m = map[s] || map.ready_to_bill;
     return `<span style="background:${m.bg};color:${m.c};padding:3px 9px;border-radius:10px;font-size:11px;font-weight:600">${m.t}</span>`;
   };
-  wrap.innerHTML = `<table class="bill-table">
+  wrap.innerHTML = `<div class="table-scroll"><table class="bill-table">
     <thead><tr>
       <th>Batch</th><th>Customer</th><th>PO</th><th>Loads</th><th>Total</th><th>Status</th><th>QB Invoice #</th><th>Created</th><th></th>
     </tr></thead>
@@ -3308,7 +3356,7 @@ async function renderBillBatches() {
         </td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
 }
 
 async function sendBatch(id) {
@@ -3425,7 +3473,7 @@ async function renderQbLog() {
   const r = await api('GET', '/api/qb-sync-log?' + params);
   const items = r.items || [];
   if (!items.length) { list.innerHTML = `<div style="padding:14px;color:var(--txt3);font-size:13px">No sync activity yet.</div>`; return; }
-  list.innerHTML = `<table class="bill-table">
+  list.innerHTML = `<div class="table-scroll"><table class="bill-table">
     <thead><tr><th>When</th><th>Action</th><th>Entity</th><th>QB ID</th><th>Status</th><th>Detail</th><th>User</th></tr></thead>
     <tbody>
       ${items.map(e => `<tr>
@@ -3440,7 +3488,7 @@ async function renderQbLog() {
         <td style="font-size:11px;color:var(--txt2)">${e.user || '—'}</td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
 }
 
 function copyRedirectUri() {
@@ -4391,7 +4439,7 @@ function renderProfitTable(rows, columns) {
   });
   const totalMarginPct = totals.revenue > 0 ? (totals.margin / totals.revenue * 100) : 0;
 
-  let h = `<table class="report-table">
+  let h = `<div class="table-scroll"><table class="report-table">
     <thead><tr>${columns.map(c => `<th style="${c.color ? 'color:' + c.color : ''}">${c.label}</th>`).join('')}</tr></thead>
     <tbody>
       ${rows.map(r => {
@@ -4418,7 +4466,7 @@ function renderProfitTable(rows, columns) {
         }).join('')}
       </tr>
     </tbody>
-  </table>`;
+  </table></div>`;
   return h;
 }
 

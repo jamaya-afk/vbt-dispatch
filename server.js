@@ -276,27 +276,48 @@ async function initPg() {
 }
 
 async function loadData() {
+  let loaded = false;
   // Postgres first
   if (pg) {
     try {
       const r = await pg.query("SELECT value FROM dispatch_data WHERE key='store'");
       if (r.rows.length) {
         store = JSON.parse(r.rows[0].value);
-        normalizeStore();
+        loaded = true;
         console.log(`✓ Loaded from Postgres: ${store.pos.length} POs, ${store.loads.length} loads`);
-        return;
       }
     } catch (e) { console.error('PG read error:', e.message); }
   }
   // File fallback
-  if (fs.existsSync(DATA_FILE)) {
+  if (!loaded && fs.existsSync(DATA_FILE)) {
     try {
       store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      normalizeStore();
+      loaded = true;
       console.log(`✓ Loaded from file: ${store.pos.length} POs`);
-      if (pg) { await saveData(); console.log('✓ Migrated file data to Postgres'); }
     } catch (e) { console.warn('File read error:', e.message); }
   }
+
+  // ALWAYS normalize — even on a brand-new install with no saved data. This
+  // seeds vendors/vendor prices and initializes the QuickBooks arrays
+  // (billingBatches, qbSyncLog, vendorBills). Skipping it used to leave
+  // store.billingBatches undefined, so the first "Send to QuickBooks" threw
+  // and killed the whole process. normalizeStore is idempotent and only fills
+  // in missing fields — it never overwrites existing Valley Best data.
+  normalizeStore();
+
+  if (!loaded) console.log('✓ Fresh install — seeded default vendors, prices and billing tables');
+  if (loaded && pg && !(await pgHasStore())) {
+    await saveData();
+    console.log('✓ Migrated file data to Postgres');
+  }
+}
+
+async function pgHasStore() {
+  if (!pg) return false;
+  try {
+    const r = await pg.query("SELECT 1 FROM dispatch_data WHERE key='store'");
+    return r.rows.length > 0;
+  } catch { return false; }
 }
 
 async function saveData() {
@@ -339,7 +360,10 @@ function normalizeStore() {
   if (!Array.isArray(store.vendors) || store.vendors.length === 0) {
     store.vendors = JSON.parse(JSON.stringify(DEFAULT_VENDORS));
   }
-  if (!store.vendorPrices || typeof store.vendorPrices !== 'object') {
+  // An empty {} counts as unseeded — a fresh install starts with vendorPrices:{},
+  // which is a truthy object, so the old check fell through to the else branch
+  // and gave every yard an empty price list instead of the defaults.
+  if (!store.vendorPrices || typeof store.vendorPrices !== 'object' || Object.keys(store.vendorPrices).length === 0) {
     store.vendorPrices = JSON.parse(JSON.stringify(DEFAULT_VENDOR_PRICES));
   } else {
     // Make sure every existing vendor has an entry (even if empty)
@@ -3226,6 +3250,23 @@ async function writeSheet(tab, rows) {
     requestBody: { values: rows },
   });
 }
+
+// ── RESILIENCE ───────────────────────────────────────────────────────────────
+// Drivers are in the field and the dispatcher may be on a phone. One bad
+// request must degrade to a 500 for that caller — never take the whole
+// dispatch system offline for everyone.
+app.use((err, req, res, next) => {
+  console.error(`[express error] ${req.method} ${req.originalUrl}:`, err && err.stack || err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Server error — the team has been notified. Please retry.' });
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection] staying alive:', reason && reason.stack || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException] staying alive:', err && err.stack || err);
+});
 
 // ── STARTUP ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
