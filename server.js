@@ -146,6 +146,11 @@ const USERS = {
   carlos:   { password: process.env.CARLOS_PASS   || 'carlos123',  role: 'driver',  truckId: 'carlos',   displayName: 'Carlos'   },
 };
 
+// LEGACY NAMING: `TRUCKS` is really the DRIVER roster — `id` is the driver's
+// login and `load.truckId` points at a driver, not a vehicle. Renaming that
+// field would touch a hundred call sites and every saved load, so it stays.
+// The real vehicle fleet lives in `store.trucks` (see DEFAULT_TRUCKS below)
+// and a load's vehicle is `load.truckUnitId`.
 const TRUCKS = [
   { id: 'beryle',   label: 'Beryle',   truckNum: 'Truck #2'  },
   { id: 'matthew',  label: 'Matthew',  truckNum: 'Truck #4'  },
@@ -153,6 +158,37 @@ const TRUCKS = [
   { id: 'leonardo', label: 'Leonardo', truckNum: 'Truck #12' },
   { id: 'carlos',   label: 'Carlos',   truckNum: 'Truck #2B' },
 ];
+
+// ── FLEET — real vehicles, independent of drivers ────────────────────────────
+// Seeded once from the five trucks Valley Best already runs, preserving each
+// truck number and its historical driver. After seeding these are ordinary
+// editable records: any driver can take any truck.
+const DEFAULT_TRUCKS = [
+  { id: 'truck-2',   truckNum: 'Truck #2',   type: 'End Dump',   status: 'available', defaultDriverId: 'beryle',   mileage: null, maintenanceNotes: '', active: true },
+  { id: 'truck-4',   truckNum: 'Truck #4',   type: 'End Dump',   status: 'available', defaultDriverId: 'matthew',  mileage: null, maintenanceNotes: '', active: true },
+  { id: 'truck-14',  truckNum: 'Truck #14',  type: 'End Dump',   status: 'available', defaultDriverId: 'rigo',     mileage: null, maintenanceNotes: '', active: true },
+  { id: 'truck-12',  truckNum: 'Truck #12',  type: 'End Dump',   status: 'available', defaultDriverId: 'leonardo', mileage: null, maintenanceNotes: '', active: true },
+  { id: 'truck-2b',  truckNum: 'Truck #2B',  type: 'End Dump',   status: 'available', defaultDriverId: 'carlos',   mileage: null, maintenanceNotes: '', active: true },
+];
+
+const TRUCK_STATUSES  = ['available', 'in-service', 'maintenance', 'out-of-service'];
+const DRIVER_STATUSES = ['available', 'working', 'off'];
+
+// The truck a load is running on. Falls back to the driver's historical truck
+// so loads created before the fleet existed still show the right vehicle.
+function getTruckForLoad(l) {
+  if (!l) return null;
+  const fleet = store.trucks || [];
+  if (l.truckUnitId) {
+    const t = fleet.find(x => x.id === l.truckUnitId);
+    if (t) return t;
+  }
+  if (l.truckId) {
+    const t = fleet.find(x => x.defaultDriverId === l.truckId);
+    if (t) return t;
+  }
+  return null;
+}
 
 // Generic fallback materials list (for the "Other" vendor or legacy data)
 const MATERIALS = ['Fill Sand','Gravel','Rock','3/4 Rock','Cold Mix','Recycle Base','Dirt','Base Rock','Other'];
@@ -371,6 +407,50 @@ function normalizeStore() {
       if (!Array.isArray(store.vendorPrices[v.id])) store.vendorPrices[v.id] = [];
     });
   }
+  // ── FLEET & DRIVERS ────────────────────────────────────────────────────────
+  // Seeded once, then owned by the user. Never overwrites existing records —
+  // only adds a truck/driver that isn't there yet, so edits survive restarts.
+  if (!Array.isArray(store.trucks)) store.trucks = [];
+  DEFAULT_TRUCKS.forEach(dt => {
+    if (!store.trucks.some(t => t.id === dt.id)) store.trucks.push({ ...dt });
+  });
+  store.trucks.forEach(t => {
+    if (!t.status) t.status = 'available';
+    if (t.active === undefined) t.active = true;
+    if (!('mileage' in t)) t.mileage = null;
+    if (!('maintenanceNotes' in t)) t.maintenanceNotes = '';
+    if (!('type' in t)) t.type = '';
+  });
+
+  if (!Array.isArray(store.drivers)) store.drivers = [];
+  TRUCKS.forEach(d => {
+    if (!store.drivers.some(x => x.id === d.id)) {
+      store.drivers.push({
+        id: d.id,                       // matches the login + legacy load.truckId
+        name: d.label,
+        login: d.id,
+        phone: '',
+        status: 'available',
+        defaultTruckId: (DEFAULT_TRUCKS.find(t => t.defaultDriverId === d.id) || {}).id || null,
+        active: true,
+        notes: '',
+      });
+    }
+  });
+  store.drivers.forEach(d => {
+    if (!d.status) d.status = 'available';
+    if (d.active === undefined) d.active = true;
+  });
+
+  // Backfill the vehicle on existing loads from the driver's historical truck,
+  // so nothing that already ran loses its truck attribution.
+  store.loads.forEach(l => {
+    if (!('truckUnitId' in l) || !l.truckUnitId) {
+      const t = DEFAULT_TRUCKS.find(x => x.defaultDriverId === l.truckId);
+      l.truckUnitId = t ? t.id : null;
+    }
+  });
+
   if (!store.nextPoNum)  store.nextPoNum = 1001;
   if (!store.nextLoadId) store.nextLoadId = 1;
 
@@ -488,6 +568,38 @@ function resolveCustomerRate(customer, material) {
 
 // Resolve vendor rate for a vendor + material.
 // VBT Yard returns 0 (internal inventory).
+// ── PICKUP YARD — SINGLE SOURCE OF TRUTH ─────────────────────────────────────
+// The yard the driver is sent to must always come from the load assignment,
+// never from a free-text PO label. Previously the driver was shown
+// `po.pickup`, a string that defaulted to "VBT Yard" — so a dispatcher who
+// assigned Vulcan on the load still sent the driver to the Valley Best yard.
+//
+// Authority, highest first:
+//   1. trip.actualYardId    — where the driver actually went on THIS trip
+//   2. load.actualYardId    — where the driver actually went on this load
+//   3. load.vendorId        — what the dispatcher assigned for this load
+//   4. po.plannedVendorId   — PO-level fallback for legacy rows
+//   5. 'vbt'                — the internal yard
+// The NAME is always looked up from the vendor record, so the label can never
+// drift from the id.
+function resolvePickupYard(load, po, trip) {
+  const id =
+    (trip && trip.actualYardId) ||
+    load?.actualYardId ||
+    load?.vendorId ||
+    po?.plannedVendorId ||
+    'vbt';
+  const v = store.vendors.find(x => x.id === id);
+  const isActual = !!((trip && trip.actualYardId) || load?.actualYardId);
+  return {
+    id,
+    name: v?.name || load?.vendorName || 'VBT Yard',
+    location: v?.location || '',
+    isInternal: id === 'vbt',
+    isActual,
+  };
+}
+
 function resolveVendorRate(vendorId, material) {
   if (vendorId === 'vbt') return { unit: 'ton', price: 0, isDefault: false, isInternal: true };
   const list = store.vendorPrices[vendorId] || [];
@@ -695,7 +807,11 @@ app.get('/api/data', reqAuth, async (req, res) => {
   }
   // Manager sees full vendor data
   res.json({
-    trucks: TRUCKS,
+    trucks: TRUCKS,                        // legacy: the DRIVER roster
+    fleet:  store.trucks || [],            // real vehicles
+    drivers: store.drivers || [],          // real driver records
+    truckStatuses: TRUCK_STATUSES,
+    driverStatuses: DRIVER_STATUSES,
     materials: MATERIALS,
     yards,
     vendors: store.vendors,
@@ -751,14 +867,32 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
 
   const enriched = myLoads.map(l => {
     const po = store.pos.find(p => p.id === l.poId) || {};
+    // Resolve against the CURRENT trip so a per-trip yard change is reflected
+    const curTrip = (Array.isArray(l.trips) && l.trips.length) ? l.trips[activeTripIdx(l)] : null;
+    const pickup  = resolvePickupYard(l, po, curTrip);
+    const truck   = getTruckForLoad(l);
     return {
       loadId: l.id,
+      truckId:    l.truckUnitId || null,
+      truckLabel: truck ? (truck.truckNum || truck.label || '') : '',
+      truckType:  truck ? (truck.type || '') : '',
+      // Per-trip pickup history so the driver can see where each haul went
+      trips: (l.trips || []).map(t => ({
+        tripNum: t.tripNum,
+        timestamps: t.timestamps || {},
+        yardId: t.actualYardId || pickup.id,
+        yardName: t.actualYardName || (store.vendors.find(v => v.id === (t.actualYardId || pickup.id)) || {}).name || pickup.name,
+      })),
       poNumber: po.poNumber || '—',
       customer: po.customer || '',
       jobName: po.job || po.customer || '',
       jobCode: po.jobCode || '',
-      pickupLocation: po.pickup || 'VBT Yard',
-      plannedVendorId: po.plannedVendorId || null,
+      // Pickup comes from the load assignment, never the PO's free-text label.
+      pickupLocation:  pickup.name,
+      pickupYardId:    pickup.id,
+      pickupIsInternal: pickup.isInternal,
+      pickupIsActual:  pickup.isActual,
+      plannedVendorId: pickup.id,
       deliveryLocation: po.address || po.city || '',
       city: po.city || '',
       material: l.material,
@@ -875,8 +1009,13 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       pricePerUnit: vendorRate.price,
       loadsAssigned: Number(s.loadsAssigned) || 0,
       loadsDelivered: 0,
-      truckId: s.truckId || null,
+      truckId: s.truckId || null,               // legacy name: this is the DRIVER
       driverName: truck?.label || '',
+      // Vehicle, chosen independently of the driver. Falls back to that
+      // driver's usual truck when the dispatcher doesn't pick one.
+      truckUnitId: s.truckUnitId
+        || (DEFAULT_TRUCKS.find(t => t.defaultDriverId === s.truckId) || {}).id
+        || null,
       deliveryDate: newPo.deliveryDate,
       status: s.truckId ? 'active' : 'unassigned',
       timestamps: {},
@@ -2641,11 +2780,16 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     return true;
   });
 
-  // Compute per-load durations in minutes. Returns null when an interval can't
-  // be computed (missing endpoint).
-  const durationsForLoad = (l) => {
-    const iso = l.isoStamps || {};
-    const ts  = l.timestamps || {};
+  // Compute durations in minutes for ONE trip. Returns null for an interval
+  // that can't be computed (missing endpoint).
+  //
+  // The source of truth is the individual trip record in load.trips[]. The
+  // load-level timestamps/isoStamps are only a mirror of the CURRENT trip and
+  // are reset when a new trip starts, so reading them reported a 3-trip load
+  // as a single data point and discarded trips 1 and 2.
+  const durationsForTrip = (l, source) => {
+    const iso = source.isoStamps || {};
+    const ts  = source.timestamps || {};
     const baseDate = l.deliveryDate || '';
 
     // Get a Date for a step. Prefer the ISO stamp (accurate). Fall back to
@@ -2691,6 +2835,34 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     };
   };
 
+  // Expand every matched load into one record PER TRIP. A load with
+  // loadsAssigned=3 yields three records, each with its own timings and its
+  // own pickup yard (a driver can rotate yards between trips).
+  //
+  // Legacy loads saved before per-trip tracking have no trips[]; they fall
+  // back to their load-level stamps as a single synthetic trip so historical
+  // data is preserved rather than dropped.
+  const tripRecords = [];
+  matched.forEach(l => {
+    const trips = (Array.isArray(l.trips) && l.trips.length)
+      ? l.trips
+      : [{
+          tripNum: 1,
+          timestamps: l.timestamps || {},
+          isoStamps:  l.isoStamps  || {},
+          actualYardId: l.actualYardId,
+        }];
+    trips.forEach((t, i) => {
+      tripRecords.push({
+        load: l,
+        tripNum: t.tripNum || (i + 1),
+        // Per-trip yard wins, then the load's actual yard, then the assignment
+        yardId: t.actualYardId || l.actualYardId || l.vendorId || '',
+        d: durationsForTrip(l, t),
+      });
+    });
+  });
+
   // Aggregate helper — given a list of numbers, compute count/avg/median/p90/min/max
   const stats = (nums) => {
     const xs = nums.filter(n => typeof n === 'number' && isFinite(n));
@@ -2710,20 +2882,25 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
 
   // Group loads by an arbitrary key fn, returning aggregations per group + per
   // duration interval.
+  // keyFn receives a TRIP RECORD ({ load, tripNum, yardId, d }), so a load
+  // whose trips used different yards contributes to each yard's stats.
   const groupBy = (keyFn, labelFn = (k) => k) => {
     const buckets = new Map();
-    matched.forEach(l => {
-      const k = keyFn(l);
-      if (!k) return;  // skip loads with no group identity (e.g. no driver)
-      if (!buckets.has(k)) buckets.set(k, []);
-      buckets.get(k).push(durationsForLoad(l));
+    tripRecords.forEach(r => {
+      const k = keyFn(r);
+      if (!k) return;  // skip records with no group identity (e.g. no driver)
+      if (!buckets.has(k)) buckets.set(k, { rows: [], loadIds: new Set() });
+      buckets.get(k).rows.push(r.d);
+      buckets.get(k).loadIds.add(r.load.id);
     });
     const out = [];
-    for (const [k, arr] of buckets.entries()) {
+    for (const [k, b] of buckets.entries()) {
+      const arr = b.rows;
       out.push({
         key: k,
         label: labelFn(k),
-        loads: arr.length,
+        trips: arr.length,          // number of individual hauls measured
+        loads: b.loadIds.size,      // number of distinct load records behind them
         startToYard:    stats(arr.map(d => d.startToYard)),
         yardService:    stats(arr.map(d => d.yardService)),
         yardToJobsite:  stats(arr.map(d => d.yardToJobsite)),
@@ -2753,16 +2930,17 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     || (store.archive || []).flatMap(b => b.pos || []).find(p => p.id === l.poId)
     || {};
 
-  const byYard     = groupBy(l => l.actualYardId || l.vendorId, yardLabel);
-  const byCustomer = groupBy(l => poFor(l).customer || '', x => x);
-  const byJobCode  = groupBy(l => poFor(l).jobCode  || '', x => x || '(no job code)');
-  const byCity     = groupBy(l => poFor(l).city     || '', x => x || '(no city)');
-  const byMaterial = groupBy(l => l.material || '', x => x);
-  const byDriver   = groupBy(l => l.truckId || '',  truckLabel);
+  const byYard     = groupBy(r => r.yardId, yardLabel);
+  const byCustomer = groupBy(r => poFor(r.load).customer || '', x => x);
+  const byJobCode  = groupBy(r => poFor(r.load).jobCode  || '', x => x || '(no job code)');
+  const byCity     = groupBy(r => poFor(r.load).city     || '', x => x || '(no city)');
+  const byMaterial = groupBy(r => r.load.material || '', x => x);
+  const byDriver   = groupBy(r => r.load.truckId || '',  truckLabel);
 
   // Slowest / fastest yards on yard service time (only yards with ≥3 loads
   // for stat stability)
-  const yardsWithEnough = byYard.filter(g => g.yardService.count >= 3);
+  const MIN_SAMPLE = 3;
+  const yardsWithEnough = byYard.filter(g => g.yardService.count >= MIN_SAMPLE);
   const slowestYards = [...yardsWithEnough].sort((a, b) => (b.yardService.avg || 0) - (a.yardService.avg || 0)).slice(0, 5);
   const fastestYards = [...yardsWithEnough].sort((a, b) => (a.yardService.avg || 0) - (b.yardService.avg || 0)).slice(0, 5);
   const slowestJobsites = byCustomer
@@ -2770,10 +2948,11 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     .sort((a, b) => (b.jobsiteService.avg || 0) - (a.jobsiteService.avg || 0))
     .slice(0, 5);
 
-  // Overall summary on the matched set
-  const all = matched.map(durationsForLoad);
+  // Overall summary — every trip across every matched load
+  const all = tripRecords.map(r => r.d);
   const overall = {
     matchedLoads: matched.length,
+    matchedTrips: tripRecords.length,
     startToYard:    stats(all.map(d => d.startToYard)),
     yardService:    stats(all.map(d => d.yardService)),
     yardToJobsite:  stats(all.map(d => d.yardToJobsite)),
@@ -3250,6 +3429,158 @@ async function writeSheet(tab, rows) {
     requestBody: { values: rows },
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FLEET (TRUCKS) & DRIVERS — real, independent entities
+// ═══════════════════════════════════════════════════════════════════════════
+app.get('/api/fleet', reqMgr, (req, res) => {
+  // Annotate each truck with who is currently running it today
+  const today = todayStr();
+  const busy = new Map();
+  store.loads.forEach(l => {
+    if (l.voided || l.deliveryDate !== today) return;
+    if (l.status === 'completed' || l.approvalStatus === 'approved') return;
+    if (l.truckUnitId) busy.set(l.truckUnitId, { loadId: l.id, driverId: l.truckId, driverName: l.driverName });
+  });
+  res.json({
+    trucks: (store.trucks || []).map(t => ({ ...t, currentAssignment: busy.get(t.id) || null })),
+    drivers: store.drivers || [],
+    truckStatuses: TRUCK_STATUSES,
+    driverStatuses: DRIVER_STATUSES,
+  });
+});
+
+app.post('/api/fleet/trucks', reqMgr, async (req, res) => {
+  const { truckNum, type, status, mileage, maintenanceNotes, defaultDriverId } = req.body || {};
+  if (!truckNum || !String(truckNum).trim()) return res.status(400).json({ error: 'Truck number is required' });
+  const num = String(truckNum).trim();
+  if ((store.trucks || []).some(t => t.truckNum.toLowerCase() === num.toLowerCase())) {
+    return res.status(400).json({ error: 'A truck with that number already exists' });
+  }
+  const truck = {
+    id: 'truck-' + num.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Math.floor(Math.random() * 1000),
+    truckNum: num,
+    type: type || '',
+    status: TRUCK_STATUSES.includes(status) ? status : 'available',
+    mileage: mileage === '' || mileage == null ? null : Number(mileage),
+    maintenanceNotes: maintenanceNotes || '',
+    defaultDriverId: defaultDriverId || null,
+    active: true,
+  };
+  store.trucks.push(truck);
+  logAction(req.session.user, 'added-truck', truck.id, { truckNum: truck.truckNum });
+  await saveData();
+  res.json({ success: true, truck });
+});
+
+app.put('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
+  const t = (store.trucks || []).find(x => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Truck not found' });
+  const before = { ...t };
+  const b = req.body || {};
+  if (b.truckNum !== undefined && String(b.truckNum).trim()) t.truckNum = String(b.truckNum).trim();
+  if (b.type !== undefined) t.type = b.type;
+  if (b.status !== undefined) {
+    if (!TRUCK_STATUSES.includes(b.status)) return res.status(400).json({ error: `Status must be one of: ${TRUCK_STATUSES.join(', ')}` });
+    t.status = b.status;
+  }
+  if (b.mileage !== undefined) t.mileage = b.mileage === '' || b.mileage == null ? null : Number(b.mileage);
+  if (b.maintenanceNotes !== undefined) t.maintenanceNotes = b.maintenanceNotes;
+  if (b.defaultDriverId !== undefined) t.defaultDriverId = b.defaultDriverId || null;
+  if (b.active !== undefined) t.active = !!b.active;
+  logAction(req.session.user, 'updated-truck', t.id, { truckNum: t.truckNum, before, after: { ...t } });
+  await saveData();
+  res.json({ success: true, truck: t });
+});
+
+// Trucks are never deleted once they have history — deactivate instead.
+app.delete('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
+  const t = (store.trucks || []).find(x => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Truck not found' });
+  const used = store.loads.some(l => l.truckUnitId === t.id);
+  if (used) {
+    t.active = false;
+    logAction(req.session.user, 'deactivated-truck', t.id, { truckNum: t.truckNum, reason: 'has load history' });
+    await saveData();
+    return res.json({ success: true, deactivated: true, message: 'Truck has delivery history — deactivated instead of deleted.' });
+  }
+  store.trucks = store.trucks.filter(x => x.id !== t.id);
+  logAction(req.session.user, 'deleted-truck', t.id, { truckNum: t.truckNum });
+  await saveData();
+  res.json({ success: true, deactivated: false });
+});
+
+app.put('/api/fleet/drivers/:id', reqMgr, async (req, res) => {
+  const d = (store.drivers || []).find(x => x.id === req.params.id);
+  if (!d) return res.status(404).json({ error: 'Driver not found' });
+  const b = req.body || {};
+  if (b.name !== undefined && String(b.name).trim()) d.name = String(b.name).trim();
+  if (b.phone !== undefined) d.phone = b.phone;
+  if (b.notes !== undefined) d.notes = b.notes;
+  if (b.status !== undefined) {
+    if (!DRIVER_STATUSES.includes(b.status)) return res.status(400).json({ error: `Status must be one of: ${DRIVER_STATUSES.join(', ')}` });
+    d.status = b.status;
+  }
+  if (b.defaultTruckId !== undefined) d.defaultTruckId = b.defaultTruckId || null;
+  if (b.active !== undefined) d.active = !!b.active;
+  logAction(req.session.user, 'updated-driver', d.id, { name: d.name });
+  await saveData();
+  res.json({ success: true, driver: d });
+});
+
+// ── QUICK ASSIGN — driver, truck and pickup yard in one mobile-friendly call ──
+// Everything else (customer, job, material, quantity, PO, date) already lives
+// on the load and is never re-entered.
+app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
+  const l = store.loads.find(x => x.id === req.params.id);
+  if (!l) return res.status(404).json({ error: 'Load not found' });
+  if (l.locked) return res.status(403).json({ error: 'Load is approved and locked' });
+  const { driverId, truckUnitId, yardId } = req.body || {};
+  const changes = {};
+
+  if (driverId !== undefined) {
+    const drv = driverId ? TRUCKS.find(t => t.id === driverId) : null;
+    if (driverId && !drv) return res.status(400).json({ error: 'Unknown driver' });
+    changes.driver = { from: l.driverName || 'Unassigned', to: drv?.label || 'Unassigned' };
+    l.truckId = driverId || null;
+    l.driverName = drv?.label || '';
+    l.status = driverId ? (l.status === 'unassigned' ? 'active' : l.status) : 'unassigned';
+  }
+  if (truckUnitId !== undefined) {
+    const t = truckUnitId ? (store.trucks || []).find(x => x.id === truckUnitId) : null;
+    if (truckUnitId && !t) return res.status(400).json({ error: 'Unknown truck' });
+    changes.truck = { from: (getTruckForLoad(l) || {}).truckNum || 'none', to: t?.truckNum || 'none' };
+    l.truckUnitId = truckUnitId || null;
+  }
+  if (yardId !== undefined) {
+    const v = store.vendors.find(x => x.id === yardId);
+    if (yardId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
+    changes.yard = { from: resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).name, to: v?.name || '' };
+    l.vendorId = yardId || null;
+    l.vendorName = v?.name || '';
+    // actualYardId is a load-level mirror of the CURRENT trip's yard. A new
+    // assignment must win over that mirror, otherwise the driver keeps seeing
+    // the yard they used on the last completed trip. The permanent per-trip
+    // record in trips[].actualYardId is deliberately left untouched — that is
+    // delivery history and must never be rewritten.
+    l.actualYardId = null;
+    l.actualYardName = '';
+    // Re-price against the new yard so cost follows the actual supplier.
+    if (yardId) {
+      const vr = resolveVendorRate(yardId, l.material);
+      l.vendorRate = vr.price;
+      l.vendorUnit = vr.unit;
+      l.vendorRateIsDefault = vr.isDefault;
+      l.vendorIsInternal = !!vr.isInternal;
+      l.pricePerUnit = vr.price;
+    }
+  }
+
+  logAction(req.session.user, 'quick-assigned-load', l.id, changes);
+  await saveData();
+  const po = store.pos.find(p => p.id === l.poId) || {};
+  res.json({ success: true, load: l, pickup: resolvePickupYard(l, po), truck: getTruckForLoad(l) });
+});
 
 // ── RESILIENCE ───────────────────────────────────────────────────────────────
 // Drivers are in the field and the dispatcher may be on a phone. One bad
