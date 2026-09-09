@@ -613,6 +613,65 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 .lc-assign-btn:active{transform:scale(.97)}
 @media(max-width:600px){.lc-assign-btn{min-height:44px;padding:10px 18px;font-size:13px}}
 
+/* ── QUICK ASSIGN / TODAY ─────────────────────────────────────────────────
+   Built phone-first: a dispatcher standing in a yard must assign a load in
+   seconds without hunting for small controls. */
+.qa-wrap{padding:14px 16px;max-width:1100px;margin:0 auto}
+.qa-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px;margin-bottom:14px}
+.qa-stat{background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:12px;text-align:center;box-shadow:var(--shadow)}
+.qa-stat .n{font-size:24px;font-weight:800;line-height:1}
+.qa-stat .l{font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-top:5px}
+.qa-stat.alert{border-color:#fca5a5;background:#fef2f2}
+.qa-stat.alert .n{color:#b42318}
+.qa-stat.warn{border-color:#fcd34d;background:#fff8ec}
+.qa-stat.warn .n{color:#b45309}
+.qa-sec-title{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);margin:18px 0 8px}
+.qa-card{background:var(--bg);border:1px solid var(--bdr);border-left:4px solid var(--bdr2);border-radius:12px;padding:13px 14px;margin-bottom:9px;box-shadow:var(--shadow)}
+.qa-card.unassigned{border-left-color:#dc2626}
+.qa-card.assigned{border-left-color:#2563eb}
+.qa-card.in-progress{border-left-color:#d97706}
+.qa-card.completed{border-left-color:#0a8a3a}
+.qa-card.awaiting-approval{border-left-color:#7c3aed}
+.qa-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.qa-cust{font-size:15px;font-weight:750;line-height:1.25}
+.qa-sub{font-size:12px;color:var(--txt2);margin-top:2px}
+.qa-chip{display:inline-block;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:20px;background:var(--bg2);color:var(--txt2);white-space:nowrap}
+.qa-chip.unassigned{background:#fee2e2;color:#b42318}
+.qa-chip.assigned{background:#dbeafe;color:#1d4ed8}
+.qa-chip.in-progress{background:#fef3c7;color:#b45309}
+.qa-chip.completed{background:#dcfce7;color:#0a8a3a}
+.qa-chip.awaiting-approval{background:#ede9fe;color:#6d28d9}
+.qa-facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.qa-fact{font-size:11.5px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:4px 9px;color:var(--txt)}
+.qa-fact b{font-weight:750}
+.qa-fact.missing{background:#fef2f2;border-color:#fca5a5;color:#b42318;font-weight:700}
+.qa-actions{display:flex;gap:8px;margin-top:11px}
+.qa-btn{flex:1;min-height:44px;border-radius:10px;border:1.5px solid var(--B);background:var(--B);color:#fff;
+  font-size:13.5px;font-weight:750;cursor:pointer;font-family:var(--f);transition:all .15s}
+.qa-btn:active{transform:scale(.985)}
+.qa-btn.ghost{background:transparent;color:var(--B)}
+.qa-btn:disabled{opacity:.45;cursor:not-allowed}
+/* Assignment picker sheet — bottom sheet on phones, centered card on desktop */
+.qa-sheet-bg{position:fixed;inset:0;background:rgba(10,14,26,.55);z-index:400;display:flex;align-items:flex-end;justify-content:center}
+.qa-sheet{background:var(--bg);width:100%;max-width:560px;border-radius:18px 18px 0 0;max-height:90vh;display:flex;flex-direction:column}
+.qa-sheet-head{padding:16px 18px 10px;border-bottom:1px solid var(--bdr)}
+.qa-sheet-body{padding:14px 18px;overflow-y:auto;flex:1}
+.qa-sheet-foot{padding:12px 18px;border-top:1px solid var(--bdr);background:var(--bg2);display:flex;gap:9px;border-radius:0 0 0 0}
+.qa-opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+.qa-opt{min-height:52px;border:1.5px solid var(--bdr2);background:var(--bg);border-radius:11px;padding:9px 12px;
+  cursor:pointer;font-family:var(--f);text-align:left;transition:all .12s}
+.qa-opt:active{transform:scale(.98)}
+.qa-opt.sel{border-color:var(--B);background:var(--Bb,#e7f0ff);box-shadow:0 0 0 2px var(--B) inset}
+.qa-opt .t{font-size:13.5px;font-weight:750;color:var(--txt)}
+.qa-opt .s{font-size:11px;color:var(--txt2);margin-top:2px}
+.qa-opt.busy .t{color:var(--txt2)}
+.qa-step{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);margin:14px 0 7px}
+.qa-step:first-child{margin-top:0}
+@media(min-width:700px){
+  .qa-sheet-bg{align-items:center}
+  .qa-sheet{border-radius:18px}
+}
+
 /* ── SIGNATURE PAD ── */
 .sig-canvas{width:100%;height:200px;background:#fff;border:2px solid var(--bdr);border-radius:var(--r);touch-action:none;cursor:crosshair}
 
@@ -633,6 +692,11 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <button class="nav-item active" data-tab="board" onclick="goTab('board')">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
         <span>Board</span>
+      </button>
+      <button class="nav-item" data-tab="today" onclick="goTab('today')" id="nav-today">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <span>Quick Assign</span>
+        <span class="nav-badge" id="today-badge" style="display:none">0</span>
       </button>
       <button class="nav-item" data-tab="approvals" onclick="goTab('approvals')">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
@@ -685,6 +749,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <div class="section active" id="sec-board">
         <div class="board-header" id="board-header"></div>
         <div class="board" id="board"></div>
+      </div>
+      <!-- QUICK ASSIGN / TODAY -->
+      <div class="section" id="sec-today">
+        <div id="today-content"></div>
       </div>
       <!-- APPROVALS -->
       <div class="section" id="sec-approvals">
@@ -1149,8 +1217,11 @@ async function init() {
       document.getElementById('page-title').textContent = 'My Trips';
       goTab('driver');
     } else {
-      goTab('board');
+      // Dispatchers land on today's board — the screen they actually work from
+      goTab('today');
+      checkPersistence();
     }
+    startLiveRefresh();
   } catch (e) {
     console.error('Init error:', e);
     toast('Failed to load app: ' + e.message, 'error');
@@ -1164,6 +1235,7 @@ function goTab(tab) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 
   if (tab === 'board')    { document.getElementById('sec-board').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch Board'; renderBoard(); }
+  if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = "Today's Dispatch"; renderToday(); }
   if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
   if (tab === 'history')  { document.getElementById('sec-history').classList.add('active'); document.getElementById('page-title').textContent = 'History'; renderHistory(); }
@@ -3380,6 +3452,214 @@ async function voidBatch(id) {
   if (r.ok) toast('Batch voided', 'success'); else toast(r.error || 'Failed', 'error');
   await loadAll();
   renderBillBatches();
+}
+
+// ── PERSISTENCE WARNING ─────────────────────────────────────────────────────
+// If loads are not reaching Postgres, the person entering them has to know.
+// A console warning nobody reads is how a day of dispatch disappears.
+async function checkPersistence() {
+  try {
+    const r = await fetch('/api/persistence');
+    if (!r.ok) return;
+    const p = await r.json();
+    document.getElementById('persist-banner')?.remove();
+    if (!p.warning) return;
+    const bar = document.createElement('div');
+    bar.id = 'persist-banner';
+    bar.style.cssText = 'position:sticky;top:0;z-index:250;background:#b42318;color:#fff;padding:11px 16px;'
+      + 'font-size:13px;font-weight:650;line-height:1.45;display:flex;gap:10px;align-items:center';
+    bar.innerHTML = `<span style="font-size:17px">&#9888;</span>
+      <span>${escapeHtml(p.warning)}</span>`;
+    document.querySelector('.content')?.prepend(bar);
+  } catch (e) { /* ignore */ }
+}
+
+// ── QUICK ASSIGN / TODAY'S DISPATCH ─────────────────────────────────────────
+// One screen, phone-first: see today, spot the unassigned, assign in seconds.
+let todayData = null;
+let qaFilter = 'all';       // all | unassigned | assigned | in-progress | completed
+let qaPick = null;          // { loadId, driverId, truckUnitId, yardId }
+
+async function renderToday() {
+  const wrap = document.getElementById('today-content');
+  if (!todayData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading today…</div>`;
+  const d = await api('GET', '/api/today');
+  if (!d.ok) { wrap.innerHTML = `<div style="padding:24px;color:var(--R)">${d.error || 'Failed to load'}</div>`; return; }
+  todayData = d;
+  paintToday();
+}
+
+function paintToday() {
+  const d = todayData; if (!d) return;
+  const s = d.summary;
+  const tile = (n, label, cls, filter) =>
+    `<div class="qa-stat ${cls || ''}" onclick="qaSetFilter('${filter || 'all'}')" style="cursor:pointer">
+       <div class="n">${n}</div><div class="l">${label}</div></div>`;
+
+  const order = { unassigned: 0, 'in-progress': 1, assigned: 2, 'awaiting-approval': 3, completed: 4 };
+  let loads = [...d.loads].sort((a, b) => (order[a.bucket] - order[b.bucket]) || String(a.customer).localeCompare(String(b.customer)));
+  if (qaFilter !== 'all') loads = loads.filter(l => l.bucket === qaFilter);
+
+  document.getElementById('today-content').innerHTML = `
+    <div class="qa-wrap">
+      <div class="qa-stats">
+        ${tile(s.unassigned, 'Unassigned', s.unassigned ? 'alert' : '', 'unassigned')}
+        ${tile(s.assigned, 'Assigned', '', 'assigned')}
+        ${tile(s.inProgress, 'In Progress', '', 'in-progress')}
+        ${tile(s.completed, 'Completed', '', 'completed')}
+        ${tile(s.awaitingApproval, 'Awaiting Approval', s.awaitingApproval ? 'warn' : '', 'awaiting-approval')}
+        ${tile(s.driversAvailable, 'Drivers Free', '', 'all')}
+        ${tile(s.driversWorking, 'Drivers Working', '', 'all')}
+        ${tile(s.jobs, 'Jobs Today', '', 'all')}
+      </div>
+      ${qaFilter !== 'all' ? `<button class="btn ghost" onclick="qaSetFilter('all')">← Showing ${qaFilter.replace('-', ' ')} · show all</button>` : ''}
+      <div class="qa-sec-title">${loads.length} load${loads.length === 1 ? '' : 's'} · ${d.date}</div>
+      ${loads.length ? loads.map(qaCard).join('') :
+        `<div class="empty-state"><h3>Nothing here</h3><p>No loads match this filter for today.</p></div>`}
+    </div>`;
+  const badge = document.getElementById('today-badge');
+  if (badge) { badge.style.display = s.unassigned ? '' : 'none'; badge.textContent = s.unassigned; }
+}
+
+function qaSetFilter(f) { qaFilter = f; paintToday(); }
+
+function qaCard(l) {
+  const label = { 'unassigned': 'Unassigned', 'assigned': 'Assigned', 'in-progress': 'In Progress',
+                  'completed': 'Completed', 'awaiting-approval': 'Awaiting Approval' }[l.bucket] || l.bucket;
+  return `<div class="qa-card ${l.bucket}">
+    <div class="qa-top">
+      <div>
+        <div class="qa-cust">${escapeHtml(l.customer || '(no customer)')}</div>
+        <div class="qa-sub">${escapeHtml(l.poNumber)}${l.jobName && l.jobName !== l.customer ? ' · ' + escapeHtml(l.jobName) : ''}${l.city ? ' · ' + escapeHtml(l.city) : ''}</div>
+      </div>
+      <span class="qa-chip ${l.bucket}">${label}</span>
+    </div>
+    <div class="qa-facts">
+      <div class="qa-fact"><b>${escapeHtml(l.material)}</b> · ${l.loadsDelivered}/${l.loadsAssigned} loads</div>
+      <div class="qa-fact">Yard: <b>${escapeHtml(l.yardName)}</b></div>
+      <div class="qa-fact${l.driverName ? '' : ' missing'}">Driver: <b>${escapeHtml(l.driverName || 'NONE')}</b></div>
+      <div class="qa-fact${l.truckNum ? '' : ' missing'}">Truck: <b>${escapeHtml(l.truckNum || 'NONE')}</b></div>
+    </div>
+    ${l.locked ? `<div class="qa-sub" style="margin-top:9px">Approved and locked — assignment can no longer change.</div>` : `
+    <div class="qa-actions">
+      <button class="qa-btn" onclick="qaOpen('${l.id}')">${l.bucket === 'unassigned' ? 'Assign' : 'Reassign'}</button>
+      <button class="qa-btn ghost" onclick="openLoadDetail('${l.id}')">Details</button>
+    </div>`}
+  </div>`;
+}
+
+// ── Assignment sheet: Driver → Truck → Yard → Confirm ───────────────────────
+// Nothing commits until Confirm, so a stray tap can never reassign a load.
+function qaOpen(loadId) {
+  const l = todayData.loads.find(x => x.id === loadId); if (!l) return;
+  qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId };
+  qaPaintSheet();
+}
+
+function qaPaintSheet() {
+  const d = todayData, p = qaPick;
+  const l = d.loads.find(x => x.id === p.loadId);
+  let el = document.getElementById('qa-sheet-bg');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'qa-sheet-bg'; el.className = 'qa-sheet-bg';
+    el.onclick = (e) => { if (e.target === el) qaClose(); };
+    document.body.appendChild(el);
+  }
+  const opt = (sel, onclick, title, sub, busy) =>
+    `<button class="qa-opt ${sel ? 'sel' : ''} ${busy ? 'busy' : ''}" onclick="${onclick}">
+       <div class="t">${escapeHtml(title)}</div><div class="s">${escapeHtml(sub)}</div></button>`;
+
+  const changed = p.driverId !== l.driverId || p.truckUnitId !== l.truckUnitId || p.yardId !== l.yardId;
+  el.innerHTML = `<div class="qa-sheet">
+    <div class="qa-sheet-head">
+      <div style="font-size:16px;font-weight:800">${escapeHtml(l.customer)}</div>
+      <div class="qa-sub">${escapeHtml(l.poNumber)} · ${escapeHtml(l.material)} · ${l.loadsAssigned} load${l.loadsAssigned === 1 ? '' : 's'}</div>
+    </div>
+    <div class="qa-sheet-body">
+      <div class="qa-step">1 · Driver</div>
+      <div class="qa-opts">
+        ${opt(!p.driverId, `qaSet('driverId',null)`, 'Unassigned', 'No driver', false)}
+        ${d.drivers.map(dr => {
+          const busy = dr.openLoadIds.length && !dr.openLoadIds.includes(l.id);
+          return opt(p.driverId === dr.id, `qaSet('driverId','${dr.id}')`, dr.name,
+            dr.status === 'off' ? 'Off duty' : busy ? `Busy · ${dr.openLoadIds.length} load(s)` : 'Available', busy);
+        }).join('')}
+      </div>
+      <div class="qa-step">2 · Truck</div>
+      <div class="qa-opts">
+        ${opt(!p.truckUnitId, `qaSet('truckUnitId',null)`, 'No truck', 'Choose later', false)}
+        ${d.trucks.map(t => {
+          const busy = t.inUseOnLoadId && t.inUseOnLoadId !== l.id;
+          return opt(p.truckUnitId === t.id, `qaSet('truckUnitId','${t.id}')`, t.truckNum,
+            t.status !== 'available' ? t.status : busy ? 'On another load' : (t.type || 'Available'), busy);
+        }).join('')}
+      </div>
+      <div class="qa-step">3 · Pickup yard</div>
+      <div class="qa-opts">
+        ${d.yards.map(y => opt(p.yardId === y.id, `qaSet('yardId','${y.id}')`, y.name,
+            y.isInternal ? 'Internal — no material cost' : 'Outside supplier', false)).join('')}
+      </div>
+    </div>
+    <div class="qa-sheet-foot">
+      <button class="qa-btn ghost" onclick="qaClose()">Cancel</button>
+      <button class="qa-btn" id="qa-confirm" ${changed ? '' : 'disabled'} onclick="qaConfirm()">
+        ${changed ? 'Confirm assignment' : 'No changes'}</button>
+    </div>
+  </div>`;
+}
+
+function qaSet(field, val) { qaPick[field] = val; qaPaintSheet(); }
+function qaClose() { const el = document.getElementById('qa-sheet-bg'); if (el) el.remove(); qaPick = null; }
+
+async function qaConfirm() {
+  const p = qaPick; if (!p) return;
+  const btn = document.getElementById('qa-confirm');
+  btn.disabled = true; btn.textContent = 'Assigning…';
+  const r = await api('POST', `/api/loads/${p.loadId}/assign`, {
+    driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId,
+  });
+  if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; return toast(r.error || 'Assign failed', 'error'); }
+  const who = r.load.driverName || 'Unassigned';
+  const truck = r.truck ? r.truck.truckNum : 'no truck';
+  qaClose();
+  toast(`${who} → ${truck} → ${r.pickup.name}`, 'success');
+  await renderToday();
+  await loadAll();
+}
+
+// ── LIVE REFRESH ────────────────────────────────────────────────────────────
+// Poll a tiny fingerprint; pull the full payload only when it actually
+// changes. Chosen over WebSockets deliberately — a phone in a truck cab loses
+// signal constantly, and a poll just succeeds on the next tick.
+let liveTimer = null, liveVersion = null;
+
+async function liveCheck(force) {
+  try {
+    const r = await fetch('/api/dispatch-version');
+    if (!r.ok) return;
+    const { version } = await r.json();
+    if (liveVersion === null) { liveVersion = version; return; }
+    if (version === liveVersion && !force) return;
+    const changed = version !== liveVersion;
+    liveVersion = version;
+    if (!changed) return;
+    if (role === 'driver') {
+      await renderDriver();
+      toast('Your assignments were updated', 'success');
+    } else if (currentTab === 'today') {
+      await renderToday();
+    } else {
+      await loadAll();
+      if (currentTab === 'board') renderBoard();
+    }
+  } catch (e) { /* offline — retry on the next tick */ }
+}
+
+function startLiveRefresh() {
+  if (liveTimer) clearInterval(liveTimer);
+  liveTimer = setInterval(() => { if (!document.hidden) liveCheck(false); }, 12000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) liveCheck(false); });
 }
 
 // ── QUICKBOOKS SETTINGS + SYNC LOG ─────────────────────────────────────────

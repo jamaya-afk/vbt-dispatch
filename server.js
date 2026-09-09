@@ -183,10 +183,8 @@ function getTruckForLoad(l) {
     const t = fleet.find(x => x.id === l.truckUnitId);
     if (t) return t;
   }
-  if (l.truckId) {
-    const t = fleet.find(x => x.defaultDriverId === l.truckId);
-    if (t) return t;
-  }
+  // No fallback to the driver's usual truck: showing a truck number the
+  // dispatcher never assigned is worse than showing none.
   return null;
 }
 
@@ -240,13 +238,13 @@ const DEFAULT_VENDORS = [
 // Default per-vendor prices (just a starting set — manager edits these)
 const DEFAULT_VENDOR_PRICES = {
   vulcan: [
-    { id: 'v1', material: '3/4 Rock',   unit: 'CY',  price: 38, active: true, notes: '' },
+    { id: 'v1', material: '3/4 Rock',   unit: 'TON', price: 38, active: true, notes: '' },
     { id: 'v2', material: 'Base Rock',  unit: 'TON', price: 22, active: true, notes: '' },
-    { id: 'v3', material: 'Sand',       unit: 'CY',  price: 28, active: true, notes: '' },
+    { id: 'v3', material: 'Sand',       unit: 'TON', price: 28, active: true, notes: '' },
   ],
   teichert: [
-    { id: 't1', material: 'Fill Sand',  unit: 'CY',  price: 18, active: true, notes: '' },
-    { id: 't2', material: 'Gravel',     unit: 'CY',  price: 32, active: true, notes: '' },
+    { id: 't1', material: 'Fill Sand',  unit: 'TON', price: 18, active: true, notes: '' },
+    { id: 't2', material: 'Gravel',     unit: 'TON', price: 32, active: true, notes: '' },
   ],
   granite: [
     { id: 'g1', material: '3/4 Rock',   unit: 'TON', price: 30, active: true, notes: '' },
@@ -257,14 +255,14 @@ const DEFAULT_VENDOR_PRICES = {
     { id: 'c2', material: 'Base Rock',  unit: 'TON', price: 24, active: true, notes: '' },
   ],
   keith: [
-    { id: 'k1', material: 'Fill Sand',  unit: 'CY',  price: 16, active: true, notes: '' },
+    { id: 'k1', material: 'Fill Sand',  unit: 'TON', price: 16, active: true, notes: '' },
     { id: 'k2', material: 'Recycle Base', unit: 'TON', price: 14, active: true, notes: '' },
   ],
   hanson: [
     { id: 'h1', material: 'Rock',       unit: 'TON', price: 32, active: true, notes: '' },
   ],
   vbt: [
-    { id: 'vb1', material: 'Dirt',      unit: 'CY',  price: 0, active: true, notes: 'Internal yard' },
+    { id: 'vb1', material: 'Dirt',      unit: 'TON', price: 0, active: true, notes: 'Internal yard' },
   ],
   other: []
 };
@@ -288,7 +286,24 @@ let store = {
 
 async function initPg() {
   if (!process.env.DATABASE_URL) {
-    console.warn('⚠ No DATABASE_URL — using file storage (data resets on redeploy!)');
+    persistence.mode = 'file';
+    persistence.durable = false;
+    console.error('');
+    console.error('  ***************************************************************');
+    console.error('  *  NO DATABASE_URL — VALLEY BEST DATA IS NOT DURABLE          *');
+    console.error('  *                                                             *');
+    console.error('  *  Loads, trips, tickets and approvals are being written to a *');
+    console.error('  *  local file that Railway DELETES on every redeploy.         *');
+    console.error('  *  Set DATABASE_URL to the Supabase/Postgres connection string.*');
+    console.error('  ***************************************************************');
+    console.error('');
+    // Refuse to start in production unless explicitly overridden, so a
+    // misconfigured deploy fails visibly instead of quietly losing a day's work.
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_EPHEMERAL_DATA !== 'true') {
+      console.error('Refusing to start in production without a database.');
+      console.error('Set DATABASE_URL, or ALLOW_EPHEMERAL_DATA=true to override (not recommended).');
+      process.exit(1);
+    }
     return;
   }
   try {
@@ -304,9 +319,15 @@ async function initPg() {
     }
     await pg.query('SELECT 1');
     await pg.query(`CREATE TABLE IF NOT EXISTS dispatch_data (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
-    console.log('✓ Postgres connected');
+    persistence.mode = 'postgres';
+    persistence.durable = true;
+    console.log('✓ Postgres connected — Valley Best data is durable');
   } catch (e) {
-    console.error('✗ Postgres connection failed:', e.message);
+    persistence.mode = 'file';
+    persistence.durable = false;
+    persistence.lastError = e.message;
+    persistence.degradedSince = new Date().toISOString();
+    console.error('✗ POSTGRES CONNECTION FAILED — data will NOT survive a redeploy:', e.message);
     pg = null;
   }
 }
@@ -356,20 +377,57 @@ async function pgHasStore() {
   } catch { return false; }
 }
 
+// Persistence health, surfaced to /healthz and to the dispatcher's screen.
+// A silent fallback to a local file is the single most dangerous failure mode
+// here: everything looks fine until Railway redeploys and the day's loads are
+// gone. So it is tracked and reported loudly rather than logged once.
+const persistence = {
+  mode: 'unknown',        // 'postgres' | 'file' | 'unknown'
+  durable: false,
+  lastSaveOk: null,
+  lastSaveAt: '',
+  lastError: '',
+  degradedSince: '',
+};
+
 async function saveData() {
   const j = JSON.stringify(store);
   if (pg) {
     try {
+      // Snapshot the previous value before overwriting. The whole operation
+      // lives in one row, so a bad write would otherwise be unrecoverable.
+      await pg.query(`
+        INSERT INTO dispatch_data(key, value)
+        SELECT 'store_prev', value FROM dispatch_data WHERE key = 'store'
+        ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
+      `).catch(() => {});
       await pg.query(
         "INSERT INTO dispatch_data(key,value) VALUES('store',$1) ON CONFLICT(key) DO UPDATE SET value=$1",
         [j]
       );
+      persistence.lastSaveOk = true;
+      persistence.lastSaveAt = new Date().toISOString();
+      persistence.lastError = '';
+      persistence.degradedSince = '';
+      return;
     } catch (e) {
-      console.error('PG write error:', e.message);
+      // Keep a local copy so the data is not lost, but do NOT pretend this is
+      // fine — the dispatcher needs to know writes are not reaching Postgres.
+      console.error('✗ PG WRITE FAILED — falling back to local file:', e.message);
+      persistence.lastSaveOk = false;
+      persistence.lastError = e.message;
+      if (!persistence.degradedSince) persistence.degradedSince = new Date().toISOString();
       try { fs.writeFileSync(DATA_FILE, j); } catch (fe) {}
+      return;
     }
-  } else {
-    try { fs.writeFileSync(DATA_FILE, j); } catch (e) {}
+  }
+  try {
+    fs.writeFileSync(DATA_FILE, j);
+    persistence.lastSaveOk = true;
+    persistence.lastSaveAt = new Date().toISOString();
+  } catch (e) {
+    persistence.lastSaveOk = false;
+    persistence.lastError = e.message;
   }
 }
 
@@ -442,14 +500,22 @@ function normalizeStore() {
     if (d.active === undefined) d.active = true;
   });
 
-  // Backfill the vehicle on existing loads from the driver's historical truck,
-  // so nothing that already ran loses its truck attribution.
-  store.loads.forEach(l => {
-    if (!('truckUnitId' in l) || !l.truckUnitId) {
-      const t = DEFAULT_TRUCKS.find(x => x.defaultDriverId === l.truckId);
-      l.truckUnitId = t ? t.id : null;
-    }
-  });
+  // ONE-TIME backfill: loads that existed before the fleet did get the truck
+  // their driver historically ran, so past deliveries keep truck attribution.
+  // Guarded by a flag — after this runs once, a load with no truck stays
+  // unassigned rather than silently inheriting the driver's usual vehicle.
+  if (!store.truckUnitBackfillV1) {
+    let n = 0;
+    store.loads.forEach(l => {
+      if (!l.truckUnitId) {
+        const t = DEFAULT_TRUCKS.find(x => x.defaultDriverId === l.truckId);
+        if (t) { l.truckUnitId = t.id; n++; }
+      }
+    });
+    store.truckUnitBackfillV1 = true;
+    if (n) console.log(`[normalize] Backfilled truck on ${n} pre-fleet load(s)`);
+  }
+  store.loads.forEach(l => { if (!('truckUnitId' in l)) l.truckUnitId = null; });
 
   // ── UNIT CONFIG (P4) ───────────────────────────────────────────────────────
   // Quantity of each unit in one load. Seeded only with what Valley Best has
@@ -650,13 +716,28 @@ function resolveVendorRate(vendorId, material) {
 // not been defined return null, and every caller reports the load as
 // "unpriced — set quantity per load" instead of inventing a total.
 //
-//   ton  → 25   the documented Valley Best rule (1 load = 25 tons)
+// CONFIRMED Valley Best rule: 1 truck load = 25 tons. Valley Best hauls and
+// delivers material by weight — CY is a concrete-placement unit and is not
+// part of this workflow, so it is deliberately absent here and never appears
+// as a configuration warning.
+//
+//   ton  → 25   confirmed: 1 Valley Best load = 25 tons
 //   load → 1    the rate already IS per load
-//   CY, SF, LF, ... → unset until management enters the real figure
+//   hour → 1    hourly work; the rate is per load-hour
+//   mile → 1    per-mile rate, multiplied by miles at call time
+//
+// The engine stays open: any other unit can be given a quantity per load in
+// costing settings, and only units actually in use are ever flagged.
 const DEFAULT_UNIT_QTY_PER_LOAD = {
   ton:  25,
   load: 1,
+  hour: 1,
+  mile: 1,
 };
+
+// Units Valley Best actually operates in. Anything outside this list still
+// works if configured, but these are what the UI offers by default.
+const SUPPORTED_UNITS = ['ton', 'load', 'hour', 'mile'];
 
 function unitKey(unit) { return String(unit || 'ton').trim().toLowerCase(); }
 
@@ -760,7 +841,34 @@ function reqAdmin(req, res, next) {
   res.status(403).json({ error: 'Admin access required' });
 }
 
-app.get('/healthz', (req, res) => res.json({ ok: true, hasDb: !!process.env.DATABASE_URL, time: new Date().toISOString() }));
+app.get('/healthz', (req, res) => res.json({
+  ok: true,
+  hasDb: !!process.env.DATABASE_URL,
+  persistence: {
+    mode: persistence.mode,
+    durable: persistence.durable,
+    lastSaveOk: persistence.lastSaveOk,
+    lastSaveAt: persistence.lastSaveAt,
+    lastError: persistence.lastError,
+    degradedSince: persistence.degradedSince,
+  },
+  fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
+  time: new Date().toISOString(),
+}));
+
+// Persistence banner for the dispatcher. If data is not reaching Postgres,
+// the person entering loads is the one who needs to know — not just the log.
+app.get('/api/persistence', reqAuth, (req, res) => {
+  res.json({
+    ...persistence,
+    fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
+    warning: !persistence.durable
+      ? 'Data is NOT in Postgres — it will be lost on the next redeploy. Set DATABASE_URL.'
+      : persistence.lastSaveOk === false
+        ? 'The last save did not reach Postgres. Recent changes may be at risk.'
+        : '',
+  });
+});
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
 
 app.get('/login', (req, res) => {
@@ -915,11 +1023,16 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
   const exactMatch = store.loads.filter(l => l.truckId === u.truckId);
   console.log(`[my-dispatch] Loads with EXACT truckId match: ${exactMatch.length}`);
 
+  // Drivers see only their CURRENT WORKDAY — today's loads, plus anything
+  // older still open (a load that ran past midnight or was left unfinished
+  // must not silently vanish on the driver). Never future work.
+  const today = todayStr();
   const myLoads = store.loads.filter(l =>
     l.truckId === u.truckId &&
     !l.voided &&
     l.status !== 'completed' &&
-    l.approvalStatus !== 'approved'
+    l.approvalStatus !== 'approved' &&
+    (l.deliveryDate || today) <= today
   );
 
   console.log(`[my-dispatch] Loads after filtering (not voided, not completed, not approved): ${myLoads.length}`);
@@ -1081,11 +1194,11 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       loadsDelivered: 0,
       truckId: s.truckId || null,               // legacy name: this is the DRIVER
       driverName: truck?.label || '',
-      // Vehicle, chosen independently of the driver. Falls back to that
-      // driver's usual truck when the dispatcher doesn't pick one.
-      truckUnitId: s.truckUnitId
-        || (DEFAULT_TRUCKS.find(t => t.defaultDriverId === s.truckId) || {}).id
-        || null,
+      // Vehicle, chosen independently of the driver. Deliberately NOT defaulted
+      // to that driver's historical truck — a driver can run a different truck
+      // any day, and silently assuming one would put the wrong truck number in
+      // front of the driver. Unset until the dispatcher picks.
+      truckUnitId: s.truckUnitId || null,
       deliveryDate: newPo.deliveryDate,
       status: s.truckId ? 'active' : 'unassigned',
       timestamps: {},
@@ -3511,6 +3624,35 @@ async function writeSheet(tab, rows) {
   });
 }
 
+// ── LIVE REFRESH ─────────────────────────────────────────────────────────────
+// A tiny fingerprint of what the caller should currently be seeing. Clients
+// poll this and only pull the full payload when the value changes, so a phone
+// sitting in a truck cab all day costs almost nothing.
+//
+// Polling on purpose: for a five-truck fleet it is far more reliable than a
+// WebSocket that has to survive cell handoffs, tunnels and screen sleep.
+function dispatchFingerprint(loads) {
+  const parts = loads.map(l => [
+    l.id, l.truckId || '-', l.truckUnitId || '-', l.vendorId || '-',
+    l.actualYardId || '-', l.loadsAssigned, l.loadsDelivered,
+    l.status, l.approvalStatus, l.deliveryDate,
+    (l.trips || []).length,
+  ].join(':'));
+  parts.sort();
+  return require('crypto').createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 16);
+}
+
+app.get('/api/dispatch-version', reqAuth, (req, res) => {
+  const u = req.session.user;
+  const today = todayStr();
+  const scope = u.role === 'driver'
+    ? store.loads.filter(l => l.truckId === u.truckId && !l.voided &&
+        l.status !== 'completed' && l.approvalStatus !== 'approved' &&
+        (l.deliveryDate || today) <= today)
+    : store.loads.filter(l => !l.voided && l.deliveryDate === today);
+  res.json({ version: dispatchFingerprint(scope), count: scope.length, at: new Date().toISOString() });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // FLEET (TRUCKS) & DRIVERS — real, independent entities
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3528,6 +3670,85 @@ app.get('/api/fleet', reqMgr, (req, res) => {
     drivers: store.drivers || [],
     truckStatuses: TRUCK_STATUSES,
     driverStatuses: DRIVER_STATUSES,
+  });
+});
+
+// ── TODAY BOARD — everything Quick Assign needs in ONE call ─────────────────
+// The dispatcher must never wait on several round trips to assign a load.
+app.get('/api/today', reqMgr, (req, res) => {
+  const day = req.query.date || todayStr();
+  const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
+
+  const bucketOf = (l) => {
+    if (l.approvalStatus === 'approved') return 'completed';
+    if (l.approvalStatus === 'submitted') return 'awaiting-approval';
+    if (!l.truckId || l.truckId === 'unassigned') return 'unassigned';
+    if ((l.loadsDelivered || 0) > 0 || (l.trips || []).length > 0) return 'in-progress';
+    return 'assigned';
+  };
+
+  const loads = dayLoads.map(l => {
+    const po = store.pos.find(p => p.id === l.poId) || {};
+    const pickup = resolvePickupYard(l, po);
+    const truck = getTruckForLoad(l);
+    return {
+      id: l.id,
+      bucket: bucketOf(l),
+      poNumber: po.poNumber || '', customer: po.customer || '',
+      jobName: po.job || po.customer || '', jobCode: po.jobCode || '',
+      address: po.address || '', city: po.city || '',
+      material: l.material,
+      loadsAssigned: l.loadsAssigned, loadsDelivered: l.loadsDelivered || 0,
+      driverId: l.truckId || null, driverName: l.driverName || '',
+      truckUnitId: l.truckUnitId || null, truckNum: truck ? truck.truckNum : '',
+      yardId: pickup.id, yardName: pickup.name,
+      locked: !!l.locked,
+      approvalStatus: l.approvalStatus,
+      missingTicket: !l.ticketImage && !l.ticketImageUrl,
+    };
+  });
+
+  // Driver availability, derived from today's actual work
+  const busyBy = new Map();
+  dayLoads.forEach(l => {
+    if (!l.truckId || l.approvalStatus === 'approved') return;
+    if (!busyBy.has(l.truckId)) busyBy.set(l.truckId, []);
+    busyBy.get(l.truckId).push(l.id);
+  });
+  const drivers = (store.drivers || []).filter(d => d.active).map(d => ({
+    id: d.id, name: d.name, status: d.status,
+    openLoadIds: busyBy.get(d.id) || [],
+    available: (busyBy.get(d.id) || []).length === 0 && d.status !== 'off',
+  }));
+
+  const truckBusy = new Map();
+  dayLoads.forEach(l => {
+    if (l.truckUnitId && l.approvalStatus !== 'approved') truckBusy.set(l.truckUnitId, l.id);
+  });
+  const trucks = (store.trucks || []).filter(t => t.active).map(t => ({
+    id: t.id, truckNum: t.truckNum, type: t.type, status: t.status,
+    inUseOnLoadId: truckBusy.get(t.id) || null,
+    available: !truckBusy.has(t.id) && t.status === 'available',
+  }));
+
+  const count = (b) => loads.filter(l => l.bucket === b).length;
+  res.json({
+    date: day,
+    version: dispatchFingerprint(dayLoads),
+    loads, drivers, trucks,
+    yards: store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, isInternal: v.id === 'vbt' })),
+    summary: {
+      jobs: new Set(dayLoads.map(l => l.poId)).size,
+      loads: dayLoads.length,
+      unassigned: count('unassigned'),
+      assigned: count('assigned'),
+      inProgress: count('in-progress'),
+      completed: count('completed'),
+      awaitingApproval: count('awaiting-approval'),
+      driversWorking: drivers.filter(d => d.openLoadIds.length > 0).length,
+      driversAvailable: drivers.filter(d => d.available).length,
+      missingTicket: loads.filter(l => l.missingTicket && l.bucket === 'awaiting-approval').length,
+    },
   });
 });
 
@@ -3690,7 +3911,11 @@ app.get('/api/costing/settings', reqMgr, (req, res) => {
     unitConfig: store.unitConfig,
     costRates: store.costRates,
     unitsInUse: units,
-    needsAttention: units.filter(u => !u.configured).map(u => u.unit),
+    // Only units genuinely in use on real loads AND lacking a quantity are
+    // flagged. Valley Best's units (ton/load/hour/mile) all ship configured,
+    // so this is normally empty.
+    needsAttention: units.filter(u => !u.configured && u.loads > 0).map(u => u.unit),
+    supportedUnits: SUPPORTED_UNITS,
     tonsPerLoadRule: TONS_PER_LOAD,
   });
 });
@@ -3747,9 +3972,18 @@ app.put('/api/costing/rates', reqMgr, async (req, res) => {
 // request must degrade to a 500 for that caller — never take the whole
 // dispatch system offline for everyone.
 app.use((err, req, res, next) => {
-  console.error(`[express error] ${req.method} ${req.originalUrl}:`, err && err.stack || err);
   if (res.headersSent) return next(err);
-  res.status(500).json({ error: 'Server error — the team has been notified. Please retry.' });
+  // A malformed or oversized request body is the caller's mistake, not ours.
+  // Returning 500 for it hides real server faults in the noise.
+  if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
+    console.warn(`[bad request] ${req.method} ${req.originalUrl}: ${err.message}`);
+    return res.status(400).json({ error: 'Malformed JSON in request body' });
+  }
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Upload too large (limit 25MB)' });
+  }
+  console.error(`[express error] ${req.method} ${req.originalUrl}:`, err && err.stack || err);
+  res.status(500).json({ error: 'Server error — please retry. If it persists, check the server log.' });
 });
 
 process.on('unhandledRejection', (reason) => {

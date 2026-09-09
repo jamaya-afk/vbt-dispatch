@@ -99,7 +99,93 @@ chk "server survived batch call" "$(curl -s -o /dev/null -w '%{http_code}' $B/he
 chk "double-bill blocked (409)" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/bill -d "{\"loadIds\":[\"$LOAD\"]}")" "409"
 chk "QuickBooks status endpoint alive" "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/api/quickbooks/status)" "200"
 
-echo "── 8. Fleet is independent of drivers ──"
+echo "── 8. Costing: confirmed 25 tons/load, no CY warning ──"
+C=$(curl -s -b $M $B/api/costing/settings | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print(d['tonsPerLoadRule'])
+print(len(d['needsAttention']))
+print('cy' in [u['unit'] for u in d['unitsInUse']])
+print(','.join(d['supportedUnits']))")
+chk "tons per load rule"        "$(echo "$C"|sed -n 1p)" "25"
+chk "nothing needs attention"   "$(echo "$C"|sed -n 2p)" "0"
+chk "no CY unit in use"         "$(echo "$C"|sed -n 3p)" "False"
+chk "supported units"           "$(echo "$C"|sed -n 4p)" "ton,load,hour,mile"
+
+# $38/ton x 25 tons x 2 loads = $1900, and both screens must agree
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"customer":"Cost Check","deliveryDate":"'"$(date +%F)"'"},
+ "splits":[{"truckId":"matthew","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}' -o /dev/null
+CL=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys
+print([l['id'] for l in json.load(sys.stdin)['loads'] if l['material']=='3/4 Rock' and l['truckId']=='matthew'][0])")
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$CL -d '{"loadsDelivered":2}' -o /dev/null
+chk "profitability cost = 38x25x2" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grand']['cost']))")" "1900"
+chk "material-costs agrees"        "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grandTotal']))")" "1900"
+chk "cost not flagged incomplete"  "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;print(json.load(sys.stdin)['grand']['costIncomplete'])")" "False"
+
+echo "── 9. Quick Assign: today board + driver/truck/yard in one call ──"
+T=$(curl -s -b $M $B/api/today | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print(len(d['loads'])); print(len(d['drivers'])); print(len(d['trucks'])); print(d['summary']['unassigned'])")
+chk "today lists loads"    "$(echo "$T"|sed -n 1p)" "2"
+chk "today lists drivers"  "$(echo "$T"|sed -n 2p)" "5"
+chk "today lists trucks"   "$(echo "$T"|sed -n 3p)" "5"
+
+# Truck must NOT be auto-assigned from the driver's historical truck
+chk "no auto truck on new load" "$(curl -s -b $M $B/api/today | python3 -c "
+import json,sys;print([l['truckNum'] for l in json.load(sys.stdin)['loads'] if l['id']=='$CL'][0] or 'NONE')")" "NONE"
+
+# One call sets driver + truck + yard
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$CL/assign \
+  -d '{"driverId":"carlos","truckUnitId":"truck-2b","yardId":"cemex"}' -o /dev/null
+Q=$(curl -s -b $M $B/api/today | python3 -c "
+import json,sys
+l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$CL'][0]
+print(l['driverName']); print(l['truckNum']); print(l['yardName']); print(l['bucket'])")
+chk "quick assign driver" "$(echo "$Q"|sed -n 1p)" "Carlos"
+chk "quick assign truck"  "$(echo "$Q"|sed -n 2p)" "Truck #2B"
+chk "quick assign yard"   "$(echo "$Q"|sed -n 3p)" "CEMEX"
+# This load already has deliveries recorded above, so it correctly reads as
+# in-progress rather than assigned — the bucket follows real trip state.
+chk "bucket reflects trip state" "$(echo "$Q"|sed -n 4p)" "in-progress"
+
+echo "── 10. Live refresh: version changes only when dispatch changes ──"
+V1=$(curl -s -b $M $B/api/dispatch-version | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])")
+V2=$(curl -s -b $M $B/api/dispatch-version | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])")
+chk "version stable when nothing changes" "$([ "$V1" = "$V2" ] && echo same || echo differs)" "same"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$CL/assign -d '{"driverId":"rigo"}' -o /dev/null
+V3=$(curl -s -b $M $B/api/dispatch-version | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])")
+chk "version changes after reassign" "$([ "$V1" != "$V3" ] && echo changed || echo same)" "changed"
+
+echo "── 11. Driver sees only their own current workday ──"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"customer":"Future Job","deliveryDate":"2099-01-01"},
+ "splits":[{"truckId":"rigo","material":"Gravel","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+R=$(mktemp); curl -s -c $R -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+RD=$(curl -s -b $R $B/api/my-dispatch | python3 -c "
+import json,sys;ls=json.load(sys.stdin)['loads']
+print(len(ls)); print(','.join(sorted(set(l['jobName'] for l in ls))))")
+chk "future-dated load hidden from driver" "$(echo "$RD"|sed -n 2p)" "Cost Check"
+chk "driver sees only today's work"        "$(echo "$RD"|sed -n 1p)" "1"
+
+echo "── 12. Persistence is reported honestly ──"
+P=$(curl -s $B/healthz | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print(d['persistence']['mode']); print(d['persistence']['durable'])")
+chk "persistence mode reported" "$(echo "$P"|sed -n 1p)" "file"
+chk "file mode flagged NOT durable" "$(echo "$P"|sed -n 2p)" "False"
+chk "dispatcher gets a warning" "$(curl -s -b $M $B/api/persistence | python3 -c "
+import json,sys;print('yes' if json.load(sys.stdin)['warning'] else 'no')")" "yes"
+
+echo "── 13. Bad requests return errors, never crash the server ──"
+curl -s -o /dev/null -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/NOPE/assign -d '{"driverId":"carlos"}'
+chk "unknown load -> 404" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/NOPE/assign -d '{"driverId":"carlos"}')" "404"
+chk "unknown driver -> 400" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$CL/assign -d '{"driverId":"ghost"}')" "400"
+chk "unknown truck -> 400" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$CL/assign -d '{"truckUnitId":"ghost"}')" "400"
+chk "garbage JSON does not crash" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$CL/assign -d 'not json')" "400"
+chk "server still alive after bad requests" "$(curl -s -o /dev/null -w '%{http_code}' $B/healthz)" "200"
+
+echo "── 14. Fleet is independent of drivers ──"
 F=$(curl -s -b $M $B/api/fleet | python3 -c "
 import json,sys;d=json.load(sys.stdin)
 print(len(d['trucks'])); print(len(d['drivers']))")
