@@ -451,6 +451,31 @@ function normalizeStore() {
     }
   });
 
+  // ── UNIT CONFIG (P4) ───────────────────────────────────────────────────────
+  // Quantity of each unit in one load. Seeded only with what Valley Best has
+  // actually stated (1 load = 25 tons). Everything else stays unset until
+  // management enters the real figure — the app reports "unpriced" rather
+  // than guessing.
+  if (!store.unitConfig || typeof store.unitConfig !== 'object') {
+    store.unitConfig = { byUnit: { ...DEFAULT_UNIT_QTY_PER_LOAD }, byMaterial: {} };
+  }
+  if (!store.unitConfig.byUnit)     store.unitConfig.byUnit = { ...DEFAULT_UNIT_QTY_PER_LOAD };
+  if (!store.unitConfig.byMaterial) store.unitConfig.byMaterial = {};
+
+  // ── COST RATES (P5) ────────────────────────────────────────────────────────
+  // Operating-cost inputs. Deliberately null: inventing a wage or a fuel price
+  // would produce confident, wrong margins. Each stays out of the cost total
+  // until management sets it.
+  if (!store.costRates || typeof store.costRates !== 'object') {
+    store.costRates = {
+      driverWagePerHour:  null,
+      fuelPricePerGallon: null,
+      truckMpgLoaded:     null,
+      truckCostPerMile:   null,
+      updatedAt: '', updatedBy: '',
+    };
+  }
+
   if (!store.nextPoNum)  store.nextPoNum = 1001;
   if (!store.nextLoadId) store.nextLoadId = 1;
 
@@ -611,26 +636,71 @@ function resolveVendorRate(vendorId, material) {
 
 // Compute revenue for a load given its snapshot rates and delivered count
 // Handles unit='load' (price per load) vs unit='ton' (price × tons-per-load × loads delivered)
-function computeRevenue(load) {
-  const rate = Number(load.customerRate) || 0;
-  const unit = load.customerUnit || 'ton';
-  const delivered = Number(load.loadsDelivered) || 0;
-  if (unit === 'load') return rate * delivered;
-  // 'ton' (or anything else): rate × tons per load × loads delivered
-  const tons = Number(load.tonsPerLoad) || TONS_PER_LOAD;
-  return rate * tons * delivered;
+// ── UNIT MODEL ───────────────────────────────────────────────────────────────
+// How much of a unit fits in one Valley Best truck load. This is a BUSINESS
+// FACT, not something the code may assume.
+//
+// The old code multiplied by tonsPerLoad (25) for every unit that wasn't
+// 'load' — so a $38/CY rock price became $950 per load, while
+// /api/material-costs used a different formula entirely and reported $76 for
+// the very same load. Both cannot be right, and guessing a cubic-yards-per-
+// load figure would just bake in a new wrong number.
+//
+// So: units Valley Best has actually defined get a quantity. Units that have
+// not been defined return null, and every caller reports the load as
+// "unpriced — set quantity per load" instead of inventing a total.
+//
+//   ton  → 25   the documented Valley Best rule (1 load = 25 tons)
+//   load → 1    the rate already IS per load
+//   CY, SF, LF, ... → unset until management enters the real figure
+const DEFAULT_UNIT_QTY_PER_LOAD = {
+  ton:  25,
+  load: 1,
+};
+
+function unitKey(unit) { return String(unit || 'ton').trim().toLowerCase(); }
+
+// Quantity of `unit` in one load, optionally overridden per material
+// (crushed rock and sand do not weigh the same per cubic yard).
+// Returns null when Valley Best has not defined it.
+function qtyPerLoad(unit, material) {
+  const u = unitKey(unit);
+  const cfg = store.unitConfig || {};
+  const perMat = (cfg.byMaterial || {})[material];
+  if (perMat && perMat[u] != null && perMat[u] !== '') return Number(perMat[u]);
+  const byUnit = cfg.byUnit || {};
+  if (byUnit[u] != null && byUnit[u] !== '') return Number(byUnit[u]);
+  if (DEFAULT_UNIT_QTY_PER_LOAD[u] != null) return DEFAULT_UNIT_QTY_PER_LOAD[u];
+  return null;  // unconfigured — caller must not fabricate a number
 }
 
-// Compute cost for a load given its snapshot vendor rate
-// VBT Yard loads have vendorRate=0 → cost is always 0
-function computeCost(load) {
-  const rate = Number(load.vendorRate) || 0;
-  const unit = load.vendorUnit || 'ton';
-  const delivered = Number(load.loadsDelivered) || 0;
-  if (unit === 'load') return rate * delivered;
-  const tons = Number(load.tonsPerLoad) || TONS_PER_LOAD;
-  return rate * tons * delivered;
+// The one money calculation. Every screen uses this so the same load can
+// never show two different figures.
+//   { amount, unconfigured, unit, qtyPerLoad, rate, delivered }
+function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride) {
+  const r = Number(rate) || 0;
+  const n = Number(delivered) || 0;
+  const u = unitKey(unit);
+  // A per-load snapshot of tons wins for ton-priced loads (legacy loads carry it)
+  let qty = (u === 'ton' && tonsPerLoadOverride) ? Number(tonsPerLoadOverride) : qtyPerLoad(u, material);
+  if (qty == null) {
+    return { amount: null, unconfigured: true, unit: u, qtyPerLoad: null, rate: r, delivered: n };
+  }
+  return { amount: r * qty * n, unconfigured: false, unit: u, qtyPerLoad: qty, rate: r, delivered: n };
 }
+
+function revenueDetail(load) {
+  return computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad);
+}
+function costDetail(load) {
+  return computeAmount(load.vendorRate, load.vendorUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad);
+}
+
+// Back-compat numeric wrappers. An unconfigured unit yields 0 rather than a
+// made-up figure; callers that care read the *Detail form and surface the
+// `unconfigured` flag to the user.
+function computeRevenue(load) { const d = revenueDetail(load); return d.amount == null ? 0 : d.amount; }
+function computeCost(load)    { const d = costDetail(load);    return d.amount == null ? 0 : d.amount; }
 
 // ── AUDIT LOG ────────────────────────────────────────────────────────────────
 // Records every meaningful manager action — used for activity log + future QBO push tracking
@@ -2992,11 +3062,19 @@ app.get('/api/profitability', reqMgr, (req, res) => {
   const byVendor   = {};   // { vendorId: { name, loads, revenue, cost, margin, ... } }
   const topLoads   = [];   // each: { id, poNumber, customer, material, driver, delivered, rev, cost, margin }
   let grandRev = 0, grandCost = 0, grandLoads = 0;
+  // Loads whose unit has no quantity-per-load defined contribute $0 cost,
+  // which makes margin look better than it is. Count them so the UI can say
+  // the figure is incomplete instead of quietly overstating profit.
+  const unpriced = { costLoads: 0, revenueLoads: 0, units: new Set() };
 
   eligible.forEach(l => {
     const po = allPos.find(p => p.id === l.poId) || {};
-    const rev    = computeRevenue(l);
-    const cost   = computeCost(l);
+    const revD = revenueDetail(l);
+    const costD = costDetail(l);
+    if (costD.unconfigured) { unpriced.costLoads++; unpriced.units.add(costD.unit); }
+    if (revD.unconfigured)  { unpriced.revenueLoads++; unpriced.units.add(revD.unit); }
+    const rev    = revD.amount == null ? 0 : revD.amount;
+    const cost   = costD.amount == null ? 0 : costD.amount;
     const margin = rev - cost;
 
     grandRev   += rev;
@@ -3078,6 +3156,11 @@ app.get('/api/profitability', reqMgr, (req, res) => {
       marginPct: grandRev > 0 ? ((grandRev - grandCost) / grandRev * 100) : 0,
       loads: grandLoads,
       loadCount: eligible.length,
+      // Truthfulness flags — see `unpriced` above
+      unpricedCostLoads: unpriced.costLoads,
+      unpricedRevenueLoads: unpriced.revenueLoads,
+      unpricedUnits: [...unpriced.units],
+      costIncomplete: unpriced.costLoads > 0,
     },
     byCustomer: Object.entries(byCustomer)
       .map(([k, v]) => ({ key: k, ...v, marginPct: v.revenue > 0 ? (v.margin / v.revenue * 100) : 0 }))
@@ -3125,28 +3208,26 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
     const delivered = Number(l.loadsDelivered) || 0;
     if (delivered === 0) return;  // only count loads actually delivered (so cost is real)
 
-    // Find the vendor's price for this material at the time it was used
-    let unitPrice = 0;
-    let unit = '';
-    if (l.pricePerUnit !== undefined && l.pricePerUnit !== null) {
-      // Snapshot saved at PO creation
-      unitPrice = Number(l.pricePerUnit) || 0;
-      unit = l.unit || '';
-    } else {
-      // Fall back to current vendor price table
-      const priceRow = (store.vendorPrices[vendorId] || []).find(p => p.material === l.material);
-      if (priceRow) { unitPrice = priceRow.price; unit = priceRow.unit; }
-    }
+    // Use the SAME costing function as /api/profitability. These two screens
+    // previously ran different formulas and reported the same load 25x apart.
+    const det = costDetail(l);
+    const unitPrice = det.rate;
+    const unit = det.unit;
+    const cost = det.amount == null ? 0 : det.amount;
 
-    const cost = delivered * unitPrice;
     byVendor[vendorId].totalLoads += delivered;
     byVendor[vendorId].totalCost  += cost;
+    if (det.unconfigured) {
+      byVendor[vendorId].unconfigured = true;
+      byVendor[vendorId].unconfiguredUnits = [...new Set([...(byVendor[vendorId].unconfiguredUnits || []), unit])];
+    }
 
     if (!byVendor[vendorId].byMaterial[l.material]) {
-      byVendor[vendorId].byMaterial[l.material] = { loads: 0, cost: 0, unit, unitPrice };
+      byVendor[vendorId].byMaterial[l.material] = { loads: 0, cost: 0, unit, unitPrice, unconfigured: false };
     }
     byVendor[vendorId].byMaterial[l.material].loads += delivered;
     byVendor[vendorId].byMaterial[l.material].cost  += cost;
+    if (det.unconfigured) byVendor[vendorId].byMaterial[l.material].unconfigured = true;
   });
 
   // List of available months (for filter dropdown)
@@ -3580,6 +3661,85 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   await saveData();
   const po = store.pos.find(p => p.id === l.poId) || {};
   res.json({ success: true, load: l, pickup: resolvePickupYard(l, po), truck: getTruckForLoad(l) });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COSTING SETTINGS — unit model (P4) and operating rates (P5)
+// ═══════════════════════════════════════════════════════════════════════════
+// Reports which units are actually in use and which of them still have no
+// quantity-per-load defined, so management can see exactly what to fill in.
+app.get('/api/costing/settings', reqMgr, (req, res) => {
+  const unitsInUse = new Map();
+  store.loads.forEach(l => {
+    [[l.vendorUnit, 'cost'], [l.customerUnit, 'revenue']].forEach(([u, side]) => {
+      const k = unitKey(u || 'ton');
+      if (!unitsInUse.has(k)) unitsInUse.set(k, { unit: k, side: new Set(), loads: 0, materials: new Set() });
+      const e = unitsInUse.get(k);
+      e.side.add(side); e.loads++; if (l.material) e.materials.add(l.material);
+    });
+  });
+  const units = [...unitsInUse.values()].map(e => ({
+    unit: e.unit,
+    usedFor: [...e.side],
+    loads: e.loads,
+    materials: [...e.materials],
+    qtyPerLoad: qtyPerLoad(e.unit, null),
+    configured: qtyPerLoad(e.unit, null) != null,
+  }));
+  res.json({
+    unitConfig: store.unitConfig,
+    costRates: store.costRates,
+    unitsInUse: units,
+    needsAttention: units.filter(u => !u.configured).map(u => u.unit),
+    tonsPerLoadRule: TONS_PER_LOAD,
+  });
+});
+
+app.put('/api/costing/units', reqMgr, async (req, res) => {
+  const { byUnit, byMaterial } = req.body || {};
+  const clean = (obj) => {
+    const out = {};
+    for (const [k, v] of Object.entries(obj || {})) {
+      if (v === '' || v === null) { out[unitKey(k)] = null; continue; }
+      const n = Number(v);
+      if (!isFinite(n) || n <= 0) return { error: `Quantity per load for "${k}" must be a positive number` };
+      out[unitKey(k)] = n;
+    }
+    return { out };
+  };
+  if (byUnit !== undefined) {
+    const r = clean(byUnit);
+    if (r.error) return res.status(400).json({ error: r.error });
+    store.unitConfig.byUnit = { ...store.unitConfig.byUnit, ...r.out };
+  }
+  if (byMaterial !== undefined) {
+    for (const [mat, units] of Object.entries(byMaterial || {})) {
+      const r = clean(units);
+      if (r.error) return res.status(400).json({ error: `${mat}: ${r.error}` });
+      store.unitConfig.byMaterial[mat] = { ...(store.unitConfig.byMaterial[mat] || {}), ...r.out };
+    }
+  }
+  logAction(req.session.user, 'updated-unit-config', '', { byUnit, byMaterial });
+  await saveData();
+  res.json({ success: true, unitConfig: store.unitConfig });
+});
+
+app.put('/api/costing/rates', reqMgr, async (req, res) => {
+  const fields = ['driverWagePerHour', 'fuelPricePerGallon', 'truckMpgLoaded', 'truckCostPerMile'];
+  const before = { ...store.costRates };
+  for (const f of fields) {
+    if (!(f in (req.body || {}))) continue;
+    const v = req.body[f];
+    if (v === '' || v === null) { store.costRates[f] = null; continue; }
+    const n = Number(v);
+    if (!isFinite(n) || n < 0) return res.status(400).json({ error: `${f} must be a non-negative number` });
+    store.costRates[f] = n;
+  }
+  store.costRates.updatedAt = new Date().toISOString();
+  store.costRates.updatedBy = req.session.user.username;
+  logAction(req.session.user, 'updated-cost-rates', '', { before, after: { ...store.costRates } });
+  await saveData();
+  res.json({ success: true, costRates: store.costRates });
 });
 
 // ── RESILIENCE ───────────────────────────────────────────────────────────────

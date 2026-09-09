@@ -4302,6 +4302,16 @@ async function renderProfitability() {
 
     // ── Top summary card ──
     const marginColor = data.grand.margin > 0 ? 'var(--G)' : data.grand.margin < 0 ? 'var(--R)' : 'var(--txt2)';
+    // Loads priced in a unit with no quantity-per-load defined contribute $0
+    // cost, so margin reads high. Say so rather than letting it look real.
+    if (data.grand.costIncomplete) {
+      h += `<div style="background:#fff8ec;border:1px solid #fcd34d;border-radius:var(--rl);padding:12px 16px;margin-bottom:14px;font-size:13px;line-height:1.5">
+        <strong>Margin is overstated.</strong> ${data.grand.unpricedCostLoads} load${data.grand.unpricedCostLoads === 1 ? '' : 's'}
+        priced in <strong>${data.grand.unpricedUnits.join(', ').toUpperCase()}</strong> have no material cost yet, because
+        Valley Best hasn't defined how many ${data.grand.unpricedUnits.join('/').toUpperCase()} are in one truck load.
+        Set it under <em>Vendors &amp; Prices → Default Rates</em> and these loads will be costed automatically.
+      </div>`;
+    }
     h += `<div style="background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);border-radius:var(--rl);padding:22px 24px;color:#fff;margin-bottom:18px;box-shadow:var(--shadow-md)">
       <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:14px">
         <div>
