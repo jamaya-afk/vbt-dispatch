@@ -1143,6 +1143,16 @@ app.post('/login', async (req, res) => {
 
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
 
+// ── STATIC + PROTECTED APP SHELL ─────────────────────────────────────────────
+// These three serve the actual application. Without them the site answers
+// "Cannot GET /" — Express has no route for the root and never serves
+// public/index.html. They sat next to the Stripe routes and were lost when
+// those were removed by line range.
+app.use('/app', reqAuth, express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
+app.get(['/app', '/app/'], reqAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/', (req, res) => res.redirect(req.session?.user ? '/app/' : '/login'));
+
+// ── API: WHO AM I ────────────────────────────────────────────────────────────
 app.get('/api/me', reqAuth, (req, res) => {
   const u = req.session.user;
   console.log(`[/api/me] username="${u.username}", role="${u.role}"`);
