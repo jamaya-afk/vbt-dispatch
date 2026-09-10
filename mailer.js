@@ -12,7 +12,20 @@
 //     so a misconfigured deploy logs instead of emailing customers.
 //   * Every attempt is recorded, sent or not.
 
-const nodemailer = require('nodemailer');
+// Loaded defensively. Customer notifications are a convenience; dispatch is
+// not. If this module is missing or fails to load — a version that needs a
+// newer Node, a half-finished install — the app must still boot and drivers
+// must still be able to run loads. It previously took the whole server into a
+// crash loop on Railway.
+let nodemailer = null;
+let mailerLoadError = '';
+try {
+  nodemailer = require('nodemailer');
+} catch (e) {
+  mailerLoadError = e.message;
+  console.error('⚠ nodemailer unavailable — customer email notifications are disabled.');
+  console.error('  Dispatch, drivers and QuickBooks are unaffected. Cause:', e.message);
+}
 
 const GMAIL_USER = process.env.GMAIL_USER || '';
 const GMAIL_APP_PASSWORD = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '');
@@ -26,7 +39,7 @@ const NOTIFY_DRY_RUN = String(process.env.NOTIFY_DRY_RUN || 'true').toLowerCase(
 
 let transport = null;
 
-function isConfigured() { return !!(GMAIL_USER && GMAIL_APP_PASSWORD); }
+function isConfigured() { return !!(nodemailer && GMAIL_USER && GMAIL_APP_PASSWORD); }
 
 function status() {
   return {
@@ -35,8 +48,11 @@ function status() {
     user: GMAIL_USER ? GMAIL_USER.replace(/^(.{2}).*(@.*)$/, '$1***$2') : '',
     globallyEnabled: NOTIFY_ENABLED,
     dryRun: NOTIFY_DRY_RUN,
+    libraryLoaded: !!nodemailer,
+    loadError: mailerLoadError,
     // What will actually happen right now, in one sentence.
-    effect: !isConfigured() ? 'Not configured — no email can be sent.'
+    effect: !nodemailer ? `Email library unavailable (${mailerLoadError}) — notifications are off, dispatch is unaffected.`
+      : !isConfigured() ? 'Not configured — no email can be sent.'
       : !NOTIFY_ENABLED ? 'Disabled — NOTIFY_ENABLED is not true, nothing will send.'
       : NOTIFY_DRY_RUN ? 'Dry run — messages are logged but NOT delivered.'
       : 'LIVE — messages are delivered to customers.',
@@ -45,6 +61,7 @@ function status() {
 
 function getTransport() {
   if (transport) return transport;
+  if (!nodemailer) throw new Error('Email library unavailable: ' + mailerLoadError);
   if (!isConfigured()) throw new Error('Gmail not configured (GMAIL_USER / GMAIL_APP_PASSWORD)');
   transport = nodemailer.createTransport({
     service: 'gmail',
@@ -58,6 +75,7 @@ function getTransport() {
 
 // Verify credentials without sending anything to a customer.
 async function verify() {
+  if (!nodemailer) return { ok: false, error: 'Email library unavailable: ' + mailerLoadError };
   if (!isConfigured()) return { ok: false, error: 'GMAIL_USER / GMAIL_APP_PASSWORD not set' };
   try {
     await getTransport().verify();
@@ -72,6 +90,7 @@ async function verify() {
 // NEVER throws — a failed email must not break a driver's step.
 async function send({ to, subject, text, html, force }) {
   const base = { to, subject };
+  if (!nodemailer) return { ...base, sent: false, dryRun: false, error: 'Email library unavailable' };
   if (!isConfigured()) return { ...base, sent: false, dryRun: false, error: 'Gmail not configured' };
   if (!NOTIFY_ENABLED && !force) return { ...base, sent: false, dryRun: false, error: 'Notifications globally disabled (NOTIFY_ENABLED)' };
   if (NOTIFY_DRY_RUN && !force) {

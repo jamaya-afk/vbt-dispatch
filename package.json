@@ -4,21 +4,25 @@
   "description": "VBT Dispatch — Clean Build",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "preflight": "node preflight.js",
+    "test": "bash test-e2e.sh"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.43.0",
+    "@supabase/supabase-js": "~2.78.0",
     "connect-pg-simple": "9.0.1",
     "express": "4.18.2",
     "express-session": "1.17.3",
     "googleapis": "140.0.0",
+    "nodemailer": "^6.10.1",
+    "pg": "8.11.3"
     "pg": "8.11.3",
     "connect-pg-simple": "9.0.1",
     "@supabase/supabase-js": "^2.43.0",
     "stripe": "^16.0.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18"
   },
   "packageManager": "npm@10.0.0"
 }
