@@ -8,26 +8,25 @@ const qb = require('./qb');
 const mailer = require('./mailer');
 
 const app = express();
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({
+  limit: '25mb',
+  verify: (req, _res, buf) => { if (req.path === '/api/stripe/webhook') req.rawBody = buf; },
+}));
 app.use(express.urlencoded({ extended: true }));
 
-// Express 4 does not forward errors thrown inside ASYNC handlers. When one
-// throws, the request is simply never answered — the dispatcher's phone spins
-// forever with no error, which is worse than a clean failure. Wrap every route
-// handler so a rejected promise always becomes a response.
-['get', 'post', 'put', 'delete', 'patch'].forEach(method => {
-  const original = app[method].bind(app);
-  app[method] = (path, ...handlers) => original(path, ...handlers.map(h => {
-    if (typeof h !== 'function' || h.length >= 4) return h;  // leave error middleware alone
-    return function wrapped(req, res, next) {
-      try {
-        const out = h(req, res, next);
-        if (out && typeof out.catch === 'function') out.catch(next);
-        return out;
-      } catch (e) { next(e); }
-    };
-  }));
-});
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// Hard-fail at boot in production if DATABASE_URL is missing — we never want
+// to silently fall back to data.json on a Railway deploy and lose data.
+if (IS_PROD && !process.env.DATABASE_URL) {
+  console.error('FATAL: DATABASE_URL is required in production.');
+  process.exit(1);
+}
+
+// Feature flag: until per-company stores ship in Phase 2, keep public signup
+// disabled so a new company can't log in and accidentally see the existing
+// shared VBT data.
+const SIGNUP_ENABLED = process.env.ENABLE_SIGNUP === 'true';
 
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
 if (!process.env.SESSION_SECRET) {
@@ -68,6 +67,39 @@ const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'vbt-photos';
 let supabaseEnabled = false;
 let supabase = null;
 
+// ── STRIPE (Phase 5 — disabled for now) ─────────────────────────────────────
+// The Stripe checkout / portal / webhook routes were merged before the
+// multi-tenant foundation that they depend on. They're left in place so the
+// merge history reads cleanly, but they're behind these stubs so a
+// ReferenceError can't crash a request handler. Stripe re-enables in Phase 5.
+let stripe = null;
+const STRIPE_PRICE_ID       = process.env.STRIPE_PRICE_ID || '';
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
+const STRIPE_SUCCESS_URL    = process.env.STRIPE_SUCCESS_URL || '/app/';
+const STRIPE_CANCEL_URL     = process.env.STRIPE_CANCEL_URL  || '/app/';
+async function getSubscriptionStatus(_companyId) {
+  // Until Stripe is wired up, every authenticated company is treated as
+  // an active internal account so the dispatch UI keeps working.
+  return { status: 'active', periodEnd: null };
+}
+function invalidateSubscriptionCache(_companyId) { /* no-op until Phase 5 */ }
+
+// Per-company stores land in Phase 2. Declared here so /signup and any
+// stragglers don't ReferenceError when they touch it.
+let stores = {};
+function makeEmptyStore() {
+  return {
+    pos: [], loads: [], archive: [],
+    vendors: [], vendorPrices: {},
+    customers: [], customerPrices: {},
+    defaultRates: null,
+    auditLog: [],
+    nextPoNum: 1001,
+    nextLoadId: 1,
+  };
+}
+async function saveCompanyStore(_companyId) { /* no-op until Phase 2 */ }
+
 console.log('[Supabase config] URL:', SUPABASE_URL ? SUPABASE_URL : '(missing)');
 console.log('[Supabase config] KEY:', SUPABASE_KEY ? `[${SUPABASE_KEY.slice(0,8)}...${SUPABASE_KEY.slice(-4)}, len=${SUPABASE_KEY.length}]` : '(missing)');
 console.log('[Supabase config] BUCKET:', SUPABASE_BUCKET);
@@ -84,7 +116,7 @@ if (SUPABASE_URL && SUPABASE_KEY) {
     console.error('⚠ Supabase init failed:', e.message);
   }
 } else {
-  console.log('⚠ Supabase not configured — uploads will fall back to base64-in-database');
+  console.log('⚠ Supabase not configured — photo uploads will be rejected (no DB/file fallback by design)');
 }
 
 // Generate a strong random folder path so public URLs are unguessable
@@ -303,26 +335,23 @@ let store = {
   nextLoadId: 1,
 };
 
+// Default company every legacy VBT record belongs to. Phase 2 will add real
+// per-company stores; for now, every existing PO/load/customer is logically
+// owned by this company.
+const DEFAULT_COMPANY_ID   = 'vbt';
+const DEFAULT_COMPANY_NAME = 'Valley Best Trucking';
+const DEFAULT_COMPANY_SLUG = 'vbt';
+
 async function initPg() {
   if (!process.env.DATABASE_URL) {
-    persistence.mode = 'file';
-    persistence.durable = false;
-    console.error('');
-    console.error('  ***************************************************************');
-    console.error('  *  NO DATABASE_URL — VALLEY BEST DATA IS NOT DURABLE          *');
-    console.error('  *                                                             *');
-    console.error('  *  Loads, trips, tickets and approvals are being written to a *');
-    console.error('  *  local file that Railway DELETES on every redeploy.         *');
-    console.error('  *  Set DATABASE_URL to the Supabase/Postgres connection string.*');
-    console.error('  ***************************************************************');
-    console.error('');
-    // Refuse to start in production unless explicitly overridden, so a
-    // misconfigured deploy fails visibly instead of quietly losing a day's work.
-    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_EPHEMERAL_DATA !== 'true') {
-      console.error('Refusing to start in production without a database.');
-      console.error('Set DATABASE_URL, or ALLOW_EPHEMERAL_DATA=true to override (not recommended).');
+    if (IS_PROD) {
+      // Caught earlier at boot, but defensively re-fail here.
+      console.error('FATAL: DATABASE_URL is required in production.');
       process.exit(1);
     }
+    persistence.mode = 'file';
+    persistence.durable = false;
+    console.warn('⚠ No DATABASE_URL — dev mode, using file storage (data resets on redeploy!)');
     return;
   }
   try {
@@ -338,16 +367,78 @@ async function initPg() {
     }
     await pg.query('SELECT 1');
     await pg.query(`CREATE TABLE IF NOT EXISTS dispatch_data (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+
+    // Multi-tenant scaffolding tables. Created here so Phase 2 (per-company
+    // stores) can layer on without another migration step.
+    await pg.query(`
+      CREATE TABLE IF NOT EXISTS companies (
+        id                      TEXT PRIMARY KEY,
+        name                    TEXT NOT NULL,
+        slug                    TEXT NOT NULL UNIQUE,
+        active                  BOOLEAN NOT NULL DEFAULT true,
+        plan                    TEXT NOT NULL DEFAULT 'trial',
+        subscription_status     TEXT NOT NULL DEFAULT 'trialing',
+        stripe_customer_id      TEXT,
+        stripe_subscription_id  TEXT,
+        current_period_end      TIMESTAMPTZ,
+        trial_ends_at           TIMESTAMPTZ,
+        created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await pg.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id            TEXT PRIMARY KEY,
+        company_id    TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        username      TEXT NOT NULL,
+        password      TEXT NOT NULL,
+        role          TEXT NOT NULL,
+        truck_id      TEXT,
+        display_name  TEXT,
+        active        BOOLEAN NOT NULL DEFAULT true,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (company_id, username)
+      )
+    `);
     persistence.mode = 'postgres';
     persistence.durable = true;
     console.log('✓ Postgres connected — Valley Best data is durable');
   } catch (e) {
+    console.error('✗ Postgres connection failed:', e.message);
     persistence.mode = 'file';
     persistence.durable = false;
     persistence.lastError = e.message;
     persistence.degradedSince = new Date().toISOString();
-    console.error('✗ POSTGRES CONNECTION FAILED — data will NOT survive a redeploy:', e.message);
+    if (IS_PROD) {
+      console.error('FATAL: cannot start without database in production.');
+      process.exit(1);
+    }
     pg = null;
+  }
+}
+
+// Idempotent: seed the default VBT company + migrate the hardcoded USERS map
+// into the users table. Run after initPg(). Safe to call on every boot.
+async function seedDefaultCompanyAndUsers() {
+  if (!pg) return;
+  try {
+    await pg.query(`
+      INSERT INTO companies (id, name, slug, active, plan, subscription_status)
+      VALUES ($1, $2, $3, true, 'internal', 'active')
+      ON CONFLICT (id) DO NOTHING
+    `, [DEFAULT_COMPANY_ID, DEFAULT_COMPANY_NAME, DEFAULT_COMPANY_SLUG]);
+
+    for (const [uname, u] of Object.entries(USERS)) {
+      const userId = `user-${DEFAULT_COMPANY_ID}-${uname}`;
+      await pg.query(`
+        INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+        ON CONFLICT (company_id, username) DO NOTHING
+      `, [userId, DEFAULT_COMPANY_ID, uname, u.password, u.role, u.truckId || null, u.displayName || uname]);
+    }
+    console.log(`✓ Seeded default company "${DEFAULT_COMPANY_ID}" + ${Object.keys(USERS).length} legacy users`);
+  } catch (e) {
+    console.error('✗ Seed default company/users failed:', e.message);
+    // Don't crash — legacy hardcoded login will still work.
   }
 }
 
@@ -364,36 +455,20 @@ async function loadData() {
       }
     } catch (e) { console.error('PG read error:', e.message); }
   }
-  // File fallback
-  if (!loaded && fs.existsSync(DATA_FILE)) {
+  // File fallback — DEV ONLY. In production we hard-fail above instead of
+  // silently using ephemeral disk that resets on every Railway redeploy.
+  if (!IS_PROD && fs.existsSync(DATA_FILE)) {
     try {
       store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
       loaded = true;
       console.log(`✓ Loaded from file: ${store.pos.length} POs`);
+      if (pg) { await saveData(); console.log('✓ Migrated file data to Postgres'); }
+      return;
     } catch (e) { console.warn('File read error:', e.message); }
   }
-
-  // ALWAYS normalize — even on a brand-new install with no saved data. This
-  // seeds vendors/vendor prices and initializes the QuickBooks arrays
-  // (billingBatches, qbSyncLog, vendorBills). Skipping it used to leave
-  // store.billingBatches undefined, so the first "Send to QuickBooks" threw
-  // and killed the whole process. normalizeStore is idempotent and only fills
-  // in missing fields — it never overwrites existing Valley Best data.
+  // Nothing loaded — still normalize so the seed defaults (trucks, vendors,
+  // etc.) populate even on a brand-new database.
   normalizeStore();
-
-  if (!loaded) console.log('✓ Fresh install — seeded default vendors, prices and billing tables');
-  if (loaded && pg && !(await pgHasStore())) {
-    await saveData();
-    console.log('✓ Migrated file data to Postgres');
-  }
-}
-
-async function pgHasStore() {
-  if (!pg) return false;
-  try {
-    const r = await pg.query("SELECT 1 FROM dispatch_data WHERE key='store'");
-    return r.rows.length > 0;
-  } catch { return false; }
 }
 
 // Persistence health, surfaced to /healthz and to the dispatcher's screen.
@@ -430,23 +505,23 @@ async function saveData() {
       persistence.degradedSince = '';
       return;
     } catch (e) {
-      // Keep a local copy so the data is not lost, but do NOT pretend this is
-      // fine — the dispatcher needs to know writes are not reaching Postgres.
-      console.error('✗ PG WRITE FAILED — falling back to local file:', e.message);
+      console.error('PG write error:', e.message);
       persistence.lastSaveOk = false;
       persistence.lastError = e.message;
       if (!persistence.degradedSince) persistence.degradedSince = new Date().toISOString();
-      try { fs.writeFileSync(DATA_FILE, j); } catch (fe) {}
-      return;
+      // In prod, never fall back to local disk — the next deploy will wipe it.
+      if (IS_PROD) throw e;
     }
   }
-  try {
-    fs.writeFileSync(DATA_FILE, j);
-    persistence.lastSaveOk = true;
-    persistence.lastSaveAt = new Date().toISOString();
-  } catch (e) {
-    persistence.lastSaveOk = false;
-    persistence.lastError = e.message;
+  if (!IS_PROD) {
+    try {
+      fs.writeFileSync(DATA_FILE, j);
+      persistence.lastSaveOk = true;
+      persistence.lastSaveAt = new Date().toISOString();
+    } catch (e) {
+      persistence.lastSaveOk = false;
+      persistence.lastError = e.message;
+    }
   }
 }
 
@@ -576,6 +651,16 @@ function normalizeStore() {
 
   if (!store.nextPoNum)  store.nextPoNum = 1001;
   if (!store.nextLoadId) store.nextLoadId = 1;
+
+  // Trucks: seeded from the legacy TRUCKS constant on first boot, then
+  // edited via the Fleet admin UI. Each truck's id is also the driver's
+  // username for backward compatibility with existing loads.
+  if (!Array.isArray(store.trucks) || store.trucks.length === 0) {
+    store.trucks = JSON.parse(JSON.stringify(TRUCKS));
+  }
+  store.trucks.forEach(t => {
+    if (t.active === undefined) t.active = true;
+  });
 
   store.loads.forEach(l => {
     if (!l.timestamps)     l.timestamps = {};
@@ -988,6 +1073,12 @@ app.get('/healthz', (req, res) => res.json({
     degradedSince: persistence.degradedSince,
   },
   fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
+  // merged in from the second /healthz the branch merge left behind — Express
+  // only ever ran the first registration, so those fields were being dropped
+  pgConnected: !!pg,
+  supabaseEnabled,
+  signupEnabled: SIGNUP_ENABLED,
+  prod: IS_PROD,
   time: new Date().toISOString(),
 }));
 
@@ -1037,25 +1128,156 @@ button:hover{box-shadow:0 8px 24px rgba(59,130,246,.4)}
 </div></body></html>`);
 });
 
-app.post('/login', (req, res) => {
+app.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const cleanName = username?.toLowerCase().trim();
+  if (!cleanName || !password) return res.redirect('/login?error=1');
+
+  // 1) DB-backed users (seeded for VBT, plus any future signup companies).
+  if (pg) {
+    try {
+      const r = await pg.query(
+        'SELECT id, company_id, username, password, role, truck_id, display_name, active FROM users WHERE username = $1',
+        [cleanName]
+      );
+      const dbUser = r.rows.find(row => row.active && row.password === password);
+      if (dbUser) {
+        req.session.user = {
+          username:    dbUser.username,
+          role:        dbUser.role,
+          truckId:     dbUser.truck_id,
+          displayName: dbUser.display_name || dbUser.username,
+          companyId:   dbUser.company_id,
+        };
+        console.log(`[LOGIN] SUCCESS (db): username="${dbUser.username}", company="${dbUser.company_id}", role="${dbUser.role}"`);
+        return res.redirect('/app/');
+      }
+    } catch (e) {
+      console.error('[LOGIN] DB lookup error:', e.message);
+      // fall through to hardcoded users
+    }
+  }
+
+  // 2) Legacy fallback: hardcoded VBT users (still works if seed hasn't run).
   const u = USERS[cleanName];
   if (!u || u.password !== password) {
     console.log(`[LOGIN] FAILED: username="${cleanName}"`);
     return res.redirect('/login?error=1');
   }
   req.session.user = {
-    username: cleanName,
-    role: u.role,
-    truckId: u.truckId,
+    username:    cleanName,
+    role:        u.role,
+    truckId:     u.truckId,
     displayName: u.displayName || (cleanName.charAt(0).toUpperCase() + cleanName.slice(1)),
+    companyId:   DEFAULT_COMPANY_ID,
   };
-  console.log(`[LOGIN] SUCCESS: username="${cleanName}", role="${u.role}", displayName="${u.displayName}"`);
+  console.log(`[LOGIN] SUCCESS (legacy): username="${cleanName}", role="${u.role}"`);
   res.redirect('/app/');
 });
 
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
+
+// ── SIGNUP ────────────────────────────────────────────────────────────────────
+const SIGNUP_STYLE = `
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 50%,#0a0e1a 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;color:#fff}
+.card{background:rgba(255,255,255,.05);backdrop-filter:blur(20px);border-radius:18px;border:1px solid rgba(255,255,255,.1);padding:40px 36px;width:100%;max-width:420px;box-shadow:0 8px 40px rgba(0,0,0,.4)}
+h2{font-size:18px;font-weight:700;margin-bottom:6px;text-align:center}
+.sub{font-size:12px;color:rgba(255,255,255,.45);text-align:center;margin-bottom:28px}
+label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.55);display:block;margin-bottom:6px;font-weight:600}
+input{width:100%;padding:11px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;font-size:14px;font-family:inherit;margin-bottom:14px;color:#fff;background:rgba(255,255,255,.05)}
+input:focus{outline:none;border-color:#60a8f0;background:rgba(255,255,255,.08)}
+input::placeholder{color:rgba(255,255,255,.3)}
+button{width:100%;padding:12px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:4px}
+button:hover{box-shadow:0 8px 24px rgba(59,130,246,.4)}
+.err{color:#fca5a5;font-size:12px;margin-bottom:16px;background:rgba(220,38,38,.12);padding:10px 14px;border-radius:8px;border:1px solid rgba(220,38,38,.3);text-align:center}
+.login-link{font-size:11px;color:rgba(255,255,255,.4);text-align:center;margin-top:20px}
+.login-link a{color:#60a8f0;text-decoration:none}
+`;
+
+app.get('/signup', (req, res) => {
+  if (req.session?.user) return res.redirect('/app/');
+  const err = req.query.error ? `<p class="err">${decodeURIComponent(req.query.error)}</p>` : '';
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Create Account — VBT Dispatch</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>${SIGNUP_STYLE}</style></head><body><div class="card">
+  <h2>Create your account</h2>
+  <p class="sub">14-day free trial · no credit card required</p>
+  ${err}
+  <form method="POST" action="/signup">
+    <label>Company Name</label><input name="companyName" placeholder="e.g. Acme Trucking" required>
+    <label>Your Username</label><input name="username" autocapitalize="none" autocorrect="off" placeholder="admin" required>
+    <label>Password</label><input name="password" type="password" placeholder="at least 8 characters" required>
+    <label>Confirm Password</label><input name="passwordConfirm" type="password" placeholder="repeat password" required>
+    <button type="submit">Create account &amp; start free trial</button>
+  </form>
+  <p class="login-link">Already have an account? <a href="/login">Sign in</a></p>
+</div></body></html>`);
+});
+
+app.post('/signup', async (req, res) => {
+  if (!SIGNUP_ENABLED) {
+    return res.redirect('/signup?error=' + encodeURIComponent(
+      'Signup is invite-only right now. Email us to request access.'
+    ));
+  }
+  if (!pg) return res.redirect('/signup?error=' + encodeURIComponent('Database not available'));
+  const { companyName, username, password, passwordConfirm } = req.body;
+  const name     = String(companyName || '').trim();
+  const uname    = String(username || '').toLowerCase().trim();
+  const pass     = String(password || '');
+  const passConf = String(passwordConfirm || '');
+
+  const errRedirect = msg => res.redirect('/signup?error=' + encodeURIComponent(msg));
+
+  if (!name)  return errRedirect('Company name is required');
+  if (!uname) return errRedirect('Username is required');
+  if (pass.length < 8) return errRedirect('Password must be at least 8 characters');
+  if (pass !== passConf) return errRedirect('Passwords do not match');
+  if (!/^[a-z0-9_.-]+$/.test(uname)) return errRedirect('Username may only contain letters, numbers, _ . -');
+
+  // Build a URL-safe slug from the company name
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
+             + '-' + Date.now().toString(36);
+  const companyId = slug;
+
+  try {
+    // Check if slug/company already exists
+    const existing = await pg.query('SELECT 1 FROM companies WHERE slug = $1', [slug]);
+    if (existing.rows.length) return errRedirect('Company name already taken — please choose another');
+
+    const trialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    await pg.query(`
+      INSERT INTO companies (id, name, slug, active, plan, subscription_status, current_period_end, trial_ends_at)
+      VALUES ($1, $2, $3, true, 'trial', 'trialing', $4, $4)
+    `, [companyId, name, slug, trialEnd]);
+
+    const userId = `user-${companyId}-${uname}`;
+    await pg.query(`
+      INSERT INTO users (id, company_id, username, password, role, display_name, active)
+      VALUES ($1, $2, $3, $4, 'admin', $5, true)
+    `, [userId, companyId, uname, pass, uname.charAt(0).toUpperCase() + uname.slice(1)]);
+
+    // Initialize in-memory store for new company
+    stores[companyId] = makeEmptyStore();
+    normalizeStore(stores[companyId]);
+    await saveCompanyStore(companyId);
+
+    req.session.user = {
+      username: uname,
+      role: 'admin',
+      truckId: null,
+      displayName: uname.charAt(0).toUpperCase() + uname.slice(1),
+      companyId,
+    };
+    console.log(`[SIGNUP] New company created: "${companyId}" (slug: ${slug}), admin: "${uname}"`);
+    res.redirect('/app/');
+  } catch (e) {
+    console.error('[SIGNUP] error:', e.message);
+    res.redirect('/signup?error=' + encodeURIComponent('Something went wrong — please try again'));
+  }
+});
 
 // Static + protected app shell
 app.use('/app', reqAuth, express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
@@ -1065,9 +1287,209 @@ app.get('/', (req, res) => res.redirect(req.session?.user ? '/app/' : '/login'))
 // ── API: WHO AM I ────────────────────────────────────────────────────────────
 app.get('/api/me', reqAuth, (req, res) => {
   const u = req.session.user;
-  console.log(`[/api/me] username="${u.username}", role="${u.role}", truckId="${u.truckId}"`);
-  res.json({ username: u.username, role: u.role, truckId: u.truckId, displayName: u.displayName || u.username });
+  console.log(`[/api/me] username="${u.username}", role="${u.role}", company="${u.companyId || ''}"`);
+  res.json({
+    username:    u.username,
+    role:        u.role,
+    truckId:     u.truckId,
+    displayName: u.displayName || u.username,
+    companyId:   u.companyId || DEFAULT_COMPANY_ID,
+  });
 });
+
+// ── API: SUBSCRIPTION STATUS ─────────────────────────────────────────────────
+app.get('/api/subscription-status', reqAuth, async (req, res) => {
+  const cid = req.session.user.companyId;
+  const sub = await getSubscriptionStatus(cid);
+  const isActive  = sub.status === 'active' || sub.status === 'trialing';
+  const notExpired = !sub.periodEnd || sub.periodEnd > new Date();
+  const daysLeft = sub.periodEnd
+    ? Math.max(0, Math.ceil((sub.periodEnd - new Date()) / 86400000))
+    : null;
+  res.json({
+    active: isActive && notExpired,
+    status: sub.status,
+    periodEnd: sub.periodEnd,
+    daysLeft,
+    stripeEnabled: !!stripe,
+  });
+});
+
+// ── API: STRIPE — CHECKOUT SESSION ──────────────────────────────────────────
+app.post('/api/stripe/checkout', reqAuth, reqMgr, async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'Stripe not configured' });
+  if (!STRIPE_PRICE_ID) return res.status(503).json({ error: 'STRIPE_PRICE_ID not set' });
+  const cid = req.session.user.companyId;
+  try {
+    const companyRow = await pg.query('SELECT * FROM companies WHERE id = $1', [cid]);
+    const company = companyRow.rows[0];
+
+    let customerId = company?.stripe_customer_id || '';
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        name: company?.name || cid,
+        metadata: { company_id: cid },
+      });
+      customerId = customer.id;
+      await pg.query('UPDATE companies SET stripe_customer_id = $1 WHERE id = $2', [customerId, cid]);
+      invalidateSubscriptionCache(cid);
+    }
+
+    const appUrl = `${req.protocol}://${req.get('host')}`;
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      mode: 'subscription',
+      line_items: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
+      success_url: STRIPE_SUCCESS_URL.startsWith('http') ? STRIPE_SUCCESS_URL : appUrl + STRIPE_SUCCESS_URL,
+      cancel_url:  STRIPE_CANCEL_URL.startsWith('http')  ? STRIPE_CANCEL_URL  : appUrl + STRIPE_CANCEL_URL,
+      metadata: { company_id: cid },
+    });
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error('[stripe/checkout] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── API: STRIPE — CUSTOMER PORTAL ───────────────────────────────────────────
+app.post('/api/stripe/portal', reqAuth, reqMgr, async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'Stripe not configured' });
+  const cid = req.session.user.companyId;
+  try {
+    const companyRow = await pg.query('SELECT stripe_customer_id FROM companies WHERE id = $1', [cid]);
+    const customerId = companyRow.rows[0]?.stripe_customer_id;
+    if (!customerId) return res.status(400).json({ error: 'No Stripe customer on file — subscribe first' });
+    const appUrl = `${req.protocol}://${req.get('host')}`;
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: appUrl + '/app/',
+    });
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error('[stripe/portal] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── API: STRIPE — WEBHOOK ────────────────────────────────────────────────────
+// Stripe sends raw JSON; we captured req.rawBody via express.json verify callback.
+app.post('/api/stripe/webhook', async (req, res) => {
+  if (!stripe) return res.status(200).send('ok'); // no-op if Stripe not configured
+  const sig = req.headers['stripe-signature'];
+  if (!sig || !STRIPE_WEBHOOK_SECRET) {
+    console.error('[stripe/webhook] missing signature or secret');
+    return res.status(400).send('Webhook signature missing');
+  }
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.rawBody, sig, STRIPE_WEBHOOK_SECRET);
+  } catch (e) {
+    console.error('[stripe/webhook] signature verification failed:', e.message);
+    return res.status(400).send(`Webhook signature error: ${e.message}`);
+  }
+
+  const obj = event.data.object;
+  const companyId = obj.metadata?.company_id;
+
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        // Session completed; subscription is now active. The subscription.updated
+        // event will also fire, but update here too for immediate effect.
+        const subId = obj.subscription;
+        const custId = obj.customer;
+        const cid = obj.metadata?.company_id;
+        if (cid && subId) {
+          const sub = await stripe.subscriptions.retrieve(subId);
+          await pg.query(`
+            UPDATE companies SET
+              stripe_customer_id     = $1,
+              stripe_subscription_id = $2,
+              subscription_status    = $3,
+              current_period_end     = to_timestamp($4),
+              plan                   = 'monthly'
+            WHERE id = $5
+          `, [custId, subId, sub.status, sub.current_period_end, cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] checkout.session.completed → company "${cid}" status="${sub.status}"`);
+        }
+        break;
+      }
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated': {
+        const cid = companyId || await companyIdFromCustomer(obj.customer);
+        if (cid) {
+          await pg.query(`
+            UPDATE companies SET
+              stripe_subscription_id = $1,
+              subscription_status    = $2,
+              current_period_end     = to_timestamp($3),
+              plan                   = CASE WHEN plan = 'internal' THEN 'internal' ELSE 'monthly' END
+            WHERE id = $4
+          `, [obj.id, obj.status, obj.current_period_end, cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] ${event.type} → company "${cid}" status="${obj.status}"`);
+        }
+        break;
+      }
+      case 'customer.subscription.deleted': {
+        const cid = companyId || await companyIdFromCustomer(obj.customer);
+        if (cid) {
+          await pg.query(`
+            UPDATE companies SET subscription_status = 'canceled', current_period_end = now()
+            WHERE id = $1 AND plan != 'internal'
+          `, [cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] subscription.deleted → company "${cid}" canceled`);
+        }
+        break;
+      }
+      case 'invoice.payment_failed': {
+        const custId = obj.customer;
+        const cid = companyId || await companyIdFromCustomer(custId);
+        if (cid) {
+          await pg.query(`
+            UPDATE companies SET subscription_status = 'past_due'
+            WHERE id = $1 AND plan != 'internal'
+          `, [cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] invoice.payment_failed → company "${cid}" past_due`);
+        }
+        break;
+      }
+      case 'invoice.paid': {
+        const custId = obj.customer;
+        const cid = companyId || await companyIdFromCustomer(custId);
+        if (cid) {
+          await pg.query(`
+            UPDATE companies SET subscription_status = 'active'
+            WHERE id = $1 AND subscription_status = 'past_due'
+          `, [cid]);
+          invalidateSubscriptionCache(cid);
+          console.log(`[stripe/webhook] invoice.paid → company "${cid}" active`);
+        }
+        break;
+      }
+      default:
+        // Unhandled event type — ignore
+        break;
+    }
+  } catch (e) {
+    console.error(`[stripe/webhook] handler error for ${event.type}:`, e.message);
+    // Still return 200 so Stripe doesn't retry unnecessarily for handler bugs
+  }
+
+  res.json({ received: true });
+});
+
+async function companyIdFromCustomer(stripeCustomerId) {
+  if (!stripeCustomerId || !pg) return null;
+  try {
+    const r = await pg.query('SELECT id FROM companies WHERE stripe_customer_id = $1 LIMIT 1', [stripeCustomerId]);
+    return r.rows[0]?.id || null;
+  } catch { return null; }
+}
 
 // ── API: PHOTO UPLOAD (Supabase Storage) ────────────────────────────────────
 // Body: { kind: 'ticket' | 'signature', loadId, dataUrl }
@@ -1116,15 +1538,12 @@ app.get('/api/data', reqAuth, async (req, res) => {
     const myLoads = store.loads.filter(l => l.truckId === u.truckId && !l.voided);
     const myPoIds = new Set(myLoads.map(l => l.poId));
     const myPos = store.pos.filter(p => myPoIds.has(p.id));
-    return res.json({ trucks: TRUCKS, materials: MATERIALS, yards, pos: myPos, loads: myLoads });
+    return res.json({ trucks: store.trucks.filter(t => t.active !== false), materials: MATERIALS, yards, pos: myPos, loads: myLoads });
   }
   // Manager sees full vendor data
   res.json({
-    trucks: TRUCKS,                        // legacy: the DRIVER roster
-    fleet:  store.trucks || [],            // real vehicles
-    drivers: store.drivers || [],          // real driver records
-    truckStatuses: TRUCK_STATUSES,
-    driverStatuses: DRIVER_STATUSES,
+    trucks: store.trucks,
+    drivers: listDrivers(),
     materials: MATERIALS,
     yards,
     vendors: store.vendors,
@@ -1305,7 +1724,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       console.log(`[create-PO] SKIPPING split — missing material or loadsAssigned:`, JSON.stringify(s));
       return;
     }
-    const truck = TRUCKS.find(t => t.id === s.truckId);
+    const truck = store.trucks.find(t => t.id === s.truckId);
     const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
     console.log(`[create-PO] Creating load: truckId="${s.truckId}", material="${s.material}", loads=${s.loadsAssigned}, driver="${truck?.label || '(unassigned)'}", vendor="${vendor?.name || '(none)'}"`);
 
@@ -1461,7 +1880,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     let auditAction = 'updated-load';
     let auditDetails = { changes: Object.keys(req.body) };
     if (req.body.truckId !== undefined) {
-      const t = TRUCKS.find(t => t.id === req.body.truckId);
+      const t = store.trucks.find(t => t.id === req.body.truckId);
       updated.driverName = t?.label || '';
       updated.status = req.body.truckId ? 'active' : 'unassigned';
       // Treat driver change as a separate action type
@@ -2787,6 +3206,193 @@ app.get('/api/audit-log', reqMgr, (req, res) => {
   res.json({ entries, total, allUsers, allActions });
 });
 
+// ── API: FLEET (Drivers + Trucks admin) ──────────────────────────────────────
+// Drivers live in the `users` table (companies/users seeded in initPg).
+// Trucks live in the JSON store. Both share an id (the driver's username) so
+// existing loads and history stay valid when drivers/trucks are renamed.
+
+// Helper: list all driver-role users for the active company. Falls back to
+// the legacy hardcoded USERS map when the DB isn't reachable so the dispatch
+// board never goes blank.
+function listDrivers() {
+  // Hardcoded legacy fallback used when DB lookup fails.
+  return Object.entries(USERS)
+    .filter(([, u]) => u.role === 'driver')
+    .map(([username, u]) => ({
+      username,
+      role: u.role,
+      truckId: u.truckId || username,
+      displayName: u.displayName || username,
+      active: true,
+    }));
+}
+
+async function listDriversFromDb(companyId) {
+  if (!pg) return listDrivers();
+  try {
+    const r = await pg.query(
+      `SELECT username, role, truck_id, display_name, active
+         FROM users
+        WHERE company_id = $1 AND role = 'driver'
+        ORDER BY display_name`,
+      [companyId]
+    );
+    return r.rows.map(row => ({
+      username:    row.username,
+      role:        row.role,
+      truckId:     row.truck_id || row.username,
+      displayName: row.display_name || row.username,
+      active:      row.active !== false,
+    }));
+  } catch (e) {
+    console.error('[listDriversFromDb] failed:', e.message);
+    return listDrivers();
+  }
+}
+
+// GET /api/fleet — admins only. Returns trucks + drivers.
+app.get('/api/fleet', reqMgr, async (req, res) => {
+  const cid = req.session.user.companyId || DEFAULT_COMPANY_ID;
+  const drivers = await listDriversFromDb(cid);
+  res.json({ trucks: store.trucks, drivers });
+});
+
+// ── Trucks CRUD ──
+app.post('/api/trucks', reqMgr, async (req, res) => {
+  const { id, label, truckNum } = req.body || {};
+  const cleanId = String(id || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
+  if (!cleanId)  return res.status(400).json({ error: 'id is required (e.g. "truck-7")' });
+  if (!label)    return res.status(400).json({ error: 'label is required (driver display name)' });
+  if (!truckNum) return res.status(400).json({ error: 'truckNum is required (e.g. "Truck #7")' });
+  if (store.trucks.some(t => t.id === cleanId)) {
+    return res.status(409).json({ error: 'A truck with that id already exists' });
+  }
+  const truck = { id: cleanId, label: String(label).trim(), truckNum: String(truckNum).trim(), active: true };
+  store.trucks.push(truck);
+  await saveData();
+  logAction(req.session.user, 'created-truck', cleanId, { truck });
+  res.json({ ok: true, truck });
+});
+
+app.put('/api/trucks/:id', reqMgr, async (req, res) => {
+  const truck = store.trucks.find(t => t.id === req.params.id);
+  if (!truck) return res.status(404).json({ error: 'Truck not found' });
+  const before = { ...truck };
+  if (req.body.label    !== undefined) truck.label    = String(req.body.label).trim();
+  if (req.body.truckNum !== undefined) truck.truckNum = String(req.body.truckNum).trim();
+  if (req.body.active   !== undefined) truck.active   = !!req.body.active;
+  await saveData();
+  logAction(req.session.user, 'updated-truck', truck.id, { before, after: truck });
+  res.json({ ok: true, truck });
+});
+
+app.delete('/api/trucks/:id', reqMgr, async (req, res) => {
+  const idx = store.trucks.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Truck not found' });
+  // Refuse to hard-delete if any non-voided load references this truck —
+  // historical attribution would break. Soft-disable instead.
+  const inUse = store.loads.some(l => l.truckId === req.params.id && !l.voided);
+  if (inUse) {
+    store.trucks[idx].active = false;
+    await saveData();
+    logAction(req.session.user, 'disabled-truck', req.params.id, { reason: 'in-use' });
+    return res.json({ ok: true, softDeleted: true });
+  }
+  const removed = store.trucks.splice(idx, 1)[0];
+  await saveData();
+  logAction(req.session.user, 'deleted-truck', req.params.id, { removed });
+  res.json({ ok: true });
+});
+
+// ── Drivers CRUD (writes the users table) ──
+app.post('/api/drivers', reqMgr, async (req, res) => {
+  if (!pg) return res.status(503).json({ error: 'Database not available' });
+  const { username, password, displayName, truckId } = req.body || {};
+  const uname = String(username || '').toLowerCase().trim();
+  if (!uname || !/^[a-z0-9_.-]+$/.test(uname)) {
+    return res.status(400).json({ error: 'username must be lowercase letters/numbers/_.-' });
+  }
+  if (!password || String(password).length < 4) {
+    return res.status(400).json({ error: 'password must be at least 4 characters' });
+  }
+  const cid    = req.session.user.companyId || DEFAULT_COMPANY_ID;
+  const userId = `user-${cid}-${uname}`;
+  const tId    = String(truckId || uname);
+  const dName  = String(displayName || '').trim() || (uname.charAt(0).toUpperCase() + uname.slice(1));
+  try {
+    const existing = await pg.query('SELECT 1 FROM users WHERE company_id=$1 AND username=$2', [cid, uname]);
+    if (existing.rows.length) return res.status(409).json({ error: 'username already exists' });
+    await pg.query(
+      `INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
+       VALUES ($1, $2, $3, $4, 'driver', $5, $6, true)`,
+      [userId, cid, uname, password, tId, dName]
+    );
+    logAction(req.session.user, 'created-driver', uname, { displayName: dName, truckId: tId });
+    const drivers = await listDriversFromDb(cid);
+    res.json({ ok: true, drivers });
+  } catch (e) {
+    console.error('[POST /api/drivers]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/drivers/:username', reqMgr, async (req, res) => {
+  if (!pg) return res.status(503).json({ error: 'Database not available' });
+  const cid = req.session.user.companyId || DEFAULT_COMPANY_ID;
+  const uname = String(req.params.username || '').toLowerCase();
+  const { displayName, truckId, password, active } = req.body || {};
+  const sets = [];
+  const vals = [];
+  let i = 1;
+  if (displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(displayName).trim()); }
+  if (truckId     !== undefined) { sets.push(`truck_id     = $${i++}`); vals.push(String(truckId)); }
+  if (active      !== undefined) { sets.push(`active       = $${i++}`); vals.push(!!active); }
+  if (password    !== undefined && String(password).length >= 4) {
+    sets.push(`password = $${i++}`); vals.push(String(password));
+  }
+  if (!sets.length) return res.status(400).json({ error: 'no fields to update' });
+  vals.push(cid, uname);
+  try {
+    const r = await pg.query(
+      `UPDATE users SET ${sets.join(', ')} WHERE company_id = $${i++} AND username = $${i++} RETURNING username`,
+      vals
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
+    logAction(req.session.user, 'updated-driver', uname, { fields: Object.keys(req.body || {}) });
+    const drivers = await listDriversFromDb(cid);
+    res.json({ ok: true, drivers });
+  } catch (e) {
+    console.error('[PUT /api/drivers]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/drivers/:username', reqMgr, async (req, res) => {
+  if (!pg) return res.status(503).json({ error: 'Database not available' });
+  const cid = req.session.user.companyId || DEFAULT_COMPANY_ID;
+  const uname = String(req.params.username || '').toLowerCase();
+  // Soft-delete by default so any historical loads keep their driver
+  // attribution. Hard delete only when ?hard=1 and the driver has no loads.
+  try {
+    if (req.query.hard === '1') {
+      const inUse = store.loads.some(l => l.truckId === uname && !l.voided);
+      if (inUse) return res.status(409).json({ error: 'driver has loads — disable instead of deleting' });
+      const r = await pg.query('DELETE FROM users WHERE company_id=$1 AND username=$2', [cid, uname]);
+      if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
+      logAction(req.session.user, 'deleted-driver', uname, {});
+    } else {
+      const r = await pg.query('UPDATE users SET active=false WHERE company_id=$1 AND username=$2', [cid, uname]);
+      if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
+      logAction(req.session.user, 'disabled-driver', uname, {});
+    }
+    const drivers = await listDriversFromDb(cid);
+    res.json({ ok: true, drivers });
+  } catch (e) {
+    console.error('[DELETE /api/drivers]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── API: CUSTOMER MASTER ────────────────────────────────────────────────────
 // The Customer Master is the canonical list of customers used as a dropdown
 // when creating POs. This prevents typos that fragment a single real customer
@@ -3241,12 +3847,7 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     return v ? v.name : id;
   };
   const truckLabel = (id) => {
-    const TRUCKS = [
-      { id: 'beryle', label: 'Beryle' }, { id: 'matthew', label: 'Matthew' },
-      { id: 'rigo', label: 'Rigo' }, { id: 'leonardo', label: 'Leonardo' },
-      { id: 'carlos', label: 'Carlos' },
-    ];
-    const t = TRUCKS.find(x => x.id === id);
+    const t = store.trucks.find(x => x.id === id);
     return t ? t.label : id;
   };
 
@@ -3542,7 +4143,7 @@ app.get('/api/reports', reqMgr, async (req, res) => {
 
   // Driver performance
   const driverStats = {};
-  TRUCKS.forEach(t => {
+  store.trucks.forEach(t => {
     const tLoads = store.loads.filter(l => l.truckId === t.id && !l.voided);
     driverStats[t.id] = {
       label: t.label,
@@ -3798,22 +4399,10 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // FLEET (TRUCKS) & DRIVERS — real, independent entities
 // ═══════════════════════════════════════════════════════════════════════════
-app.get('/api/fleet', reqMgr, (req, res) => {
-  // Annotate each truck with who is currently running it today
-  const today = todayStr();
-  const busy = new Map();
-  store.loads.forEach(l => {
-    if (l.voided || l.deliveryDate !== today) return;
-    if (l.status === 'completed' || l.approvalStatus === 'approved') return;
-    if (l.truckUnitId) busy.set(l.truckUnitId, { loadId: l.id, driverId: l.truckId, driverName: l.driverName });
-  });
-  res.json({
-    trucks: (store.trucks || []).map(t => ({ ...t, currentAssignment: busy.get(t.id) || null })),
-    drivers: store.drivers || [],
-    truckStatuses: TRUCK_STATUSES,
-    driverStatuses: DRIVER_STATUSES,
-  });
-});
+// NOTE: /api/fleet is registered earlier (the company-scoped version added on
+// the other branch). Express only runs the first match, so the duplicate that
+// the branch merge left here was dead code and has been removed. Live driver
+// and truck availability for Quick Assign comes from /api/today instead.
 
 // ── TODAY BOARD — everything Quick Assign needs in ONE call ─────────────────
 // The dispatcher must never wait on several round trips to assign a load.
@@ -4250,6 +4839,7 @@ process.on('uncaughtException', (err) => {
 const PORT = process.env.PORT || 3000;
 (async () => {
   await initPg();
+  await seedDefaultCompanyAndUsers();
   await loadData();
   app.listen(PORT, () => {
     console.log(`VBT Dispatch on port ${PORT}`);

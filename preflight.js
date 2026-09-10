@@ -69,11 +69,15 @@ const targetMajor = declared && major(declared) ? major(declared) : runningMajor
 console.log(`\nDependencies (checked against deploy target Node ${targetMajor}):`);
 for (const name of Object.keys(pkg.dependencies || {})) {
   const declaredRange = pkg.dependencies[name];
+  // Read the manifest off disk rather than require()-ing it. Packages with a
+  // restrictive "exports" map (stripe, for one) refuse
+  // require('pkg/package.json') even when perfectly installed.
   let dep;
+  const manifest = path.join(__dirname, 'node_modules', name, 'package.json');
   try {
-    dep = require(path.join(name, 'package.json'));
+    dep = JSON.parse(fs.readFileSync(manifest, 'utf8'));
   } catch (e) {
-    console.log(`  MISSING  ${name.padEnd(24)} (declared ${declaredRange}) — require() will throw at boot`);
+    console.log(`  MISSING  ${name.padEnd(24)} (declared ${declaredRange}) — not installed; require() would throw at boot`);
     problems++;
     continue;
   }
