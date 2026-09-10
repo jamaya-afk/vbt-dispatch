@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>VBT Dispatch</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -566,6 +566,110 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   .hero-row{flex-direction:column;align-items:flex-start}
   .hero-stats{grid-template-columns:repeat(2,1fr)}
   .hero-title{font-size:18px}
+  .topbar{flex-wrap:wrap}
+  /* A driver has no sidebar, so the hamburger is a dead button for them */
+  body.driver-mode .menu-toggle{display:none}
+}
+
+/* ── MOBILE PHONE (dispatcher on a jobsite) ────────────────────────────────
+   Mobile dispatch is a first-class Valley Best requirement, not a fallback.
+   Two things matter most on a phone: nothing may overflow sideways, and every
+   control the dispatcher taps must be big enough to hit while standing in a
+   yard. 44px is the minimum reliable touch target. */
+@media(max-width:600px){
+  /* Wide tables scroll inside themselves instead of dragging the whole page */
+  .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
+  .bill-table{min-width:720px}
+
+  /* Touch targets — every one of these measured under 44px before this block */
+  .btn,.view-btn,.today-btn,.filter-clear,.signout-btn,.vendor-tab,
+  .bill-filter,.filter-bar select,.filter-bar input{min-height:44px}
+  .btn,.view-btn{padding-left:16px;padding-right:16px}
+  .date-nav button,.menu-toggle,.modal-close,.split-remove{min-width:44px;min-height:44px}
+  .nav-item{min-height:48px}
+  .bill-table input[type=checkbox]{width:24px;height:24px}
+  .bill-table td,.bill-table th{padding:14px 12px}
+
+  /* Stop the filter walls from pushing the board below the fold */
+  .filter-bar,.bill-filters{gap:6px;padding:8px 10px}
+  .filter-bar select,.bill-filter{flex:1 1 44%;min-width:0}
+
+  /* Cards get real tap feedback (manager side had hover-only affordances) */
+  .lcard:active{transform:scale(.99)}
+  .lcard{cursor:pointer}
+}
+
+/* iOS dynamic browser chrome clips the last row with plain 100vh */
+@supports(height:100dvh){
+  body,.shell{height:100dvh}
+}
+
+/* Tap-to-assign on a load card — the touch-safe path. Drag-and-drop does not
+   fire on iOS/Android, so this is the only way to reassign from a phone. */
+.lc-assign-btn{margin-left:auto;flex-shrink:0;padding:7px 14px;min-height:34px;font-size:11.5px;font-weight:700;
+  border:1.5px solid var(--B);background:var(--Bb,#e7f0ff);color:var(--B);border-radius:20px;cursor:pointer;
+  font-family:var(--f);letter-spacing:.02em;transition:all .15s}
+.lc-assign-btn:hover{background:var(--B);color:#fff}
+.lc-assign-btn:active{transform:scale(.97)}
+@media(max-width:600px){.lc-assign-btn{min-height:44px;padding:10px 18px;font-size:13px}}
+
+/* ── QUICK ASSIGN / TODAY ─────────────────────────────────────────────────
+   Built phone-first: a dispatcher standing in a yard must assign a load in
+   seconds without hunting for small controls. */
+.qa-wrap{padding:14px 16px;max-width:1100px;margin:0 auto}
+.qa-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px;margin-bottom:14px}
+.qa-stat{background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:12px;text-align:center;box-shadow:var(--shadow)}
+.qa-stat .n{font-size:24px;font-weight:800;line-height:1}
+.qa-stat .l{font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-top:5px}
+.qa-stat.alert{border-color:#fca5a5;background:#fef2f2}
+.qa-stat.alert .n{color:#b42318}
+.qa-stat.warn{border-color:#fcd34d;background:#fff8ec}
+.qa-stat.warn .n{color:#b45309}
+.qa-sec-title{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);margin:18px 0 8px}
+.qa-card{background:var(--bg);border:1px solid var(--bdr);border-left:4px solid var(--bdr2);border-radius:12px;padding:13px 14px;margin-bottom:9px;box-shadow:var(--shadow)}
+.qa-card.unassigned{border-left-color:#dc2626}
+.qa-card.assigned{border-left-color:#2563eb}
+.qa-card.in-progress{border-left-color:#d97706}
+.qa-card.completed{border-left-color:#0a8a3a}
+.qa-card.awaiting-approval{border-left-color:#7c3aed}
+.qa-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.qa-cust{font-size:15px;font-weight:750;line-height:1.25}
+.qa-sub{font-size:12px;color:var(--txt2);margin-top:2px}
+.qa-chip{display:inline-block;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:20px;background:var(--bg2);color:var(--txt2);white-space:nowrap}
+.qa-chip.unassigned{background:#fee2e2;color:#b42318}
+.qa-chip.assigned{background:#dbeafe;color:#1d4ed8}
+.qa-chip.in-progress{background:#fef3c7;color:#b45309}
+.qa-chip.completed{background:#dcfce7;color:#0a8a3a}
+.qa-chip.awaiting-approval{background:#ede9fe;color:#6d28d9}
+.qa-facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.qa-fact{font-size:11.5px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:4px 9px;color:var(--txt)}
+.qa-fact b{font-weight:750}
+.qa-fact.missing{background:#fef2f2;border-color:#fca5a5;color:#b42318;font-weight:700}
+.qa-actions{display:flex;gap:8px;margin-top:11px}
+.qa-btn{flex:1;min-height:44px;border-radius:10px;border:1.5px solid var(--B);background:var(--B);color:#fff;
+  font-size:13.5px;font-weight:750;cursor:pointer;font-family:var(--f);transition:all .15s}
+.qa-btn:active{transform:scale(.985)}
+.qa-btn.ghost{background:transparent;color:var(--B)}
+.qa-btn:disabled{opacity:.45;cursor:not-allowed}
+/* Assignment picker sheet — bottom sheet on phones, centered card on desktop */
+.qa-sheet-bg{position:fixed;inset:0;background:rgba(10,14,26,.55);z-index:400;display:flex;align-items:flex-end;justify-content:center}
+.qa-sheet{background:var(--bg);width:100%;max-width:560px;border-radius:18px 18px 0 0;max-height:90vh;display:flex;flex-direction:column}
+.qa-sheet-head{padding:16px 18px 10px;border-bottom:1px solid var(--bdr)}
+.qa-sheet-body{padding:14px 18px;overflow-y:auto;flex:1}
+.qa-sheet-foot{padding:12px 18px;border-top:1px solid var(--bdr);background:var(--bg2);display:flex;gap:9px;border-radius:0 0 0 0}
+.qa-opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+.qa-opt{min-height:52px;border:1.5px solid var(--bdr2);background:var(--bg);border-radius:11px;padding:9px 12px;
+  cursor:pointer;font-family:var(--f);text-align:left;transition:all .12s}
+.qa-opt:active{transform:scale(.98)}
+.qa-opt.sel{border-color:var(--B);background:var(--Bb,#e7f0ff);box-shadow:0 0 0 2px var(--B) inset}
+.qa-opt .t{font-size:13.5px;font-weight:750;color:var(--txt)}
+.qa-opt .s{font-size:11px;color:var(--txt2);margin-top:2px}
+.qa-opt.busy .t{color:var(--txt2)}
+.qa-step{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);margin:14px 0 7px}
+.qa-step:first-child{margin-top:0}
+@media(min-width:700px){
+  .qa-sheet-bg{align-items:center}
+  .qa-sheet{border-radius:18px}
 }
 
 /* ── SIGNATURE PAD ── */
@@ -588,6 +692,11 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <button class="nav-item active" data-tab="board" onclick="goTab('board')">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
         <span>Board</span>
+      </button>
+      <button class="nav-item" data-tab="today" onclick="goTab('today')" id="nav-today">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <span>Quick Assign</span>
+        <span class="nav-badge" id="today-badge" style="display:none">0</span>
       </button>
       <button class="nav-item" data-tab="approvals" onclick="goTab('approvals')">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
@@ -644,6 +753,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <div class="section active" id="sec-board">
         <div class="board-header" id="board-header"></div>
         <div class="board" id="board"></div>
+      </div>
+      <!-- QUICK ASSIGN / TODAY -->
+      <div class="section" id="sec-today">
+        <div id="today-content"></div>
       </div>
       <!-- APPROVALS -->
       <div class="section" id="sec-approvals">
@@ -1119,8 +1232,11 @@ async function init() {
       document.getElementById('page-title').textContent = 'My Trips';
       goTab('driver');
     } else {
-      goTab('board');
+      // Dispatchers land on today's board — the screen they actually work from
+      goTab('today');
+      checkPersistence();
     }
+    startLiveRefresh();
   } catch (e) {
     console.error('Init error:', e);
     toast('Failed to load app: ' + e.message, 'error');
@@ -1134,6 +1250,7 @@ function goTab(tab) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 
   if (tab === 'board')    { document.getElementById('sec-board').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch Board'; renderBoard(); }
+  if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = "Today's Dispatch"; renderToday(); }
   if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
   if (tab === 'history')  { document.getElementById('sec-history').classList.add('active'); document.getElementById('page-title').textContent = 'History'; renderHistory(); }
@@ -1254,7 +1371,7 @@ function renderDayBoard() {
       <div class="driver-col-head">
         <div>
           <div class="driver-name" style="color:var(--A)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</div>
-          <div class="driver-truck">Drag a card here to unassign</div>
+          <div class="driver-truck">Tap Assign on a load — or drag a card here to unassign</div>
         </div>
         <span class="driver-load-count" style="background:var(--Ad);color:var(--A)">${allUnas.length}</span>
       </div>
@@ -1582,6 +1699,9 @@ function loadCard(l) {
     </div>
     <div class="lc-driver-row">
       ${driverHtml}
+      ${(role === 'manager' || role === 'admin') && !l.locked
+        ? `<button class="lc-assign-btn" onclick="event.stopPropagation();openReassignModal('single','${l.id}')" title="Assign or change driver">${l.truckId && l.truckId !== 'unassigned' ? 'Reassign' : 'Assign'}</button>`
+        : ''}
     </div>
   </div>`;
 }
@@ -3150,7 +3270,7 @@ async function loadBilling() {
     refreshBillButtons();
     return;
   }
-  wrap.innerHTML = `<table class="bill-table">
+  wrap.innerHTML = `<div class="table-scroll"><table class="bill-table">
     <thead><tr>
       <th><input type="checkbox" id="bill-all" onchange="toggleAllBill(this.checked)"></th>
       <th>PO</th><th>Customer</th><th>City</th><th>Material</th><th>Loads</th><th>Driver</th><th>Date</th><th>Approved</th>
@@ -3168,7 +3288,7 @@ async function loadBilling() {
         <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}</td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
   refreshBillButtons();
 }
 
@@ -3303,7 +3423,7 @@ async function renderBillBatches() {
     const m = map[s] || map.ready_to_bill;
     return `<span style="background:${m.bg};color:${m.c};padding:3px 9px;border-radius:10px;font-size:11px;font-weight:600">${m.t}</span>`;
   };
-  wrap.innerHTML = `<table class="bill-table">
+  wrap.innerHTML = `<div class="table-scroll"><table class="bill-table">
     <thead><tr>
       <th>Batch</th><th>Customer</th><th>PO</th><th>Loads</th><th>Total</th><th>Status</th><th>QB Invoice #</th><th>Created</th><th></th>
     </tr></thead>
@@ -3324,7 +3444,7 @@ async function renderBillBatches() {
         </td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
 }
 
 async function sendBatch(id) {
@@ -3350,6 +3470,328 @@ async function voidBatch(id) {
   renderBillBatches();
 }
 
+// ── PERSISTENCE WARNING ─────────────────────────────────────────────────────
+// If loads are not reaching Postgres, the person entering them has to know.
+// A console warning nobody reads is how a day of dispatch disappears.
+async function checkPersistence() {
+  try {
+    const r = await fetch('/api/persistence');
+    if (!r.ok) return;
+    const p = await r.json();
+    document.getElementById('persist-banner')?.remove();
+    if (!p.warning) return;
+    const bar = document.createElement('div');
+    bar.id = 'persist-banner';
+    bar.style.cssText = 'position:sticky;top:0;z-index:250;background:#b42318;color:#fff;padding:11px 16px;'
+      + 'font-size:13px;font-weight:650;line-height:1.45;display:flex;gap:10px;align-items:center';
+    bar.innerHTML = `<span style="font-size:17px">&#9888;</span>
+      <span>${escapeHtml(p.warning)}</span>`;
+    document.querySelector('.content')?.prepend(bar);
+  } catch (e) { /* ignore */ }
+}
+
+// ── QUICK ASSIGN / TODAY'S DISPATCH ─────────────────────────────────────────
+// One screen, phone-first: see today, spot the unassigned, assign in seconds.
+let todayData = null;
+let qaFilter = 'all';       // all | unassigned | assigned | in-progress | completed
+let qaPick = null;          // { loadId, driverId, truckUnitId, yardId }
+
+async function renderToday() {
+  const wrap = document.getElementById('today-content');
+  if (!todayData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading today…</div>`;
+  const d = await api('GET', '/api/today');
+  if (!d.ok) { wrap.innerHTML = `<div style="padding:24px;color:var(--R)">${d.error || 'Failed to load'}</div>`; return; }
+  todayData = d;
+  paintToday();
+}
+
+function paintToday() {
+  const d = todayData; if (!d) return;
+  const s = d.summary;
+  const tile = (n, label, cls, filter) =>
+    `<div class="qa-stat ${cls || ''}" onclick="qaSetFilter('${filter || 'all'}')" style="cursor:pointer">
+       <div class="n">${n}</div><div class="l">${label}</div></div>`;
+
+  const order = { unassigned: 0, 'in-progress': 1, assigned: 2, 'awaiting-approval': 3, completed: 4 };
+  let loads = [...d.loads].sort((a, b) => (order[a.bucket] - order[b.bucket]) || String(a.customer).localeCompare(String(b.customer)));
+  if (qaFilter !== 'all') loads = loads.filter(l => l.bucket === qaFilter);
+
+  document.getElementById('today-content').innerHTML = `
+    <div class="qa-wrap">
+      <div class="qa-stats">
+        ${tile(s.unassigned, 'Unassigned', s.unassigned ? 'alert' : '', 'unassigned')}
+        ${tile(s.assigned, 'Assigned', '', 'assigned')}
+        ${tile(s.inProgress, 'In Progress', '', 'in-progress')}
+        ${tile(s.completed, 'Completed', '', 'completed')}
+        ${tile(s.awaitingApproval, 'Awaiting Approval', s.awaitingApproval ? 'warn' : '', 'awaiting-approval')}
+        ${tile(s.driversAvailable, 'Drivers Free', '', 'all')}
+        ${tile(s.driversWorking, 'Drivers Working', '', 'all')}
+        ${tile(s.jobs, 'Jobs Today', '', 'all')}
+      </div>
+      ${qaFilter !== 'all' ? `<button class="btn ghost" onclick="qaSetFilter('all')">← Showing ${qaFilter.replace('-', ' ')} · show all</button>` : ''}
+      <div class="qa-sec-title">${loads.length} load${loads.length === 1 ? '' : 's'} · ${d.date}</div>
+      ${loads.length ? loads.map(qaCard).join('') :
+        `<div class="empty-state"><h3>Nothing here</h3><p>No loads match this filter for today.</p></div>`}
+    </div>`;
+  const badge = document.getElementById('today-badge');
+  if (badge) { badge.style.display = s.unassigned ? '' : 'none'; badge.textContent = s.unassigned; }
+}
+
+function qaSetFilter(f) { qaFilter = f; paintToday(); }
+
+function qaCard(l) {
+  const label = { 'unassigned': 'Unassigned', 'assigned': 'Assigned', 'in-progress': 'In Progress',
+                  'completed': 'Completed', 'awaiting-approval': 'Awaiting Approval' }[l.bucket] || l.bucket;
+  return `<div class="qa-card ${l.bucket}">
+    <div class="qa-top">
+      <div>
+        <div class="qa-cust">${escapeHtml(l.customer || '(no customer)')}</div>
+        <div class="qa-sub">${escapeHtml(l.poNumber)}${l.jobName && l.jobName !== l.customer ? ' · ' + escapeHtml(l.jobName) : ''}${l.city ? ' · ' + escapeHtml(l.city) : ''}</div>
+      </div>
+      <span class="qa-chip ${l.bucket}">${label}</span>
+    </div>
+    <div class="qa-facts">
+      <div class="qa-fact"><b>${escapeHtml(l.material)}</b> · ${l.loadsDelivered}/${l.loadsAssigned} loads</div>
+      <div class="qa-fact">Yard: <b>${escapeHtml(l.yardName)}</b></div>
+      <div class="qa-fact${l.driverName ? '' : ' missing'}">Driver: <b>${escapeHtml(l.driverName || 'NONE')}</b></div>
+      <div class="qa-fact${l.truckNum ? '' : ' missing'}">Truck: <b>${escapeHtml(l.truckNum || 'NONE')}</b></div>
+    </div>
+    <div class="qa-actions">
+      ${l.locked ? '' : `<button class="qa-btn" onclick="qaOpen('${l.id}')">${l.bucket === 'unassigned' ? 'Assign' : 'Reassign'}</button>`}
+      <button class="qa-btn ghost" onclick="openLoadDetail('${l.id}')">Details</button>
+      <button class="qa-btn ghost" style="flex:0 0 auto;padding:0 14px" title="Customer updates: ${l.notifyOn ? 'ON' : 'OFF'}"
+        onclick="openNotifySheet('${l.poId}')">${l.notifyOn ? '&#128276; On' : '&#128276; Off'}</button>
+    </div>
+    ${l.locked ? `<div class="qa-sub" style="margin-top:8px">Approved and locked — assignment can no longer change.</div>` : ''}
+  </div>`;
+}
+
+// ── Assignment sheet: Driver → Truck → Yard → Confirm ───────────────────────
+// Nothing commits until Confirm, so a stray tap can never reassign a load.
+function qaOpen(loadId) {
+  const l = todayData.loads.find(x => x.id === loadId); if (!l) return;
+  qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId };
+  qaPaintSheet();
+}
+
+function qaPaintSheet() {
+  const d = todayData, p = qaPick;
+  const l = d.loads.find(x => x.id === p.loadId);
+  let el = document.getElementById('qa-sheet-bg');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'qa-sheet-bg'; el.className = 'qa-sheet-bg';
+    el.onclick = (e) => { if (e.target === el) qaClose(); };
+    document.body.appendChild(el);
+  }
+  const opt = (sel, onclick, title, sub, busy) =>
+    `<button class="qa-opt ${sel ? 'sel' : ''} ${busy ? 'busy' : ''}" onclick="${onclick}">
+       <div class="t">${escapeHtml(title)}</div><div class="s">${escapeHtml(sub)}</div></button>`;
+
+  const changed = p.driverId !== l.driverId || p.truckUnitId !== l.truckUnitId || p.yardId !== l.yardId;
+  el.innerHTML = `<div class="qa-sheet">
+    <div class="qa-sheet-head">
+      <div style="font-size:16px;font-weight:800">${escapeHtml(l.customer)}</div>
+      <div class="qa-sub">${escapeHtml(l.poNumber)} · ${escapeHtml(l.material)} · ${l.loadsAssigned} load${l.loadsAssigned === 1 ? '' : 's'}</div>
+    </div>
+    <div class="qa-sheet-body">
+      <div class="qa-step">1 · Driver</div>
+      <div class="qa-opts">
+        ${opt(!p.driverId, `qaSet('driverId',null)`, 'Unassigned', 'No driver', false)}
+        ${d.drivers.map(dr => {
+          const busy = dr.openLoadIds.length && !dr.openLoadIds.includes(l.id);
+          return opt(p.driverId === dr.id, `qaSet('driverId','${dr.id}')`, dr.name,
+            dr.status === 'off' ? 'Off duty' : busy ? `Busy · ${dr.openLoadIds.length} load(s)` : 'Available', busy);
+        }).join('')}
+      </div>
+      <div class="qa-step">2 · Truck</div>
+      <div class="qa-opts">
+        ${opt(!p.truckUnitId, `qaSet('truckUnitId',null)`, 'No truck', 'Choose later', false)}
+        ${d.trucks.map(t => {
+          const busy = t.inUseOnLoadId && t.inUseOnLoadId !== l.id;
+          return opt(p.truckUnitId === t.id, `qaSet('truckUnitId','${t.id}')`, t.truckNum,
+            t.status !== 'available' ? t.status : busy ? 'On another load' : (t.type || 'Available'), busy);
+        }).join('')}
+      </div>
+      <div class="qa-step">3 · Pickup yard</div>
+      <div class="qa-opts">
+        ${d.yards.map(y => opt(p.yardId === y.id, `qaSet('yardId','${y.id}')`, y.name,
+            y.isInternal ? 'Internal — no material cost' : 'Outside supplier', false)).join('')}
+      </div>
+    </div>
+    <div class="qa-sheet-foot">
+      <button class="qa-btn ghost" onclick="qaClose()">Cancel</button>
+      <button class="qa-btn" id="qa-confirm" ${changed ? '' : 'disabled'} onclick="qaConfirm()">
+        ${changed ? 'Confirm assignment' : 'No changes'}</button>
+    </div>
+  </div>`;
+}
+
+function qaSet(field, val) { qaPick[field] = val; qaPaintSheet(); }
+function qaClose() { const el = document.getElementById('qa-sheet-bg'); if (el) el.remove(); qaPick = null; }
+
+async function qaConfirm() {
+  const p = qaPick; if (!p) return;
+  const btn = document.getElementById('qa-confirm');
+  btn.disabled = true; btn.textContent = 'Assigning…';
+  const r = await api('POST', `/api/loads/${p.loadId}/assign`, {
+    driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId,
+  });
+  if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; return toast(r.error || 'Assign failed', 'error'); }
+  const who = r.load.driverName || 'Unassigned';
+  const truck = r.truck ? r.truck.truckNum : 'no truck';
+  qaClose();
+  toast(`${who} → ${truck} → ${r.pickup.name}`, 'success');
+  await renderToday();
+  await loadAll();
+}
+
+// ── CUSTOMER NOTIFICATIONS (per PO) ─────────────────────────────────────────
+const NOTIFY_LABELS = {
+  driverAssigned: 'Driver assigned',
+  arrivedPickup:  'Arrived at pickup yard',
+  loaded:         'Loaded / leaving yard',
+  arrivedJobsite: 'Arrived at jobsite',
+  delivered:      'Delivered',
+  podReady:       'Ticket / POD ready',
+  delay:          'Delay or exception',
+};
+let notifyState = null;   // { poId, notifications, mailer }
+
+async function openNotifySheet(poId) {
+  const r = await api('GET', `/api/pos/${poId}/notifications`);
+  if (!r.ok) return toast(r.error || 'Could not load settings', 'error');
+  notifyState = { poId, n: r.notifications, mailer: r.mailer, suggested: r.suggestedEmail };
+  if (!notifyState.n.contacts.length && r.suggestedEmail) {
+    notifyState.suggestOffer = true;
+  }
+  paintNotifySheet();
+}
+
+function paintNotifySheet() {
+  const st = notifyState; if (!st) return;
+  let el = document.getElementById('qa-sheet-bg');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'qa-sheet-bg'; el.className = 'qa-sheet-bg';
+    el.onclick = (e) => { if (e.target === el) qaClose(); };
+    document.body.appendChild(el);
+  }
+  const n = st.n;
+  const m = st.mailer || {};
+  const warn = !m.configured
+    ? 'Gmail is not configured yet — set GMAIL_USER and GMAIL_APP_PASSWORD. Nothing can send.'
+    : !m.globallyEnabled ? 'Notifications are globally off (NOTIFY_ENABLED is not true). Nothing will send.'
+    : m.dryRun ? 'Dry run is on — messages are logged but NOT delivered to customers.' : '';
+
+  el.innerHTML = `<div class="qa-sheet">
+    <div class="qa-sheet-head">
+      <div style="font-size:16px;font-weight:800">Customer updates</div>
+      <div class="qa-sub">Automatic delivery emails for this PO</div>
+    </div>
+    <div class="qa-sheet-body">
+      ${warn ? `<div style="background:#fff8ec;border:1px solid #fcd34d;border-radius:10px;padding:10px 12px;font-size:12.5px;margin-bottom:14px">${escapeHtml(warn)}</div>` : ''}
+
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1.5px solid ${n.enabled ? 'var(--G,#0a8a3a)' : 'var(--bdr2)'};border-radius:12px;background:${n.enabled ? '#e3f6e9' : 'var(--bg2)'}">
+        <div>
+          <div style="font-weight:750;font-size:14px">Customer updates: ${n.enabled ? 'ON' : 'OFF'}</div>
+          <div style="font-size:12px;color:var(--txt2);margin-top:2px">${n.enabled ? 'Emails send on the milestones ticked below.' : 'No emails will be sent for this PO.'}</div>
+        </div>
+        <button class="qa-btn" style="flex:0 0 auto;padding:0 18px;${n.enabled ? 'background:transparent;color:var(--B)' : ''}"
+          onclick="notifyToggle(${!n.enabled})">${n.enabled ? 'Turn off' : 'Turn on'}</button>
+      </div>
+
+      <div class="qa-step">Customer email</div>
+      ${n.contacts.map((c, i) => `
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:7px">
+          <div style="flex:1;min-width:0;padding:10px 12px;background:var(--bg2);border:1px solid var(--bdr);border-radius:9px;font-size:13px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(c.email)}${c.name ? ` <span style="color:var(--txt3)">(${escapeHtml(c.name)})</span>` : ''}</div>
+          <button class="qa-btn ghost" style="flex:0 0 auto;padding:0 14px" onclick="notifyRemoveContact(${i})">Remove</button>
+        </div>`).join('')}
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <input id="nt-email" class="bill-filter" style="flex:1;min-height:44px" placeholder="name@company.com"
+          value="${st.suggestOffer ? escapeHtml(st.suggested) : ''}" autocapitalize="none">
+        <button class="qa-btn" style="flex:0 0 auto;padding:0 18px" onclick="notifyAddContact()">Add</button>
+      </div>
+      ${st.suggestOffer ? `<div style="font-size:11.5px;color:var(--txt3);margin-top:5px">Suggested from the customer record — check it before adding.</div>` : ''}
+
+      <div class="qa-step">Notify when</div>
+      ${Object.keys(NOTIFY_LABELS).map(k => `
+        <label style="display:flex;align-items:center;gap:11px;padding:11px 12px;border:1px solid var(--bdr);border-radius:10px;margin-bottom:6px;cursor:pointer;background:var(--bg)">
+          <input type="checkbox" style="width:22px;height:22px;flex-shrink:0" ${n.events[k] ? 'checked' : ''} onchange="notifySetEvent('${k}', this.checked)">
+          <span style="font-size:13.5px;font-weight:600">${NOTIFY_LABELS[k]}</span>
+        </label>`).join('')}
+    </div>
+    <div class="qa-sheet-foot">
+      <button class="qa-btn ghost" onclick="qaClose()">Close</button>
+      <button class="qa-btn" onclick="notifySave()">Save</button>
+    </div>
+  </div>`;
+}
+
+function notifySetEvent(k, v) { notifyState.n.events[k] = v; }
+function notifyToggle(v) {
+  if (v && !notifyState.n.contacts.length) return toast('Add a customer email first', 'error');
+  notifyState.n.enabled = v; paintNotifySheet();
+}
+function notifyAddContact() {
+  const inp = document.getElementById('nt-email');
+  const email = (inp.value || '').trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast('Enter a valid email address', 'error');
+  if (notifyState.n.contacts.some(c => c.email.toLowerCase() === email.toLowerCase())) return toast('Already added', 'error');
+  notifyState.n.contacts.push({ name: '', email });
+  notifyState.suggestOffer = false;
+  paintNotifySheet();
+}
+function notifyRemoveContact(i) {
+  notifyState.n.contacts.splice(i, 1);
+  if (!notifyState.n.contacts.length) notifyState.n.enabled = false;
+  paintNotifySheet();
+}
+async function notifySave() {
+  const st = notifyState;
+  const r = await api('PUT', `/api/pos/${st.poId}/notifications`, {
+    enabled: st.n.enabled, contacts: st.n.contacts, events: st.n.events,
+  });
+  if (!r.ok) return toast(r.error || 'Save failed', 'error');
+  qaClose();
+  toast(r.notifications.enabled ? 'Customer updates ON' : 'Customer updates OFF', 'success');
+  if (currentTab === 'today') renderToday();
+}
+
+// ── LIVE REFRESH ────────────────────────────────────────────────────────────
+// Poll a tiny fingerprint; pull the full payload only when it actually
+// changes. Chosen over WebSockets deliberately — a phone in a truck cab loses
+// signal constantly, and a poll just succeeds on the next tick.
+let liveTimer = null, liveVersion = null;
+
+async function liveCheck(force) {
+  try {
+    const r = await fetch('/api/dispatch-version');
+    if (!r.ok) return;
+    const { version } = await r.json();
+    if (liveVersion === null) { liveVersion = version; return; }
+    if (version === liveVersion && !force) return;
+    const changed = version !== liveVersion;
+    liveVersion = version;
+    if (!changed) return;
+    if (role === 'driver') {
+      await renderDriver();
+      toast('Your assignments were updated', 'success');
+    } else if (currentTab === 'today') {
+      await renderToday();
+    } else {
+      await loadAll();
+      if (currentTab === 'board') renderBoard();
+    }
+  } catch (e) { /* offline — retry on the next tick */ }
+}
+
+function startLiveRefresh() {
+  if (liveTimer) clearInterval(liveTimer);
+  liveTimer = setInterval(() => { if (!document.hidden) liveCheck(false); }, 12000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) liveCheck(false); });
+}
+
 // ── QUICKBOOKS SETTINGS + SYNC LOG ─────────────────────────────────────────
 async function renderQuickBooks() {
   const wrap = document.getElementById('quickbooks-content');
@@ -3362,7 +3804,7 @@ async function renderQuickBooks() {
   const cfg = r.config || {};
   const conn = r.connection || {};
   const isConnected = conn.status === 'connected' && !!conn.realmId;
-  const isAdmin = role === 'admin';
+  const isAdmin = role === 'admin' || role === 'manager';
 
   const statusBadge = isConnected
     ? `<span style="background:#e3f6e9;color:#0a8a3a;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">Connected</span>`
@@ -3374,10 +3816,27 @@ async function renderQuickBooks() {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
           <div>
             <div style="font-size:18px;font-weight:700;margin-bottom:4px">QuickBooks Online</div>
-            <div style="font-size:13px;color:var(--txt2)">${cfg.configured ? `Environment: <strong>${cfg.environment || 'sandbox'}</strong> · Redirect: <code style="font-size:11px">${cfg.redirectUri || ''}</code>` : '<span style="color:#b42318">QB_CLIENT_ID / QB_CLIENT_SECRET / QB_REDIRECT_URI not set</span>'}</div>
+            <div style="font-size:13px;color:var(--txt2)">Environment: <strong>${cfg.environment || 'sandbox'}</strong></div>
           </div>
           <div>${statusBadge}</div>
         </div>
+
+        ${!cfg.configured ? `
+          <div style="margin-top:14px;padding:12px 14px;background:#fff8ec;border:1px solid #fcd34d;border-radius:10px;font-size:13px">
+            <strong>Missing environment variables.</strong> Set all three in Railway → Variables, then redeploy:
+            <pre style="margin:8px 0 0;font-size:12px;line-height:1.7;background:none;border:none;padding:0">QB_CLIENT_ID=&lt;from Intuit Developer → Keys &amp; OAuth&gt;\nQB_CLIENT_SECRET=&lt;from Intuit Developer → Keys &amp; OAuth&gt;\nQB_REDIRECT_URI=https://YOUR-DOMAIN/api/quickbooks/callback</pre>
+          </div>
+        ` : `
+          <div style="margin-top:14px;padding:12px 14px;background:var(--bg2);border:1px solid var(--bdr);border-radius:10px">
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--txt3);margin-bottom:6px">Redirect URI — paste this EXACTLY into Intuit Developer → Keys &amp; OAuth → Redirect URIs</div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <code id="qb-redirect-uri" style="font-size:13px;background:var(--bg);border:1px solid var(--bdr);padding:6px 10px;border-radius:6px;user-select:all;flex:1;min-width:0;overflow-x:auto;white-space:nowrap">${escapeHtml(cfg.redirectUri || '')}</code>
+              <button class="btn ghost" style="flex-shrink:0" onclick="copyRedirectUri()">Copy</button>
+            </div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:6px">Common mismatches: trailing slash, http vs https, www vs no-www, extra space. Intuit compares byte-for-byte.</div>
+          </div>
+        `}
+
         ${isConnected ? `
           <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;font-size:13px">
             <div><span style="color:var(--txt3);font-size:11px;text-transform:uppercase;letter-spacing:.04em">Realm</span><div style="font-family:monospace">${conn.realmId}</div></div>
@@ -3393,6 +3852,8 @@ async function renderQuickBooks() {
           ${!isAdmin && !isConnected ? `<span style="font-size:12px;color:var(--txt3)">Ask an admin to connect QuickBooks.</span>` : ''}
         </div>
       </div>
+
+      <div id="notify-card" style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;padding:18px;box-shadow:var(--shadow)"></div>
 
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;padding:18px;box-shadow:var(--shadow)">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -3411,6 +3872,95 @@ async function renderQuickBooks() {
     </div>
   `;
   renderQbLog();
+  renderNotifyCard();
+}
+
+// ── EMAIL NOTIFICATION SETTINGS PANEL ───────────────────────────────────────
+async function renderNotifyCard() {
+  const el = document.getElementById('notify-card');
+  if (!el) return;
+  const r = await api('GET', '/api/notifications/status');
+  if (!r.ok) { el.innerHTML = `<div style="color:var(--R)">${r.error || 'Failed to load'}</div>`; return; }
+  const m = r.mailer;
+  const pill = (txt, bg, fg) => `<span style="background:${bg};color:${fg};padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">${txt}</span>`;
+  const state = !m.configured ? pill('Not configured', '#fee4e2', '#b42318')
+    : !m.globallyEnabled ? pill('Disabled', '#f4f4f5', '#71717a')
+    : m.dryRun ? pill('Dry run', '#fff8ec', '#b45309')
+    : pill('Live', '#e3f6e9', '#0a8a3a');
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:15px;font-weight:700">Customer Email Notifications</div>
+        <div style="font-size:13px;color:var(--txt2);margin-top:3px">Gmail${m.user ? ' · ' + escapeHtml(m.user) : ''}</div>
+      </div>
+      <div>${state}</div>
+    </div>
+    <div style="margin-top:10px;padding:10px 12px;background:var(--bg2);border:1px solid var(--bdr);border-radius:9px;font-size:12.5px">
+      ${escapeHtml(m.effect)}
+    </div>
+    <div style="margin-top:10px;font-size:12.5px;color:var(--txt2)">
+      ${r.posEnabled} of ${r.totalPos} PO${r.totalPos === 1 ? '' : 's'} have customer updates turned on.
+      Updates are off for a PO until a dispatcher enables them.
+    </div>
+    ${!m.configured ? `
+      <div style="margin-top:12px;padding:12px 14px;background:#fff8ec;border:1px solid #fcd34d;border-radius:10px;font-size:12.5px;line-height:1.6">
+        <strong>To enable Gmail:</strong> turn on 2-Step Verification on the Google account, then
+        Google Account → Security → App passwords → generate one. Set in Railway:
+        <pre style="margin:8px 0 0;background:none;border:none;padding:0;font-size:12px">GMAIL_USER=dispatch@yourdomain.com
+GMAIL_APP_PASSWORD=the 16-character app password
+NOTIFY_ENABLED=true
+NOTIFY_DRY_RUN=true    # flip to false once a test email looks right</pre>
+      </div>` : `
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="nt-test-to" class="bill-filter" style="flex:1;min-width:200px;min-height:40px" placeholder="Send a test to…" autocapitalize="none">
+        <button class="btn ghost" onclick="notifyVerify()">Check credentials</button>
+        <button class="btn primary" onclick="notifyTest()">Send test</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--txt3);margin-top:6px">A test always sends for real, even in dry run — that is how you confirm delivery works.</div>`}
+    <div style="margin-top:14px">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:7px">Recent notification activity</div>
+      <div id="notify-log"></div>
+    </div>`;
+  renderNotifyLog();
+}
+
+async function renderNotifyLog() {
+  const el = document.getElementById('notify-log'); if (!el) return;
+  const r = await api('GET', '/api/notifications/log?limit=40');
+  const items = r.items || [];
+  if (!items.length) { el.innerHTML = `<div style="font-size:12.5px;color:var(--txt3)">No notification activity yet.</div>`; return; }
+  const badge = (s) => ({
+    sent: '<span style="color:#0a8a3a;font-weight:700">Sent</span>',
+    'dry-run': '<span style="color:#b45309;font-weight:700">Dry run</span>',
+    failed: '<span style="color:#b42318;font-weight:700">Failed</span>',
+    skipped: '<span style="color:#8a93a6">Skipped</span>',
+  }[s] || s);
+  el.innerHTML = `<div class="table-scroll"><table class="bill-table" style="min-width:640px">
+    <thead><tr><th>When</th><th>Event</th><th>Customer</th><th>To</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>${items.map(e => `<tr>
+      <td style="font-size:11px;color:var(--txt2);white-space:nowrap">${new Date(e.at).toLocaleString()}</td>
+      <td style="font-size:12px">${escapeHtml(NOTIFY_LABELS[e.event] || e.event)}</td>
+      <td style="font-size:12px">${escapeHtml(e.customer || '')}</td>
+      <td style="font-size:11.5px">${escapeHtml(e.to || '—')}</td>
+      <td style="font-size:12px">${badge(e.status)}</td>
+      <td style="font-size:11.5px;color:var(--txt2);max-width:260px">${escapeHtml(e.reason || '')}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+async function notifyVerify() {
+  const r = await api('POST', '/api/notifications/verify', {});
+  if (r.ok) toast('Gmail credentials are valid', 'success');
+  else toast(r.error || 'Verification failed', 'error');
+}
+
+async function notifyTest() {
+  const to = (document.getElementById('nt-test-to').value || '').trim();
+  if (!to) return toast('Enter an address to send the test to', 'error');
+  if (!confirm(`Send a real test email to ${to}?`)) return;
+  const r = await api('POST', '/api/notifications/test', { to });
+  if (r.ok) { toast('Test sent — check the inbox', 'success'); renderNotifyLog(); }
+  else toast(r.error || 'Send failed', 'error');
 }
 
 async function renderQbLog() {
@@ -3424,7 +3974,7 @@ async function renderQbLog() {
   const r = await api('GET', '/api/qb-sync-log?' + params);
   const items = r.items || [];
   if (!items.length) { list.innerHTML = `<div style="padding:14px;color:var(--txt3);font-size:13px">No sync activity yet.</div>`; return; }
-  list.innerHTML = `<table class="bill-table">
+  list.innerHTML = `<div class="table-scroll"><table class="bill-table">
     <thead><tr><th>When</th><th>Action</th><th>Entity</th><th>QB ID</th><th>Status</th><th>Detail</th><th>User</th></tr></thead>
     <tbody>
       ${items.map(e => `<tr>
@@ -3439,7 +3989,15 @@ async function renderQbLog() {
         <td style="font-size:11px;color:var(--txt2)">${e.user || '—'}</td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
+}
+
+function copyRedirectUri() {
+  const el = document.getElementById('qb-redirect-uri');
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent.trim()).then(() => toast('Redirect URI copied', 'success')).catch(() => {
+    const r = prompt('Copy this URI and paste it exactly into Intuit Developer → Redirect URIs:', el.textContent.trim());
+  });
 }
 
 async function qbDisconnect() {
@@ -3474,7 +4032,7 @@ function renderVendors() {
     <button class="view-btn ${vendorSubview === 'prices' ? 'active' : ''}" onclick="setVendorSubview('prices')">Vendor Prices</button>
     <button class="view-btn ${vendorSubview === 'master' ? 'active' : ''}" onclick="setVendorSubview('master')">Customers</button>
     <button class="view-btn ${vendorSubview === 'customers' ? 'active' : ''}" onclick="setVendorSubview('customers')">Customer Prices</button>
-    ${role === 'admin' ? `<button class="view-btn ${vendorSubview === 'defaults' ? 'active' : ''}" onclick="setVendorSubview('defaults')">Default Rates</button>` : ''}
+    ${(role === 'admin' || role === 'manager') ? `<button class="view-btn ${vendorSubview === 'defaults' ? 'active' : ''}" onclick="setVendorSubview('defaults')">Default Rates</button>` : ''}
     <button class="view-btn ${vendorSubview === 'costs' ? 'active' : ''}" onclick="setVendorSubview('costs')">Material Costs</button>
   </div>`;
 
@@ -4245,6 +4803,16 @@ async function renderProfitability() {
 
     // ── Top summary card ──
     const marginColor = data.grand.margin > 0 ? 'var(--G)' : data.grand.margin < 0 ? 'var(--R)' : 'var(--txt2)';
+    // Loads priced in a unit with no quantity-per-load defined contribute $0
+    // cost, so margin reads high. Say so rather than letting it look real.
+    if (data.grand.costIncomplete) {
+      h += `<div style="background:#fff8ec;border:1px solid #fcd34d;border-radius:var(--rl);padding:12px 16px;margin-bottom:14px;font-size:13px;line-height:1.5">
+        <strong>Margin is overstated.</strong> ${data.grand.unpricedCostLoads} load${data.grand.unpricedCostLoads === 1 ? '' : 's'}
+        priced in <strong>${data.grand.unpricedUnits.join(', ').toUpperCase()}</strong> have no material cost yet, because
+        Valley Best hasn't defined how many ${data.grand.unpricedUnits.join('/').toUpperCase()} are in one truck load.
+        Set it under <em>Vendors &amp; Prices → Default Rates</em> and these loads will be costed automatically.
+      </div>`;
+    }
     h += `<div style="background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);border-radius:var(--rl);padding:22px 24px;color:#fff;margin-bottom:18px;box-shadow:var(--shadow-md)">
       <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:14px">
         <div>
@@ -4382,7 +4950,7 @@ function renderProfitTable(rows, columns) {
   });
   const totalMarginPct = totals.revenue > 0 ? (totals.margin / totals.revenue * 100) : 0;
 
-  let h = `<table class="report-table">
+  let h = `<div class="table-scroll"><table class="report-table">
     <thead><tr>${columns.map(c => `<th style="${c.color ? 'color:' + c.color : ''}">${c.label}</th>`).join('')}</tr></thead>
     <tbody>
       ${rows.map(r => {
@@ -4409,7 +4977,7 @@ function renderProfitTable(rows, columns) {
         }).join('')}
       </tr>
     </tbody>
-  </table>`;
+  </table></div>`;
   return h;
 }
 

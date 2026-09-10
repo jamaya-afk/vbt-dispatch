@@ -5,6 +5,7 @@ const session = require('express-session');
 const path = require('path');
 const fs = require('fs');
 const qb = require('./qb');
+const mailer = require('./mailer');
 
 const app = express();
 app.use(express.json({
@@ -28,6 +29,9 @@ if (IS_PROD && !process.env.DATABASE_URL) {
 const SIGNUP_ENABLED = process.env.ENABLE_SIGNUP === 'true';
 
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
+if (!process.env.SESSION_SECRET) {
+  console.warn('⚠ SECURITY: SESSION_SECRET not set — using a known default. Set it in Railway variables.');
+}
 const sessionOpts = {
   secret: process.env.SESSION_SECRET || 'vbt-2025-secret',
   resave: false, saveUninitialized: false,
@@ -193,6 +197,11 @@ const USERS = {
   carlos:   { password: process.env.CARLOS_PASS   || 'carlos123',  role: 'driver',  truckId: 'carlos',   displayName: 'Carlos'   },
 };
 
+// LEGACY NAMING: `TRUCKS` is really the DRIVER roster — `id` is the driver's
+// login and `load.truckId` points at a driver, not a vehicle. Renaming that
+// field would touch a hundred call sites and every saved load, so it stays.
+// The real vehicle fleet lives in `store.trucks` (see DEFAULT_TRUCKS below)
+// and a load's vehicle is `load.truckUnitId`.
 const TRUCKS = [
   { id: 'beryle',   label: 'Beryle',   truckNum: 'Truck #2'  },
   { id: 'matthew',  label: 'Matthew',  truckNum: 'Truck #4'  },
@@ -200,6 +209,35 @@ const TRUCKS = [
   { id: 'leonardo', label: 'Leonardo', truckNum: 'Truck #12' },
   { id: 'carlos',   label: 'Carlos',   truckNum: 'Truck #2B' },
 ];
+
+// ── FLEET — real vehicles, independent of drivers ────────────────────────────
+// Seeded once from the five trucks Valley Best already runs, preserving each
+// truck number and its historical driver. After seeding these are ordinary
+// editable records: any driver can take any truck.
+const DEFAULT_TRUCKS = [
+  { id: 'truck-2',   truckNum: 'Truck #2',   type: 'End Dump',   status: 'available', defaultDriverId: 'beryle',   mileage: null, maintenanceNotes: '', active: true },
+  { id: 'truck-4',   truckNum: 'Truck #4',   type: 'End Dump',   status: 'available', defaultDriverId: 'matthew',  mileage: null, maintenanceNotes: '', active: true },
+  { id: 'truck-14',  truckNum: 'Truck #14',  type: 'End Dump',   status: 'available', defaultDriverId: 'rigo',     mileage: null, maintenanceNotes: '', active: true },
+  { id: 'truck-12',  truckNum: 'Truck #12',  type: 'End Dump',   status: 'available', defaultDriverId: 'leonardo', mileage: null, maintenanceNotes: '', active: true },
+  { id: 'truck-2b',  truckNum: 'Truck #2B',  type: 'End Dump',   status: 'available', defaultDriverId: 'carlos',   mileage: null, maintenanceNotes: '', active: true },
+];
+
+const TRUCK_STATUSES  = ['available', 'in-service', 'maintenance', 'out-of-service'];
+const DRIVER_STATUSES = ['available', 'working', 'off'];
+
+// The truck a load is running on. Falls back to the driver's historical truck
+// so loads created before the fleet existed still show the right vehicle.
+function getTruckForLoad(l) {
+  if (!l) return null;
+  const fleet = store.trucks || [];
+  if (l.truckUnitId) {
+    const t = fleet.find(x => x.id === l.truckUnitId);
+    if (t) return t;
+  }
+  // No fallback to the driver's usual truck: showing a truck number the
+  // dispatcher never assigned is worse than showing none.
+  return null;
+}
 
 // Generic fallback materials list (for the "Other" vendor or legacy data)
 const MATERIALS = ['Fill Sand','Gravel','Rock','3/4 Rock','Cold Mix','Recycle Base','Dirt','Base Rock','Other'];
@@ -251,13 +289,13 @@ const DEFAULT_VENDORS = [
 // Default per-vendor prices (just a starting set — manager edits these)
 const DEFAULT_VENDOR_PRICES = {
   vulcan: [
-    { id: 'v1', material: '3/4 Rock',   unit: 'CY',  price: 38, active: true, notes: '' },
+    { id: 'v1', material: '3/4 Rock',   unit: 'TON', price: 38, active: true, notes: '' },
     { id: 'v2', material: 'Base Rock',  unit: 'TON', price: 22, active: true, notes: '' },
-    { id: 'v3', material: 'Sand',       unit: 'CY',  price: 28, active: true, notes: '' },
+    { id: 'v3', material: 'Sand',       unit: 'TON', price: 28, active: true, notes: '' },
   ],
   teichert: [
-    { id: 't1', material: 'Fill Sand',  unit: 'CY',  price: 18, active: true, notes: '' },
-    { id: 't2', material: 'Gravel',     unit: 'CY',  price: 32, active: true, notes: '' },
+    { id: 't1', material: 'Fill Sand',  unit: 'TON', price: 18, active: true, notes: '' },
+    { id: 't2', material: 'Gravel',     unit: 'TON', price: 32, active: true, notes: '' },
   ],
   granite: [
     { id: 'g1', material: '3/4 Rock',   unit: 'TON', price: 30, active: true, notes: '' },
@@ -268,14 +306,14 @@ const DEFAULT_VENDOR_PRICES = {
     { id: 'c2', material: 'Base Rock',  unit: 'TON', price: 24, active: true, notes: '' },
   ],
   keith: [
-    { id: 'k1', material: 'Fill Sand',  unit: 'CY',  price: 16, active: true, notes: '' },
+    { id: 'k1', material: 'Fill Sand',  unit: 'TON', price: 16, active: true, notes: '' },
     { id: 'k2', material: 'Recycle Base', unit: 'TON', price: 14, active: true, notes: '' },
   ],
   hanson: [
     { id: 'h1', material: 'Rock',       unit: 'TON', price: 32, active: true, notes: '' },
   ],
   vbt: [
-    { id: 'vb1', material: 'Dirt',      unit: 'CY',  price: 0, active: true, notes: 'Internal yard' },
+    { id: 'vb1', material: 'Dirt',      unit: 'TON', price: 0, active: true, notes: 'Internal yard' },
   ],
   other: []
 };
@@ -397,15 +435,15 @@ async function seedDefaultCompanyAndUsers() {
 }
 
 async function loadData() {
+  let loaded = false;
   // Postgres first
   if (pg) {
     try {
       const r = await pg.query("SELECT value FROM dispatch_data WHERE key='store'");
       if (r.rows.length) {
         store = JSON.parse(r.rows[0].value);
-        normalizeStore();
+        loaded = true;
         console.log(`✓ Loaded from Postgres: ${store.pos.length} POs, ${store.loads.length} loads`);
-        return;
       }
     } catch (e) { console.error('PG read error:', e.message); }
   }
@@ -414,7 +452,7 @@ async function loadData() {
   if (!IS_PROD && fs.existsSync(DATA_FILE)) {
     try {
       store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      normalizeStore();
+      loaded = true;
       console.log(`✓ Loaded from file: ${store.pos.length} POs`);
       if (pg) { await saveData(); console.log('✓ Migrated file data to Postgres'); }
       return;
@@ -425,10 +463,30 @@ async function loadData() {
   normalizeStore();
 }
 
+// Persistence health, surfaced to /healthz and to the dispatcher's screen.
+// A silent fallback to a local file is the single most dangerous failure mode
+// here: everything looks fine until Railway redeploys and the day's loads are
+// gone. So it is tracked and reported loudly rather than logged once.
+const persistence = {
+  mode: 'unknown',        // 'postgres' | 'file' | 'unknown'
+  durable: false,
+  lastSaveOk: null,
+  lastSaveAt: '',
+  lastError: '',
+  degradedSince: '',
+};
+
 async function saveData() {
   const j = JSON.stringify(store);
   if (pg) {
     try {
+      // Snapshot the previous value before overwriting. The whole operation
+      // lives in one row, so a bad write would otherwise be unrecoverable.
+      await pg.query(`
+        INSERT INTO dispatch_data(key, value)
+        SELECT 'store_prev', value FROM dispatch_data WHERE key = 'store'
+        ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
+      `).catch(() => {});
       await pg.query(
         "INSERT INTO dispatch_data(key,value) VALUES('store',$1) ON CONFLICT(key) DO UPDATE SET value=$1",
         [j]
@@ -468,7 +526,10 @@ function normalizeStore() {
   if (!Array.isArray(store.vendors) || store.vendors.length === 0) {
     store.vendors = JSON.parse(JSON.stringify(DEFAULT_VENDORS));
   }
-  if (!store.vendorPrices || typeof store.vendorPrices !== 'object') {
+  // An empty {} counts as unseeded — a fresh install starts with vendorPrices:{},
+  // which is a truthy object, so the old check fell through to the else branch
+  // and gave every yard an empty price list instead of the defaults.
+  if (!store.vendorPrices || typeof store.vendorPrices !== 'object' || Object.keys(store.vendorPrices).length === 0) {
     store.vendorPrices = JSON.parse(JSON.stringify(DEFAULT_VENDOR_PRICES));
   } else {
     // Make sure every existing vendor has an entry (even if empty)
@@ -476,6 +537,96 @@ function normalizeStore() {
       if (!Array.isArray(store.vendorPrices[v.id])) store.vendorPrices[v.id] = [];
     });
   }
+  // ── FLEET & DRIVERS ────────────────────────────────────────────────────────
+  // Seeded once, then owned by the user. Never overwrites existing records —
+  // only adds a truck/driver that isn't there yet, so edits survive restarts.
+  if (!Array.isArray(store.trucks)) store.trucks = [];
+  DEFAULT_TRUCKS.forEach(dt => {
+    if (!store.trucks.some(t => t.id === dt.id)) store.trucks.push({ ...dt });
+  });
+  store.trucks.forEach(t => {
+    if (!t.status) t.status = 'available';
+    if (t.active === undefined) t.active = true;
+    if (!('mileage' in t)) t.mileage = null;
+    if (!('maintenanceNotes' in t)) t.maintenanceNotes = '';
+    if (!('type' in t)) t.type = '';
+  });
+
+  if (!Array.isArray(store.drivers)) store.drivers = [];
+  TRUCKS.forEach(d => {
+    if (!store.drivers.some(x => x.id === d.id)) {
+      store.drivers.push({
+        id: d.id,                       // matches the login + legacy load.truckId
+        name: d.label,
+        login: d.id,
+        phone: '',
+        status: 'available',
+        defaultTruckId: (DEFAULT_TRUCKS.find(t => t.defaultDriverId === d.id) || {}).id || null,
+        active: true,
+        notes: '',
+      });
+    }
+  });
+  store.drivers.forEach(d => {
+    if (!d.status) d.status = 'available';
+    if (d.active === undefined) d.active = true;
+  });
+
+  // ONE-TIME backfill: loads that existed before the fleet did get the truck
+  // their driver historically ran, so past deliveries keep truck attribution.
+  // Guarded by a flag — after this runs once, a load with no truck stays
+  // unassigned rather than silently inheriting the driver's usual vehicle.
+  if (!store.truckUnitBackfillV1) {
+    let n = 0;
+    store.loads.forEach(l => {
+      if (!l.truckUnitId) {
+        const t = DEFAULT_TRUCKS.find(x => x.defaultDriverId === l.truckId);
+        if (t) { l.truckUnitId = t.id; n++; }
+      }
+    });
+    store.truckUnitBackfillV1 = true;
+    if (n) console.log(`[normalize] Backfilled truck on ${n} pre-fleet load(s)`);
+  }
+  store.loads.forEach(l => { if (!('truckUnitId' in l)) l.truckUnitId = null; });
+
+  // ── CUSTOMER NOTIFICATIONS ─────────────────────────────────────────────────
+  // Off for every PO unless a dispatcher turns it on. Existing POs are
+  // backfilled to OFF so enabling the feature never emails a past customer.
+  if (!Array.isArray(store.notificationLog)) store.notificationLog = [];
+  store.pos.forEach(p => {
+    if (!p.notifications || typeof p.notifications !== 'object') {
+      p.notifications = { enabled: false, contacts: [], events: { ...DEFAULT_NOTIFY_EVENTS } };
+    }
+    if (!Array.isArray(p.notifications.contacts)) p.notifications.contacts = [];
+    p.notifications.events = { ...DEFAULT_NOTIFY_EVENTS, ...(p.notifications.events || {}) };
+    if (p.notifications.enabled === undefined) p.notifications.enabled = false;
+  });
+
+  // ── UNIT CONFIG (P4) ───────────────────────────────────────────────────────
+  // Quantity of each unit in one load. Seeded only with what Valley Best has
+  // actually stated (1 load = 25 tons). Everything else stays unset until
+  // management enters the real figure — the app reports "unpriced" rather
+  // than guessing.
+  if (!store.unitConfig || typeof store.unitConfig !== 'object') {
+    store.unitConfig = { byUnit: { ...DEFAULT_UNIT_QTY_PER_LOAD }, byMaterial: {} };
+  }
+  if (!store.unitConfig.byUnit)     store.unitConfig.byUnit = { ...DEFAULT_UNIT_QTY_PER_LOAD };
+  if (!store.unitConfig.byMaterial) store.unitConfig.byMaterial = {};
+
+  // ── COST RATES (P5) ────────────────────────────────────────────────────────
+  // Operating-cost inputs. Deliberately null: inventing a wage or a fuel price
+  // would produce confident, wrong margins. Each stays out of the cost total
+  // until management sets it.
+  if (!store.costRates || typeof store.costRates !== 'object') {
+    store.costRates = {
+      driverWagePerHour:  null,
+      fuelPricePerGallon: null,
+      truckMpgLoaded:     null,
+      truckCostPerMile:   null,
+      updatedAt: '', updatedBy: '',
+    };
+  }
+
   if (!store.nextPoNum)  store.nextPoNum = 1001;
   if (!store.nextLoadId) store.nextLoadId = 1;
 
@@ -603,6 +754,141 @@ function resolveCustomerRate(customer, material) {
 
 // Resolve vendor rate for a vendor + material.
 // VBT Yard returns 0 (internal inventory).
+// ── CUSTOMER NOTIFICATIONS ───────────────────────────────────────────────────
+// Which milestones a customer can be told about. All default OFF: a dispatcher
+// opts a PO in, then picks the events. Nothing is ever sent by default.
+const DEFAULT_NOTIFY_EVENTS = {
+  driverAssigned: false,
+  arrivedPickup:  false,
+  loaded:         false,
+  arrivedJobsite: false,
+  delivered:      false,
+  podReady:       false,
+  delay:          false,
+};
+
+// Guarantees a PO has notification settings. Belt and braces: normalizeStore
+// backfills at boot and PO creation sets them, but any PO reaching this code
+// without them would otherwise throw inside an async handler.
+function ensureNotifyCfg(po) {
+  if (!po) return null;
+  if (!po.notifications || typeof po.notifications !== 'object') {
+    po.notifications = { enabled: false, contacts: [], events: { ...DEFAULT_NOTIFY_EVENTS } };
+  }
+  if (!Array.isArray(po.notifications.contacts)) po.notifications.contacts = [];
+  po.notifications.events = { ...DEFAULT_NOTIFY_EVENTS, ...(po.notifications.events || {}) };
+  return po.notifications;
+}
+
+function logNotification(entry) {
+  try {
+    if (!Array.isArray(store.notificationLog)) store.notificationLog = [];
+    store.notificationLog.push({
+      id: 'NTF-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+      at: new Date().toISOString(),
+      event: entry.event,
+      loadId: entry.loadId || '',
+      poId: entry.poId || '',
+      poNumber: entry.poNumber || '',
+      customer: entry.customer || '',
+      to: entry.to || '',
+      subject: entry.subject || '',
+      status: entry.status,              // sent | dry-run | failed | skipped
+      reason: entry.reason || '',
+      messageId: entry.messageId || '',
+      triggeredBy: entry.triggeredBy || '',
+    });
+    if (store.notificationLog.length > 5000) store.notificationLog = store.notificationLog.slice(-5000);
+  } catch (e) {
+    console.error('[logNotification] failed:', e.message);
+  }
+}
+
+// Fire a customer update for a load milestone.
+//
+// Deliberately fire-and-forget: a slow or failing mail server must never
+// delay a driver tapping "Loaded" in a yard with one bar of signal. The
+// result is recorded in the notification log either way.
+function notifyLoadEvent(load, po, eventKey, opts = {}) {
+  try {
+    if (!po || !load) return;
+    const cfg = ensureNotifyCfg(po);
+    const base = {
+      event: eventKey, loadId: load.id, poId: po.id,
+      poNumber: po.poNumber, customer: po.customer, triggeredBy: opts.user || '',
+    };
+    if (!cfg || !cfg.enabled)          return logNotification({ ...base, status: 'skipped', reason: 'notifications off for this PO' });
+    if (!cfg.events?.[eventKey])       return logNotification({ ...base, status: 'skipped', reason: `event "${eventKey}" not selected` });
+    const recipients = (cfg.contacts || []).filter(c => c && c.email).map(c => c.email);
+    if (!recipients.length)            return logNotification({ ...base, status: 'skipped', reason: 'no contact email on this PO' });
+
+    const truck = getTruckForLoad(load);
+    const pickup = resolvePickupYard(load, po, opts.trip);
+    const { subject, text, html } = mailer.buildMessage(eventKey, {
+      customer: po.customer,
+      jobName: po.job || po.customer,
+      address: po.address, city: po.city,
+      material: load.material,
+      loadNum: opts.loadNum || (load.loadsDelivered || 0) + 1,
+      totalLoads: load.loadsAssigned,
+      truckNum: truck ? truck.truckNum : '',
+      yardName: pickup.name,
+      poNumber: po.poNumber,
+      when: new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }),
+      note: opts.note || '',
+    });
+
+    for (const to of recipients) {
+      mailer.send({ to, subject, text, html })
+        .then(r => {
+          logNotification({
+            ...base, to, subject,
+            status: r.sent ? 'sent' : r.dryRun ? 'dry-run' : 'failed',
+            reason: r.error || '', messageId: r.messageId || '',
+          });
+          return saveData();
+        })
+        .catch(e => {
+          logNotification({ ...base, to, subject, status: 'failed', reason: e.message });
+        });
+    }
+  } catch (e) {
+    console.error('[notifyLoadEvent] failed:', e.message);
+  }
+}
+
+// ── PICKUP YARD — SINGLE SOURCE OF TRUTH ─────────────────────────────────────
+// The yard the driver is sent to must always come from the load assignment,
+// never from a free-text PO label. Previously the driver was shown
+// `po.pickup`, a string that defaulted to "VBT Yard" — so a dispatcher who
+// assigned Vulcan on the load still sent the driver to the Valley Best yard.
+//
+// Authority, highest first:
+//   1. trip.actualYardId    — where the driver actually went on THIS trip
+//   2. load.actualYardId    — where the driver actually went on this load
+//   3. load.vendorId        — what the dispatcher assigned for this load
+//   4. po.plannedVendorId   — PO-level fallback for legacy rows
+//   5. 'vbt'                — the internal yard
+// The NAME is always looked up from the vendor record, so the label can never
+// drift from the id.
+function resolvePickupYard(load, po, trip) {
+  const id =
+    (trip && trip.actualYardId) ||
+    load?.actualYardId ||
+    load?.vendorId ||
+    po?.plannedVendorId ||
+    'vbt';
+  const v = store.vendors.find(x => x.id === id);
+  const isActual = !!((trip && trip.actualYardId) || load?.actualYardId);
+  return {
+    id,
+    name: v?.name || load?.vendorName || 'VBT Yard',
+    location: v?.location || '',
+    isInternal: id === 'vbt',
+    isActual,
+  };
+}
+
 function resolveVendorRate(vendorId, material) {
   if (vendorId === 'vbt') return { unit: 'ton', price: 0, isDefault: false, isInternal: true };
   const list = store.vendorPrices[vendorId] || [];
@@ -614,26 +900,86 @@ function resolveVendorRate(vendorId, material) {
 
 // Compute revenue for a load given its snapshot rates and delivered count
 // Handles unit='load' (price per load) vs unit='ton' (price × tons-per-load × loads delivered)
-function computeRevenue(load) {
-  const rate = Number(load.customerRate) || 0;
-  const unit = load.customerUnit || 'ton';
-  const delivered = Number(load.loadsDelivered) || 0;
-  if (unit === 'load') return rate * delivered;
-  // 'ton' (or anything else): rate × tons per load × loads delivered
-  const tons = Number(load.tonsPerLoad) || TONS_PER_LOAD;
-  return rate * tons * delivered;
+// ── UNIT MODEL ───────────────────────────────────────────────────────────────
+// How much of a unit fits in one Valley Best truck load. This is a BUSINESS
+// FACT, not something the code may assume.
+//
+// The old code multiplied by tonsPerLoad (25) for every unit that wasn't
+// 'load' — so a $38/CY rock price became $950 per load, while
+// /api/material-costs used a different formula entirely and reported $76 for
+// the very same load. Both cannot be right, and guessing a cubic-yards-per-
+// load figure would just bake in a new wrong number.
+//
+// So: units Valley Best has actually defined get a quantity. Units that have
+// not been defined return null, and every caller reports the load as
+// "unpriced — set quantity per load" instead of inventing a total.
+//
+// CONFIRMED Valley Best rule: 1 truck load = 25 tons. Valley Best hauls and
+// delivers material by weight — CY is a concrete-placement unit and is not
+// part of this workflow, so it is deliberately absent here and never appears
+// as a configuration warning.
+//
+//   ton  → 25   confirmed: 1 Valley Best load = 25 tons
+//   load → 1    the rate already IS per load
+//   hour → 1    hourly work; the rate is per load-hour
+//   mile → 1    per-mile rate, multiplied by miles at call time
+//
+// The engine stays open: any other unit can be given a quantity per load in
+// costing settings, and only units actually in use are ever flagged.
+const DEFAULT_UNIT_QTY_PER_LOAD = {
+  ton:  25,
+  load: 1,
+  hour: 1,
+  mile: 1,
+};
+
+// Units Valley Best actually operates in. Anything outside this list still
+// works if configured, but these are what the UI offers by default.
+const SUPPORTED_UNITS = ['ton', 'load', 'hour', 'mile'];
+
+function unitKey(unit) { return String(unit || 'ton').trim().toLowerCase(); }
+
+// Quantity of `unit` in one load, optionally overridden per material
+// (crushed rock and sand do not weigh the same per cubic yard).
+// Returns null when Valley Best has not defined it.
+function qtyPerLoad(unit, material) {
+  const u = unitKey(unit);
+  const cfg = store.unitConfig || {};
+  const perMat = (cfg.byMaterial || {})[material];
+  if (perMat && perMat[u] != null && perMat[u] !== '') return Number(perMat[u]);
+  const byUnit = cfg.byUnit || {};
+  if (byUnit[u] != null && byUnit[u] !== '') return Number(byUnit[u]);
+  if (DEFAULT_UNIT_QTY_PER_LOAD[u] != null) return DEFAULT_UNIT_QTY_PER_LOAD[u];
+  return null;  // unconfigured — caller must not fabricate a number
 }
 
-// Compute cost for a load given its snapshot vendor rate
-// VBT Yard loads have vendorRate=0 → cost is always 0
-function computeCost(load) {
-  const rate = Number(load.vendorRate) || 0;
-  const unit = load.vendorUnit || 'ton';
-  const delivered = Number(load.loadsDelivered) || 0;
-  if (unit === 'load') return rate * delivered;
-  const tons = Number(load.tonsPerLoad) || TONS_PER_LOAD;
-  return rate * tons * delivered;
+// The one money calculation. Every screen uses this so the same load can
+// never show two different figures.
+//   { amount, unconfigured, unit, qtyPerLoad, rate, delivered }
+function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride) {
+  const r = Number(rate) || 0;
+  const n = Number(delivered) || 0;
+  const u = unitKey(unit);
+  // A per-load snapshot of tons wins for ton-priced loads (legacy loads carry it)
+  let qty = (u === 'ton' && tonsPerLoadOverride) ? Number(tonsPerLoadOverride) : qtyPerLoad(u, material);
+  if (qty == null) {
+    return { amount: null, unconfigured: true, unit: u, qtyPerLoad: null, rate: r, delivered: n };
+  }
+  return { amount: r * qty * n, unconfigured: false, unit: u, qtyPerLoad: qty, rate: r, delivered: n };
 }
+
+function revenueDetail(load) {
+  return computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad);
+}
+function costDetail(load) {
+  return computeAmount(load.vendorRate, load.vendorUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad);
+}
+
+// Back-compat numeric wrappers. An unconfigured unit yields 0 rather than a
+// made-up figure; callers that care read the *Detail form and surface the
+// `unconfigured` flag to the user.
+function computeRevenue(load) { const d = revenueDetail(load); return d.amount == null ? 0 : d.amount; }
+function computeCost(load)    { const d = costDetail(load);    return d.amount == null ? 0 : d.amount; }
 
 // ── AUDIT LOG ────────────────────────────────────────────────────────────────
 // Records every meaningful manager action — used for activity log + future QBO push tracking
@@ -686,7 +1032,27 @@ function logAction(user, action, target, details) {
 // ── AUTH ─────────────────────────────────────────────────────────────────────
 function reqAuth(req, res, next) { if (req.session?.user) return next(); res.redirect('/login'); }
 function reqMgr(req, res, next)   { const r = req.session?.user?.role; if (r === 'admin' || r === 'manager') return next(); res.status(403).json({ error: 'Office access required' }); }
-function reqAdmin(req, res, next) { if (req.session?.user?.role === 'admin') return next(); res.status(403).json({ error: 'Admin access required' }); }
+// Manager and admin are treated as equivalent permission levels.
+function reqAdmin(req, res, next) {
+  const r = req.session?.user?.role;
+  if (r === 'admin' || r === 'manager') return next();
+  res.status(403).json({ error: 'Admin access required' });
+}
+
+app.get('/healthz', (req, res) => res.json({
+  ok: true,
+  hasDb: !!process.env.DATABASE_URL,
+  persistence: {
+    mode: persistence.mode,
+    durable: persistence.durable,
+    lastSaveOk: persistence.lastSaveOk,
+    lastSaveAt: persistence.lastSaveAt,
+    lastError: persistence.lastError,
+    degradedSince: persistence.degradedSince,
+  },
+  fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
+  time: new Date().toISOString(),
+}));
 
 app.get('/healthz', (req, res) => res.json({
   ok: true,
@@ -1179,11 +1545,16 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
   const exactMatch = store.loads.filter(l => l.truckId === u.truckId);
   console.log(`[my-dispatch] Loads with EXACT truckId match: ${exactMatch.length}`);
 
+  // Drivers see only their CURRENT WORKDAY — today's loads, plus anything
+  // older still open (a load that ran past midnight or was left unfinished
+  // must not silently vanish on the driver). Never future work.
+  const today = todayStr();
   const myLoads = store.loads.filter(l =>
     l.truckId === u.truckId &&
     !l.voided &&
     l.status !== 'completed' &&
-    l.approvalStatus !== 'approved'
+    l.approvalStatus !== 'approved' &&
+    (l.deliveryDate || today) <= today
   );
 
   console.log(`[my-dispatch] Loads after filtering (not voided, not completed, not approved): ${myLoads.length}`);
@@ -1201,14 +1572,32 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
 
   const enriched = myLoads.map(l => {
     const po = store.pos.find(p => p.id === l.poId) || {};
+    // Resolve against the CURRENT trip so a per-trip yard change is reflected
+    const curTrip = (Array.isArray(l.trips) && l.trips.length) ? l.trips[activeTripIdx(l)] : null;
+    const pickup  = resolvePickupYard(l, po, curTrip);
+    const truck   = getTruckForLoad(l);
     return {
       loadId: l.id,
+      truckId:    l.truckUnitId || null,
+      truckLabel: truck ? (truck.truckNum || truck.label || '') : '',
+      truckType:  truck ? (truck.type || '') : '',
+      // Per-trip pickup history so the driver can see where each haul went
+      trips: (l.trips || []).map(t => ({
+        tripNum: t.tripNum,
+        timestamps: t.timestamps || {},
+        yardId: t.actualYardId || pickup.id,
+        yardName: t.actualYardName || (store.vendors.find(v => v.id === (t.actualYardId || pickup.id)) || {}).name || pickup.name,
+      })),
       poNumber: po.poNumber || '—',
       customer: po.customer || '',
       jobName: po.job || po.customer || '',
       jobCode: po.jobCode || '',
-      pickupLocation: po.pickup || 'VBT Yard',
-      plannedVendorId: po.plannedVendorId || null,
+      // Pickup comes from the load assignment, never the PO's free-text label.
+      pickupLocation:  pickup.name,
+      pickupYardId:    pickup.id,
+      pickupIsInternal: pickup.isInternal,
+      pickupIsActual:  pickup.isActual,
+      plannedVendorId: pickup.id,
       deliveryLocation: po.address || po.city || '',
       city: po.city || '',
       material: l.material,
@@ -1282,6 +1671,8 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     notes:           po.notes || '',
     status:          po.deliveryDate > todayStr() ? 'scheduled' : 'active',
     materials:       [],
+    // Customer updates start OFF on every new PO. A dispatcher opts in.
+    notifications:   { enabled: false, contacts: [], events: { ...DEFAULT_NOTIFY_EVENTS } },
     createdAt:       new Date().toISOString(),
   };
 
@@ -1325,8 +1716,13 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       pricePerUnit: vendorRate.price,
       loadsAssigned: Number(s.loadsAssigned) || 0,
       loadsDelivered: 0,
-      truckId: s.truckId || null,
+      truckId: s.truckId || null,               // legacy name: this is the DRIVER
       driverName: truck?.label || '',
+      // Vehicle, chosen independently of the driver. Deliberately NOT defaulted
+      // to that driver's historical truck — a driver can run a different truck
+      // any day, and silently assuming one would put the wrong truck number in
+      // front of the driver. Unset until the dispatcher picks.
+      truckUnitId: s.truckUnitId || null,
       deliveryDate: newPo.deliveryDate,
       status: s.truckId ? 'active' : 'unassigned',
       timestamps: {},
@@ -1622,12 +2018,16 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
         trip.actualYardName = yard.name;
       }
     }
+    // Fired after the yard is stamped so the customer is told the correct one
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'arrivedPickup', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'loaded') {
     if (!trip.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
     stampBoth('loadedAt');
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'loaded', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'arrived-jobsite') {
     if (!trip.timestamps?.loadedAt) return res.status(400).json({ error: 'Must mark loaded / leaving yard first' });
     stampBoth('arrivedJobsite');
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'arrivedJobsite', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'trip-complete') {
     // Ends the current trip. Increments loadsDelivered. Does NOT submit for
     // approval — that's the `delivered` action below, which fires only after
@@ -1636,6 +2036,7 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     if (trip.timestamps?.completed)        return res.status(400).json({ error: 'Trip already complete' });
     stampBoth('completed');
     l.loadsDelivered = (l.loadsDelivered || 0) + 1;
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'delivered', { user: u.username, trip, loadNum: l.loadsDelivered });
     // If that was the LAST trip, also stamp the load-level "completed" so the
     // existing board/status code recognizes the load as ready-to-submit.
     if (l.loadsDelivered >= l.loadsAssigned) {
@@ -1757,14 +2158,24 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
   const ids = req.body.loadIds || [];
   let count = 0;
   const billedIds = [];
+  const skipped = [];
   store.loads.forEach(l => {
-    if (ids.includes(l.id) && l.approvalStatus === 'approved' && l.billStatus === 'ready') {
-      l.billStatus = 'billed';
-      l.billedAt   = new Date().toISOString();
-      billedIds.push(l.id);
-      count++;
-    }
+    if (!ids.includes(l.id)) return;
+    if (l.approvalStatus !== 'approved' || l.billStatus !== 'ready') return;
+    // Duplicate-billing guard: a load already claimed by a billing batch must
+    // not be manually marked billed — void the batch first to release it.
+    if (l.billingBatchId || l.qbInvoiceId) { skipped.push(l.id); return; }
+    l.billStatus = 'billed';
+    l.billedAt   = new Date().toISOString();
+    billedIds.push(l.id);
+    count++;
   });
+  if (skipped.length) {
+    return res.status(409).json({
+      error: `${skipped.length} load(s) already belong to a billing batch — void the batch before billing them manually.`,
+      skipped,
+    });
+  }
   if (count > 0) {
     logAction(req.session.user, 'marked-billed', '', {
       count,
@@ -1956,7 +2367,7 @@ app.get('/api/quickbooks/callback', reqAuth, async (req, res) => {
     if (state !== req.session.qbOauthState) {
       return res.status(400).send('OAuth state mismatch — please try connecting again.');
     }
-    if (req.session.user.role !== 'admin') {
+    if (!['admin', 'manager'].includes(req.session.user.role)) {
       return res.status(403).send('Only an admin can complete QuickBooks setup.');
     }
     const tok = await qb.exchangeCodeForToken(code);
@@ -3268,11 +3679,16 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     return true;
   });
 
-  // Compute per-load durations in minutes. Returns null when an interval can't
-  // be computed (missing endpoint).
-  const durationsForLoad = (l) => {
-    const iso = l.isoStamps || {};
-    const ts  = l.timestamps || {};
+  // Compute durations in minutes for ONE trip. Returns null for an interval
+  // that can't be computed (missing endpoint).
+  //
+  // The source of truth is the individual trip record in load.trips[]. The
+  // load-level timestamps/isoStamps are only a mirror of the CURRENT trip and
+  // are reset when a new trip starts, so reading them reported a 3-trip load
+  // as a single data point and discarded trips 1 and 2.
+  const durationsForTrip = (l, source) => {
+    const iso = source.isoStamps || {};
+    const ts  = source.timestamps || {};
     const baseDate = l.deliveryDate || '';
 
     // Get a Date for a step. Prefer the ISO stamp (accurate). Fall back to
@@ -3318,6 +3734,34 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     };
   };
 
+  // Expand every matched load into one record PER TRIP. A load with
+  // loadsAssigned=3 yields three records, each with its own timings and its
+  // own pickup yard (a driver can rotate yards between trips).
+  //
+  // Legacy loads saved before per-trip tracking have no trips[]; they fall
+  // back to their load-level stamps as a single synthetic trip so historical
+  // data is preserved rather than dropped.
+  const tripRecords = [];
+  matched.forEach(l => {
+    const trips = (Array.isArray(l.trips) && l.trips.length)
+      ? l.trips
+      : [{
+          tripNum: 1,
+          timestamps: l.timestamps || {},
+          isoStamps:  l.isoStamps  || {},
+          actualYardId: l.actualYardId,
+        }];
+    trips.forEach((t, i) => {
+      tripRecords.push({
+        load: l,
+        tripNum: t.tripNum || (i + 1),
+        // Per-trip yard wins, then the load's actual yard, then the assignment
+        yardId: t.actualYardId || l.actualYardId || l.vendorId || '',
+        d: durationsForTrip(l, t),
+      });
+    });
+  });
+
   // Aggregate helper — given a list of numbers, compute count/avg/median/p90/min/max
   const stats = (nums) => {
     const xs = nums.filter(n => typeof n === 'number' && isFinite(n));
@@ -3337,20 +3781,25 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
 
   // Group loads by an arbitrary key fn, returning aggregations per group + per
   // duration interval.
+  // keyFn receives a TRIP RECORD ({ load, tripNum, yardId, d }), so a load
+  // whose trips used different yards contributes to each yard's stats.
   const groupBy = (keyFn, labelFn = (k) => k) => {
     const buckets = new Map();
-    matched.forEach(l => {
-      const k = keyFn(l);
-      if (!k) return;  // skip loads with no group identity (e.g. no driver)
-      if (!buckets.has(k)) buckets.set(k, []);
-      buckets.get(k).push(durationsForLoad(l));
+    tripRecords.forEach(r => {
+      const k = keyFn(r);
+      if (!k) return;  // skip records with no group identity (e.g. no driver)
+      if (!buckets.has(k)) buckets.set(k, { rows: [], loadIds: new Set() });
+      buckets.get(k).rows.push(r.d);
+      buckets.get(k).loadIds.add(r.load.id);
     });
     const out = [];
-    for (const [k, arr] of buckets.entries()) {
+    for (const [k, b] of buckets.entries()) {
+      const arr = b.rows;
       out.push({
         key: k,
         label: labelFn(k),
-        loads: arr.length,
+        trips: arr.length,          // number of individual hauls measured
+        loads: b.loadIds.size,      // number of distinct load records behind them
         startToYard:    stats(arr.map(d => d.startToYard)),
         yardService:    stats(arr.map(d => d.yardService)),
         yardToJobsite:  stats(arr.map(d => d.yardToJobsite)),
@@ -3375,16 +3824,17 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     || (store.archive || []).flatMap(b => b.pos || []).find(p => p.id === l.poId)
     || {};
 
-  const byYard     = groupBy(l => l.actualYardId || l.vendorId, yardLabel);
-  const byCustomer = groupBy(l => poFor(l).customer || '', x => x);
-  const byJobCode  = groupBy(l => poFor(l).jobCode  || '', x => x || '(no job code)');
-  const byCity     = groupBy(l => poFor(l).city     || '', x => x || '(no city)');
-  const byMaterial = groupBy(l => l.material || '', x => x);
-  const byDriver   = groupBy(l => l.truckId || '',  truckLabel);
+  const byYard     = groupBy(r => r.yardId, yardLabel);
+  const byCustomer = groupBy(r => poFor(r.load).customer || '', x => x);
+  const byJobCode  = groupBy(r => poFor(r.load).jobCode  || '', x => x || '(no job code)');
+  const byCity     = groupBy(r => poFor(r.load).city     || '', x => x || '(no city)');
+  const byMaterial = groupBy(r => r.load.material || '', x => x);
+  const byDriver   = groupBy(r => r.load.truckId || '',  truckLabel);
 
   // Slowest / fastest yards on yard service time (only yards with ≥3 loads
   // for stat stability)
-  const yardsWithEnough = byYard.filter(g => g.yardService.count >= 3);
+  const MIN_SAMPLE = 3;
+  const yardsWithEnough = byYard.filter(g => g.yardService.count >= MIN_SAMPLE);
   const slowestYards = [...yardsWithEnough].sort((a, b) => (b.yardService.avg || 0) - (a.yardService.avg || 0)).slice(0, 5);
   const fastestYards = [...yardsWithEnough].sort((a, b) => (a.yardService.avg || 0) - (b.yardService.avg || 0)).slice(0, 5);
   const slowestJobsites = byCustomer
@@ -3392,10 +3842,11 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     .sort((a, b) => (b.jobsiteService.avg || 0) - (a.jobsiteService.avg || 0))
     .slice(0, 5);
 
-  // Overall summary on the matched set
-  const all = matched.map(durationsForLoad);
+  // Overall summary — every trip across every matched load
+  const all = tripRecords.map(r => r.d);
   const overall = {
     matchedLoads: matched.length,
+    matchedTrips: tripRecords.length,
     startToYard:    stats(all.map(d => d.startToYard)),
     yardService:    stats(all.map(d => d.yardService)),
     yardToJobsite:  stats(all.map(d => d.yardToJobsite)),
@@ -3435,11 +3886,19 @@ app.get('/api/profitability', reqMgr, (req, res) => {
   const byVendor   = {};   // { vendorId: { name, loads, revenue, cost, margin, ... } }
   const topLoads   = [];   // each: { id, poNumber, customer, material, driver, delivered, rev, cost, margin }
   let grandRev = 0, grandCost = 0, grandLoads = 0;
+  // Loads whose unit has no quantity-per-load defined contribute $0 cost,
+  // which makes margin look better than it is. Count them so the UI can say
+  // the figure is incomplete instead of quietly overstating profit.
+  const unpriced = { costLoads: 0, revenueLoads: 0, units: new Set() };
 
   eligible.forEach(l => {
     const po = allPos.find(p => p.id === l.poId) || {};
-    const rev    = computeRevenue(l);
-    const cost   = computeCost(l);
+    const revD = revenueDetail(l);
+    const costD = costDetail(l);
+    if (costD.unconfigured) { unpriced.costLoads++; unpriced.units.add(costD.unit); }
+    if (revD.unconfigured)  { unpriced.revenueLoads++; unpriced.units.add(revD.unit); }
+    const rev    = revD.amount == null ? 0 : revD.amount;
+    const cost   = costD.amount == null ? 0 : costD.amount;
     const margin = rev - cost;
 
     grandRev   += rev;
@@ -3521,6 +3980,11 @@ app.get('/api/profitability', reqMgr, (req, res) => {
       marginPct: grandRev > 0 ? ((grandRev - grandCost) / grandRev * 100) : 0,
       loads: grandLoads,
       loadCount: eligible.length,
+      // Truthfulness flags — see `unpriced` above
+      unpricedCostLoads: unpriced.costLoads,
+      unpricedRevenueLoads: unpriced.revenueLoads,
+      unpricedUnits: [...unpriced.units],
+      costIncomplete: unpriced.costLoads > 0,
     },
     byCustomer: Object.entries(byCustomer)
       .map(([k, v]) => ({ key: k, ...v, marginPct: v.revenue > 0 ? (v.margin / v.revenue * 100) : 0 }))
@@ -3568,28 +4032,26 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
     const delivered = Number(l.loadsDelivered) || 0;
     if (delivered === 0) return;  // only count loads actually delivered (so cost is real)
 
-    // Find the vendor's price for this material at the time it was used
-    let unitPrice = 0;
-    let unit = '';
-    if (l.pricePerUnit !== undefined && l.pricePerUnit !== null) {
-      // Snapshot saved at PO creation
-      unitPrice = Number(l.pricePerUnit) || 0;
-      unit = l.unit || '';
-    } else {
-      // Fall back to current vendor price table
-      const priceRow = (store.vendorPrices[vendorId] || []).find(p => p.material === l.material);
-      if (priceRow) { unitPrice = priceRow.price; unit = priceRow.unit; }
-    }
+    // Use the SAME costing function as /api/profitability. These two screens
+    // previously ran different formulas and reported the same load 25x apart.
+    const det = costDetail(l);
+    const unitPrice = det.rate;
+    const unit = det.unit;
+    const cost = det.amount == null ? 0 : det.amount;
 
-    const cost = delivered * unitPrice;
     byVendor[vendorId].totalLoads += delivered;
     byVendor[vendorId].totalCost  += cost;
+    if (det.unconfigured) {
+      byVendor[vendorId].unconfigured = true;
+      byVendor[vendorId].unconfiguredUnits = [...new Set([...(byVendor[vendorId].unconfiguredUnits || []), unit])];
+    }
 
     if (!byVendor[vendorId].byMaterial[l.material]) {
-      byVendor[vendorId].byMaterial[l.material] = { loads: 0, cost: 0, unit, unitPrice };
+      byVendor[vendorId].byMaterial[l.material] = { loads: 0, cost: 0, unit, unitPrice, unconfigured: false };
     }
     byVendor[vendorId].byMaterial[l.material].loads += delivered;
     byVendor[vendorId].byMaterial[l.material].cost  += cost;
+    if (det.unconfigured) byVendor[vendorId].byMaterial[l.material].unconfigured = true;
   });
 
   // List of available months (for filter dropdown)
@@ -3872,6 +4334,486 @@ async function writeSheet(tab, rows) {
     requestBody: { values: rows },
   });
 }
+
+// ── LIVE REFRESH ─────────────────────────────────────────────────────────────
+// A tiny fingerprint of what the caller should currently be seeing. Clients
+// poll this and only pull the full payload when the value changes, so a phone
+// sitting in a truck cab all day costs almost nothing.
+//
+// Polling on purpose: for a five-truck fleet it is far more reliable than a
+// WebSocket that has to survive cell handoffs, tunnels and screen sleep.
+function dispatchFingerprint(loads) {
+  const parts = loads.map(l => [
+    l.id, l.truckId || '-', l.truckUnitId || '-', l.vendorId || '-',
+    l.actualYardId || '-', l.loadsAssigned, l.loadsDelivered,
+    l.status, l.approvalStatus, l.deliveryDate,
+    (l.trips || []).length,
+  ].join(':'));
+  parts.sort();
+  return require('crypto').createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 16);
+}
+
+app.get('/api/dispatch-version', reqAuth, (req, res) => {
+  const u = req.session.user;
+  const today = todayStr();
+  const scope = u.role === 'driver'
+    ? store.loads.filter(l => l.truckId === u.truckId && !l.voided &&
+        l.status !== 'completed' && l.approvalStatus !== 'approved' &&
+        (l.deliveryDate || today) <= today)
+    : store.loads.filter(l => !l.voided && l.deliveryDate === today);
+  res.json({ version: dispatchFingerprint(scope), count: scope.length, at: new Date().toISOString() });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FLEET (TRUCKS) & DRIVERS — real, independent entities
+// ═══════════════════════════════════════════════════════════════════════════
+app.get('/api/fleet', reqMgr, (req, res) => {
+  // Annotate each truck with who is currently running it today
+  const today = todayStr();
+  const busy = new Map();
+  store.loads.forEach(l => {
+    if (l.voided || l.deliveryDate !== today) return;
+    if (l.status === 'completed' || l.approvalStatus === 'approved') return;
+    if (l.truckUnitId) busy.set(l.truckUnitId, { loadId: l.id, driverId: l.truckId, driverName: l.driverName });
+  });
+  res.json({
+    trucks: (store.trucks || []).map(t => ({ ...t, currentAssignment: busy.get(t.id) || null })),
+    drivers: store.drivers || [],
+    truckStatuses: TRUCK_STATUSES,
+    driverStatuses: DRIVER_STATUSES,
+  });
+});
+
+// ── TODAY BOARD — everything Quick Assign needs in ONE call ─────────────────
+// The dispatcher must never wait on several round trips to assign a load.
+app.get('/api/today', reqMgr, (req, res) => {
+  const day = req.query.date || todayStr();
+  const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
+
+  const bucketOf = (l) => {
+    if (l.approvalStatus === 'approved') return 'completed';
+    if (l.approvalStatus === 'submitted') return 'awaiting-approval';
+    if (!l.truckId || l.truckId === 'unassigned') return 'unassigned';
+    if ((l.loadsDelivered || 0) > 0 || (l.trips || []).length > 0) return 'in-progress';
+    return 'assigned';
+  };
+
+  const loads = dayLoads.map(l => {
+    const po = store.pos.find(p => p.id === l.poId) || {};
+    const pickup = resolvePickupYard(l, po);
+    const truck = getTruckForLoad(l);
+    return {
+      id: l.id,
+      bucket: bucketOf(l),
+      poId: l.poId,
+      notifyOn: !!po.notifications?.enabled,
+      poNumber: po.poNumber || '', customer: po.customer || '',
+      jobName: po.job || po.customer || '', jobCode: po.jobCode || '',
+      address: po.address || '', city: po.city || '',
+      material: l.material,
+      loadsAssigned: l.loadsAssigned, loadsDelivered: l.loadsDelivered || 0,
+      driverId: l.truckId || null, driverName: l.driverName || '',
+      truckUnitId: l.truckUnitId || null, truckNum: truck ? truck.truckNum : '',
+      yardId: pickup.id, yardName: pickup.name,
+      locked: !!l.locked,
+      approvalStatus: l.approvalStatus,
+      missingTicket: !l.ticketImage && !l.ticketImageUrl,
+    };
+  });
+
+  // Driver availability, derived from today's actual work
+  const busyBy = new Map();
+  dayLoads.forEach(l => {
+    if (!l.truckId || l.approvalStatus === 'approved') return;
+    if (!busyBy.has(l.truckId)) busyBy.set(l.truckId, []);
+    busyBy.get(l.truckId).push(l.id);
+  });
+  const drivers = (store.drivers || []).filter(d => d.active).map(d => ({
+    id: d.id, name: d.name, status: d.status,
+    openLoadIds: busyBy.get(d.id) || [],
+    available: (busyBy.get(d.id) || []).length === 0 && d.status !== 'off',
+  }));
+
+  const truckBusy = new Map();
+  dayLoads.forEach(l => {
+    if (l.truckUnitId && l.approvalStatus !== 'approved') truckBusy.set(l.truckUnitId, l.id);
+  });
+  const trucks = (store.trucks || []).filter(t => t.active).map(t => ({
+    id: t.id, truckNum: t.truckNum, type: t.type, status: t.status,
+    inUseOnLoadId: truckBusy.get(t.id) || null,
+    available: !truckBusy.has(t.id) && t.status === 'available',
+  }));
+
+  const count = (b) => loads.filter(l => l.bucket === b).length;
+  res.json({
+    date: day,
+    version: dispatchFingerprint(dayLoads),
+    loads, drivers, trucks,
+    yards: store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, isInternal: v.id === 'vbt' })),
+    summary: {
+      jobs: new Set(dayLoads.map(l => l.poId)).size,
+      loads: dayLoads.length,
+      unassigned: count('unassigned'),
+      assigned: count('assigned'),
+      inProgress: count('in-progress'),
+      completed: count('completed'),
+      awaitingApproval: count('awaiting-approval'),
+      driversWorking: drivers.filter(d => d.openLoadIds.length > 0).length,
+      driversAvailable: drivers.filter(d => d.available).length,
+      missingTicket: loads.filter(l => l.missingTicket && l.bucket === 'awaiting-approval').length,
+    },
+  });
+});
+
+app.post('/api/fleet/trucks', reqMgr, async (req, res) => {
+  const { truckNum, type, status, mileage, maintenanceNotes, defaultDriverId } = req.body || {};
+  if (!truckNum || !String(truckNum).trim()) return res.status(400).json({ error: 'Truck number is required' });
+  const num = String(truckNum).trim();
+  if ((store.trucks || []).some(t => t.truckNum.toLowerCase() === num.toLowerCase())) {
+    return res.status(400).json({ error: 'A truck with that number already exists' });
+  }
+  const truck = {
+    id: 'truck-' + num.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Math.floor(Math.random() * 1000),
+    truckNum: num,
+    type: type || '',
+    status: TRUCK_STATUSES.includes(status) ? status : 'available',
+    mileage: mileage === '' || mileage == null ? null : Number(mileage),
+    maintenanceNotes: maintenanceNotes || '',
+    defaultDriverId: defaultDriverId || null,
+    active: true,
+  };
+  store.trucks.push(truck);
+  logAction(req.session.user, 'added-truck', truck.id, { truckNum: truck.truckNum });
+  await saveData();
+  res.json({ success: true, truck });
+});
+
+app.put('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
+  const t = (store.trucks || []).find(x => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Truck not found' });
+  const before = { ...t };
+  const b = req.body || {};
+  if (b.truckNum !== undefined && String(b.truckNum).trim()) t.truckNum = String(b.truckNum).trim();
+  if (b.type !== undefined) t.type = b.type;
+  if (b.status !== undefined) {
+    if (!TRUCK_STATUSES.includes(b.status)) return res.status(400).json({ error: `Status must be one of: ${TRUCK_STATUSES.join(', ')}` });
+    t.status = b.status;
+  }
+  if (b.mileage !== undefined) t.mileage = b.mileage === '' || b.mileage == null ? null : Number(b.mileage);
+  if (b.maintenanceNotes !== undefined) t.maintenanceNotes = b.maintenanceNotes;
+  if (b.defaultDriverId !== undefined) t.defaultDriverId = b.defaultDriverId || null;
+  if (b.active !== undefined) t.active = !!b.active;
+  logAction(req.session.user, 'updated-truck', t.id, { truckNum: t.truckNum, before, after: { ...t } });
+  await saveData();
+  res.json({ success: true, truck: t });
+});
+
+// Trucks are never deleted once they have history — deactivate instead.
+app.delete('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
+  const t = (store.trucks || []).find(x => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Truck not found' });
+  const used = store.loads.some(l => l.truckUnitId === t.id);
+  if (used) {
+    t.active = false;
+    logAction(req.session.user, 'deactivated-truck', t.id, { truckNum: t.truckNum, reason: 'has load history' });
+    await saveData();
+    return res.json({ success: true, deactivated: true, message: 'Truck has delivery history — deactivated instead of deleted.' });
+  }
+  store.trucks = store.trucks.filter(x => x.id !== t.id);
+  logAction(req.session.user, 'deleted-truck', t.id, { truckNum: t.truckNum });
+  await saveData();
+  res.json({ success: true, deactivated: false });
+});
+
+app.put('/api/fleet/drivers/:id', reqMgr, async (req, res) => {
+  const d = (store.drivers || []).find(x => x.id === req.params.id);
+  if (!d) return res.status(404).json({ error: 'Driver not found' });
+  const b = req.body || {};
+  if (b.name !== undefined && String(b.name).trim()) d.name = String(b.name).trim();
+  if (b.phone !== undefined) d.phone = b.phone;
+  if (b.notes !== undefined) d.notes = b.notes;
+  if (b.status !== undefined) {
+    if (!DRIVER_STATUSES.includes(b.status)) return res.status(400).json({ error: `Status must be one of: ${DRIVER_STATUSES.join(', ')}` });
+    d.status = b.status;
+  }
+  if (b.defaultTruckId !== undefined) d.defaultTruckId = b.defaultTruckId || null;
+  if (b.active !== undefined) d.active = !!b.active;
+  logAction(req.session.user, 'updated-driver', d.id, { name: d.name });
+  await saveData();
+  res.json({ success: true, driver: d });
+});
+
+// ── QUICK ASSIGN — driver, truck and pickup yard in one mobile-friendly call ──
+// Everything else (customer, job, material, quantity, PO, date) already lives
+// on the load and is never re-entered.
+app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
+  const l = store.loads.find(x => x.id === req.params.id);
+  if (!l) return res.status(404).json({ error: 'Load not found' });
+  if (l.locked) return res.status(403).json({ error: 'Load is approved and locked' });
+  const { driverId, truckUnitId, yardId } = req.body || {};
+  const changes = {};
+
+  if (driverId !== undefined) {
+    const drv = driverId ? TRUCKS.find(t => t.id === driverId) : null;
+    if (driverId && !drv) return res.status(400).json({ error: 'Unknown driver' });
+    changes.driver = { from: l.driverName || 'Unassigned', to: drv?.label || 'Unassigned' };
+    l.truckId = driverId || null;
+    l.driverName = drv?.label || '';
+    l.status = driverId ? (l.status === 'unassigned' ? 'active' : l.status) : 'unassigned';
+  }
+  if (truckUnitId !== undefined) {
+    const t = truckUnitId ? (store.trucks || []).find(x => x.id === truckUnitId) : null;
+    if (truckUnitId && !t) return res.status(400).json({ error: 'Unknown truck' });
+    changes.truck = { from: (getTruckForLoad(l) || {}).truckNum || 'none', to: t?.truckNum || 'none' };
+    l.truckUnitId = truckUnitId || null;
+  }
+  if (yardId !== undefined) {
+    const v = store.vendors.find(x => x.id === yardId);
+    if (yardId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
+    changes.yard = { from: resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).name, to: v?.name || '' };
+    l.vendorId = yardId || null;
+    l.vendorName = v?.name || '';
+    // actualYardId is a load-level mirror of the CURRENT trip's yard. A new
+    // assignment must win over that mirror, otherwise the driver keeps seeing
+    // the yard they used on the last completed trip. The permanent per-trip
+    // record in trips[].actualYardId is deliberately left untouched — that is
+    // delivery history and must never be rewritten.
+    l.actualYardId = null;
+    l.actualYardName = '';
+    // Re-price against the new yard so cost follows the actual supplier.
+    if (yardId) {
+      const vr = resolveVendorRate(yardId, l.material);
+      l.vendorRate = vr.price;
+      l.vendorUnit = vr.unit;
+      l.vendorRateIsDefault = vr.isDefault;
+      l.vendorIsInternal = !!vr.isInternal;
+      l.pricePerUnit = vr.price;
+    }
+  }
+
+  logAction(req.session.user, 'quick-assigned-load', l.id, changes);
+  // Tell the customer only when a driver was actually put on the load —
+  // not when the truck or yard alone changed.
+  if (changes.driver && l.truckId) {
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'driverAssigned', { user: req.session.user.username });
+  }
+  await saveData();
+  const po = store.pos.find(p => p.id === l.poId) || {};
+  res.json({ success: true, load: l, pickup: resolvePickupYard(l, po), truck: getTruckForLoad(l) });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COSTING SETTINGS — unit model (P4) and operating rates (P5)
+// ═══════════════════════════════════════════════════════════════════════════
+// Reports which units are actually in use and which of them still have no
+// quantity-per-load defined, so management can see exactly what to fill in.
+app.get('/api/costing/settings', reqMgr, (req, res) => {
+  const unitsInUse = new Map();
+  store.loads.forEach(l => {
+    [[l.vendorUnit, 'cost'], [l.customerUnit, 'revenue']].forEach(([u, side]) => {
+      const k = unitKey(u || 'ton');
+      if (!unitsInUse.has(k)) unitsInUse.set(k, { unit: k, side: new Set(), loads: 0, materials: new Set() });
+      const e = unitsInUse.get(k);
+      e.side.add(side); e.loads++; if (l.material) e.materials.add(l.material);
+    });
+  });
+  const units = [...unitsInUse.values()].map(e => ({
+    unit: e.unit,
+    usedFor: [...e.side],
+    loads: e.loads,
+    materials: [...e.materials],
+    qtyPerLoad: qtyPerLoad(e.unit, null),
+    configured: qtyPerLoad(e.unit, null) != null,
+  }));
+  res.json({
+    unitConfig: store.unitConfig,
+    costRates: store.costRates,
+    unitsInUse: units,
+    // Only units genuinely in use on real loads AND lacking a quantity are
+    // flagged. Valley Best's units (ton/load/hour/mile) all ship configured,
+    // so this is normally empty.
+    needsAttention: units.filter(u => !u.configured && u.loads > 0).map(u => u.unit),
+    supportedUnits: SUPPORTED_UNITS,
+    tonsPerLoadRule: TONS_PER_LOAD,
+  });
+});
+
+app.put('/api/costing/units', reqMgr, async (req, res) => {
+  const { byUnit, byMaterial } = req.body || {};
+  const clean = (obj) => {
+    const out = {};
+    for (const [k, v] of Object.entries(obj || {})) {
+      if (v === '' || v === null) { out[unitKey(k)] = null; continue; }
+      const n = Number(v);
+      if (!isFinite(n) || n <= 0) return { error: `Quantity per load for "${k}" must be a positive number` };
+      out[unitKey(k)] = n;
+    }
+    return { out };
+  };
+  if (byUnit !== undefined) {
+    const r = clean(byUnit);
+    if (r.error) return res.status(400).json({ error: r.error });
+    store.unitConfig.byUnit = { ...store.unitConfig.byUnit, ...r.out };
+  }
+  if (byMaterial !== undefined) {
+    for (const [mat, units] of Object.entries(byMaterial || {})) {
+      const r = clean(units);
+      if (r.error) return res.status(400).json({ error: `${mat}: ${r.error}` });
+      store.unitConfig.byMaterial[mat] = { ...(store.unitConfig.byMaterial[mat] || {}), ...r.out };
+    }
+  }
+  logAction(req.session.user, 'updated-unit-config', '', { byUnit, byMaterial });
+  await saveData();
+  res.json({ success: true, unitConfig: store.unitConfig });
+});
+
+app.put('/api/costing/rates', reqMgr, async (req, res) => {
+  const fields = ['driverWagePerHour', 'fuelPricePerGallon', 'truckMpgLoaded', 'truckCostPerMile'];
+  const before = { ...store.costRates };
+  for (const f of fields) {
+    if (!(f in (req.body || {}))) continue;
+    const v = req.body[f];
+    if (v === '' || v === null) { store.costRates[f] = null; continue; }
+    const n = Number(v);
+    if (!isFinite(n) || n < 0) return res.status(400).json({ error: `${f} must be a non-negative number` });
+    store.costRates[f] = n;
+  }
+  store.costRates.updatedAt = new Date().toISOString();
+  store.costRates.updatedBy = req.session.user.username;
+  logAction(req.session.user, 'updated-cost-rates', '', { before, after: { ...store.costRates } });
+  await saveData();
+  res.json({ success: true, costRates: store.costRates });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CUSTOMER NOTIFICATIONS — Gmail
+// ═══════════════════════════════════════════════════════════════════════════
+app.get('/api/notifications/status', reqMgr, (req, res) => {
+  res.json({
+    mailer: mailer.status(),
+    eventKeys: Object.keys(DEFAULT_NOTIFY_EVENTS),
+    posEnabled: store.pos.filter(p => p.notifications && p.notifications.enabled).length,
+    totalPos: store.pos.length,
+  });
+});
+
+// Verify the Gmail credentials without emailing a customer.
+app.post('/api/notifications/verify', reqMgr, async (req, res) => {
+  const r = await mailer.verify();
+  res.json(r);
+});
+
+// Send a test message to the signed-in dispatcher (or a given address).
+// `force` bypasses the dry-run flag — this is the one path where that is safe,
+// because the operator chose the recipient themselves.
+app.post('/api/notifications/test', reqMgr, async (req, res) => {
+  const to = (req.body?.to || '').trim();
+  if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return res.status(400).json({ error: 'A valid email address is required' });
+  const { subject, text, html } = mailer.buildMessage('delivered', {
+    customer: 'Test Customer', jobName: 'Test Job', address: '123 Example St', city: 'Fresno',
+    material: '3/4 Rock', loadNum: 1, totalLoads: 1, truckNum: 'Truck #12',
+    yardName: 'VBT Yard', poNumber: 'PO-TEST',
+    when: new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }),
+    note: 'This is a test from Valley Best Dispatch. No real delivery is involved.',
+  });
+  const r = await mailer.send({ to, subject: '[TEST] ' + subject, text, html, force: true });
+  logNotification({ event: 'test', to, subject, status: r.sent ? 'sent' : 'failed', reason: r.error || '', messageId: r.messageId || '', triggeredBy: req.session.user.username });
+  await saveData();
+  res.json(r.sent ? { success: true, messageId: r.messageId } : { error: r.error || 'Send failed' });
+});
+
+// Per-PO settings
+app.get('/api/pos/:id/notifications', reqMgr, (req, res) => {
+  const po = store.pos.find(p => p.id === req.params.id);
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  ensureNotifyCfg(po);
+  const cust = store.customers.find(c => (c.name || '').toLowerCase().trim() === (po.customer || '').toLowerCase().trim());
+  res.json({
+    notifications: po.notifications,
+    eventKeys: Object.keys(DEFAULT_NOTIFY_EVENTS),
+    // Offer the customer-master email as a starting point, don't auto-use it
+    suggestedEmail: cust?.email || '',
+    mailer: mailer.status(),
+  });
+});
+
+app.put('/api/pos/:id/notifications', reqMgr, async (req, res) => {
+  const po = store.pos.find(p => p.id === req.params.id);
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  ensureNotifyCfg(po);
+  const b = req.body || {};
+
+  if (b.contacts !== undefined) {
+    if (!Array.isArray(b.contacts)) return res.status(400).json({ error: 'contacts must be a list' });
+    const clean = [];
+    for (const c of b.contacts) {
+      const email = String(c?.email || '').trim();
+      if (!email) continue;
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ error: `"${email}" is not a valid email address` });
+      clean.push({ name: String(c.name || '').trim(), email });
+    }
+    po.notifications.contacts = clean;
+  }
+  if (b.events !== undefined) {
+    const ev = { ...po.notifications.events };
+    for (const [k, v] of Object.entries(b.events || {})) {
+      if (k in DEFAULT_NOTIFY_EVENTS) ev[k] = !!v;
+    }
+    po.notifications.events = ev;
+  }
+  if (b.enabled !== undefined) {
+    // Refuse to arm notifications with nowhere to send them — otherwise the
+    // dispatcher believes the customer is being kept informed and they are not.
+    if (b.enabled && !po.notifications.contacts.length) {
+      return res.status(400).json({ error: 'Add at least one customer email before turning updates on' });
+    }
+    po.notifications.enabled = !!b.enabled;
+  }
+
+  logAction(req.session.user, 'updated-po-notifications', po.id, {
+    poNumber: po.poNumber, enabled: po.notifications.enabled,
+    contacts: po.notifications.contacts.length,
+    events: Object.entries(po.notifications.events).filter(([, v]) => v).map(([k]) => k),
+  });
+  await saveData();
+  res.json({ success: true, notifications: po.notifications });
+});
+
+app.get('/api/notifications/log', reqMgr, (req, res) => {
+  const f = req.query || {};
+  let items = [...(store.notificationLog || [])];
+  if (f.poId)   items = items.filter(e => e.poId === f.poId);
+  if (f.loadId) items = items.filter(e => e.loadId === f.loadId);
+  if (f.status) items = items.filter(e => e.status === f.status);
+  items.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  res.json({ items: items.slice(0, Math.min(parseInt(f.limit || '300', 10) || 300, 2000)) });
+});
+
+// ── RESILIENCE ───────────────────────────────────────────────────────────────
+// Drivers are in the field and the dispatcher may be on a phone. One bad
+// request must degrade to a 500 for that caller — never take the whole
+// dispatch system offline for everyone.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  // A malformed or oversized request body is the caller's mistake, not ours.
+  // Returning 500 for it hides real server faults in the noise.
+  if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
+    console.warn(`[bad request] ${req.method} ${req.originalUrl}: ${err.message}`);
+    return res.status(400).json({ error: 'Malformed JSON in request body' });
+  }
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Upload too large (limit 25MB)' });
+  }
+  console.error(`[express error] ${req.method} ${req.originalUrl}:`, err && err.stack || err);
+  res.status(500).json({ error: 'Server error — please retry. If it persists, check the server log.' });
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection] staying alive:', reason && reason.stack || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException] staying alive:', err && err.stack || err);
+});
 
 // ── STARTUP ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
