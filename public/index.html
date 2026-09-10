@@ -604,6 +604,19 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   body,.shell{height:100dvh}
 }
 
+/* The viewport is viewport-fit=cover, which lets the page run under the iPhone
+   notch and home indicator. Without these insets the topbar hides behind the
+   notch and — worse — the Confirm button in the assignment sheet sits under
+   the home indicator, where a tap swipes the app away instead. */
+@supports(padding:env(safe-area-inset-bottom)){
+  .topbar{padding-top:calc(14px + env(safe-area-inset-top))}
+  .qa-sheet-foot{padding-bottom:calc(12px + env(safe-area-inset-bottom))}
+  .modal-foot{padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  .qa-wrap{padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  .drv-trips{padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+  .sidebar{padding-top:env(safe-area-inset-top)}
+}
+
 /* Tap-to-assign on a load card — the touch-safe path. Drag-and-drop does not
    fire on iOS/Android, so this is the only way to reassign from a phone. */
 .lc-assign-btn{margin-left:auto;flex-shrink:0;padding:7px 14px;min-height:34px;font-size:11.5px;font-weight:700;
@@ -3995,9 +4008,15 @@ async function renderQbLog() {
 function copyRedirectUri() {
   const el = document.getElementById('qb-redirect-uri');
   if (!el) return;
-  navigator.clipboard.writeText(el.textContent.trim()).then(() => toast('Redirect URI copied', 'success')).catch(() => {
-    const r = prompt('Copy this URI and paste it exactly into Intuit Developer → Redirect URIs:', el.textContent.trim());
-  });
+  const uri = el.textContent.trim();
+  const manual = () => prompt('Copy this URI and paste it exactly into Intuit Developer → Redirect URIs:', uri);
+  // navigator.clipboard only exists in a secure context. Over plain HTTP it is
+  // undefined, so calling it throws SYNCHRONOUSLY — a .catch() never fires and
+  // the fallback would never run. Check for it before touching it.
+  if (!navigator.clipboard || !navigator.clipboard.writeText) return manual();
+  navigator.clipboard.writeText(uri)
+    .then(() => toast('Redirect URI copied', 'success'))
+    .catch(manual);
 }
 
 async function qbDisconnect() {
