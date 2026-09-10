@@ -235,7 +235,33 @@ chk "unselected event skipped"          "$(echo "$NLOG"|sed -n 3p)" "skipped"
 chk "nothing falsely reported as sent"  "$(echo "$NLOG"|sed -n 4p)" "no"
 chk "server alive after notify"   "$(curl -s -o /dev/null -w '%{http_code}' $B/healthz)" "200"
 
-echo "── 15. Fleet is independent of drivers ──"
+echo "── 15. Single company: no SaaS surface ──"
+chk "no /signup"                "$(curl -s -o /dev/null -w '%{http_code}' $B/signup)" "404"
+chk "no stripe checkout"        "$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/stripe/checkout)" "404"
+chk "no stripe portal"          "$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/stripe/portal)" "404"
+chk "no stripe webhook"         "$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/stripe/webhook)" "404"
+chk "no subscription status"    "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/api/subscription-status)" "404"
+
+echo "── 16. Deleting a PO (clearing test data) ──"
+TPO=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"poNumber":"ZZ-TESTING","customer":"scratch","deliveryDate":"'"$(date +%F)"'"},
+ "splits":[{"truckId":"carlos","material":"Fill Sand","loadsAssigned":2,"vendorId":"vbt"}]}' \
+ | python3 -c "import json,sys;print(json.load(sys.stdin)['po']['id'])")
+BEFORE=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(len(json.load(sys.stdin)['pos']))")
+chk "test PO deleted"      "$(curl -s -o /dev/null -w '%{http_code}' -b $M -X DELETE $B/api/pos/$TPO)" "200"
+AFTER=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(len(json.load(sys.stdin)['pos']))")
+chk "PO count dropped by 1" "$((BEFORE-AFTER))" "1"
+chk "its loads went too"    "$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;print(len([l for l in json.load(sys.stdin)['loads'] if l['poId']=='$TPO']))")" "0"
+# The PO holding the approved load from step 6 must be protected
+APO=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print([l['poId'] for l in d['loads'] if l.get('approvalStatus')=='approved'][0])")
+chk "PO with approved load refuses delete" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -X DELETE $B/api/pos/$APO)" "403"
+chk "that PO is still there" "$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;print(len([p for p in json.load(sys.stdin)['pos'] if p['id']=='$APO']))")" "1"
+
+echo "── 17. Fleet is independent of drivers ──"
 F=$(curl -s -b $M $B/api/fleet | python3 -c "
 import json,sys;d=json.load(sys.stdin)
 print(len(d['trucks'])); print(len(d['drivers']))")

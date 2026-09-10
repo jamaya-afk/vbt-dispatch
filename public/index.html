@@ -2292,6 +2292,14 @@ function openLoadDetail(id) {
     if (!l.approvalStatus || l.approvalStatus === 'pending') {
       actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
     }
+    // Removing a whole PO (and its loads) had no UI at all, so test POs piled
+    // up with no way to clear them. The server still refuses if any load on
+    // the PO has been approved — those are voided, never deleted.
+    const poLoadCount = loads.filter(x => x.poId === l.poId).length;
+    const poHasApproved = loads.some(x => x.poId === l.poId && x.approvalStatus === 'approved');
+    if (!poHasApproved) {
+      actions += `<button class="btn danger" onclick="deletePO('${l.poId}', ${poLoadCount})">Delete PO ${escapeHtml(po.poNumber || '')}</button>`;
+    }
   }
 
   showInfoModal('Load Details', html, actions);
@@ -2316,6 +2324,22 @@ async function deleteLoad(id) {
   const d = await api('DELETE', '/api/loads/' + id);
   if (d.ok) { document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove(); await loadAll(); renderBoard(); toast('Load deleted', 'success'); }
   else toast(d.error || 'Failed', 'error');
+}
+
+// Delete a PO and every load on it. Use this to clear test POs — the server
+// refuses once any load has been approved, so real delivered work can never
+// be removed this way (it gets voided instead).
+async function deletePO(poId, loadCount) {
+  const po = pos.find(p => p.id === poId);
+  const label = po ? `${po.poNumber} — ${po.customer}` : poId;
+  if (!confirm(`Delete PO ${label} and its ${loadCount} load${loadCount === 1 ? '' : 's'}?\n\nThis cannot be undone.`)) return;
+  const d = await api('DELETE', '/api/pos/' + poId);
+  if (!d.ok) return toast(d.error || 'Failed to delete PO', 'error');
+  document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove();
+  await loadAll();
+  toast(`Deleted PO ${po ? po.poNumber : ''}`, 'success');
+  if (currentTab === 'today') renderToday();
+  else renderBoard();
 }
 
 // ── REASSIGN DRIVER ──────────────────────────────────────────────────────────
