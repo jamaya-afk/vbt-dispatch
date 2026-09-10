@@ -20,6 +20,21 @@ for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; 
 
 curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
 
+echo "── 0. The app actually opens in a browser ──"
+# The whole suite once passed 73/73 while the site answered "Cannot GET /",
+# because every check hit /api/* and none ever loaded a page. These do.
+A=$(mktemp)   # anonymous, no session
+chk "logged out, / redirects"      "$(curl -s -o /dev/null -w '%{http_code}' -c $A $B/)" "302"
+chk "  ...to the login page"       "$(curl -s -o /dev/null -w '%{redirect_url}' -c $A $B/ | sed 's|.*//[^/]*||')" "/login"
+chk "login page renders"           "$(curl -s -o /dev/null -w '%{http_code}' $B/login)" "200"
+chk "logged out, /app/ is blocked" "$(curl -s -o /dev/null -w '%{http_code}' $B/app/)" "302"
+# now with a real session
+chk "logged in, / redirects to app" "$(curl -s -o /dev/null -w '%{redirect_url}' -b $M $B/ | sed 's|.*//[^/]*||')" "/app/"
+chk "/app/ serves the app shell"    "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/app/)" "200"
+chk "  ...and it is the real page"  "$(curl -s -b $M $B/app/ | grep -c 'id=\"sec-board\"')" "1"
+chk "static assets serve"           "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/app/index.html)" "200"
+chk "/api/me identifies the user"   "$(curl -s -b $M $B/api/me | python3 -c "import json,sys;print(json.load(sys.stdin)['username'])")" "joshua"
+
 echo "── 1. PO with 3 loads, driver beryle, truck #12 (NOT his usual truck) ──"
 curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
  "po":{"customer":"ABC Construction","deliveryDate":"'"$(date +%F)"'","address":"123 Main St","city":"Fresno","notes":"Gate 4455"},
