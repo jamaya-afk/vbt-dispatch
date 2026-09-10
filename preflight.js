@@ -27,37 +27,67 @@ function major(range) {
 
 console.log(`\nValley Best preflight — running Node ${running}\n`);
 
-// 1. Declared engine vs actual
+// 1. engines.node must be a CONCRETE version the host can resolve.
+//
+// Railway provisions Node from this field. A range like ">=18" gave it nothing
+// to pin, so the container came up with no node binary at all —
+// "node: command not found" on every start. Only a concrete form is safe.
 const declared = pkg.engines && pkg.engines.node;
 console.log(`package.json engines.node: ${declared || '(none)'}`);
-if (declared && /^\d+\.x$/.test(declared)) {
+if (!declared) {
+  console.log('  BREAKS   no engines.node — the host has nothing to pin a Node version to');
+  problems++;
+} else if (!/^\d+(\.\d+)*(\.x)?$/.test(declared)) {
+  console.log(`  BREAKS   "${declared}" is a RANGE, not a concrete version.`);
+  console.log('           Railway could not resolve it and installed no Node at all.');
+  console.log('           Use a concrete form such as "18.x" or "20.x".');
+  problems++;
+} else {
   const want = major(declared);
   if (want !== runningMajor) {
-    console.log(`  ! engines pins Node ${want}.x but this is Node ${runningMajor}. Railway follows engines,`);
-    console.log(`    which is how an incompatible dependency slipped in. Prefer ">=18".`);
-    warnings++;
+    console.log(`  note     pins Node ${want}.x; this machine is Node ${runningMajor} — deps are checked against ${want} below`);
   }
 }
 
-// 2. Every dependency: installed at all, and does it accept this Node?
-console.log('\nDependencies:');
+// nixpacks.toml declaring a different Node than engines is how the runtime and
+// the dependency checks drift apart.
+try {
+  const nix = fs.readFileSync(path.join(__dirname, 'nixpacks.toml'), 'utf8');
+  const m = nix.match(/nodejs[_-](\d+)/);
+  if (m && declared && major(declared) !== Number(m[1])) {
+    console.log(`  ! nixpacks.toml asks for nodejs_${m[1]} but engines says ${declared}.`);
+    console.log(`    Railway follows engines; the observed runtime has been Node ${major(declared)}.`);
+    warnings++;
+  }
+} catch (e) { /* no nixpacks.toml is fine */ }
+
+// 2. Every dependency: installed at all, and does it accept the Node version
+// PRODUCTION will run — not the one this machine happens to have. Checking
+// against the local Node is how a package needing Node 20 passed on a dev box
+// running Node 22 and then crash-looped on Railway's Node 18.
+const targetMajor = declared && major(declared) ? major(declared) : runningMajor;
+console.log(`\nDependencies (checked against deploy target Node ${targetMajor}):`);
 for (const name of Object.keys(pkg.dependencies || {})) {
   const declaredRange = pkg.dependencies[name];
+  // Read the manifest off disk rather than require()-ing it. Packages with a
+  // restrictive "exports" map (stripe, for one) refuse
+  // require('pkg/package.json') even when perfectly installed.
   let dep;
+  const manifest = path.join(__dirname, 'node_modules', name, 'package.json');
   try {
-    dep = require(path.join(name, 'package.json'));
+    dep = JSON.parse(fs.readFileSync(manifest, 'utf8'));
   } catch (e) {
-    console.log(`  MISSING  ${name.padEnd(24)} (declared ${declaredRange}) — require() will throw at boot`);
+    console.log(`  MISSING  ${name.padEnd(24)} (declared ${declaredRange}) — not installed; require() would throw at boot`);
     problems++;
     continue;
   }
   const needs = dep.engines && dep.engines.node;
   const needMajor = needs ? major(needs) : null;
-  if (needMajor && needMajor > runningMajor) {
-    console.log(`  BREAKS   ${name.padEnd(24)} ${String(dep.version).padEnd(10)} needs Node ${needs} — this is Node ${runningMajor}`);
+  if (needMajor && needMajor > targetMajor) {
+    console.log(`  BREAKS   ${name.padEnd(24)} ${String(dep.version).padEnd(10)} needs Node ${needs} — production runs Node ${targetMajor}`);
     problems++;
-  } else if (/^\^/.test(declaredRange) && needMajor) {
-    console.log(`  ok       ${name.padEnd(24)} ${String(dep.version).padEnd(10)} needs ${needs} (caret range — may float to a newer Node requirement)`);
+  } else if (/^\^/.test(declaredRange)) {
+    console.log(`  ok       ${name.padEnd(24)} ${String(dep.version).padEnd(10)} needs ${needs || 'any'} (caret "${declaredRange}" can float to a version needing newer Node)`);
     warnings++;
   } else {
     console.log(`  ok       ${name.padEnd(24)} ${String(dep.version).padEnd(10)} needs ${needs || 'any'}`);

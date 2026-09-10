@@ -349,6 +349,8 @@ async function initPg() {
       console.error('FATAL: DATABASE_URL is required in production.');
       process.exit(1);
     }
+    persistence.mode = 'file';
+    persistence.durable = false;
     console.warn('⚠ No DATABASE_URL — dev mode, using file storage (data resets on redeploy!)');
     return;
   }
@@ -397,9 +399,15 @@ async function initPg() {
         UNIQUE (company_id, username)
       )
     `);
-    console.log('✓ Postgres connected');
+    persistence.mode = 'postgres';
+    persistence.durable = true;
+    console.log('✓ Postgres connected — Valley Best data is durable');
   } catch (e) {
     console.error('✗ Postgres connection failed:', e.message);
+    persistence.mode = 'file';
+    persistence.durable = false;
+    persistence.lastError = e.message;
+    persistence.degradedSince = new Date().toISOString();
     if (IS_PROD) {
       console.error('FATAL: cannot start without database in production.');
       process.exit(1);
@@ -491,15 +499,29 @@ async function saveData() {
         "INSERT INTO dispatch_data(key,value) VALUES('store',$1) ON CONFLICT(key) DO UPDATE SET value=$1",
         [j]
       );
+      persistence.lastSaveOk = true;
+      persistence.lastSaveAt = new Date().toISOString();
+      persistence.lastError = '';
+      persistence.degradedSince = '';
       return;
     } catch (e) {
       console.error('PG write error:', e.message);
+      persistence.lastSaveOk = false;
+      persistence.lastError = e.message;
+      if (!persistence.degradedSince) persistence.degradedSince = new Date().toISOString();
       // In prod, never fall back to local disk — the next deploy will wipe it.
       if (IS_PROD) throw e;
     }
   }
   if (!IS_PROD) {
-    try { fs.writeFileSync(DATA_FILE, j); } catch (e) {}
+    try {
+      fs.writeFileSync(DATA_FILE, j);
+      persistence.lastSaveOk = true;
+      persistence.lastSaveAt = new Date().toISOString();
+    } catch (e) {
+      persistence.lastSaveOk = false;
+      persistence.lastError = e.message;
+    }
   }
 }
 
@@ -1051,18 +1073,28 @@ app.get('/healthz', (req, res) => res.json({
     degradedSince: persistence.degradedSince,
   },
   fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
-  time: new Date().toISOString(),
-}));
-
-app.get('/healthz', (req, res) => res.json({
-  ok: true,
-  hasDb: !!process.env.DATABASE_URL,
+  // merged in from the second /healthz the branch merge left behind — Express
+  // only ever ran the first registration, so those fields were being dropped
   pgConnected: !!pg,
   supabaseEnabled,
   signupEnabled: SIGNUP_ENABLED,
   prod: IS_PROD,
   time: new Date().toISOString(),
 }));
+
+// Persistence banner for the dispatcher. If data is not reaching Postgres,
+// the person entering loads is the one who needs to know — not just the log.
+app.get('/api/persistence', reqAuth, (req, res) => {
+  res.json({
+    ...persistence,
+    fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
+    warning: !persistence.durable
+      ? 'Data is NOT in Postgres — it will be lost on the next redeploy. Set DATABASE_URL.'
+      : persistence.lastSaveOk === false
+        ? 'The last save did not reach Postgres. Recent changes may be at risk.'
+        : '',
+  });
+});
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
 
 app.get('/login', (req, res) => {
@@ -4367,22 +4399,10 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // FLEET (TRUCKS) & DRIVERS — real, independent entities
 // ═══════════════════════════════════════════════════════════════════════════
-app.get('/api/fleet', reqMgr, (req, res) => {
-  // Annotate each truck with who is currently running it today
-  const today = todayStr();
-  const busy = new Map();
-  store.loads.forEach(l => {
-    if (l.voided || l.deliveryDate !== today) return;
-    if (l.status === 'completed' || l.approvalStatus === 'approved') return;
-    if (l.truckUnitId) busy.set(l.truckUnitId, { loadId: l.id, driverId: l.truckId, driverName: l.driverName });
-  });
-  res.json({
-    trucks: (store.trucks || []).map(t => ({ ...t, currentAssignment: busy.get(t.id) || null })),
-    drivers: store.drivers || [],
-    truckStatuses: TRUCK_STATUSES,
-    driverStatuses: DRIVER_STATUSES,
-  });
-});
+// NOTE: /api/fleet is registered earlier (the company-scoped version added on
+// the other branch). Express only runs the first match, so the duplicate that
+// the branch merge left here was dead code and has been removed. Live driver
+// and truck availability for Quick Assign comes from /api/today instead.
 
 // ── TODAY BOARD — everything Quick Assign needs in ONE call ─────────────────
 // The dispatcher must never wait on several round trips to assign a load.
