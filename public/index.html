@@ -711,6 +711,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <span>Quick Assign</span>
         <span class="nav-badge" id="today-badge" style="display:none">0</span>
       </button>
+      <button class="nav-item" data-tab="pos" onclick="goTab('pos')" id="nav-pos">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        <span>Purchase Orders</span>
+      </button>
       <button class="nav-item" data-tab="approvals" onclick="goTab('approvals')">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
         <span>Approvals</span>
@@ -770,6 +774,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <!-- QUICK ASSIGN / TODAY -->
       <div class="section" id="sec-today">
         <div id="today-content"></div>
+      </div>
+      <!-- PURCHASE ORDERS -->
+      <div class="section" id="sec-pos">
+        <div id="pos-content"></div>
       </div>
       <!-- APPROVALS -->
       <div class="section" id="sec-approvals">
@@ -1264,6 +1272,7 @@ function goTab(tab) {
 
   if (tab === 'board')    { document.getElementById('sec-board').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch Board'; renderBoard(); }
   if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = "Today's Dispatch"; renderToday(); }
+  if (tab === 'pos')      { document.getElementById('sec-pos').classList.add('active'); document.getElementById('page-title').textContent = 'Purchase Orders'; renderPOsList(); }
   if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
   if (tab === 'history')  { document.getElementById('sec-history').classList.add('active'); document.getElementById('page-title').textContent = 'History'; renderHistory(); }
@@ -2338,7 +2347,8 @@ async function deletePO(poId, loadCount) {
   document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove();
   await loadAll();
   toast(`Deleted PO ${po ? po.poNumber : ''}`, 'success');
-  if (currentTab === 'today') renderToday();
+  if (currentTab === 'pos') renderPOsList();
+  else if (currentTab === 'today') renderToday();
   else renderBoard();
 }
 
@@ -3569,6 +3579,83 @@ async function checkPersistence() {
       <span>${escapeHtml(p.warning)}</span>`;
     document.querySelector('.content')?.prepend(bar);
   } catch (e) { /* ignore */ }
+}
+
+// ── PURCHASE ORDERS ─────────────────────────────────────────────────────────
+// Every PO in one place. This exists because the only way to reach a PO used
+// to be through one of its loads — so a PO whose loads had all been deleted
+// became invisible AND undeletable. Those show up here as "no loads".
+let poFilter = 'all';   // all | orphan | active | completed | locked
+
+function renderPOsList() {
+  const wrap = document.getElementById('pos-content');
+  const rows = (pos || []).map(p => {
+    const mine = (loads || []).filter(l => l.poId === p.id);
+    const approved = mine.filter(l => l.approvalStatus === 'approved').length;
+    const delivered = mine.reduce((s, l) => s + (l.loadsDelivered || 0), 0);
+    const assigned = mine.reduce((s, l) => s + (l.loadsAssigned || 0), 0);
+    return {
+      po: p, loadCount: mine.length, approved, delivered, assigned,
+      orphan: mine.length === 0,
+      locked: approved > 0,
+    };
+  }).sort((a, b) => String(b.po.deliveryDate || '').localeCompare(String(a.po.deliveryDate || '')));
+
+  const counts = {
+    all: rows.length,
+    orphan: rows.filter(r => r.orphan).length,
+    locked: rows.filter(r => r.locked).length,
+    open: rows.filter(r => !r.locked && !r.orphan).length,
+  };
+  let shown = rows;
+  if (poFilter === 'orphan') shown = rows.filter(r => r.orphan);
+  if (poFilter === 'locked') shown = rows.filter(r => r.locked);
+  if (poFilter === 'open')   shown = rows.filter(r => !r.locked && !r.orphan);
+
+  const chip = (key, label, n) =>
+    `<button class="view-btn ${poFilter === key ? 'active' : ''}" onclick="poFilter='${key}';renderPOsList()">${label} (${n})</button>`;
+
+  wrap.innerHTML = `
+    <div class="qa-wrap">
+      <div style="display:flex;gap:6px;background:var(--bg2);padding:4px;border-radius:20px;flex-wrap:wrap;margin-bottom:14px">
+        ${chip('all', 'All', counts.all)}
+        ${chip('open', 'Open', counts.open)}
+        ${chip('locked', 'Has approved loads', counts.locked)}
+        ${chip('orphan', 'No loads', counts.orphan)}
+      </div>
+      ${counts.orphan && poFilter !== 'orphan' ? `<div style="background:#fff8ec;border:1px solid #fcd34d;border-radius:10px;padding:11px 14px;font-size:13px;margin-bottom:12px">
+        <strong>${counts.orphan} PO${counts.orphan === 1 ? ' has' : 's have'} no loads.</strong>
+        Usually leftovers from testing — they were unreachable before this screen existed. Safe to delete.
+      </div>` : ''}
+      ${shown.length ? shown.map(poCard).join('') :
+        `<div class="empty-state"><h3>Nothing here</h3><p>No purchase orders match this filter.</p></div>`}
+    </div>`;
+}
+
+function poCard(r) {
+  const p = r.po;
+  const site = [p.address, p.city].filter(Boolean).join(', ');
+  return `<div class="qa-card ${r.orphan ? 'unassigned' : r.locked ? 'completed' : 'assigned'}">
+    <div class="qa-top">
+      <div>
+        <div class="qa-cust">${escapeHtml(p.customer || '(no customer)')}</div>
+        <div class="qa-sub">${escapeHtml(p.poNumber || '—')}${p.jobCode ? ' · ' + escapeHtml(p.jobCode) : ''}${site ? ' · ' + escapeHtml(site) : ''}</div>
+      </div>
+      <span class="qa-chip ${r.orphan ? 'unassigned' : r.locked ? 'completed' : 'assigned'}">
+        ${r.orphan ? 'No loads' : r.locked ? 'Has approved' : 'Open'}</span>
+    </div>
+    <div class="qa-facts">
+      <div class="qa-fact">Delivery: <b>${escapeHtml(p.deliveryDate || '—')}</b></div>
+      <div class="qa-fact">Loads: <b>${r.loadCount}</b>${r.assigned ? ` · ${r.delivered}/${r.assigned} delivered` : ''}</div>
+      ${r.approved ? `<div class="qa-fact"><b>${r.approved}</b> approved</div>` : ''}
+      ${p.createdAt ? `<div class="qa-fact">Created ${new Date(p.createdAt).toLocaleDateString()}</div>` : ''}
+    </div>
+    <div class="qa-actions">
+      ${r.locked
+        ? `<div class="qa-sub" style="flex:1">Cannot be deleted — has approved loads. Void those instead.</div>`
+        : `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5" onclick="deletePO('${p.id}', ${r.loadCount})">Delete PO</button>`}
+    </div>
+  </div>`;
 }
 
 // ── QUICK ASSIGN / TODAY'S DISPATCH ─────────────────────────────────────────
