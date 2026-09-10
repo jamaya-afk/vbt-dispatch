@@ -185,7 +185,57 @@ chk "unknown truck -> 400" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'C
 chk "garbage JSON does not crash" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$CL/assign -d 'not json')" "400"
 chk "server still alive after bad requests" "$(curl -s -o /dev/null -w '%{http_code}' $B/healthz)" "200"
 
-echo "── 14. Fleet is independent of drivers ──"
+echo "── 14. Customer notifications: silent by default, never blocking ──"
+N=$(curl -s -b $M $B/api/notifications/status | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print(d['mailer']['configured']); print(d['mailer']['dryRun']); print(d['posEnabled'])")
+chk "gmail unconfigured in test env" "$(echo "$N"|sed -n 1p)" "False"
+chk "dry run is the default"         "$(echo "$N"|sed -n 2p)" "True"
+chk "no PO has updates on"           "$(echo "$N"|sed -n 3p)" "0"
+
+# Regression: a PO created after boot had no notification settings, and the
+# resulting async throw left the request HANGING instead of erroring.
+chk "settings on a PO created after boot" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -b $M $B/api/pos/$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;print([p['id'] for p in json.load(sys.stdin)['pos'] if p['customer']=='Cost Check'][0])")/notifications)" "200"
+chk "unknown PO answers, does not hang" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -b $M $B/api/pos/NOPE/notifications)" "404"
+
+PO1=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;print([p['id'] for p in json.load(sys.stdin)['pos'] if p['customer']=='ABC Construction'][0])")
+# Arming with no contact must be refused — otherwise the dispatcher believes
+# the customer is informed and nothing is going anywhere.
+chk "cannot arm with no contact -> 400" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X PUT $B/api/pos/$PO1/notifications -d '{"enabled":true}')" "400"
+chk "invalid email rejected -> 400"     "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X PUT $B/api/pos/$PO1/notifications -d '{"contacts":[{"email":"nope"}]}')" "400"
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/pos/$PO1/notifications \
+  -d '{"contacts":[{"name":"John","email":"john@abcconstruction.com"}],"events":{"delivered":true,"loaded":true},"enabled":true}' -o /dev/null
+chk "updates now on for that PO" "$(curl -s -b $M $B/api/notifications/status | python3 -c "import json,sys;print(json.load(sys.stdin)['posEnabled'])")" "1"
+
+# A driver step must still succeed with mail unconfigured, and be logged
+NPO=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"customer":"ABC Construction","deliveryDate":"'"$(date +%F)"'","city":"Fresno"},
+ "splits":[{"truckId":"leonardo","material":"Gravel","loadsAssigned":1,"vendorId":"vbt"}]}' | python3 -c "import json,sys;print(json.load(sys.stdin)['po']['id'])")
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/pos/$NPO/notifications \
+  -d '{"contacts":[{"email":"john@abcconstruction.com"}],"events":{"loaded":true,"delivered":true},"enabled":true}' -o /dev/null
+NL=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;print([l['id'] for l in json.load(sys.stdin)['loads'] if l['truckId']=='leonardo'][0])")
+L=$(mktemp); curl -s -c $L -X POST -d "username=leonardo&password=leo123" $B/login -o /dev/null
+curl -s -b $L -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"start-trip"}' -o /dev/null
+curl -s -b $L -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"arrived-pickup","yardId":"vbt"}' -o /dev/null
+chk "driver step succeeds with mail unconfigured" "$(curl -s -o /dev/null -w '%{http_code}' -b $L -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"loaded"}')" "200"
+sleep 1
+# Two milestones passed: arrivedPickup (not selected -> skipped) and
+# loaded (selected, but Gmail unconfigured -> failed). Nothing may report 'sent'.
+NLOG=$(curl -s -b $M "$B/api/notifications/log?loadId=$NL" | python3 -c "
+import json,sys;d=json.load(sys.stdin)['items']
+st={e['event']:e['status'] for e in d}
+print(len(d)); print(st.get('loaded')); print(st.get('arrivedPickup'))
+print('yes' if any(e['status']=='sent' for e in d) else 'no')")
+chk "both milestones recorded"          "$(echo "$NLOG"|sed -n 1p)" "2"
+chk "selected event tried and failed"   "$(echo "$NLOG"|sed -n 2p)" "failed"
+chk "unselected event skipped"          "$(echo "$NLOG"|sed -n 3p)" "skipped"
+chk "nothing falsely reported as sent"  "$(echo "$NLOG"|sed -n 4p)" "no"
+chk "server alive after notify"   "$(curl -s -o /dev/null -w '%{http_code}' $B/healthz)" "200"
+
+echo "── 15. Fleet is independent of drivers ──"
 F=$(curl -s -b $M $B/api/fleet | python3 -c "
 import json,sys;d=json.load(sys.stdin)
 print(len(d['trucks'])); print(len(d['drivers']))")

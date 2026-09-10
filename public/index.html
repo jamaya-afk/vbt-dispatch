@@ -3540,11 +3540,13 @@ function qaCard(l) {
       <div class="qa-fact${l.driverName ? '' : ' missing'}">Driver: <b>${escapeHtml(l.driverName || 'NONE')}</b></div>
       <div class="qa-fact${l.truckNum ? '' : ' missing'}">Truck: <b>${escapeHtml(l.truckNum || 'NONE')}</b></div>
     </div>
-    ${l.locked ? `<div class="qa-sub" style="margin-top:9px">Approved and locked — assignment can no longer change.</div>` : `
     <div class="qa-actions">
-      <button class="qa-btn" onclick="qaOpen('${l.id}')">${l.bucket === 'unassigned' ? 'Assign' : 'Reassign'}</button>
+      ${l.locked ? '' : `<button class="qa-btn" onclick="qaOpen('${l.id}')">${l.bucket === 'unassigned' ? 'Assign' : 'Reassign'}</button>`}
       <button class="qa-btn ghost" onclick="openLoadDetail('${l.id}')">Details</button>
-    </div>`}
+      <button class="qa-btn ghost" style="flex:0 0 auto;padding:0 14px" title="Customer updates: ${l.notifyOn ? 'ON' : 'OFF'}"
+        onclick="openNotifySheet('${l.poId}')">${l.notifyOn ? '&#128276; On' : '&#128276; Off'}</button>
+    </div>
+    ${l.locked ? `<div class="qa-sub" style="margin-top:8px">Approved and locked — assignment can no longer change.</div>` : ''}
   </div>`;
 }
 
@@ -3626,6 +3628,118 @@ async function qaConfirm() {
   toast(`${who} → ${truck} → ${r.pickup.name}`, 'success');
   await renderToday();
   await loadAll();
+}
+
+// ── CUSTOMER NOTIFICATIONS (per PO) ─────────────────────────────────────────
+const NOTIFY_LABELS = {
+  driverAssigned: 'Driver assigned',
+  arrivedPickup:  'Arrived at pickup yard',
+  loaded:         'Loaded / leaving yard',
+  arrivedJobsite: 'Arrived at jobsite',
+  delivered:      'Delivered',
+  podReady:       'Ticket / POD ready',
+  delay:          'Delay or exception',
+};
+let notifyState = null;   // { poId, notifications, mailer }
+
+async function openNotifySheet(poId) {
+  const r = await api('GET', `/api/pos/${poId}/notifications`);
+  if (!r.ok) return toast(r.error || 'Could not load settings', 'error');
+  notifyState = { poId, n: r.notifications, mailer: r.mailer, suggested: r.suggestedEmail };
+  if (!notifyState.n.contacts.length && r.suggestedEmail) {
+    notifyState.suggestOffer = true;
+  }
+  paintNotifySheet();
+}
+
+function paintNotifySheet() {
+  const st = notifyState; if (!st) return;
+  let el = document.getElementById('qa-sheet-bg');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'qa-sheet-bg'; el.className = 'qa-sheet-bg';
+    el.onclick = (e) => { if (e.target === el) qaClose(); };
+    document.body.appendChild(el);
+  }
+  const n = st.n;
+  const m = st.mailer || {};
+  const warn = !m.configured
+    ? 'Gmail is not configured yet — set GMAIL_USER and GMAIL_APP_PASSWORD. Nothing can send.'
+    : !m.globallyEnabled ? 'Notifications are globally off (NOTIFY_ENABLED is not true). Nothing will send.'
+    : m.dryRun ? 'Dry run is on — messages are logged but NOT delivered to customers.' : '';
+
+  el.innerHTML = `<div class="qa-sheet">
+    <div class="qa-sheet-head">
+      <div style="font-size:16px;font-weight:800">Customer updates</div>
+      <div class="qa-sub">Automatic delivery emails for this PO</div>
+    </div>
+    <div class="qa-sheet-body">
+      ${warn ? `<div style="background:#fff8ec;border:1px solid #fcd34d;border-radius:10px;padding:10px 12px;font-size:12.5px;margin-bottom:14px">${escapeHtml(warn)}</div>` : ''}
+
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1.5px solid ${n.enabled ? 'var(--G,#0a8a3a)' : 'var(--bdr2)'};border-radius:12px;background:${n.enabled ? '#e3f6e9' : 'var(--bg2)'}">
+        <div>
+          <div style="font-weight:750;font-size:14px">Customer updates: ${n.enabled ? 'ON' : 'OFF'}</div>
+          <div style="font-size:12px;color:var(--txt2);margin-top:2px">${n.enabled ? 'Emails send on the milestones ticked below.' : 'No emails will be sent for this PO.'}</div>
+        </div>
+        <button class="qa-btn" style="flex:0 0 auto;padding:0 18px;${n.enabled ? 'background:transparent;color:var(--B)' : ''}"
+          onclick="notifyToggle(${!n.enabled})">${n.enabled ? 'Turn off' : 'Turn on'}</button>
+      </div>
+
+      <div class="qa-step">Customer email</div>
+      ${n.contacts.map((c, i) => `
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:7px">
+          <div style="flex:1;min-width:0;padding:10px 12px;background:var(--bg2);border:1px solid var(--bdr);border-radius:9px;font-size:13px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(c.email)}${c.name ? ` <span style="color:var(--txt3)">(${escapeHtml(c.name)})</span>` : ''}</div>
+          <button class="qa-btn ghost" style="flex:0 0 auto;padding:0 14px" onclick="notifyRemoveContact(${i})">Remove</button>
+        </div>`).join('')}
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <input id="nt-email" class="bill-filter" style="flex:1;min-height:44px" placeholder="name@company.com"
+          value="${st.suggestOffer ? escapeHtml(st.suggested) : ''}" autocapitalize="none">
+        <button class="qa-btn" style="flex:0 0 auto;padding:0 18px" onclick="notifyAddContact()">Add</button>
+      </div>
+      ${st.suggestOffer ? `<div style="font-size:11.5px;color:var(--txt3);margin-top:5px">Suggested from the customer record — check it before adding.</div>` : ''}
+
+      <div class="qa-step">Notify when</div>
+      ${Object.keys(NOTIFY_LABELS).map(k => `
+        <label style="display:flex;align-items:center;gap:11px;padding:11px 12px;border:1px solid var(--bdr);border-radius:10px;margin-bottom:6px;cursor:pointer;background:var(--bg)">
+          <input type="checkbox" style="width:22px;height:22px;flex-shrink:0" ${n.events[k] ? 'checked' : ''} onchange="notifySetEvent('${k}', this.checked)">
+          <span style="font-size:13.5px;font-weight:600">${NOTIFY_LABELS[k]}</span>
+        </label>`).join('')}
+    </div>
+    <div class="qa-sheet-foot">
+      <button class="qa-btn ghost" onclick="qaClose()">Close</button>
+      <button class="qa-btn" onclick="notifySave()">Save</button>
+    </div>
+  </div>`;
+}
+
+function notifySetEvent(k, v) { notifyState.n.events[k] = v; }
+function notifyToggle(v) {
+  if (v && !notifyState.n.contacts.length) return toast('Add a customer email first', 'error');
+  notifyState.n.enabled = v; paintNotifySheet();
+}
+function notifyAddContact() {
+  const inp = document.getElementById('nt-email');
+  const email = (inp.value || '').trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast('Enter a valid email address', 'error');
+  if (notifyState.n.contacts.some(c => c.email.toLowerCase() === email.toLowerCase())) return toast('Already added', 'error');
+  notifyState.n.contacts.push({ name: '', email });
+  notifyState.suggestOffer = false;
+  paintNotifySheet();
+}
+function notifyRemoveContact(i) {
+  notifyState.n.contacts.splice(i, 1);
+  if (!notifyState.n.contacts.length) notifyState.n.enabled = false;
+  paintNotifySheet();
+}
+async function notifySave() {
+  const st = notifyState;
+  const r = await api('PUT', `/api/pos/${st.poId}/notifications`, {
+    enabled: st.n.enabled, contacts: st.n.contacts, events: st.n.events,
+  });
+  if (!r.ok) return toast(r.error || 'Save failed', 'error');
+  qaClose();
+  toast(r.notifications.enabled ? 'Customer updates ON' : 'Customer updates OFF', 'success');
+  if (currentTab === 'today') renderToday();
 }
 
 // ── LIVE REFRESH ────────────────────────────────────────────────────────────
@@ -3723,6 +3837,8 @@ async function renderQuickBooks() {
         </div>
       </div>
 
+      <div id="notify-card" style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;padding:18px;box-shadow:var(--shadow)"></div>
+
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;padding:18px;box-shadow:var(--shadow)">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-size:15px;font-weight:700">Sync Log</div>
@@ -3740,6 +3856,95 @@ async function renderQuickBooks() {
     </div>
   `;
   renderQbLog();
+  renderNotifyCard();
+}
+
+// ── EMAIL NOTIFICATION SETTINGS PANEL ───────────────────────────────────────
+async function renderNotifyCard() {
+  const el = document.getElementById('notify-card');
+  if (!el) return;
+  const r = await api('GET', '/api/notifications/status');
+  if (!r.ok) { el.innerHTML = `<div style="color:var(--R)">${r.error || 'Failed to load'}</div>`; return; }
+  const m = r.mailer;
+  const pill = (txt, bg, fg) => `<span style="background:${bg};color:${fg};padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">${txt}</span>`;
+  const state = !m.configured ? pill('Not configured', '#fee4e2', '#b42318')
+    : !m.globallyEnabled ? pill('Disabled', '#f4f4f5', '#71717a')
+    : m.dryRun ? pill('Dry run', '#fff8ec', '#b45309')
+    : pill('Live', '#e3f6e9', '#0a8a3a');
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:15px;font-weight:700">Customer Email Notifications</div>
+        <div style="font-size:13px;color:var(--txt2);margin-top:3px">Gmail${m.user ? ' · ' + escapeHtml(m.user) : ''}</div>
+      </div>
+      <div>${state}</div>
+    </div>
+    <div style="margin-top:10px;padding:10px 12px;background:var(--bg2);border:1px solid var(--bdr);border-radius:9px;font-size:12.5px">
+      ${escapeHtml(m.effect)}
+    </div>
+    <div style="margin-top:10px;font-size:12.5px;color:var(--txt2)">
+      ${r.posEnabled} of ${r.totalPos} PO${r.totalPos === 1 ? '' : 's'} have customer updates turned on.
+      Updates are off for a PO until a dispatcher enables them.
+    </div>
+    ${!m.configured ? `
+      <div style="margin-top:12px;padding:12px 14px;background:#fff8ec;border:1px solid #fcd34d;border-radius:10px;font-size:12.5px;line-height:1.6">
+        <strong>To enable Gmail:</strong> turn on 2-Step Verification on the Google account, then
+        Google Account → Security → App passwords → generate one. Set in Railway:
+        <pre style="margin:8px 0 0;background:none;border:none;padding:0;font-size:12px">GMAIL_USER=dispatch@yourdomain.com
+GMAIL_APP_PASSWORD=the 16-character app password
+NOTIFY_ENABLED=true
+NOTIFY_DRY_RUN=true    # flip to false once a test email looks right</pre>
+      </div>` : `
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="nt-test-to" class="bill-filter" style="flex:1;min-width:200px;min-height:40px" placeholder="Send a test to…" autocapitalize="none">
+        <button class="btn ghost" onclick="notifyVerify()">Check credentials</button>
+        <button class="btn primary" onclick="notifyTest()">Send test</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--txt3);margin-top:6px">A test always sends for real, even in dry run — that is how you confirm delivery works.</div>`}
+    <div style="margin-top:14px">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-bottom:7px">Recent notification activity</div>
+      <div id="notify-log"></div>
+    </div>`;
+  renderNotifyLog();
+}
+
+async function renderNotifyLog() {
+  const el = document.getElementById('notify-log'); if (!el) return;
+  const r = await api('GET', '/api/notifications/log?limit=40');
+  const items = r.items || [];
+  if (!items.length) { el.innerHTML = `<div style="font-size:12.5px;color:var(--txt3)">No notification activity yet.</div>`; return; }
+  const badge = (s) => ({
+    sent: '<span style="color:#0a8a3a;font-weight:700">Sent</span>',
+    'dry-run': '<span style="color:#b45309;font-weight:700">Dry run</span>',
+    failed: '<span style="color:#b42318;font-weight:700">Failed</span>',
+    skipped: '<span style="color:#8a93a6">Skipped</span>',
+  }[s] || s);
+  el.innerHTML = `<div class="table-scroll"><table class="bill-table" style="min-width:640px">
+    <thead><tr><th>When</th><th>Event</th><th>Customer</th><th>To</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>${items.map(e => `<tr>
+      <td style="font-size:11px;color:var(--txt2);white-space:nowrap">${new Date(e.at).toLocaleString()}</td>
+      <td style="font-size:12px">${escapeHtml(NOTIFY_LABELS[e.event] || e.event)}</td>
+      <td style="font-size:12px">${escapeHtml(e.customer || '')}</td>
+      <td style="font-size:11.5px">${escapeHtml(e.to || '—')}</td>
+      <td style="font-size:12px">${badge(e.status)}</td>
+      <td style="font-size:11.5px;color:var(--txt2);max-width:260px">${escapeHtml(e.reason || '')}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+async function notifyVerify() {
+  const r = await api('POST', '/api/notifications/verify', {});
+  if (r.ok) toast('Gmail credentials are valid', 'success');
+  else toast(r.error || 'Verification failed', 'error');
+}
+
+async function notifyTest() {
+  const to = (document.getElementById('nt-test-to').value || '').trim();
+  if (!to) return toast('Enter an address to send the test to', 'error');
+  if (!confirm(`Send a real test email to ${to}?`)) return;
+  const r = await api('POST', '/api/notifications/test', { to });
+  if (r.ok) { toast('Test sent — check the inbox', 'success'); renderNotifyLog(); }
+  else toast(r.error || 'Send failed', 'error');
 }
 
 async function renderQbLog() {

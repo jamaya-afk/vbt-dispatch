@@ -5,10 +5,29 @@ const session = require('express-session');
 const path = require('path');
 const fs = require('fs');
 const qb = require('./qb');
+const mailer = require('./mailer');
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Express 4 does not forward errors thrown inside ASYNC handlers. When one
+// throws, the request is simply never answered — the dispatcher's phone spins
+// forever with no error, which is worse than a clean failure. Wrap every route
+// handler so a rejected promise always becomes a response.
+['get', 'post', 'put', 'delete', 'patch'].forEach(method => {
+  const original = app[method].bind(app);
+  app[method] = (path, ...handlers) => original(path, ...handlers.map(h => {
+    if (typeof h !== 'function' || h.length >= 4) return h;  // leave error middleware alone
+    return function wrapped(req, res, next) {
+      try {
+        const out = h(req, res, next);
+        if (out && typeof out.catch === 'function') out.catch(next);
+        return out;
+      } catch (e) { next(e); }
+    };
+  }));
+});
 
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
 if (!process.env.SESSION_SECRET) {
@@ -517,6 +536,19 @@ function normalizeStore() {
   }
   store.loads.forEach(l => { if (!('truckUnitId' in l)) l.truckUnitId = null; });
 
+  // ── CUSTOMER NOTIFICATIONS ─────────────────────────────────────────────────
+  // Off for every PO unless a dispatcher turns it on. Existing POs are
+  // backfilled to OFF so enabling the feature never emails a past customer.
+  if (!Array.isArray(store.notificationLog)) store.notificationLog = [];
+  store.pos.forEach(p => {
+    if (!p.notifications || typeof p.notifications !== 'object') {
+      p.notifications = { enabled: false, contacts: [], events: { ...DEFAULT_NOTIFY_EVENTS } };
+    }
+    if (!Array.isArray(p.notifications.contacts)) p.notifications.contacts = [];
+    p.notifications.events = { ...DEFAULT_NOTIFY_EVENTS, ...(p.notifications.events || {}) };
+    if (p.notifications.enabled === undefined) p.notifications.enabled = false;
+  });
+
   // ── UNIT CONFIG (P4) ───────────────────────────────────────────────────────
   // Quantity of each unit in one load. Seeded only with what Valley Best has
   // actually stated (1 load = 25 tons). Everything else stays unset until
@@ -659,6 +691,109 @@ function resolveCustomerRate(customer, material) {
 
 // Resolve vendor rate for a vendor + material.
 // VBT Yard returns 0 (internal inventory).
+// ── CUSTOMER NOTIFICATIONS ───────────────────────────────────────────────────
+// Which milestones a customer can be told about. All default OFF: a dispatcher
+// opts a PO in, then picks the events. Nothing is ever sent by default.
+const DEFAULT_NOTIFY_EVENTS = {
+  driverAssigned: false,
+  arrivedPickup:  false,
+  loaded:         false,
+  arrivedJobsite: false,
+  delivered:      false,
+  podReady:       false,
+  delay:          false,
+};
+
+// Guarantees a PO has notification settings. Belt and braces: normalizeStore
+// backfills at boot and PO creation sets them, but any PO reaching this code
+// without them would otherwise throw inside an async handler.
+function ensureNotifyCfg(po) {
+  if (!po) return null;
+  if (!po.notifications || typeof po.notifications !== 'object') {
+    po.notifications = { enabled: false, contacts: [], events: { ...DEFAULT_NOTIFY_EVENTS } };
+  }
+  if (!Array.isArray(po.notifications.contacts)) po.notifications.contacts = [];
+  po.notifications.events = { ...DEFAULT_NOTIFY_EVENTS, ...(po.notifications.events || {}) };
+  return po.notifications;
+}
+
+function logNotification(entry) {
+  try {
+    if (!Array.isArray(store.notificationLog)) store.notificationLog = [];
+    store.notificationLog.push({
+      id: 'NTF-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+      at: new Date().toISOString(),
+      event: entry.event,
+      loadId: entry.loadId || '',
+      poId: entry.poId || '',
+      poNumber: entry.poNumber || '',
+      customer: entry.customer || '',
+      to: entry.to || '',
+      subject: entry.subject || '',
+      status: entry.status,              // sent | dry-run | failed | skipped
+      reason: entry.reason || '',
+      messageId: entry.messageId || '',
+      triggeredBy: entry.triggeredBy || '',
+    });
+    if (store.notificationLog.length > 5000) store.notificationLog = store.notificationLog.slice(-5000);
+  } catch (e) {
+    console.error('[logNotification] failed:', e.message);
+  }
+}
+
+// Fire a customer update for a load milestone.
+//
+// Deliberately fire-and-forget: a slow or failing mail server must never
+// delay a driver tapping "Loaded" in a yard with one bar of signal. The
+// result is recorded in the notification log either way.
+function notifyLoadEvent(load, po, eventKey, opts = {}) {
+  try {
+    if (!po || !load) return;
+    const cfg = ensureNotifyCfg(po);
+    const base = {
+      event: eventKey, loadId: load.id, poId: po.id,
+      poNumber: po.poNumber, customer: po.customer, triggeredBy: opts.user || '',
+    };
+    if (!cfg || !cfg.enabled)          return logNotification({ ...base, status: 'skipped', reason: 'notifications off for this PO' });
+    if (!cfg.events?.[eventKey])       return logNotification({ ...base, status: 'skipped', reason: `event "${eventKey}" not selected` });
+    const recipients = (cfg.contacts || []).filter(c => c && c.email).map(c => c.email);
+    if (!recipients.length)            return logNotification({ ...base, status: 'skipped', reason: 'no contact email on this PO' });
+
+    const truck = getTruckForLoad(load);
+    const pickup = resolvePickupYard(load, po, opts.trip);
+    const { subject, text, html } = mailer.buildMessage(eventKey, {
+      customer: po.customer,
+      jobName: po.job || po.customer,
+      address: po.address, city: po.city,
+      material: load.material,
+      loadNum: opts.loadNum || (load.loadsDelivered || 0) + 1,
+      totalLoads: load.loadsAssigned,
+      truckNum: truck ? truck.truckNum : '',
+      yardName: pickup.name,
+      poNumber: po.poNumber,
+      when: new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }),
+      note: opts.note || '',
+    });
+
+    for (const to of recipients) {
+      mailer.send({ to, subject, text, html })
+        .then(r => {
+          logNotification({
+            ...base, to, subject,
+            status: r.sent ? 'sent' : r.dryRun ? 'dry-run' : 'failed',
+            reason: r.error || '', messageId: r.messageId || '',
+          });
+          return saveData();
+        })
+        .catch(e => {
+          logNotification({ ...base, to, subject, status: 'failed', reason: e.message });
+        });
+    }
+  } catch (e) {
+    console.error('[notifyLoadEvent] failed:', e.message);
+  }
+}
+
 // ── PICKUP YARD — SINGLE SOURCE OF TRUTH ─────────────────────────────────────
 // The yard the driver is sent to must always come from the load assignment,
 // never from a free-text PO label. Previously the driver was shown
@@ -1149,6 +1284,8 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     notes:           po.notes || '',
     status:          po.deliveryDate > todayStr() ? 'scheduled' : 'active',
     materials:       [],
+    // Customer updates start OFF on every new PO. A dispatcher opts in.
+    notifications:   { enabled: false, contacts: [], events: { ...DEFAULT_NOTIFY_EVENTS } },
     createdAt:       new Date().toISOString(),
   };
 
@@ -1494,12 +1631,16 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
         trip.actualYardName = yard.name;
       }
     }
+    // Fired after the yard is stamped so the customer is told the correct one
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'arrivedPickup', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'loaded') {
     if (!trip.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
     stampBoth('loadedAt');
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'loaded', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'arrived-jobsite') {
     if (!trip.timestamps?.loadedAt) return res.status(400).json({ error: 'Must mark loaded / leaving yard first' });
     stampBoth('arrivedJobsite');
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'arrivedJobsite', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'trip-complete') {
     // Ends the current trip. Increments loadsDelivered. Does NOT submit for
     // approval — that's the `delivered` action below, which fires only after
@@ -1508,6 +1649,7 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     if (trip.timestamps?.completed)        return res.status(400).json({ error: 'Trip already complete' });
     stampBoth('completed');
     l.loadsDelivered = (l.loadsDelivered || 0) + 1;
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'delivered', { user: u.username, trip, loadNum: l.loadsDelivered });
     // If that was the LAST trip, also stamp the load-level "completed" so the
     // existing board/status code recognizes the load as ready-to-submit.
     if (l.loadsDelivered >= l.loadsAssigned) {
@@ -3694,6 +3836,8 @@ app.get('/api/today', reqMgr, (req, res) => {
     return {
       id: l.id,
       bucket: bucketOf(l),
+      poId: l.poId,
+      notifyOn: !!po.notifications?.enabled,
       poNumber: po.poNumber || '', customer: po.customer || '',
       jobName: po.job || po.customer || '', jobCode: po.jobCode || '',
       address: po.address || '', city: po.city || '',
@@ -3879,6 +4023,11 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   }
 
   logAction(req.session.user, 'quick-assigned-load', l.id, changes);
+  // Tell the customer only when a driver was actually put on the load —
+  // not when the truck or yard alone changed.
+  if (changes.driver && l.truckId) {
+    notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'driverAssigned', { user: req.session.user.username });
+  }
   await saveData();
   const po = store.pos.find(p => p.id === l.poId) || {};
   res.json({ success: true, load: l, pickup: resolvePickupYard(l, po), truck: getTruckForLoad(l) });
@@ -3965,6 +4114,110 @@ app.put('/api/costing/rates', reqMgr, async (req, res) => {
   logAction(req.session.user, 'updated-cost-rates', '', { before, after: { ...store.costRates } });
   await saveData();
   res.json({ success: true, costRates: store.costRates });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CUSTOMER NOTIFICATIONS — Gmail
+// ═══════════════════════════════════════════════════════════════════════════
+app.get('/api/notifications/status', reqMgr, (req, res) => {
+  res.json({
+    mailer: mailer.status(),
+    eventKeys: Object.keys(DEFAULT_NOTIFY_EVENTS),
+    posEnabled: store.pos.filter(p => p.notifications && p.notifications.enabled).length,
+    totalPos: store.pos.length,
+  });
+});
+
+// Verify the Gmail credentials without emailing a customer.
+app.post('/api/notifications/verify', reqMgr, async (req, res) => {
+  const r = await mailer.verify();
+  res.json(r);
+});
+
+// Send a test message to the signed-in dispatcher (or a given address).
+// `force` bypasses the dry-run flag — this is the one path where that is safe,
+// because the operator chose the recipient themselves.
+app.post('/api/notifications/test', reqMgr, async (req, res) => {
+  const to = (req.body?.to || '').trim();
+  if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return res.status(400).json({ error: 'A valid email address is required' });
+  const { subject, text, html } = mailer.buildMessage('delivered', {
+    customer: 'Test Customer', jobName: 'Test Job', address: '123 Example St', city: 'Fresno',
+    material: '3/4 Rock', loadNum: 1, totalLoads: 1, truckNum: 'Truck #12',
+    yardName: 'VBT Yard', poNumber: 'PO-TEST',
+    when: new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }),
+    note: 'This is a test from Valley Best Dispatch. No real delivery is involved.',
+  });
+  const r = await mailer.send({ to, subject: '[TEST] ' + subject, text, html, force: true });
+  logNotification({ event: 'test', to, subject, status: r.sent ? 'sent' : 'failed', reason: r.error || '', messageId: r.messageId || '', triggeredBy: req.session.user.username });
+  await saveData();
+  res.json(r.sent ? { success: true, messageId: r.messageId } : { error: r.error || 'Send failed' });
+});
+
+// Per-PO settings
+app.get('/api/pos/:id/notifications', reqMgr, (req, res) => {
+  const po = store.pos.find(p => p.id === req.params.id);
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  ensureNotifyCfg(po);
+  const cust = store.customers.find(c => (c.name || '').toLowerCase().trim() === (po.customer || '').toLowerCase().trim());
+  res.json({
+    notifications: po.notifications,
+    eventKeys: Object.keys(DEFAULT_NOTIFY_EVENTS),
+    // Offer the customer-master email as a starting point, don't auto-use it
+    suggestedEmail: cust?.email || '',
+    mailer: mailer.status(),
+  });
+});
+
+app.put('/api/pos/:id/notifications', reqMgr, async (req, res) => {
+  const po = store.pos.find(p => p.id === req.params.id);
+  if (!po) return res.status(404).json({ error: 'PO not found' });
+  ensureNotifyCfg(po);
+  const b = req.body || {};
+
+  if (b.contacts !== undefined) {
+    if (!Array.isArray(b.contacts)) return res.status(400).json({ error: 'contacts must be a list' });
+    const clean = [];
+    for (const c of b.contacts) {
+      const email = String(c?.email || '').trim();
+      if (!email) continue;
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ error: `"${email}" is not a valid email address` });
+      clean.push({ name: String(c.name || '').trim(), email });
+    }
+    po.notifications.contacts = clean;
+  }
+  if (b.events !== undefined) {
+    const ev = { ...po.notifications.events };
+    for (const [k, v] of Object.entries(b.events || {})) {
+      if (k in DEFAULT_NOTIFY_EVENTS) ev[k] = !!v;
+    }
+    po.notifications.events = ev;
+  }
+  if (b.enabled !== undefined) {
+    // Refuse to arm notifications with nowhere to send them — otherwise the
+    // dispatcher believes the customer is being kept informed and they are not.
+    if (b.enabled && !po.notifications.contacts.length) {
+      return res.status(400).json({ error: 'Add at least one customer email before turning updates on' });
+    }
+    po.notifications.enabled = !!b.enabled;
+  }
+
+  logAction(req.session.user, 'updated-po-notifications', po.id, {
+    poNumber: po.poNumber, enabled: po.notifications.enabled,
+    contacts: po.notifications.contacts.length,
+    events: Object.entries(po.notifications.events).filter(([, v]) => v).map(([k]) => k),
+  });
+  await saveData();
+  res.json({ success: true, notifications: po.notifications });
+});
+
+app.get('/api/notifications/log', reqMgr, (req, res) => {
+  const f = req.query || {};
+  let items = [...(store.notificationLog || [])];
+  if (f.poId)   items = items.filter(e => e.poId === f.poId);
+  if (f.loadId) items = items.filter(e => e.loadId === f.loadId);
+  if (f.status) items = items.filter(e => e.status === f.status);
+  items.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  res.json({ items: items.slice(0, Math.min(parseInt(f.limit || '300', 10) || 300, 2000)) });
 });
 
 // ── RESILIENCE ───────────────────────────────────────────────────────────────
