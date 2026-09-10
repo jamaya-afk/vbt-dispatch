@@ -604,6 +604,19 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   body,.shell{height:100dvh}
 }
 
+/* The viewport is viewport-fit=cover, which lets the page run under the iPhone
+   notch and home indicator. Without these insets the topbar hides behind the
+   notch and — worse — the Confirm button in the assignment sheet sits under
+   the home indicator, where a tap swipes the app away instead. */
+@supports(padding:env(safe-area-inset-bottom)){
+  .topbar{padding-top:calc(14px + env(safe-area-inset-top))}
+  .qa-sheet-foot{padding-bottom:calc(12px + env(safe-area-inset-bottom))}
+  .modal-foot{padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  .qa-wrap{padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  .drv-trips{padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+  .sidebar{padding-top:env(safe-area-inset-top)}
+}
+
 /* Tap-to-assign on a load card — the touch-safe path. Drag-and-drop does not
    fire on iOS/Android, so this is the only way to reassign from a phone. */
 .lc-assign-btn{margin-left:auto;flex-shrink:0;padding:7px 14px;min-height:34px;font-size:11.5px;font-weight:700;
@@ -821,7 +834,7 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <div class="field"><label>City</label><input id="po-city" placeholder="Fresno"></div>
       </div>
       <div class="field"><label>Planned Pickup Yard <span style="color:var(--txt3);text-transform:none;letter-spacing:0;font-weight:400">(driver can change at pickup)</span></label>
-        <select id="po-vendor"></select>
+        <select id="po-vendor" onchange="onPoVendorChange(this.value)"></select>
       </div>
       <div class="field"><label>Notes (visible to driver)</label><textarea id="po-notes" placeholder="Optional"></textarea></div>
       <div style="border-top:1px solid var(--bdr);padding-top:10px;margin-top:4px">
@@ -1756,8 +1769,11 @@ function openNewPO() {
       }
     }
 
-    // Build a sane default first split
+    // Build a sane default first split — it inherits the Planned Pickup Yard,
+    // and lastPoVendorId records that default so a later change to the yard
+    // knows which rows were still following it.
     const defaultVendorId = vSel?.value || (activeVendors[0]?.id || 'vbt');
+    lastPoVendorId = defaultVendorId;
     const defaultMats = (typeof getVendorMaterials === 'function') ? getVendorMaterials(defaultVendorId) : [];
     splits = [{
       truckId: (trucks[0]?.id) || '',
@@ -1799,8 +1815,11 @@ function renderSplits() {
           </select>
         </div>
         <div class="field">
-          <label>Vendor</label>
-          <select onchange="onSplitVendorChange(${i}, this.value)">
+          <label>Pickup Yard${s.vendorId && s.vendorId !== poVendorId()
+            ? ' <span style="color:var(--B);text-transform:none;letter-spacing:0;font-weight:700">· custom</span>' : ''}</label>
+          <select onchange="onSplitVendorChange(${i}, this.value)"
+            title="Where this load is picked up. Defaults to the Planned Pickup Yard; change it for a mixed-yard PO."
+            style="${s.vendorId && s.vendorId !== poVendorId() ? 'border-color:var(--B)' : ''}">
             ${(vendors || []).filter(v => v.active).map(v => `<option value="${v.id}" ${s.vendorId === v.id ? 'selected' : ''}>${v.name}</option>`).join('')}
           </select>
         </div>
@@ -1834,6 +1853,42 @@ function onSplitVendorChange(i, vendorId) {
   }
   renderSplits();
   setTimeout(() => refreshAllPricingPreviews(), 50);
+}
+
+// Planned Pickup Yard is the PO-level DEFAULT; each load's Pickup Yard is the
+// actual source used for dispatch and costing.
+//
+// They used to be entirely independent: you could set the yard to Vulcan at
+// the top and every load row silently stayed on VBT Yard, so the driver was
+// sent to the wrong yard and the material was costed against the wrong
+// supplier. Now the rows follow the default — but a row the dispatcher
+// deliberately pointed at another yard is left alone, because one PO can
+// legitimately run VBT -> Vulcan -> VBT.
+let lastPoVendorId = 'vbt';
+
+function onPoVendorChange(vendorId) {
+  const mats = getVendorMaterials(vendorId);
+  let kept = 0;
+  splits.forEach(s => {
+    // Only rows still sitting on the old default follow the change. A row
+    // already overridden to a different yard is a deliberate choice.
+    if (s.vendorId && s.vendorId !== lastPoVendorId) { kept++; return; }
+    s.vendorId = vendorId;
+    // Keep the chosen material if the new yard also sells it; otherwise fall
+    // back to that yard's first priced material so the rate stays real.
+    const same = mats.find(m => m.material === s.material);
+    if (same) { s.unit = same.unit; }
+    else if (mats.length) { s.material = mats[0].material; s.unit = mats[0].unit; }
+  });
+  lastPoVendorId = vendorId;
+  renderSplits();
+  setTimeout(() => refreshAllPricingPreviews(), 50);
+  if (kept) toast(`${kept} load${kept === 1 ? '' : 's'} kept a different pickup yard`, 'success');
+}
+
+// The yard currently selected at PO level — the default for new rows.
+function poVendorId() {
+  return document.getElementById('po-vendor')?.value || 'vbt';
 }
 
 function onSplitMaterialChange(i, sel) {
@@ -1887,14 +1942,16 @@ function refreshAllPricingPreviews() {
 }
 
 function addSplit() {
-  // Default to first vendor that has prices (or first vendor)
-  const firstVendor = (vendors.find(v => v.active && (vendorPrices[v.id]?.length || 0) > 0) || vendors[0] || { id: '' });
-  const firstVendorPrices = vendorPrices[firstVendor.id]?.filter(p => p.active) || [];
+  // Inherit the Planned Pickup Yard. It used to pick "the first vendor that
+  // has prices", which quietly contradicted the yard the dispatcher had just
+  // chosen at the top of the form.
+  const vendorId = poVendorId();
+  const vendorMats = getVendorMaterials(vendorId);
   splits.push({
     truckId: trucks[0]?.id || '',
-    vendorId: firstVendor.id,
-    material: firstVendorPrices[0]?.material || (materials[0] || 'Fill Sand'),
-    unit: firstVendorPrices[0]?.unit || '',
+    vendorId,
+    material: vendorMats[0]?.material || (materials[0] || 'Fill Sand'),
+    unit: vendorMats[0]?.unit || '',
     loadsAssigned: 1
   });
   renderSplits();
@@ -2235,6 +2292,14 @@ function openLoadDetail(id) {
     if (!l.approvalStatus || l.approvalStatus === 'pending') {
       actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
     }
+    // Removing a whole PO (and its loads) had no UI at all, so test POs piled
+    // up with no way to clear them. The server still refuses if any load on
+    // the PO has been approved — those are voided, never deleted.
+    const poLoadCount = loads.filter(x => x.poId === l.poId).length;
+    const poHasApproved = loads.some(x => x.poId === l.poId && x.approvalStatus === 'approved');
+    if (!poHasApproved) {
+      actions += `<button class="btn danger" onclick="deletePO('${l.poId}', ${poLoadCount})">Delete PO ${escapeHtml(po.poNumber || '')}</button>`;
+    }
   }
 
   showInfoModal('Load Details', html, actions);
@@ -2259,6 +2324,22 @@ async function deleteLoad(id) {
   const d = await api('DELETE', '/api/loads/' + id);
   if (d.ok) { document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove(); await loadAll(); renderBoard(); toast('Load deleted', 'success'); }
   else toast(d.error || 'Failed', 'error');
+}
+
+// Delete a PO and every load on it. Use this to clear test POs — the server
+// refuses once any load has been approved, so real delivered work can never
+// be removed this way (it gets voided instead).
+async function deletePO(poId, loadCount) {
+  const po = pos.find(p => p.id === poId);
+  const label = po ? `${po.poNumber} — ${po.customer}` : poId;
+  if (!confirm(`Delete PO ${label} and its ${loadCount} load${loadCount === 1 ? '' : 's'}?\n\nThis cannot be undone.`)) return;
+  const d = await api('DELETE', '/api/pos/' + poId);
+  if (!d.ok) return toast(d.error || 'Failed to delete PO', 'error');
+  document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove();
+  await loadAll();
+  toast(`Deleted PO ${po ? po.poNumber : ''}`, 'success');
+  if (currentTab === 'today') renderToday();
+  else renderBoard();
 }
 
 // ── REASSIGN DRIVER ──────────────────────────────────────────────────────────
@@ -3995,9 +4076,15 @@ async function renderQbLog() {
 function copyRedirectUri() {
   const el = document.getElementById('qb-redirect-uri');
   if (!el) return;
-  navigator.clipboard.writeText(el.textContent.trim()).then(() => toast('Redirect URI copied', 'success')).catch(() => {
-    const r = prompt('Copy this URI and paste it exactly into Intuit Developer → Redirect URIs:', el.textContent.trim());
-  });
+  const uri = el.textContent.trim();
+  const manual = () => prompt('Copy this URI and paste it exactly into Intuit Developer → Redirect URIs:', uri);
+  // navigator.clipboard only exists in a secure context. Over plain HTTP it is
+  // undefined, so calling it throws SYNCHRONOUSLY — a .catch() never fires and
+  // the fallback would never run. Check for it before touching it.
+  if (!navigator.clipboard || !navigator.clipboard.writeText) return manual();
+  navigator.clipboard.writeText(uri)
+    .then(() => toast('Redirect URI copied', 'success'))
+    .catch(manual);
 }
 
 async function qbDisconnect() {

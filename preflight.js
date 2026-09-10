@@ -86,8 +86,13 @@ for (const name of Object.keys(pkg.dependencies || {})) {
   if (needMajor && needMajor > targetMajor) {
     console.log(`  BREAKS   ${name.padEnd(24)} ${String(dep.version).padEnd(10)} needs Node ${needs} — production runs Node ${targetMajor}`);
     problems++;
-  } else if (/^\^/.test(declaredRange)) {
-    console.log(`  ok       ${name.padEnd(24)} ${String(dep.version).padEnd(10)} needs ${needs || 'any'} (caret "${declaredRange}" can float to a version needing newer Node)`);
+  } else if (/^[\^~]/.test(declaredRange)) {
+    // A floating range is a live hazard with no committed lockfile: npm
+    // re-resolves on every Railway build. It is worse when the package
+    // declares no engines at all, because then nothing above can catch a
+    // version that quietly starts requiring a newer Node.
+    const blind = needs ? '' : ' and it declares NO engines, so this check cannot protect it';
+    console.log(`  warn     ${name.padEnd(24)} ${String(dep.version).padEnd(10)} range "${declaredRange}" floats${blind}`);
     warnings++;
   } else {
     console.log(`  ok       ${name.padEnd(24)} ${String(dep.version).padEnd(10)} needs ${needs || 'any'}`);
