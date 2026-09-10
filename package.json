@@ -19,7 +19,7 @@
     "stripe": "16.12.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": "20.x"
   },
   "packageManager": "npm@10.0.0"
 }
