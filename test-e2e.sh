@@ -276,7 +276,31 @@ chk "PO with approved load refuses delete" "$(curl -s -o /dev/null -w '%{http_co
 chk "that PO is still there" "$(curl -s -b $M $B/api/data | python3 -c "
 import json,sys;print(len([p for p in json.load(sys.stdin)['pos'] if p['id']=='$APO']))")" "1"
 
-echo "── 17. Fleet is independent of drivers ──"
+echo "── 17. Drivers and vehicles are not the same list ──"
+# A branch merge left both the driver roster and the vehicle fleet writing into
+# store.trucks, so the PO form's Driver dropdown listed truck ids and every new
+# load came out with a blank driver name. These keep them apart.
+DT=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print(','.join(sorted(t['id'] for t in d['trucks'])))
+print(','.join(sorted(t['id'] for t in d.get('fleet',[]))))
+print('yes' if any(str(t['id']).startswith('truck-') for t in d['trucks']) else 'no')")
+chk "driver dropdown holds people"  "$(echo "$DT"|sed -n 1p)" "beryle,carlos,leonardo,matthew,rigo"
+chk "fleet holds vehicles"          "$(echo "$DT"|sed -n 2p)" "truck-12,truck-14,truck-2,truck-2b,truck-4"
+chk "no vehicle in driver dropdown" "$(echo "$DT"|sed -n 3p)" "no"
+# A PO created with a driver + a truck must record BOTH
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"poNumber":"DRV-CHK","customer":"driver check","deliveryDate":"'"$(date +%F)"'"},
+ "splits":[{"truckId":"carlos","truckUnitId":"truck-14","material":"Fill Sand","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+DC=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+po=[p for p in d['pos'] if p['poNumber']=='DRV-CHK'][0]
+l=[x for x in d['loads'] if x['poId']==po['id']][0]
+print(l.get('driverName') or 'BLANK'); print(l.get('truckUnitId') or 'NONE')")
+chk "new load records the driver name" "$(echo "$DC"|sed -n 1p)" "Carlos"
+chk "new load records the truck"       "$(echo "$DC"|sed -n 2p)" "truck-14"
+
+echo "── 18. Fleet is independent of drivers ──"
 F=$(curl -s -b $M $B/api/fleet | python3 -c "
 import json,sys;d=json.load(sys.stdin)
 print(len(d['trucks'])); print(len(d['drivers']))")

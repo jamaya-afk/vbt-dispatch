@@ -195,6 +195,20 @@ const DEFAULT_TRUCKS = [
 const TRUCK_STATUSES  = ['available', 'in-service', 'maintenance', 'out-of-service'];
 const DRIVER_STATUSES = ['available', 'working', 'off'];
 
+// The DRIVER roster in the legacy `{ id, label, truckNum }` shape the UI's
+// Driver dropdown still expects. Kept separate from store.trucks, which is the
+// vehicle fleet — conflating the two is what put truck ids in the driver
+// picker and left driverName blank on every new load.
+function driverRoster() {
+  const fleet = store.trucks || [];
+  const src = (store.drivers || []).filter(d => d.active !== false);
+  if (!src.length) return TRUCKS.map(t => ({ ...t, active: true }));
+  return src.map(d => {
+    const t = fleet.find(x => x.id === d.defaultTruckId);
+    return { id: d.id, label: d.name || d.id, truckNum: t ? t.truckNum : '', active: true };
+  });
+}
+
 // The truck a load is running on. Falls back to the driver's historical truck
 // so loads created before the fleet existed still show the right vehicle.
 function getTruckForLoad(l) {
@@ -620,15 +634,38 @@ function normalizeStore() {
   if (!store.nextPoNum)  store.nextPoNum = 1001;
   if (!store.nextLoadId) store.nextLoadId = 1;
 
-  // Trucks: seeded from the legacy TRUCKS constant on first boot, then
-  // edited via the Fleet admin UI. Each truck's id is also the driver's
-  // username for backward compatibility with existing loads.
-  if (!Array.isArray(store.trucks) || store.trucks.length === 0) {
-    store.trucks = JSON.parse(JSON.stringify(TRUCKS));
+  // MIGRATION — store.trucks ended up holding two different kinds of record.
+  // One branch wrote the DRIVER roster into it ({id:'beryle', label:'Beryle'})
+  // and another wrote the VEHICLE fleet ({id:'truck-2', truckNum:'Truck #2'}).
+  // Both seeds could run, leaving people and vehicles mixed in one array —
+  // which is why the PO form's Driver dropdown was listing truck ids and every
+  // new load came out with a blank driver name.
+  //
+  // Split them: store.trucks keeps vehicles, store.drivers keeps people.
+  // Nothing is discarded — a driver entry found here is folded into
+  // store.drivers if it isn't already there.
+  if (Array.isArray(store.trucks)) {
+    const isDriverRow = (t) => t && !String(t.id || '').startsWith('truck-') && USERS[t.id];
+    const strays = store.trucks.filter(isDriverRow);
+    if (strays.length) {
+      strays.forEach(s => {
+        const existing = store.drivers.find(d => d.id === s.id);
+        if (existing) {
+          if (!existing.name && s.label) existing.name = s.label;
+        } else {
+          const veh = DEFAULT_TRUCKS.find(t => t.defaultDriverId === s.id);
+          store.drivers.push({
+            id: s.id, name: s.label || s.id, login: s.id, phone: '',
+            status: 'available', defaultTruckId: veh ? veh.id : null,
+            active: s.active !== false, notes: '',
+          });
+        }
+      });
+      store.trucks = store.trucks.filter(t => !isDriverRow(t));
+      console.log(`[normalize] Split ${strays.length} driver record(s) out of the vehicle fleet`);
+    }
   }
-  store.trucks.forEach(t => {
-    if (t.active === undefined) t.active = true;
-  });
+  store.trucks.forEach(t => { if (t.active === undefined) t.active = true; });
 
   store.loads.forEach(l => {
     if (!l.timestamps)     l.timestamps = {};
@@ -1212,11 +1249,12 @@ app.get('/api/data', reqAuth, async (req, res) => {
     const myLoads = store.loads.filter(l => l.truckId === u.truckId && !l.voided);
     const myPoIds = new Set(myLoads.map(l => l.poId));
     const myPos = store.pos.filter(p => myPoIds.has(p.id));
-    return res.json({ trucks: store.trucks.filter(t => t.active !== false), materials: MATERIALS, yards, pos: myPos, loads: myLoads });
+    return res.json({ trucks: driverRoster(), materials: MATERIALS, yards, pos: myPos, loads: myLoads });
   }
   // Manager sees full vendor data
   res.json({
-    trucks: store.trucks,
+    trucks: driverRoster(),          // legacy contract: the DRIVER dropdown
+    fleet:  store.trucks || [],      // the actual vehicles
     drivers: listDrivers(),
     materials: MATERIALS,
     yards,
@@ -1398,7 +1436,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       console.log(`[create-PO] SKIPPING split — missing material or loadsAssigned:`, JSON.stringify(s));
       return;
     }
-    const truck = store.trucks.find(t => t.id === s.truckId);
+    const truck = driverRoster().find(t => t.id === s.truckId);   // DRIVER, not vehicle
     const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
     console.log(`[create-PO] Creating load: truckId="${s.truckId}", material="${s.material}", loads=${s.loadsAssigned}, driver="${truck?.label || '(unassigned)'}", vendor="${vendor?.name || '(none)'}"`);
 
@@ -1554,7 +1592,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     let auditAction = 'updated-load';
     let auditDetails = { changes: Object.keys(req.body) };
     if (req.body.truckId !== undefined) {
-      const t = store.trucks.find(t => t.id === req.body.truckId);
+      const t = driverRoster().find(t => t.id === req.body.truckId);   // DRIVER
       updated.driverName = t?.label || '';
       updated.status = req.body.truckId ? 'active' : 'unassigned';
       // Treat driver change as a separate action type
@@ -3521,7 +3559,7 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     return v ? v.name : id;
   };
   const truckLabel = (id) => {
-    const t = store.trucks.find(x => x.id === id);
+    const t = driverRoster().find(x => x.id === id);
     return t ? t.label : id;
   };
 
@@ -3817,7 +3855,7 @@ app.get('/api/reports', reqMgr, async (req, res) => {
 
   // Driver performance
   const driverStats = {};
-  store.trucks.forEach(t => {
+  driverRoster().forEach(t => {
     const tLoads = store.loads.filter(l => l.truckId === t.id && !l.voided);
     driverStats[t.id] = {
       label: t.label,
