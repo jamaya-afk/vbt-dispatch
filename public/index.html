@@ -203,6 +203,11 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .lc-status.is-overdue{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;box-shadow:0 1px 3px rgba(220,38,38,.3)}
 .lc-status.is-active{background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;box-shadow:0 1px 3px rgba(217,119,6,.3)}
 .lc-status.is-normal{background:var(--Ib);color:var(--I);font-weight:700}
+/* Voided: kept on the record as proof, but visibly not live work */
+.lc-status.is-voided{background:#71717a;color:#fff;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.lcard.is-voided{opacity:.55}
+.lcard.is-voided::before{background:#71717a}
+.lcard.is-voided .lc-customer,.lcard.is-voided .lc-po{text-decoration:line-through}
 .lc-po{font-size:10px;font-weight:700;color:var(--I);letter-spacing:.06em;margin-bottom:4px;text-transform:uppercase}
 .lc-customer{font-size:13.5px;font-weight:700;line-height:1.3;margin-bottom:4px;letter-spacing:-.005em;padding-right:80px}
 .lc-detail{font-size:11.5px;color:var(--txt2);margin-bottom:3px;line-height:1.4;font-weight:500}
@@ -1050,6 +1055,10 @@ function getCardStatus(l) {
   const today = todayStr();
   const sched = l.deliveryDate || '';
   const ts = l.timestamps || {};
+
+  // Voided outranks everything. The record is kept as proof but the load does
+  // not count, and it must not sit on the board looking like live work.
+  if (l.voided) return { kind: 'voided', label: 'Voided' };
 
   // 1. PARTIAL — driver submitted incomplete (some but not all) — YELLOW
   // This takes priority over "completed" coloring so manager sees it stands out
@@ -2301,13 +2310,19 @@ function openLoadDetail(id) {
     if (!l.approvalStatus || l.approvalStatus === 'pending') {
       actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
     }
+    // Void is the correction path for delivered work. An approved load is
+    // never deleted — the ticket, signature and GPS are proof and stay put.
+    if (l.voided) {
+      actions += `<button class="btn ghost" onclick="unvoidLoad('${l.id}')">Restore Load</button>`;
+    } else if (l.approvalStatus === 'approved' || l.approvalStatus === 'submitted') {
+      actions += `<button class="btn danger" onclick="voidLoad('${l.id}')">Void Load</button>`;
+    }
     // Removing a whole PO (and its loads) had no UI at all, so test POs piled
-    // up with no way to clear them. The server still refuses if any load on
-    // the PO has been approved — those are voided, never deleted.
-    const poLoadCount = loads.filter(x => x.poId === l.poId).length;
-    const poHasApproved = loads.some(x => x.poId === l.poId && x.approvalStatus === 'approved');
-    if (!poHasApproved) {
-      actions += `<button class="btn danger" onclick="deletePO('${l.poId}', ${poLoadCount})">Delete PO ${escapeHtml(po.poNumber || '')}</button>`;
+    // up with no way to clear them. A voided load no longer blocks it.
+    const poLoads = loads.filter(x => x.poId === l.poId);
+    const poBlocking = poLoads.filter(x => x.approvalStatus === 'approved' && !x.voided);
+    if (!poBlocking.length) {
+      actions += `<button class="btn danger" onclick="deletePO('${l.poId}', ${poLoads.length})">Delete PO ${escapeHtml(po.poNumber || '')}</button>`;
     }
   }
 
@@ -2333,6 +2348,76 @@ async function deleteLoad(id) {
   const d = await api('DELETE', '/api/loads/' + id);
   if (d.ok) { document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove(); await loadAll(); renderBoard(); toast('Load deleted', 'success'); }
   else toast(d.error || 'Failed', 'error');
+}
+
+// ── VOID / RESTORE A LOAD ───────────────────────────────────────────────────
+// Approved deliveries are written off, never deleted. The ticket photo,
+// signature, GPS and timestamps stay on the record as proof; voiding just
+// stops the load counting in dispatch, billing and analytics.
+async function voidLoad(id) {
+  const l = loads.find(x => x.id === id);
+  const reason = prompt(
+    'Why is this load being voided?\n\n'
+    + 'The delivery record, ticket and signature are kept — the load simply stops counting '
+    + 'toward billing and reporting. The reason goes on the audit trail.');
+  if (!reason || !reason.trim()) return;
+  const d = await api('POST', `/api/loads/${id}/void`, { reason: reason.trim() });
+  if (!d.ok) {
+    // Being on a billing batch is the one case with a different fix
+    if (d.billingBatchId) {
+      alert(`${d.error}\n\nGo to Ready to Bill → Billing Batches and void batch ${d.billingBatchId}, then void this load.`);
+    } else toast(d.error || 'Could not void', 'error');
+    return;
+  }
+  document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove();
+  await loadAll();
+  toast('Load voided', 'success');
+  refreshCurrentView();
+}
+
+// Void every approved load blocking a PO, in one pass, with one reason.
+// Offered from the Purchase Orders screen where "cannot be deleted" used to be
+// a dead end with no way to act on it.
+async function voidPoLoads(poId) {
+  const po = pos.find(p => p.id === poId);
+  const blocking = loads.filter(l => l.poId === poId && l.approvalStatus === 'approved' && !l.voided);
+  if (!blocking.length) return toast('Nothing to void on this PO', 'error');
+  const reason = prompt(
+    `Void ${blocking.length} approved load${blocking.length === 1 ? '' : 's'} on PO ${po ? po.poNumber : ''}?\n\n`
+    + 'Tickets, signatures and GPS are kept as proof — the loads just stop counting toward '
+    + 'billing and reporting. Why are they being voided?');
+  if (!reason || !reason.trim()) return;
+
+  let done = 0; const failed = [];
+  for (const l of blocking) {
+    const d = await api('POST', `/api/loads/${l.id}/void`, { reason: reason.trim() });
+    if (d.ok) done++; else failed.push(`${l.id}: ${d.error || 'failed'}`);
+  }
+  await loadAll();
+  if (failed.length) {
+    alert(`Voided ${done}. These could not be voided:\n\n${failed.join('\n')}`);
+  } else {
+    toast(`Voided ${done} load${done === 1 ? '' : 's'} — the PO can now be deleted`, 'success');
+  }
+  refreshCurrentView();
+}
+
+async function unvoidLoad(id) {
+  if (!confirm('Restore this load? It will count toward billing and reporting again.')) return;
+  const d = await api('POST', `/api/loads/${id}/unvoid`, {});
+  if (!d.ok) return toast(d.error || 'Could not restore', 'error');
+  document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove();
+  await loadAll();
+  toast('Load restored', 'success');
+  refreshCurrentView();
+}
+
+function refreshCurrentView() {
+  if (currentTab === 'pos') renderPOsList();
+  else if (currentTab === 'today') renderToday();
+  else if (currentTab === 'approvals') renderApprovals();
+  else if (currentTab === 'billing') renderBilling();
+  else renderBoard();
 }
 
 // Delete a PO and every load on it. Use this to clear test POs — the server
@@ -3591,13 +3676,18 @@ function renderPOsList() {
   const wrap = document.getElementById('pos-content');
   const rows = (pos || []).map(p => {
     const mine = (loads || []).filter(l => l.poId === p.id);
+    // A voided load is already written off, so it no longer blocks deleting
+    // the PO. `blocking` is what actually stands in the way.
+    const blocking = mine.filter(l => l.approvalStatus === 'approved' && !l.voided);
+    const voided = mine.filter(l => l.voided).length;
     const approved = mine.filter(l => l.approvalStatus === 'approved').length;
     const delivered = mine.reduce((s, l) => s + (l.loadsDelivered || 0), 0);
     const assigned = mine.reduce((s, l) => s + (l.loadsAssigned || 0), 0);
     return {
-      po: p, loadCount: mine.length, approved, delivered, assigned,
+      po: p, loadCount: mine.length, approved, voided, delivered, assigned,
+      blocking,                                   // the loads that must be voided first
       orphan: mine.length === 0,
-      locked: approved > 0,
+      locked: blocking.length > 0,                // voided loads no longer lock the PO
     };
   }).sort((a, b) => String(b.po.deliveryDate || '').localeCompare(String(a.po.deliveryDate || '')));
 
@@ -3648,11 +3738,13 @@ function poCard(r) {
       <div class="qa-fact">Delivery: <b>${escapeHtml(p.deliveryDate || '—')}</b></div>
       <div class="qa-fact">Loads: <b>${r.loadCount}</b>${r.assigned ? ` · ${r.delivered}/${r.assigned} delivered` : ''}</div>
       ${r.approved ? `<div class="qa-fact"><b>${r.approved}</b> approved</div>` : ''}
+      ${r.voided ? `<div class="qa-fact"><b>${r.voided}</b> voided</div>` : ''}
       ${p.createdAt ? `<div class="qa-fact">Created ${new Date(p.createdAt).toLocaleDateString()}</div>` : ''}
     </div>
     <div class="qa-actions">
       ${r.locked
-        ? `<div class="qa-sub" style="flex:1">Cannot be deleted — has approved loads. Void those instead.</div>`
+        ? `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5"
+             onclick="voidPoLoads('${p.id}')">Void ${r.blocking.length} approved load${r.blocking.length === 1 ? '' : 's'}…</button>`
         : `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5" onclick="deletePO('${p.id}', ${r.loadCount})">Delete PO</button>`}
     </div>
   </div>`;

@@ -276,6 +276,40 @@ chk "PO with approved load refuses delete" "$(curl -s -o /dev/null -w '%{http_co
 chk "that PO is still there" "$(curl -s -b $M $B/api/data | python3 -c "
 import json,sys;print(len([p for p in json.load(sys.stdin)['pos'] if p['id']=='$APO']))")" "1"
 
+echo "── 16b. Voiding an approved load (the correction path) ──"
+# load.voided was read in ~29 places and set by nothing, so "void it instead"
+# was advice with no way to follow it. $LOAD is approved and in a batch.
+chk "void needs a reason"            "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$LOAD/void -d '{}')" "400"
+chk "load on a batch refuses void"   "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$LOAD/void -d '{"reason":"wrong site"}')" "409"
+# A fresh approved load NOT on a batch can be voided
+VPO=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"poNumber":"VOID-CHK","customer":"void check","deliveryDate":"'"$(date +%F)"'"},
+ "splits":[{"truckId":"carlos","truckUnitId":"truck-2b","material":"Fill Sand","loadsAssigned":1,"vendorId":"vbt"}]}' \
+ | python3 -c "import json,sys;print(json.load(sys.stdin)['po']['id'])")
+VL=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print([l['id'] for l in d['loads'] if l['poId']=='$VPO'][0])")
+V=$(mktemp); curl -s -c $V -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
+for A in start-trip arrived-pickup loaded arrived-jobsite trip-complete; do
+  curl -s -b $V -H 'Content-Type: application/json' -X POST $B/api/loads/$VL/trip-action -d "{\"action\":\"$A\",\"yardId\":\"vbt\"}" -o /dev/null; done
+curl -s -b $V -H 'Content-Type: application/json' -X PUT $B/api/loads/$VL \
+  -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"F\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+curl -s -b $V -H 'Content-Type: application/json' -X POST $B/api/loads/$VL/trip-action -d '{"action":"delivered"}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$VL/approve -d '{}' -o /dev/null
+chk "PO with approved load blocks delete" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -X DELETE $B/api/pos/$VPO)" "403"
+chk "approved load voids"                "$(curl -s -o /dev/null -w '%{http_code}' -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$VL/void -d '{"reason":"delivered to the wrong site"}')" "200"
+VS=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+l=[x for x in d['loads'] if x['id']=='$VL'][0]
+print(l.get('voided')); print(l.get('voidReason')); print(l.get('approvalStatus')); print('yes' if l.get('ticketImage') else 'no')")
+chk "  marked voided"        "$(echo "$VS"|sed -n 1p)" "True"
+chk "  reason recorded"      "$(echo "$VS"|sed -n 2p)" "delivered to the wrong site"
+chk "  approval kept as history" "$(echo "$VS"|sed -n 3p)" "approved"
+chk "  ticket PROOF retained"    "$(echo "$VS"|sed -n 4p)" "yes"
+chk "  drops out of Ready to Bill" "$(curl -s -b $M $B/api/ready-to-bill | python3 -c "
+import json,sys;print(len([i for i in json.load(sys.stdin)['items'] if i['id']=='$VL']))")" "0"
+chk "PO now deletable"       "$(curl -s -o /dev/null -w '%{http_code}' -b $M -X DELETE $B/api/pos/$VPO)" "200"
+
 echo "── 17. Drivers and vehicles are not the same list ──"
 # A branch merge left both the driver roster and the vehicle fleet writing into
 # store.trucks, so the PO form's Driver dropdown listed truck ids and every new

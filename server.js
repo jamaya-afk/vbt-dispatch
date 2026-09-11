@@ -1550,8 +1550,14 @@ app.delete('/api/pos/:id', reqMgr, async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   // Refuse to delete if any linked loads are approved (data integrity)
   const linked = store.loads.filter(l => l.poId === req.params.id);
-  if (linked.some(l => l.approvalStatus === 'approved')) {
-    return res.status(403).json({ error: 'Cannot delete — has approved loads. Void individual loads instead.' });
+  // A voided load no longer blocks deletion — it has already been written off.
+  const blocking = linked.filter(l => l.approvalStatus === 'approved' && !l.voided);
+  if (blocking.length) {
+    return res.status(403).json({
+      error: `Cannot delete — ${blocking.length} approved load${blocking.length === 1 ? '' : 's'} on this PO. `
+           + 'Void them first (approved deliveries are written off, never deleted), then the PO can go.',
+      blockingLoadIds: blocking.map(l => l.id),
+    });
   }
   const deletedPo = store.pos[idx];
   const linkedCount = store.loads.filter(l => l.poId === req.params.id).length;
@@ -1880,6 +1886,74 @@ app.post('/api/loads/:id/reject', reqMgr, async (req, res) => {
   });
   await saveData();
   res.json({ success: true });
+});
+
+// ── API: VOID / UNVOID A LOAD ────────────────────────────────────────────────
+// The correction path for delivered work. Approved loads are never deleted —
+// the ticket, signature, GPS and timestamps are legal proof and stay on the
+// record permanently. Voiding marks the load as not counting: it drops out of
+// dispatch, Ready to Bill, analytics and reporting, but the evidence remains
+// and the reason is on the audit trail.
+//
+// Until now `load.voided` was read in dozens of places and set by nothing, so
+// "void it instead" was advice with no way to follow it.
+app.post('/api/loads/:id/void', reqMgr, async (req, res) => {
+  const l = store.loads.find(x => x.id === req.params.id);
+  if (!l) return res.status(404).json({ error: 'Load not found' });
+  if (l.voided) return res.status(400).json({ error: 'This load is already voided' });
+
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to void a load' });
+
+  // A load already invoiced must be corrected through the billing batch, or
+  // our records and QuickBooks would disagree about what was billed.
+  if (l.billingBatchId || l.qbInvoiceId) {
+    const b = (store.billingBatches || []).find(x => x.id === l.billingBatchId);
+    return res.status(409).json({
+      error: 'This load is on a billing batch'
+        + (l.qbInvoiceNumber ? ` (QuickBooks invoice ${l.qbInvoiceNumber})` : '')
+        + '. Void the batch first — that releases the load and keeps QuickBooks in step.',
+      billingBatchId: l.billingBatchId || '',
+      batchStatus: b ? b.syncStatus : '',
+    });
+  }
+
+  const po = store.pos.find(p => p.id === l.poId) || {};
+  l.voided     = true;
+  l.voidedAt   = new Date().toISOString();
+  l.voidedBy   = req.session.user.displayName || req.session.user.username;
+  l.voidReason = reason;
+  l.billStatus = 'voided';   // out of Ready to Bill; approvalStatus is left as history
+
+  logAction(req.session.user, 'voided-load', l.id, {
+    poNumber: po.poNumber || '', customer: po.customer || '',
+    material: l.material, driver: l.driverName,
+    delivered: l.loadsDelivered, wasApproved: l.approvalStatus === 'approved',
+    reason,
+  });
+  await saveData();
+  res.json({ success: true, load: l });
+});
+
+// Reverse a void. Voiding by mistake should not be permanent — this restores
+// the load rather than recreating it, so the original evidence is unchanged.
+app.post('/api/loads/:id/unvoid', reqMgr, async (req, res) => {
+  const l = store.loads.find(x => x.id === req.params.id);
+  if (!l) return res.status(404).json({ error: 'Load not found' });
+  if (!l.voided) return res.status(400).json({ error: 'This load is not voided' });
+
+  l.voided = false;
+  l.billStatus = l.approvalStatus === 'approved' ? 'ready' : 'not-ready';
+  const prior = l.voidReason;
+  l.unvoidedAt = new Date().toISOString();
+  l.unvoidedBy = req.session.user.displayName || req.session.user.username;
+  l.voidReason = '';
+  l.voidedAt = '';
+  l.voidedBy = '';
+
+  logAction(req.session.user, 'unvoided-load', l.id, { previousReason: prior });
+  await saveData();
+  res.json({ success: true, load: l });
 });
 
 // ── API: BILLING ─────────────────────────────────────────────────────────────
