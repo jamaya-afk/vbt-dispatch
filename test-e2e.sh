@@ -546,6 +546,35 @@ chk "  ...and Quick Assign carries lastSeen" "$(curl -s -b $M $B/api/today | pyt
 chk "  ...drivers cannot read it"  "$(curl -s -b $D -o /dev/null -w '%{http_code}' $B/api/driver-locations)" "403"
 chk "driver app calls the endpoint in driver mode" "$(grep -c "startGPSTracking();" public/index.html)" "1"
 
+echo "── 29. One pickup-yard source for every office screen ──"
+# A load whose stored vendorName is stale must still show the resolved yard.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"YARD-1","customer":"Yard Co","deliveryDate":"'"$(date +%F)"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","material":"Base Rock","loadsAssigned":1,"vendorId":"vulcan"}]}' -o /dev/null
+YL=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='YARD-1'][0];print([l['id'] for l in d['loads'] if l['poId']==po['id']][0])")
+chk "office load carries resolved pickup (vendor wins over PO plan)" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$YL'][0];print(l['pickup']['id'], l['pickup']['name'])")" "vulcan Vulcan"
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$YL -d '{"vendorId":"cemex"}' -o /dev/null
+YP=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$YL'][0];print(l['pickup']['name'], l['vendorName'], l.get('actualYardId'), l['vendorRateIsDefault'])")
+chk "generic PUT of vendorId re-resolves, clears mirror, re-prices" "$YP" "CEMEX CEMEX None False"
+chk "profitability uses the same resolver" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;d=json.load(sys.stdin);print(any('CEMEX' in (v.get('name') or '') for v in d['byVendor']))")" "True"
+chk "no independent yard label left in the UI" "$(grep -cE "l\.vendorName \|\| po\.pickup|l\.actualYardName \|\| \(l\.vendorName\)|l\.actualYardName \|\| l\.pickup" public/index.html)" "0"
+chk "no hand-rolled yard chain left on the server" "$(grep -cE "l\.actualYardId \|\| l\.vendorId|l\.vendorId \|\| l\.yardId" server.js)" "0"
+
+echo "── 30. Nothing assigns before Confirm — drag/drop, reassign modal, Quick Assign ──"
+chk "drag/drop does not PUT on drop"        "$(grep -c "api('PUT', '/api/loads/' + dragId" public/index.html)" "0"
+chk "  ...it opens the Quick Assign sheet"   "$(sed -n '/^async function onDrop/,/^}/p' public/index.html | grep -c 'qaOpen(id)')" "1"
+chk "  ...and the sheet only writes on Confirm" "$(sed -n '/^function qaPaintSheet/,/^}/p' public/index.html | grep -c "api('POST'\|api('PUT'")" "0"
+chk "reassign modal goes through /assign"    "$(sed -n '/^async function confirmReassign/,/^}/p' public/index.html | grep -c '/assign')" "1"
+chk "  ...not the generic load update"       "$(sed -n '/^async function confirmReassign/,/^}/p' public/index.html | grep -c "api('PUT'")" "0"
+
+echo "── 31. Login is rate limited ──"
+curl -s -X POST $B/api/_test/reset-login-limits -o /dev/null
+for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null -X POST -d 'username=oscar&password=wrong' $B/login; done
+chk "9th attempt is locked out"               "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=oscar&password=wrong' $B/login | sed 's|http://[^/]*||')" "/login?error=locked"
+chk "  ...even with the right password"      "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=oscar&password=oscar123' $B/login | sed 's|http://[^/]*||')" "/login?error=locked"
+chk "  ...other users unaffected"            "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=perla&password=perla123' $B/login | sed 's|http://[^/]*||')" "/app/"
+curl -s -X POST $B/api/_test/reset-login-limits -o /dev/null
+chk "cleared window logs in again"           "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=oscar&password=oscar123' $B/login | sed 's|http://[^/]*||')" "/app/"
+chk "session cookie is httpOnly + named"     "$(curl -s -i -X POST -d 'username=perla&password=perla123' $B/login | grep -i '^set-cookie' | grep -c 'vbt.sid=.*HttpOnly')" "1"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -583,10 +612,19 @@ else
   $PSQL -c "update users set password='changed-in-db' where username='joshua'" >/dev/null
   chk "old seed password rejected after DB change" "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=joshua123' $B2/login | sed 's|.*//[^/]*||')" "/login?error=1"
   chk "new DB password accepted"                   "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=changed-in-db' $B2/login | sed 's|.*//[^/]*||')" "/app/"
+  # Passwords: seeded rows are hashed, a plaintext row migrates on first login.
+  chk "no plaintext password rows remain after migration" "$($PSQL -c "select count(*) from users where password not like 'scrypt\$%'")" "0"
+  chk "plaintext row migrated to scrypt on login"      "$($PSQL -c "select count(*) from users where username='joshua' and password like 'scrypt\$%'")" "1"
+  chk "  ...and the migrated hash still verifies"      "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=changed-in-db' $B2/login | sed 's|.*//[^/]*||')" "/app/"
+  chk "  ...wrong password still rejected"             "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=changed-in-dc' $B2/login | sed 's|.*//[^/]*||')" "/login?error=1"
+  curl -s -b $PM -H 'Content-Type: application/json' -X PUT $B2/api/drivers/beryle -d '{"password":"beryle-new"}' -o /dev/null
+  chk "password set from Drivers & Trucks is hashed" "$($PSQL -c "select count(*) from users where username='beryle' and password like 'scrypt\$%'")" "1"
+  chk "  ...and works"  "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=beryle&password=beryle-new' $B2/login | sed 's|.*//[^/]*||')" "/app/"
   $PSQL -c "update users set password='joshua123' where username='joshua'" >/dev/null
   # A driver created in Drivers & Trucks gets a login AND is dispatchable.
   curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/drivers -d '{"username":"nadia","password":"nadia123","displayName":"Nadia","defaultTruckId":"truck-4"}' -o /dev/null
   chk "new driver login row exists" "$($PSQL -c "select count(*) from users where username='nadia' and role='driver' and truck_id='nadia'")" "1"
+  chk "  ...stored hashed" "$($PSQL -c "select count(*) from users where username='nadia' and password like 'scrypt\$%'")" "1"
   ND=$(mktemp)
   chk "new driver can log in" "$(curl -s -c $ND -o /dev/null -w '%{redirect_url}' -X POST -d 'username=nadia&password=nadia123' $B2/login | sed 's|.*//[^/]*||')" "/app/"
   curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{

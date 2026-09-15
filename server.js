@@ -75,10 +75,14 @@ app.use(express.json({
 app.use(express.urlencoded({ extended: true }));
 
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
+// Railway terminates TLS at its proxy; trusting one hop lets express-session
+// see the request as https so the cookie can be Secure in production.
+if (IS_PROD) app.set('trust proxy', 1);
 const sessionOpts = {
   secret: process.env.SESSION_SECRET,
+  name: 'vbt.sid',
   resave: false, saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, sameSite: 'lax' }
+  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, sameSite: 'lax', secure: IS_PROD }
 };
 // Railway/Supabase Postgres needs TLS; a local test database does not.
 // `?sslmode=disable` in DATABASE_URL (or PGSSL=disable) turns it off.
@@ -517,7 +521,7 @@ async function seedDefaultCompanyAndUsers() {
         INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
         VALUES ($1, $2, $3, $4, $5, $6, $7, true)
         ON CONFLICT (company_id, username) DO NOTHING
-      `, [userId, DEFAULT_COMPANY_ID, uname, u.password, u.role, u.truckId || null, u.displayName || uname]);
+      `, [userId, DEFAULT_COMPANY_ID, uname, hashPassword(u.password), u.role, u.truckId || null, u.displayName || uname]);
     }
     console.log(`✓ Seeded default company "${DEFAULT_COMPANY_ID}" + ${Object.keys(USERS).length} legacy users`);
   } catch (e) {
@@ -1181,6 +1185,14 @@ function resolvePickupYard(load, po, trip) {
   };
 }
 
+// Office-facing view of a load: the load plus its ONE authoritative pickup
+// yard. Every manager screen reads `load.pickup`, never vendorName /
+// actualYardName / po.pickup on its own.
+function withPickup(l) {
+  const po = store.pos.find(p => p.id === l.poId) || {};
+  return { ...l, pickup: resolvePickupYard(l, po) };
+}
+
 function resolveVendorRate(vendorId, material) {
   if (vendorId === 'vbt') return { unit: 'ton', price: 0, isDefault: false, isInternal: true };
   const list = store.vendorPrices[vendorId] || [];
@@ -1463,6 +1475,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     res.json({ ok: true, fakeQb });
   });
   app.get('/api/_test/qb-fake', reqMgr, (req, res) => res.json(fakeQb));
+  app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
   app.get('/api/_test/today', (req, res) => res.json({ tz: OPERATING_TZ, today: todayStrAt(req.query.at ? new Date(String(req.query.at)) : new Date()) }));
   app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
   app.get('/api/_test/async-reject', (req, res) => Promise.reject(new Error('test: rejected promise')));
@@ -1470,8 +1483,61 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
 }
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
 
+// ── PASSWORDS ────────────────────────────────────────────────────────────────
+// scrypt (Node built-in, no dependency). Stored form: scrypt$<salt>$<hash>.
+// Rows written before this existed hold plaintext; verifyPassword accepts
+// them ONCE and the login handler immediately rewrites the row hashed, so
+// every account migrates on its next successful login with no reset.
+function hashPassword(plain) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(String(plain), salt, 64, { N: 16384, r: 8, p: 1 });
+  return `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`;
+}
+function verifyPassword(plain, stored) {
+  if (!stored) return { ok: false, needsRehash: false };
+  if (String(stored).startsWith('scrypt$')) {
+    const [, saltHex, hashHex] = String(stored).split('$');
+    try {
+      const salt = Buffer.from(saltHex, 'hex');
+      const expected = Buffer.from(hashHex, 'hex');
+      const actual = crypto.scryptSync(String(plain), salt, expected.length, { N: 16384, r: 8, p: 1 });
+      return { ok: actual.length === expected.length && crypto.timingSafeEqual(actual, expected), needsRehash: false };
+    } catch { return { ok: false, needsRehash: false }; }
+  }
+  // Legacy plaintext row: constant-time compare, then rehash on success.
+  const a = Buffer.from(String(plain)), b = Buffer.from(String(stored));
+  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+  return { ok, needsRehash: ok };
+}
+
+// ── LOGIN RATE LIMIT ─────────────────────────────────────────────────────────
+// In-memory, per username and per source address. Enough to stop password
+// guessing against a five-driver company; a distributed limiter would need
+// shared state this single-process app does not have.
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_PER_USER = 8;
+const LOGIN_MAX_PER_IP = 40;
+const loginFailures = new Map();   // key -> [timestamps]
+function loginKeyFailures(key) {
+  const now = Date.now();
+  const arr = (loginFailures.get(key) || []).filter(t => now - t < LOGIN_WINDOW_MS);
+  loginFailures.set(key, arr);
+  return arr;
+}
+function loginBlocked(ip, user) {
+  return loginKeyFailures('u:' + user).length >= LOGIN_MAX_PER_USER || loginKeyFailures('ip:' + ip).length >= LOGIN_MAX_PER_IP;
+}
+function loginFailed(ip, user) {
+  loginKeyFailures('u:' + user).push(Date.now());
+  loginKeyFailures('ip:' + ip).push(Date.now());
+}
+function loginSucceeded(user) { loginFailures.delete('u:' + user); }
+setInterval(() => { for (const k of loginFailures.keys()) loginKeyFailures(k); }, LOGIN_WINDOW_MS).unref();
+
 app.get('/login', (req, res) => {
-  const err = req.query.error ? '<p class="err">Invalid username or password</p>' : '';
+  const err = req.query.error === 'locked'
+    ? '<p class="err">Too many sign-in attempts. Wait 15 minutes and try again.</p>'
+    : req.query.error ? '<p class="err">Invalid username or password</p>' : '';
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Valley Best Concrete — Dispatch</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -1505,6 +1571,11 @@ app.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const cleanName = username?.toLowerCase().trim();
   if (!cleanName || !password) return res.redirect('/login?error=1');
+  const ip = req.ip || req.socket?.remoteAddress || '';
+  if (loginBlocked(ip, cleanName)) {
+    console.warn(`[LOGIN] RATE LIMITED: username="${cleanName}" ip=${ip}`);
+    return res.redirect('/login?error=locked');   // a 4xx would not be followed by the browser
+  }
 
   // 1) DB-backed users — the real driver/office login store, written by the
   //    Drivers & Trucks screen.
@@ -1514,8 +1585,20 @@ app.post('/login', async (req, res) => {
         'SELECT id, company_id, username, password, role, truck_id, display_name, active FROM users WHERE username = $1',
         [cleanName]
       );
-      const dbUser = r.rows.find(row => row.active && row.password === password);
+      let dbUser = null;
+      for (const row of r.rows) {
+        if (!row.active) continue;
+        const v = verifyPassword(password, row.password);
+        if (!v.ok) continue;
+        dbUser = row;
+        if (v.needsRehash) {
+          await pg.query('UPDATE users SET password = $1 WHERE id = $2', [hashPassword(password), row.id]);
+          console.log(`[LOGIN] migrated plaintext password to scrypt for "${row.username}"`);
+        }
+        break;
+      }
       if (dbUser) {
+        loginSucceeded(cleanName);
         // A driver's session truckId must be a roster id (that is what
         // load.truckId holds). users.truck_id normally equals the username;
         // if it was ever set to something that is not a roster driver (an
@@ -1537,6 +1620,7 @@ app.post('/login', async (req, res) => {
       // otherwise a changed password or a deactivated account would still be
       // openable with the original seed password.
       console.log(`[LOGIN] FAILED (db): username="${cleanName}"`);
+      loginFailed(ip, cleanName);
       return res.redirect('/login?error=1');
     } catch (e) {
       console.error('[LOGIN] DB lookup error:', e.message);
@@ -1547,10 +1631,12 @@ app.post('/login', async (req, res) => {
 
   // 2) Legacy fallback: hardcoded VBT users (dev / no-database mode only).
   const u = USERS[cleanName];
-  if (!u || u.password !== password) {
+  if (!u || !verifyPassword(password, u.password).ok) {
     console.log(`[LOGIN] FAILED: username="${cleanName}"`);
+    loginFailed(ip, cleanName);
     return res.redirect('/login?error=1');
   }
+  loginSucceeded(cleanName);
   req.session.user = {
     username:    cleanName,
     role:        u.role,
@@ -1693,7 +1779,7 @@ app.get('/api/data', reqAuth, async (req, res) => {
     vendorPrices: store.vendorPrices,
     customers: store.customers || [],
     pos: store.pos,
-    loads: store.loads
+    loads: store.loads.map(withPickup)
   });
 });
 
@@ -2050,6 +2136,21 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     const updated = { ...l, ...req.body, id: l.id, poId: l.poId };
     let auditAction = 'updated-load';
     let auditDetails = { changes: Object.keys(req.body) };
+    if (req.body.vendorId !== undefined && req.body.vendorId !== l.vendorId) {
+      // Same rule as /assign: a new yard wins over the current-trip mirror
+      // and re-prices the load. Trip history is untouched.
+      const v = req.body.vendorId ? store.vendors.find(x => x.id === req.body.vendorId) : null;
+      if (req.body.vendorId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
+      updated.vendorName = v?.name || '';
+      updated.actualYardId = null;
+      updated.actualYardName = '';
+      if (v) {
+        const vr = resolveVendorRate(v.id, updated.material);
+        updated.vendorRate = vr.price; updated.vendorUnit = vr.unit; updated.vendorRateIsDefault = vr.isDefault;
+        updated.vendorIsInternal = !!vr.isInternal; updated.pricePerUnit = vr.price;
+      }
+      auditDetails.yard = { from: resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).name, to: v?.name || '' };
+    }
     if (req.body.truckId !== undefined) {
       const t = driverRoster().find(t => t.id === req.body.truckId);   // DRIVER
       updated.driverName = t?.label || '';
@@ -3085,7 +3186,7 @@ function buildVendorBillGroups(loadIds) {
     if (l.approvalStatus !== 'approved') continue;
     if (l.voided) continue;
     if (l.vendorBillId) continue;  // already in a bill
-    const vendorId = l.vendorId || l.yardId || '';
+    const vendorId = resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).id;
     if (!vendorId || vendorId === 'vbt') continue;  // skip internal yard
     const v = store.vendors.find(x => x.id === vendorId);
     if (!v) continue;
@@ -3548,7 +3649,7 @@ app.post('/api/drivers', reqMgr, async (req, res) => {
       await pg.query(
         `INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
          VALUES ($1, $2, $3, $4, 'driver', $5, $6, true)`,
-        [`user-${DEFAULT_COMPANY_ID}-${uname}`, DEFAULT_COMPANY_ID, uname, password, uname, dName]
+        [`user-${DEFAULT_COMPANY_ID}-${uname}`, DEFAULT_COMPANY_ID, uname, hashPassword(password), uname, dName]
       );
       loginCreated = true;
     } catch (e) {
@@ -3579,7 +3680,7 @@ app.put('/api/drivers/:username', reqMgr, async (req, res) => {
     const sets = []; const vals = []; let i = 1;
     if (b.displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(b.displayName).trim()); }
     if (b.active !== undefined)      { sets.push(`active = $${i++}`); vals.push(!!b.active); }
-    if (b.password !== undefined && String(b.password).length >= 4) { sets.push(`password = $${i++}`); vals.push(String(b.password)); }
+    if (b.password !== undefined && String(b.password).length >= 4) { sets.push(`password = $${i++}`); vals.push(hashPassword(String(b.password))); }
     // truck_id is the driver's roster id, never a vehicle.
     sets.push(`truck_id = $${i++}`); vals.push(uname);
     vals.push(DEFAULT_COMPANY_ID, uname);
@@ -3928,7 +4029,7 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     if (from && (l.deliveryDate || '') < from) return false;
     if (to   && (l.deliveryDate || '') > to)   return false;
     if (driver   && l.truckId !== driver)                                 return false;
-    if (yard     && (l.actualYardId || l.vendorId) !== yard)              return false;
+    if (yard     && resolvePickupYard(l, poRow).id !== yard)             return false;
     if (customer && !lcEq(poRow.customer, customer))                      return false;
     if (city     && !lcEq(poRow.city, city))                              return false;
     if (material && l.material !== material)                              return false;
@@ -4014,7 +4115,7 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
         load: l,
         tripNum: t.tripNum || (i + 1),
         // Per-trip yard wins, then the load's actual yard, then the assignment
-        yardId: t.actualYardId || l.actualYardId || l.vendorId || '',
+        yardId: resolvePickupYard(l, store.pos.find(p => p.id === l.poId), t).id,
         d: durationsForTrip(l, t),
       });
     });
@@ -4184,7 +4285,7 @@ app.get('/api/profitability', reqMgr, (req, res) => {
     }
 
     // By vendor (where the cost goes — payables)
-    const vId = l.actualYardId || l.vendorId || po.plannedVendorId;
+    const vId = resolvePickupYard(l, po).id;
     if (vId) {
       const v = store.vendors.find(x => x.id === vId);
       if (!byVendor[vId]) byVendor[vId] = {
@@ -4210,7 +4311,7 @@ app.get('/api/profitability', reqMgr, (req, res) => {
       delivered: Number(l.loadsDelivered) || 0,
       assigned:  Number(l.loadsAssigned)  || 0,
       isPartial: !!l.isPartial,
-      vendorName: l.actualYardName || l.vendorName || '',
+      vendorName: resolvePickupYard(l, po).name,
       vendorIsInternal: vId === 'vbt',
       deliveryDate: l.deliveryDate || '',
       revenue: rev,
@@ -4277,7 +4378,7 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
 
   eligible.forEach(l => {
     // Determine which vendor this load was picked up from
-    const vendorId = l.actualYardId || l.vendorId || (store.pos.find(p => p.id === l.poId) || {}).plannedVendorId;
+    const vendorId = resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).id;
     if (!vendorId) return;
     if (vendorId === 'vbt') return;  // VBT Yard = internal, no cost
 
@@ -4440,7 +4541,7 @@ app.get('/api/history', reqMgr, (req, res) => {
   const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided)
     .map(l => {
       const po = store.pos.find(p => p.id === l.poId) || {};
-      return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address, pickup: po.pickup };
+      return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address, pickup: resolvePickupYard(l, po) };
     });
   // Archive batches carry full load copies; keep photo payloads out of this list.
   const slim = l => ({ ...l, ticketImage: l.ticketImage ? '[stored]' : '', pod: l.pod ? { ...l.pod, signature: l.pod.signature ? '[stored]' : '' } : l.pod });
@@ -4475,7 +4576,7 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
           new Date().toISOString(),
           po.poNumber || '', po.customer || '', po.city || '',
           l.material, l.loadsDelivered, l.driverName, l.deliveryDate,
-          l.actualYardName || po.pickup || '',
+          resolvePickupYard(l, po).name,
           l.approvedBy || '', l.billedAt || ''
         ]);
       });
