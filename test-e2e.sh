@@ -35,12 +35,57 @@ chk "  ...and it is the real page"  "$(curl -s -b $M $B/app/ | grep -c 'id=\"sec
 chk "static assets serve"           "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/app/index.html)" "200"
 chk "/api/me identifies the user"   "$(curl -s -b $M $B/api/me | python3 -c "import json,sys;print(json.load(sys.stdin)['username'])")" "joshua"
 
+PNG="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+echo "── 0b. Fleet live status: derived from the workflow, never invented ──"
+LD=$(mktemp); curl -s -c $LD -X POST -d "username=leonardo&password=leo123" $B/login -o /dev/null
+fl() { curl -s -b $M $B/api/fleet/live | python3 -c "
+import json,sys;d=json.load(sys.stdin);r=[x for x in d['trucks'] if x['driverId']=='leonardo'][0]
+print($1)"; }
+chk "drivers cannot call the fleet endpoint" "$(curl -s -b $LD -o /dev/null -w '%{http_code}' $B/api/fleet/live)" "403"
+chk "anonymous is refused"                   "$(curl -s -o /dev/null -w '%{http_code}' $B/api/fleet/live)" "403"
+chk "one row per active driver"              "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['count'], len(d['trucks']), d['staleAfterSeconds'])")" "5 5 300"
+chk "no work + no GPS: workflow Available, shown Offline, gps null" "$(fl "r['workflowKey'], r['statusKey'], r['live'], r['gps'], r['load']")" "available offline False None None"
+curl -s -b $LD -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":36.7468,"lng":-119.7726,"accuracy":8}' -o /dev/null
+chk "1. no current work + fresh GPS → Available" "$(fl "r['status'], r['live'], r['gps']['lat'], r['gps']['stale']")" "Available True 36.7468 False"
+chk "   usual truck shown, flagged as not assigned" "$(fl "r['truckNum'], r['truckIsAssigned']")" "Truck #12 False"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"poNumber":"10482","customer":"ABC Materials","deliveryDate":"'"$(date +%F)"'","address":"500 Main St","city":"Merced","plannedVendorId":"vulcan"},
+ "splits":[{"truckId":"leonardo","truckUnitId":"truck-4","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}' -o /dev/null
+FL=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='10482'][0];print([l['id'] for l in d['loads'] if l['poId']==po['id']][0])")
+chk "2. assigned, no trip → Assigned"   "$(fl "r['status'], r['since'], r['load']['tripNumber'], r['load']['loadNumber']")" "Assigned None 1 1"
+chk "11. driver/truck/PO/load relationship" "$(fl "r['truckNum'], r['truckIsAssigned'], r['load']['poNumber'], r['load']['customer'], r['load']['city'], r['load']['material'], r['load']['pickup']['name'], r['load']['loadsAssigned']")" "Truck #4 True 10482 ABC Materials Merced 3/4 Rock Vulcan 2"
+ta() { curl -s -b $LD -H 'Content-Type: application/json' -X POST $B/api/loads/$FL/trip-action -d "$1" -o /dev/null; }
+ta '{"action":"start-trip","gps":{"lat":36.74,"lng":-119.77}}'
+chk "3. started → Going to Yard, since = start stamp" "$(fl "r['status'], r['since'] is not None and r['since']==r['load']['tripStartedAt']")" "Going to Yard True"
+ta '{"action":"arrived-pickup","yardId":"cemex"}'
+chk "4. arrived pickup → At Yard, pickup follows the trip" "$(fl "r['status'], r['load']['pickup']['name']")" "At Yard CEMEX"
+ta '{"action":"loaded"}'
+chk "5. loaded → Loaded / En Route"      "$(fl "r['status']")" "Loaded / En Route"
+ta '{"action":"arrived-jobsite"}'
+chk "6. arrived jobsite → At Jobsite"    "$(fl "r['status']")" "At Jobsite"
+ta '{"action":"trip-complete"}'
+chk "7. trip done, one load left → Returning, load 2 of 2" "$(fl "r['status'], r['load']['loadsDelivered'], r['load']['loadNumber'], r['load']['tripNumber']")" "Returning 1 2 2"
+ta '{"action":"start-trip"}'; ta '{"action":"arrived-pickup","yardId":"vulcan"}'; ta '{"action":"loaded"}'; ta '{"action":"arrived-jobsite"}'; ta '{"action":"trip-complete"}'
+curl -s -b $LD -H 'Content-Type: application/json' -X PUT $B/api/loads/$FL -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+ta '{"action":"delivered"}'
+chk "8. all work done (submitted) → Completed, finished load still named" "$(fl "r['status'], r['load']['approvalStatus'], r['load']['loadsDelivered']")" "Completed submitted 2"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$FL/approve -d '{}' -o /dev/null
+chk "   still Completed after approval, load cleared" "$(fl "r['status'], r['load']")" "Completed None"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/backdate-location -d '{"driverId":"leonardo","seconds":301}' -o /dev/null
+chk "9. GPS older than 5 min → Offline, real point + real age kept" "$(fl "r['status'], r['live'], r['gps']['stale'], r['gps']['ageSeconds']>=301, r['gps']['lat'], r['workflowStatus']")" "Offline False True True 36.7468 Completed"
+chk "12. no fake coordinates for drivers who never reported" "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;d=json.load(sys.stdin);print(all(x['gps'] is None and x['statusKey']=='offline' for x in d['trucks'] if x['driverId']!='leonardo'))")" "True"
+chk "   version changes with state" "$(V1=$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])"); curl -s -b $LD -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":36.75,"lng":-119.78}' -o /dev/null; V2=$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])"); [ "$V1" != "$V2" ] && echo changed)" "changed"
+chk "   fresh GPS again → live Completed" "$(fl "r['status'], r['live']")" "Completed True"
+# Void the fixture load so the money/count assertions further down are unaffected.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$FL/void -d '{"reason":"fleet status fixture"}' -o /dev/null
+chk "   voided fixture drops out: Available again" "$(fl "r['workflowStatus']")" "Available"
+
 echo "── 1. PO with 3 loads, driver beryle, truck #12 (NOT his usual truck) ──"
 curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
  "po":{"customer":"ABC Construction","deliveryDate":"'"$(date +%F)"'","address":"123 Main St","city":"Fresno","notes":"Gate 4455"},
  "splits":[{"truckId":"beryle","truckUnitId":"truck-12","material":"3/4 Rock","loadsAssigned":3,"vendorId":"vbt"}]}' -o /dev/null
 
-LOAD=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(json.load(sys.stdin)['loads'][0]['id'])")
+LOAD=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([l for l in json.load(sys.stdin)['loads'] if l['truckId']=='beryle'][0]['id'])")
 echo "  load = $LOAD"
 
 echo "── 2. Driver view: correct yard / truck / job ──"
@@ -62,7 +107,7 @@ run_trip vbt; run_trip vulcan; run_trip vbt
 
 S=$(curl -s -b $M $B/api/data | python3 -c "
 import json,sys
-l=json.load(sys.stdin)['loads'][0]
+l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$LOAD'][0]
 t=l.get('trips',[])
 print(len(t))
 print(','.join(str(x.get('actualYardId')) for x in t))
@@ -103,9 +148,9 @@ PNG="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQ
 curl -s -b $D -H 'Content-Type: application/json' -X PUT $B/api/loads/$LOAD \
   -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
 curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$LOAD/trip-action -d '{"action":"delivered"}' -o /dev/null
-chk "submitted for approval" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(json.load(sys.stdin)['loads'][0]['approvalStatus'])")" "submitted"
+chk "submitted for approval" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='$LOAD'][0]['approvalStatus'])")" "submitted"
 curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$LOAD/approve -d '{}' -o /dev/null
-chk "approved" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(json.load(sys.stdin)['loads'][0]['approvalStatus'])")" "approved"
+chk "approved" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='$LOAD'][0]['approvalStatus'])")" "approved"
 chk "in Ready to Bill" "$(curl -s -b $M $B/api/ready-to-bill | python3 -c "import json,sys;print(len(json.load(sys.stdin)['items']))")" "1"
 
 echo "── 7. QuickBooks batch + duplicate-billing protection ──"
@@ -231,7 +276,7 @@ NPO=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
 curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/pos/$NPO/notifications \
   -d '{"contacts":[{"email":"john@abcconstruction.com"}],"events":{"loaded":true,"delivered":true},"enabled":true}' -o /dev/null
 NL=$(curl -s -b $M $B/api/data | python3 -c "
-import json,sys;print([l['id'] for l in json.load(sys.stdin)['loads'] if l['truckId']=='leonardo'][0])")
+import json,sys;print([l['id'] for l in json.load(sys.stdin)['loads'] if l['poId']=='$NPO'][0])")
 L=$(mktemp); curl -s -c $L -X POST -d "username=leonardo&password=leo123" $B/login -o /dev/null
 curl -s -b $L -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"start-trip"}' -o /dev/null
 curl -s -b $L -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"arrived-pickup","yardId":"vbt"}' -o /dev/null

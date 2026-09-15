@@ -1475,6 +1475,12 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     res.json({ ok: true, fakeQb });
   });
   app.get('/api/_test/qb-fake', reqMgr, (req, res) => res.json(fakeQb));
+  app.post('/api/_test/backdate-location', reqMgr, (req, res) => {
+    const loc = (store.driverLocations || {})[req.body?.driverId];
+    if (!loc) return res.status(404).json({ error: 'no location' });
+    loc.at = new Date(Date.now() - Number(req.body?.seconds || 0) * 1000).toISOString();
+    res.json({ ok: true, at: loc.at });
+  });
   app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
   app.get('/api/_test/today', (req, res) => res.json({ tz: OPERATING_TZ, today: todayStrAt(req.query.at ? new Date(String(req.query.at)) : new Date()) }));
   app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
@@ -1745,6 +1751,127 @@ app.get('/api/driver-locations', reqMgr, (req, res) => {
     return { ...loc, driverName: d ? d.name : loc.driverId, ageSeconds: Math.max(0, Math.round((Date.now() - Date.parse(loc.at)) / 1000)) };
   });
   res.json({ locations: rows });
+});
+
+// ── FLEET LIVE STATUS ────────────────────────────────────────────────────────
+// One row per active driver for the manager's fleet map. Everything here is
+// DERIVED from records the app already keeps — the roster, the vehicle, the
+// driver's workday loads, the current trip's stamps and the last GPS point.
+// There is no separate status store: the display status is a pure function
+// of those inputs (fleetWorkflowStatus), and "live" is a pure function of
+// the GPS age. A point older than FLEET_STALE_MS, or no point at all, is
+// reported as Offline with the real timestamp (or null), never as current.
+const FLEET_STALE_MS = 5 * 60 * 1000;
+const FLEET_STATUS = {
+  available:  'Available',
+  assigned:   'Assigned',
+  toYard:     'Going to Yard',
+  atYard:     'At Yard',
+  enRoute:    'Loaded / En Route',
+  atJobsite:  'At Jobsite',
+  returning:  'Returning',
+  completed:  'Completed',
+  offline:    'Offline',
+};
+
+// Which of a driver's loads is "current": one with an unfinished trip first,
+// then the first open load with trips still to run.
+function fleetCurrentLoad(openLoads) {
+  const withOpenTrip = openLoads.find(l => {
+    const t = (l.trips || [])[activeTripIdx(l)];
+    return t && t.timestamps?.start && !t.timestamps?.completed;
+  });
+  if (withOpenTrip) return withOpenTrip;
+  return openLoads.find(l => (l.loadsDelivered || 0) < (l.loadsAssigned || 0) && l.approvalStatus !== 'submitted') || openLoads[0] || null;
+}
+
+// Pure: (current load, its current trip, whether any work remains today,
+// whether the driver had any load today) → { key, since }.
+function fleetWorkflowStatus({ load, trip, workRemains, hadWorkToday }) {
+  if (!load) return { key: hadWorkToday ? 'completed' : 'available', since: null };
+  const ts = trip && trip.isoStamps ? trip.isoStamps : {};
+  const tstamps = trip && trip.timestamps ? trip.timestamps : {};
+  if (tstamps.completed)      return { key: workRemains ? 'returning' : 'completed', since: ts.completed || null };
+  if (tstamps.arrivedJobsite) return { key: 'atJobsite', since: ts.arrivedJobsite || null };
+  if (tstamps.loadedAt)       return { key: 'enRoute',   since: ts.loadedAt || null };
+  if (tstamps.arrivedPickup)  return { key: 'atYard',    since: ts.arrivedPickup || null };
+  if (tstamps.start)          return { key: 'toYard',    since: ts.start || null };
+  if (load.approvalStatus === 'submitted' || load.allTripsDone) return { key: workRemains ? 'returning' : 'completed', since: load.submittedAt || null };
+  return { key: 'assigned', since: null };
+}
+
+function fleetLiveRows(now = Date.now()) {
+  const today = todayStr();
+  return (store.drivers || []).filter(d => d.active !== false).map(d => {
+    const u = { truckId: d.id };
+    const open = driverWorkdayLoads(u);
+    const todays = store.loads.filter(l => l.truckId === d.id && !l.voided && l.deliveryDate === today);
+    const load = fleetCurrentLoad(open);
+    // The previous trip on the current load counts as "just completed" only
+    // while no new trip has been started.
+    let trip = null;
+    if (load) {
+      const idx = activeTripIdx(load);
+      trip = load.trips[idx] || (idx > 0 ? load.trips[idx - 1] : null);
+    }
+    const remainingOnLoad = load ? (load.loadsDelivered || 0) < (load.loadsAssigned || 0) && load.approvalStatus !== 'submitted' : false;
+    const otherOpen = load ? open.some(l => l.id !== load.id) : open.length > 0;
+    const wf = fleetWorkflowStatus({ load, trip, workRemains: remainingOnLoad || otherOpen, hadWorkToday: todays.length > 0 });
+
+    const loc = (store.driverLocations || {})[d.id] || null;
+    const ageSeconds = loc ? Math.max(0, Math.round((now - Date.parse(loc.at)) / 1000)) : null;
+    const stale = !loc || ageSeconds * 1000 > FLEET_STALE_MS;
+    const live = !stale && d.status !== 'off';
+
+    const po = load ? (store.pos.find(p => p.id === load.poId) || {}) : null;
+    const truck = load ? getTruckForLoad(load) : null;
+    const usual = !truck && d.defaultTruckId ? (store.trucks || []).find(t => t.id === d.defaultTruckId) : null;
+    const vehicle = truck || usual || null;
+    const tripNumber = load ? Math.min(activeTripIdx(load) + 1, Math.max(load.loadsAssigned || 1, 1)) : null;
+
+    return {
+      driverId: d.id,
+      driverName: d.name || d.id,
+      driverStatus: d.status || 'available',        // roster: available | working | off
+      truckUnitId: vehicle ? vehicle.id : null,
+      truckNum: vehicle ? vehicle.truckNum : '',
+      truckIsAssigned: !!truck,                      // false = showing the driver's usual truck
+      status: live ? FLEET_STATUS[wf.key] : FLEET_STATUS.offline,
+      statusKey: live ? wf.key : 'offline',
+      workflowStatus: FLEET_STATUS[wf.key],          // what the stamps say, regardless of GPS
+      workflowKey: wf.key,
+      since: wf.since,                               // ISO time the current stage began, or null
+      live,
+      load: load ? {
+        id: load.id, poId: load.poId,
+        poNumber: po.poNumber || '', customer: po.customer || '', jobCode: po.jobCode || '',
+        address: po.address || '', city: po.city || '',
+        material: load.material,
+        loadsAssigned: load.loadsAssigned, loadsDelivered: load.loadsDelivered || 0,
+        loadNumber: Math.min((load.loadsDelivered || 0) + (trip && trip.timestamps?.completed ? 1 : 1), Math.max(load.loadsAssigned || 1, 1)),
+        tripNumber,
+        tripStartedAt: (trip && trip.isoStamps && trip.isoStamps.start) || null,
+        pickup: resolvePickupYard(load, po, trip),
+        approvalStatus: load.approvalStatus,
+      } : null,
+      gps: loc ? {
+        lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy == null ? null : loc.accuracy,
+        at: loc.at, ageSeconds, stale,
+      } : null,
+    };
+  });
+}
+
+app.get('/api/fleet/live', reqMgr, (req, res) => {
+  const rows = fleetLiveRows();
+  const version = crypto.createHash('sha1').update(rows.map(r => [r.driverId, r.statusKey, r.since, r.load?.id, r.gps?.at, r.gps?.stale].join(':')).join('|')).digest('hex').slice(0, 16);
+  res.json({
+    generatedAt: new Date().toISOString(),
+    staleAfterSeconds: FLEET_STALE_MS / 1000,
+    version,
+    count: rows.length,
+    trucks: rows,
+  });
 });
 
 // ── API: DATA (board, lists, etc.) ──────────────────────────────────────────
