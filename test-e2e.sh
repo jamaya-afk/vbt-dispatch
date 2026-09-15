@@ -7,7 +7,7 @@ set -u
 export PORT=${PORT:-4600}
 B=http://localhost:$PORT
 M=$(mktemp); D=$(mktemp)
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIPPED=0
 chk() { # chk "name" actual expected
   if [ "$2" = "$3" ]; then echo "  PASS  $1 ($2)"; PASS=$((PASS+1));
   else echo "  FAIL  $1 — got '$2' want '$3'"; FAIL=$((FAIL+1)); fi
@@ -15,7 +15,7 @@ chk() { # chk "name" actual expected
 
 cd "$(dirname "$0")"
 rm -f data.json
-(node server.js > /tmp/vbt-test.log 2>&1 &)
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 
 curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
@@ -341,8 +341,88 @@ print(len(d['trucks'])); print(len(d['drivers']))")
 chk "5 trucks seeded" "$(echo "$F"|sed -n 1p)" "5"
 chk "5 drivers seeded" "$(echo "$F"|sed -n 2p)" "5"
 
-pkill -f "node server.js" >/dev/null 2>&1
+echo "── 19. Secrets: no committed credential, no silent defaults ──"
+chk "service-account.json is not tracked by git" "$(git ls-files -- service-account.json | wc -l | tr -d ' ')" "0"
+chk "no literal session secret in source"        "$(grep -c "vbt-2025-secret" server.js)" "0"
+chk "no literal QB key in source"                "$(grep -c "vbt-2025-qb-default-key" qb.js)" "0"
+chk "Sheets never reads a key file from disk"    "$(grep -c "keyFile:" server.js)" "0"
+# Production must refuse to boot when any required secret is missing.
+PB=$( (NODE_ENV=production DATABASE_URL=postgres://unused PORT=4698 node server.js >/dev/null 2>&1; echo $?) )
+chk "prod boot refuses without SESSION_SECRET/QB_ENCRYPTION_KEY" "$PB" "1"
+PB=$( (NODE_ENV=production SESSION_SECRET=x QB_ENCRYPTION_KEY=y PORT=4698 node server.js >/dev/null 2>&1; echo $?) )
+chk "prod boot refuses without DATABASE_URL" "$PB" "1"
+
+echo "── 20. Async route errors answer, they never hang ──"
+# Express 4 drops a rejected promise on the floor: the request hangs forever.
+# The central wrapper in server.js turns it into a 500. If someone removes
+# that block again, these curls time out (000) instead of returning 500.
+for R in async-throw async-reject sync-throw; do
+  chk "/api/_test/$R returns 500 within 5s" "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' $B/api/_test/$R)" "500"
+done
+chk "server still alive after the throws" "$(curl -s -o /dev/null -w '%{http_code}' $B/healthz)" "200"
+
+pkill -f "^node server.js" >/dev/null 2>&1
 rm -f data.json
+
+echo "── 21. Postgres: a failed store read must NEVER cause a write ──"
+if [ -z "${TEST_DATABASE_URL:-}" ]; then
+  echo "  SKIP  TEST_DATABASE_URL not set — run ./test-pg-local.sh to exercise this against a throwaway Postgres"
+  SKIPPED=$((SKIPPED+1))
+else
+  PSQL="psql $TEST_DATABASE_URL -tA -q"
+  P2=$((PORT+1)); B2=http://localhost:$P2
+  $PSQL -c "DROP TABLE IF EXISTS dispatch_data, users, companies, user_sessions" >/dev/null
+  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  chk "fresh DB boots loaded" "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "True"
+  PM=$(mktemp); curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{
+   "po":{"poNumber":"PG-REAL","customer":"Real Customer","deliveryDate":"'"$(date +%F)"'"},
+   "splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+  chk "real PO persisted to the store row" "$($PSQL -c "select count(*) from dispatch_data where key='store' and value like '%PG-REAL%'")" "1"
+  # A second save so store_prev exists (it snapshots the value before each save).
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{
+   "po":{"poNumber":"PG-SECOND","customer":"Second Customer","deliveryDate":"'"$(date +%F)"'"},
+   "splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+  chk "store_prev holds the state before the last save" "$($PSQL -c "select count(*) from dispatch_data where key='store_prev' and value like '%PG-REAL%' and value not like '%PG-SECOND%'")" "1"
+  # Legacy seed password must stop working once the users table says otherwise.
+  $PSQL -c "update users set password='changed-in-db' where username='joshua'" >/dev/null
+  chk "old seed password rejected after DB change" "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=joshua123' $B2/login | sed 's|.*//[^/]*||')" "/login?error=1"
+  chk "new DB password accepted"                   "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=changed-in-db' $B2/login | sed 's|.*//[^/]*||')" "/app/"
+  $PSQL -c "update users set password='joshua123' where username='joshua'" >/dev/null
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  # Restart so store_boot exists, then damage the store row and boot again.
+  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  chk "store_boot snapshot written on boot" "$($PSQL -c "select count(*) from dispatch_data where key='store_boot' and value like '%PG-REAL%'")" "1"
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  $PSQL -c "update dispatch_data set value='{not json' where key='store'" >/dev/null
+  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  chk "boot with unreadable store: loaded=false"   "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "False"
+  chk "  ...and healthz no longer claims durable"  "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['persistence']['durable'])")" "False"
+  curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
+  chk "write attempt while locked is refused (503)" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"customer":"Overwriter","deliveryDate":"2026-01-01"},"splits":[]}')" "503"
+  chk "read while locked is refused, not an empty board" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' $B2/api/data)" "503"
+  chk "store row was NOT overwritten"     "$($PSQL -c "select value from dispatch_data where key='store'")" "{not json"
+  chk "store_prev was NOT rotated away"   "$($PSQL -c "select count(*) from dispatch_data where key='store_prev' and value like '%PG-REAL%'")" "1"
+  chk "backups endpoint reachable while locked" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' $B2/api/admin/backups)" "200"
+  chk "restore demands confirm" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/admin/restore -d '{"from":"store_boot"}')" "400"
+  RS=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/admin/restore -d '{"from":"store_boot","confirm":"RESTORE"}')
+  chk "restore from store_boot succeeds" "$(echo "$RS" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('success'), d.get('loaded'))")" "True True"
+  chk "damaged row kept as store_before_restore" "$($PSQL -c "select value from dispatch_data where key='store_before_restore'")" "{not json"
+  chk "real PO is back after restore" "$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;print(len([p for p in json.load(sys.stdin)['pos'] if p['poNumber']=='PG-REAL']))")" "1"
+  chk "writes work again after restore" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"PG-AFTER","customer":"After Restore","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "200"
+  # A missing store row next to existing backups is a lost row, not a new company.
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  $PSQL -c "delete from dispatch_data where key='store'" >/dev/null
+  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  chk "missing store row + backups present: refuses to seed" "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "False"
+  chk "  ...no store row was created" "$($PSQL -c "select count(*) from dispatch_data where key='store'")" "0"
+  pkill -f "^node server.js" >/dev/null 2>&1
+fi
 echo
-echo "════ $PASS passed, $FAIL failed ════"
+[ "$SKIPPED" -gt 0 ] && SK=", $SKIPPED section(s) skipped" || SK=""
+echo "════ $PASS passed, $FAIL failed$SK ════"
 [ "$FAIL" -eq 0 ]

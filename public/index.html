@@ -3661,9 +3661,38 @@ async function checkPersistence() {
     bar.style.cssText = 'position:sticky;top:0;z-index:250;background:#b42318;color:#fff;padding:11px 16px;'
       + 'font-size:13px;font-weight:650;line-height:1.45;display:flex;gap:10px;align-items:center';
     bar.innerHTML = `<span style="font-size:17px">&#9888;</span>
-      <span>${escapeHtml(p.warning)}</span>`;
+      <span style="flex:1">${escapeHtml(p.warning)}</span>`;
+    // Only an office login can restore, and only when the store failed to load
+    // (the one situation where nothing else in the app will work anyway).
+    if (p.loaded === false && (me?.role === 'admin' || me?.role === 'manager')) {
+      const b = document.createElement('button');
+      b.textContent = 'Restore backup…';
+      b.style.cssText = 'background:#fff;color:#b42318;border:0;border-radius:6px;padding:7px 12px;font-weight:700;cursor:pointer';
+      b.onclick = restoreBackupPrompt;
+      bar.appendChild(b);
+    }
     document.querySelector('.content')?.prepend(bar);
   } catch (e) { /* ignore */ }
+}
+
+// Restore the live dispatch data from one of the server-side backups.
+// store_prev = the value before the most recent save; store_boot = the value
+// when the server last started. The server copies the current row aside first,
+// so this can itself be undone.
+async function restoreBackupPrompt() {
+  let info;
+  try { info = await (await fetch('/api/admin/backups')).json(); } catch { alert('Could not list backups.'); return; }
+  const lines = (info.backups || []).map(b => `${b.key}: ${(b.bytes / 1024).toFixed(1)} KB, written ${b.updatedAt ? new Date(b.updatedAt).toLocaleString() : 'unknown'}`);
+  const from = prompt(`Restore dispatch data from which backup?\n\n${lines.join('\n')}\n\nType store_prev or store_boot:`);
+  if (!from) return;
+  if (!(info.restorable || []).includes(from.trim())) { alert('Not a restorable backup: ' + from); return; }
+  if (!confirm(`Replace the live dispatch data with "${from.trim()}"?\nThe current row is kept as store_before_restore.`)) return;
+  const r = await fetch('/api/admin/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: from.trim(), confirm: 'RESTORE' }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert('Restore failed: ' + (d.error || r.status)); return; }
+  alert(`Restored from ${d.restoredFrom}: ${d.pos} POs, ${d.loads} loads. Reloading.`);
+  location.reload();
 }
 
 // ── PURCHASE ORDERS ─────────────────────────────────────────────────────────

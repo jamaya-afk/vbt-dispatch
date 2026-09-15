@@ -4,40 +4,97 @@ const express = require('express');
 const session = require('express-session');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// ── REQUIRED SECRETS ─────────────────────────────────────────────────────────
+// Production refuses to boot without these. There are deliberately no
+// fallback values anywhere in the source: a known default session secret lets
+// anyone forge a login cookie, a known default encryption key makes the stored
+// QuickBooks tokens readable, and a missing DATABASE_URL would silently write
+// the day's dispatch to a disk Railway wipes on the next deploy.
+const REQUIRED_PROD_SECRETS = {
+  DATABASE_URL:      'Postgres connection string — the only durable store',
+  SESSION_SECRET:    'signs login cookies (any long random string)',
+  QB_ENCRYPTION_KEY: 'encrypts QuickBooks OAuth tokens at rest (any long random string)',
+};
+if (IS_PROD) {
+  const missing = Object.keys(REQUIRED_PROD_SECRETS).filter(k => !String(process.env[k] || '').trim());
+  if (missing.length) {
+    console.error('FATAL: required production secrets are not set:');
+    for (const k of missing) console.error(`  ${k.padEnd(18)} — ${REQUIRED_PROD_SECRETS[k]}`);
+    console.error('Set them in the Railway service variables and redeploy.');
+    process.exit(1);
+  }
+}
+// Dev only: a per-process random value, never a literal in the source.
+// Sessions and dev-only QuickBooks tokens reset on each restart, which is fine
+// locally and impossible in production because of the guard above.
+if (!process.env.SESSION_SECRET) {
+  process.env.SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+  console.warn('⚠ SESSION_SECRET not set — using a random per-process value (dev only; sessions reset on restart).');
+}
+if (!process.env.QB_ENCRYPTION_KEY) {
+  process.env.QB_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+  console.warn('⚠ QB_ENCRYPTION_KEY not set — using a random per-process value (dev only; QuickBooks tokens reset on restart).');
+}
+
 const qb = require('./qb');
 const mailer = require('./mailer');
 
 const app = express();
+
+// ── ASYNC ROUTE SAFETY ───────────────────────────────────────────────────────
+// Express 4 does not catch a rejected promise from an async handler: the
+// request hangs forever and the caller sees nothing, while the in-memory
+// store may already be half-changed. Every handler registered through
+// app.<verb>() is wrapped here once, centrally, so a throw becomes next(err)
+// and the error middleware at the bottom answers with a real 500.
+// test-e2e.sh section 20 fails if this block is removed.
+function wrapAsyncHandler(fn) {
+  if (Array.isArray(fn)) return fn.map(wrapAsyncHandler);
+  if (typeof fn !== 'function' || fn.length === 4) return fn;   // error middleware stays as-is
+  return function asyncSafe(req, res, next) {
+    let out;
+    try { out = fn(req, res, next); } catch (e) { return next(e); }
+    if (out && typeof out.then === 'function') out.then(undefined, next);
+  };
+}
+for (const verb of ['get', 'post', 'put', 'delete', 'patch', 'all']) {
+  const original = app[verb].bind(app);
+  app[verb] = function (pathArg, ...handlers) {
+    if (verb === 'get' && handlers.length === 0) return original(pathArg);   // app.get('setting name')
+    return original(pathArg, ...handlers.map(wrapAsyncHandler));
+  };
+}
+
 app.use(express.json({
   limit: '25mb',
 }));
 app.use(express.urlencoded({ extended: true }));
 
-const IS_PROD = process.env.NODE_ENV === 'production';
-
-// Hard-fail at boot in production if DATABASE_URL is missing — we never want
-// to silently fall back to data.json on a Railway deploy and lose data.
-if (IS_PROD && !process.env.DATABASE_URL) {
-  console.error('FATAL: DATABASE_URL is required in production.');
-  process.exit(1);
-}
-
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
-if (!process.env.SESSION_SECRET) {
-  console.warn('⚠ SECURITY: SESSION_SECRET not set — using a known default. Set it in Railway variables.');
-}
 const sessionOpts = {
-  secret: process.env.SESSION_SECRET || 'vbt-2025-secret',
+  secret: process.env.SESSION_SECRET,
   resave: false, saveUninitialized: false,
   cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, sameSite: 'lax' }
 };
+// Railway/Supabase Postgres needs TLS; a local test database does not.
+// `?sslmode=disable` in DATABASE_URL (or PGSSL=disable) turns it off.
+function pgSsl() {
+  const url = String(process.env.DATABASE_URL || '');
+  if (process.env.PGSSL === 'disable' || /sslmode=disable/.test(url)) return false;
+  return { rejectUnauthorized: false };
+}
 let sessionPool = null;
 if (process.env.DATABASE_URL) {
   try {
     const { Pool } = require('pg');
     sessionPool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: pgSsl(),
+      connectionTimeoutMillis: 10000,   // never hang boot forever on a dead host
     });
     sessionPool.on('error', e => console.error('Session pool error:', e.message));
     const pgSession = require('connect-pg-simple')(session);
@@ -343,7 +400,7 @@ async function initPg() {
       const { Pool } = require('pg');
       pg = new Pool({
         connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false },
+        ssl: pgSsl(),
         connectionTimeoutMillis: 10000,
       });
     } else {
@@ -351,6 +408,8 @@ async function initPg() {
     }
     await pg.query('SELECT 1');
     await pg.query(`CREATE TABLE IF NOT EXISTS dispatch_data (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    // Additive only: lets /api/admin/backups show when each restore point was written.
+    await pg.query(`ALTER TABLE dispatch_data ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`);
 
     // Multi-tenant scaffolding tables. Created here so Phase 2 (per-company
     // stores) can layer on without another migration step.
@@ -424,33 +483,112 @@ async function seedDefaultCompanyAndUsers() {
   }
 }
 
+// A store row must be a JSON object. Anything else (bad JSON, an array, a
+// string) means the row is damaged and must NOT be silently replaced.
+function parseStoreRow(text) {
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('store row is not a JSON object');
+  return parsed;
+}
+
+// Load the store. `persistence.loaded` becomes true ONLY after an existing
+// store row was read and validated, or after the database was proven to be
+// genuinely empty (no store row AND no backup rows). A successful connection
+// is not a successful load: if the read fails for any reason the process
+// stays in a locked state where saveData() refuses to write, so a transient
+// read error can never turn into "seed an empty store over production".
 async function loadData() {
-  let loaded = false;
-  // Postgres first
+  persistence.loaded = false;
+  persistence.loadError = '';
   if (pg) {
-    try {
-      const r = await pg.query("SELECT value FROM dispatch_data WHERE key='store'");
-      if (r.rows.length) {
-        store = JSON.parse(r.rows[0].value);
-        loaded = true;
-        console.log(`✓ Loaded from Postgres: ${store.pos.length} POs, ${store.loads.length} loads`);
-      }
-    } catch (e) { console.error('PG read error:', e.message); }
-  }
-  // File fallback — DEV ONLY. In production we hard-fail above instead of
-  // silently using ephemeral disk that resets on every Railway redeploy.
-  if (!IS_PROD && fs.existsSync(DATA_FILE)) {
-    try {
-      store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      loaded = true;
-      console.log(`✓ Loaded from file: ${store.pos.length} POs`);
-      if (pg) { await saveData(); console.log('✓ Migrated file data to Postgres'); }
+    const r = await pg.query("SELECT value FROM dispatch_data WHERE key='store'");
+    if (r.rows.length) {
+      store = parseStoreRow(r.rows[0].value);
+      normalizeStore();
+      persistence.loaded = true;
+      console.log(`✓ Loaded from Postgres: ${store.pos.length} POs, ${store.loads.length} loads`);
       return;
-    } catch (e) { console.warn('File read error:', e.message); }
+    }
+    // No store row. Before treating this as a brand-new database, make sure
+    // there is no backup row either — a missing store next to an existing
+    // backup means the row was lost, not that the company is new.
+    const backups = await pg.query("SELECT key FROM dispatch_data WHERE key LIKE 'store_%'");
+    if (backups.rows.length) {
+      throw new Error(`'store' row is missing but backups exist (${backups.rows.map(x => x.key).join(', ')}) — refusing to seed. Restore a backup instead.`);
+    }
+    // Genuinely empty database: seed defaults, and in dev migrate data.json.
+    if (!IS_PROD && fs.existsSync(DATA_FILE)) {
+      try {
+        store = parseStoreRow(fs.readFileSync(DATA_FILE, 'utf8'));
+        normalizeStore();
+        persistence.loaded = true;
+        await saveData();
+        console.log(`✓ Migrated data.json to Postgres: ${store.pos.length} POs`);
+        return;
+      } catch (e) { console.warn('File read error (ignored, DB is empty):', e.message); }
+    }
+    normalizeStore();
+    persistence.loaded = true;
+    console.log('✓ Empty database — seeded defaults (no store row, no backups)');
+    return;
   }
-  // Nothing loaded — still normalize so the seed defaults (trucks, vendors,
-  // etc.) populate even on a brand-new database.
+  // File mode — DEV ONLY (production exits at boot without DATABASE_URL).
+  if (fs.existsSync(DATA_FILE)) {
+    store = parseStoreRow(fs.readFileSync(DATA_FILE, 'utf8'));
+    normalizeStore();
+    persistence.loaded = true;
+    console.log(`✓ Loaded from file: ${store.pos.length} POs`);
+    return;
+  }
   normalizeStore();
+  persistence.loaded = true;
+}
+
+// One extra restore point that a couple of quick saves cannot rotate away:
+// the store exactly as it was when this process booted. Written once, after
+// a successful load, never on a locked process.
+async function snapshotBootStore() {
+  if (!pg || !persistence.loaded) return;
+  try {
+    await pg.query(`
+      INSERT INTO dispatch_data(key, value, updated_at)
+      SELECT 'store_boot', value, now() FROM dispatch_data WHERE key = 'store'
+      ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    `);
+  } catch (e) { console.warn('store_boot snapshot skipped:', e.message); }
+}
+
+const RESTORE_KEYS = ['store_prev', 'store_boot'];
+async function listBackups() {
+  if (!pg) return [];
+  const r = await pg.query(`SELECT key, length(value) AS bytes, updated_at FROM dispatch_data WHERE key = 'store' OR key LIKE 'store_%' ORDER BY key`);
+  // Sizes and timestamps only — a backup is never parsed into the live store here.
+  return r.rows.map(row => ({ key: row.key, bytes: Number(row.bytes), updatedAt: row.updated_at }));
+}
+
+// Restore the live store from a backup row. Safe by construction:
+//   1. the current 'store' row (whatever state it is in) is copied to
+//      'store_before_restore' first, so the restore itself is reversible;
+//   2. the backup is parsed and validated BEFORE anything is written;
+//   3. the in-memory store is reloaded from the database afterwards, which
+//      also clears the locked state if the process booted with a bad row.
+async function restoreFromBackup(key) {
+  if (!pg) throw new Error('Restore requires Postgres');
+  if (!RESTORE_KEYS.includes(key)) throw new Error(`Unknown backup "${key}"`);
+  const r = await pg.query('SELECT value FROM dispatch_data WHERE key = $1', [key]);
+  if (!r.rows.length) throw new Error(`Backup "${key}" does not exist`);
+  const candidate = parseStoreRow(r.rows[0].value);   // validate first
+  await pg.query(`
+    INSERT INTO dispatch_data(key, value, updated_at)
+    SELECT 'store_before_restore', value, now() FROM dispatch_data WHERE key = 'store'
+    ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+  `);
+  await pg.query(
+    "INSERT INTO dispatch_data(key, value, updated_at) VALUES('store', $1, now()) ON CONFLICT(key) DO UPDATE SET value = $1, updated_at = now()",
+    [r.rows[0].value]
+  );
+  await loadData();
+  return { restoredFrom: key, pos: (candidate.pos || []).length, loads: (candidate.loads || []).length };
 }
 
 // Persistence health, surfaced to /healthz and to the dispatcher's screen.
@@ -460,6 +598,8 @@ async function loadData() {
 const persistence = {
   mode: 'unknown',        // 'postgres' | 'file' | 'unknown'
   durable: false,
+  loaded: false,          // true ONLY after the existing store was read and validated
+  loadError: '',
   lastSaveOk: null,
   lastSaveAt: '',
   lastError: '',
@@ -467,20 +607,41 @@ const persistence = {
 };
 
 async function saveData() {
+  // The single most important line in this file. If the store was never
+  // successfully loaded, whatever is in memory is seed data or nothing, and
+  // writing it would overwrite the company's real records.
+  if (!persistence.loaded) {
+    const msg = 'REFUSED: store was never loaded from the database — writing now would overwrite production data';
+    persistence.lastSaveOk = false;
+    persistence.lastError = msg;
+    throw new Error(msg);
+  }
   const j = JSON.stringify(store);
   if (pg) {
     try {
       // Snapshot the previous value before overwriting. The whole operation
       // lives in one row, so a bad write would otherwise be unrecoverable.
-      await pg.query(`
-        INSERT INTO dispatch_data(key, value)
-        SELECT 'store_prev', value FROM dispatch_data WHERE key = 'store'
-        ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
-      `).catch(() => {});
-      await pg.query(
-        "INSERT INTO dispatch_data(key,value) VALUES('store',$1) ON CONFLICT(key) DO UPDATE SET value=$1",
-        [j]
-      );
+      // Both statements run in one transaction so the backup and the new
+      // value can never disagree.
+      const client = await pg.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`
+          INSERT INTO dispatch_data(key, value, updated_at)
+          SELECT 'store_prev', value, now() FROM dispatch_data WHERE key = 'store'
+          ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        `);
+        await client.query(
+          "INSERT INTO dispatch_data(key,value,updated_at) VALUES('store',$1,now()) ON CONFLICT(key) DO UPDATE SET value=$1, updated_at=now()",
+          [j]
+        );
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        client.release();
+      }
       persistence.lastSaveOk = true;
       persistence.lastSaveAt = new Date().toISOString();
       persistence.lastError = '';
@@ -491,11 +652,12 @@ async function saveData() {
       persistence.lastSaveOk = false;
       persistence.lastError = e.message;
       if (!persistence.degradedSince) persistence.degradedSince = new Date().toISOString();
-      // In prod, never fall back to local disk — the next deploy will wipe it.
-      if (IS_PROD) throw e;
+      // Never fall back to local disk when Postgres is the configured store —
+      // a file write would look like success and vanish on the next deploy.
+      throw e;
     }
   }
-  if (!IS_PROD) {
+  {
     try {
       fs.writeFileSync(DATA_FILE, j);
       persistence.lastSaveOk = true;
@@ -1069,9 +1231,16 @@ function reqAdmin(req, res, next) {
 app.get('/healthz', (req, res) => res.json({
   ok: true,
   hasDb: !!process.env.DATABASE_URL,
+  // `loaded` is the truth about the data: durable=true only says Postgres is
+  // reachable. A process that could not read its store reports loaded=false
+  // and refuses every write.
+  loaded: persistence.loaded,
+  loadError: persistence.loadError,
   persistence: {
     mode: persistence.mode,
-    durable: persistence.durable,
+    durable: persistence.durable && persistence.loaded,
+    loaded: persistence.loaded,
+    loadError: persistence.loadError,
     lastSaveOk: persistence.lastSaveOk,
     lastSaveAt: persistence.lastSaveAt,
     lastError: persistence.lastError,
@@ -1092,13 +1261,61 @@ app.get('/api/persistence', reqAuth, (req, res) => {
   res.json({
     ...persistence,
     fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
-    warning: !persistence.durable
+    warning: !persistence.loaded
+      ? 'LOCKED: the dispatch data could not be read from the database. Nothing has been changed or overwritten. An admin can restore a backup from Settings.'
+      : !persistence.durable
       ? 'Data is NOT in Postgres — it will be lost on the next redeploy. Set DATABASE_URL.'
       : persistence.lastSaveOk === false
         ? 'The last save did not reach Postgres. Recent changes may be at risk.'
         : '',
   });
 });
+
+// ── STORE LOCK ───────────────────────────────────────────────────────────────
+// While the store is not loaded, every dispatch API answers 503 instead of
+// serving an empty board that the office could mistake for lost data, and
+// instead of accepting a write that saveData() would refuse anyway. Health,
+// identity and the backup/restore endpoints stay reachable so the situation
+// can be seen and fixed.
+const LOCK_EXEMPT = new Set(['/api/persistence', '/api/me', '/api/admin/backups', '/api/admin/restore']);
+app.use('/api', (req, res, next) => {
+  if (persistence.loaded || LOCK_EXEMPT.has(req.originalUrl.split('?')[0])) return next();
+  res.status(503).json({
+    error: 'Dispatch data is locked: the store could not be loaded from the database. Nothing was overwritten.',
+    locked: true,
+    loadError: persistence.loadError,
+  });
+});
+
+// ── BACKUP / RESTORE (admin) ─────────────────────────────────────────────────
+// store_prev = the value before the most recent save; store_boot = the value
+// when this process last started. Restoring first copies the current row to
+// store_before_restore, so a restore is itself undoable.
+app.get('/api/admin/backups', reqAdmin, async (req, res) => {
+  const rows = await listBackups();
+  res.json({ loaded: persistence.loaded, loadError: persistence.loadError, restorable: RESTORE_KEYS, backups: rows });
+});
+app.post('/api/admin/restore', reqAdmin, async (req, res) => {
+  const { from, confirm } = req.body || {};
+  if (!RESTORE_KEYS.includes(from)) return res.status(400).json({ error: `from must be one of ${RESTORE_KEYS.join(', ')}` });
+  if (confirm !== 'RESTORE') return res.status(400).json({ error: 'Pass confirm: "RESTORE" to replace the live dispatch data with this backup' });
+  try {
+    const result = await restoreFromBackup(from);
+    logAction(req.session.user, 'restore-backup', from, { pos: result.pos, loads: result.loads });
+    await saveData();   // persists the audit entry; also proves the store is writable again
+    res.json({ success: true, ...result, loaded: persistence.loaded });
+  } catch (e) {
+    res.status(409).json({ error: e.message, loaded: persistence.loaded });
+  }
+});
+
+// Test-only hooks. Never mounted in production; used by test-e2e.sh to prove
+// the async wrapper above is still in place (a hung request = missing wrapper).
+if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
+  app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
+  app.get('/api/_test/async-reject', (req, res) => Promise.reject(new Error('test: rejected promise')));
+  app.get('/api/_test/sync-throw', (req, res) => { throw new Error('test: sync throw'); });
+}
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
 
 app.get('/login', (req, res) => {
@@ -1156,13 +1373,20 @@ app.post('/login', async (req, res) => {
         console.log(`[LOGIN] SUCCESS (db): username="${dbUser.username}", role="${dbUser.role}"`);
         return res.redirect('/app/');
       }
+      // The users table answered and did not accept this login. That is the
+      // final word: it must NOT fall through to the hardcoded legacy map,
+      // otherwise a changed password or a deactivated account would still be
+      // openable with the original seed password.
+      console.log(`[LOGIN] FAILED (db): username="${cleanName}"`);
+      return res.redirect('/login?error=1');
     } catch (e) {
       console.error('[LOGIN] DB lookup error:', e.message);
-      // fall through to hardcoded users
+      if (IS_PROD) return res.redirect('/login?error=1');
+      // dev only: fall through to the hardcoded map if the table is unreachable
     }
   }
 
-  // 2) Legacy fallback: hardcoded VBT users (still works if seed hasn't run).
+  // 2) Legacy fallback: hardcoded VBT users (dev / no-database mode only).
   const u = USERS[cleanName];
   if (!u || u.password !== password) {
     console.log(`[LOGIN] FAILED: username="${cleanName}"`);
@@ -4095,16 +4319,37 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
 
 // ── API: GOOGLE SHEETS SYNC ──────────────────────────────────────────────────
 const SHEET_ID = process.env.SHEET_ID || '1T5pOeXmLmZyKKfq4YRl9aymXn9MQnNrqmcuyJluMhQs';
+// The service-account credential comes ONLY from the environment
+// (GOOGLE_SERVICE_ACCOUNT_JSON: the key file's JSON, raw or base64). A
+// service-account.json on disk is deliberately ignored — one was committed to
+// this repo's history and has to be treated as compromised, so the app must
+// never quietly pick a file like that back up.
 let sheets = null;
+function loadGoogleCredentials() {
+  const raw = String(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '').trim();
+  if (!raw) return null;
+  const text = raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
+  const creds = JSON.parse(text);
+  if (creds.type !== 'service_account' || !creds.client_email || !creds.private_key) {
+    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not a service-account key');
+  }
+  return creds;
+}
 try {
   if (fs.existsSync(path.join(__dirname, 'service-account.json'))) {
+    console.warn('⚠ SECURITY: service-account.json is present on disk and is IGNORED. Delete it; use GOOGLE_SERVICE_ACCOUNT_JSON.');
+  }
+  const credentials = loadGoogleCredentials();
+  if (credentials) {
     const { google } = require('googleapis');
     const auth = new google.auth.GoogleAuth({
-      keyFile: path.join(__dirname, 'service-account.json'),
+      credentials,
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
     sheets = google.sheets({ version: 'v4', auth });
-    console.log('✓ Google Sheets ready');
+    console.log(`✓ Google Sheets ready (${credentials.client_email})`);
+  } else {
+    console.log('· Google Sheets not configured (GOOGLE_SERVICE_ACCOUNT_JSON unset) — archive/sync disabled');
   }
 } catch (e) { console.warn('Sheets init failed:', e.message); }
 
@@ -4626,9 +4871,20 @@ const PORT = process.env.PORT || 3000;
 (async () => {
   await initPg();
   await seedDefaultCompanyAndUsers();
-  await loadData();
+  try {
+    await loadData();
+    await snapshotBootStore();
+  } catch (e) {
+    // Fail SAFE, not fail closed: the process stays up so /healthz and the
+    // dispatcher's screen show exactly what happened and an admin can restore
+    // a backup — but every read of dispatch data and every write is refused
+    // (see the lock middleware and saveData) until a load succeeds.
+    persistence.loaded = false;
+    persistence.loadError = e.message;
+    console.error('✗ STORE LOAD FAILED — running LOCKED, nothing will be written:', e.message);
+  }
   app.listen(PORT, () => {
-    console.log(`VBT Dispatch on port ${PORT}`);
+    console.log(`VBT Dispatch on port ${PORT}${persistence.loaded ? '' : ' (LOCKED — store not loaded)'}`);
     if (!pg) console.warn('⚠ No Postgres — data will reset on redeploy');
   });
 })();

@@ -12,7 +12,13 @@ const QB_ENVIRONMENT   = (process.env.QB_ENVIRONMENT || 'sandbox').toLowerCase()
 const QB_SCOPES        = process.env.QB_SCOPES || 'com.intuit.quickbooks.accounting';
 const QB_DEFAULT_ITEM  = process.env.QB_DEFAULT_ITEM_NAME || 'Services';
 const QB_MINOR_VERSION = process.env.QB_MINOR_VERSION || '70';
-const QB_ENCRYPTION_KEY_RAW = process.env.QB_ENCRYPTION_KEY || process.env.SESSION_SECRET || 'vbt-2025-qb-default-key';
+// No fallback value on purpose. server.js hard-fails in production when this
+// is unset and generates a per-process random key in dev before requiring
+// this module. Loading qb.js without a key is a programming error.
+const QB_ENCRYPTION_KEY_RAW = String(process.env.QB_ENCRYPTION_KEY || '').trim();
+if (!QB_ENCRYPTION_KEY_RAW) {
+  throw new Error('QB_ENCRYPTION_KEY is not set — refusing to encrypt QuickBooks tokens with a guessable key');
+}
 
 const QB_AUTH_BASE  = 'https://appcenter.intuit.com/connect/oauth2';
 const QB_TOKEN_URL  = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
