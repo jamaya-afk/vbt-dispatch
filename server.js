@@ -266,6 +266,49 @@ function driverRoster() {
   });
 }
 
+// ONE driver roster. store.drivers is the dispatch source of truth (name,
+// default truck, status, active); the Postgres users table only holds the
+// login for that same id (users.truck_id === driver id === load.truckId).
+// Everything that names a driver — Drivers & Trucks, Quick Assign, PO
+// creation, assignment validation, driver login — resolves through here.
+function rosterDriver(id) {
+  return (store.drivers || []).find(d => d.id === id) || null;
+}
+function upsertRosterDriver({ id, name, defaultTruckId, active, status, phone, notes }) {
+  if (!Array.isArray(store.drivers)) store.drivers = [];
+  let d = rosterDriver(id);
+  if (!d) {
+    d = { id, name: name || id, login: id, phone: '', status: 'available', defaultTruckId: null, active: true, notes: '' };
+    store.drivers.push(d);
+  }
+  if (name !== undefined && String(name).trim()) d.name = String(name).trim();
+  if (defaultTruckId !== undefined) d.defaultTruckId = defaultTruckId || null;
+  if (active !== undefined) d.active = !!active;
+  if (status !== undefined && DRIVER_STATUSES.includes(status)) d.status = status;
+  if (phone !== undefined) d.phone = phone;
+  if (notes !== undefined) d.notes = notes;
+  return d;
+}
+// Roster + login state, for the Drivers & Trucks screen.
+async function fleetDrivers() {
+  const logins = new Map();
+  if (pg) {
+    try {
+      const r = await pg.query(`SELECT username, truck_id, active FROM users WHERE company_id = $1 AND role = 'driver'`, [DEFAULT_COMPANY_ID]);
+      r.rows.forEach(row => logins.set(row.truck_id || row.username, { username: row.username, active: row.active !== false }));
+    } catch (e) { console.error('[fleetDrivers] users lookup failed:', e.message); }
+  }
+  return (store.drivers || []).map(d => {
+    const login = logins.get(d.id);
+    return {
+      id: d.id, username: d.id, displayName: d.name || d.id,
+      defaultTruckId: d.defaultTruckId || null, status: d.status || 'available',
+      active: d.active !== false, phone: d.phone || '', notes: d.notes || '',
+      hasLogin: !!login, loginActive: login ? login.active : false,
+    };
+  });
+}
+
 // The truck a load is running on. Falls back to the driver's historical truck
 // so loads created before the fleet existed still show the right vehicle.
 function getTruckForLoad(l) {
@@ -1433,10 +1476,17 @@ app.post('/login', async (req, res) => {
       );
       const dbUser = r.rows.find(row => row.active && row.password === password);
       if (dbUser) {
+        // A driver's session truckId must be a roster id (that is what
+        // load.truckId holds). users.truck_id normally equals the username;
+        // if it was ever set to something that is not a roster driver (an
+        // old screen let it hold a vehicle id), fall back to the username so
+        // the driver still sees their own loads.
+        let sessTruckId = dbUser.truck_id;
+        if (dbUser.role === 'driver' && !rosterDriver(sessTruckId)) sessTruckId = dbUser.username;
         req.session.user = {
           username:    dbUser.username,
           role:        dbUser.role,
-          truckId:     dbUser.truck_id,
+          truckId:     sessTruckId,
           displayName: dbUser.display_name || dbUser.username,
         };
         console.log(`[LOGIN] SUCCESS (db): username="${dbUser.username}", role="${dbUser.role}"`);
@@ -1548,7 +1598,7 @@ app.get('/api/data', reqAuth, async (req, res) => {
   res.json({
     trucks: driverRoster(),          // legacy contract: the DRIVER dropdown
     fleet:  store.trucks || [],      // the actual vehicles
-    drivers: listDrivers(),
+    drivers: store.drivers || [],    // the roster (same list Quick Assign uses)
     materials: MATERIALS,
     yards,
     vendors: store.vendors,
@@ -3388,183 +3438,101 @@ app.get('/api/audit-log', reqMgr, (req, res) => {
 // Helper: list all driver-role users for the active company. Falls back to
 // the legacy hardcoded USERS map when the DB isn't reachable so the dispatch
 // board never goes blank.
-function listDrivers() {
-  // Hardcoded legacy fallback used when DB lookup fails.
-  return Object.entries(USERS)
-    .filter(([, u]) => u.role === 'driver')
-    .map(([username, u]) => ({
-      username,
-      role: u.role,
-      truckId: u.truckId || username,
-      displayName: u.displayName || username,
-      active: true,
-    }));
-}
-
-async function listDriversFromDb(companyId) {
-  if (!pg) return listDrivers();
-  try {
-    const r = await pg.query(
-      `SELECT username, role, truck_id, display_name, active
-         FROM users
-        WHERE company_id = $1 AND role = 'driver'
-        ORDER BY display_name`,
-      [companyId]
-    );
-    return r.rows.map(row => ({
-      username:    row.username,
-      role:        row.role,
-      truckId:     row.truck_id || row.username,
-      displayName: row.display_name || row.username,
-      active:      row.active !== false,
-    }));
-  } catch (e) {
-    console.error('[listDriversFromDb] failed:', e.message);
-    return listDrivers();
-  }
-}
-
-// GET /api/fleet — admins only. Returns trucks + drivers.
+// GET /api/fleet — office only. Vehicles + the driver roster with login state.
 app.get('/api/fleet', reqMgr, async (req, res) => {
-  const cid = DEFAULT_COMPANY_ID;
-  const drivers = await listDriversFromDb(cid);
-  res.json({ trucks: store.trucks, drivers });
+  res.json({ trucks: store.trucks || [], drivers: await fleetDrivers(), truckStatuses: TRUCK_STATUSES, driverStatuses: DRIVER_STATUSES });
 });
 
-// ── Trucks CRUD ──
-app.post('/api/trucks', reqMgr, async (req, res) => {
-  const { id, label, truckNum } = req.body || {};
-  const cleanId = String(id || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
-  if (!cleanId)  return res.status(400).json({ error: 'id is required (e.g. "truck-7")' });
-  if (!label)    return res.status(400).json({ error: 'label is required (driver display name)' });
-  if (!truckNum) return res.status(400).json({ error: 'truckNum is required (e.g. "Truck #7")' });
-  if (store.trucks.some(t => t.id === cleanId)) {
-    return res.status(409).json({ error: 'A truck with that id already exists' });
-  }
-  const truck = { id: cleanId, label: String(label).trim(), truckNum: String(truckNum).trim(), active: true };
-  store.trucks.push(truck);
-  await saveData();
-  logAction(req.session.user, 'created-truck', cleanId, { truck });
-  res.json({ ok: true, truck });
-});
-
-app.put('/api/trucks/:id', reqMgr, async (req, res) => {
-  const truck = store.trucks.find(t => t.id === req.params.id);
-  if (!truck) return res.status(404).json({ error: 'Truck not found' });
-  const before = { ...truck };
-  if (req.body.label    !== undefined) truck.label    = String(req.body.label).trim();
-  if (req.body.truckNum !== undefined) truck.truckNum = String(req.body.truckNum).trim();
-  if (req.body.active   !== undefined) truck.active   = !!req.body.active;
-  await saveData();
-  logAction(req.session.user, 'updated-truck', truck.id, { before, after: truck });
-  res.json({ ok: true, truck });
-});
-
-app.delete('/api/trucks/:id', reqMgr, async (req, res) => {
-  const idx = store.trucks.findIndex(t => t.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Truck not found' });
-  // Refuse to hard-delete if any non-voided load references this truck —
-  // historical attribution would break. Soft-disable instead.
-  const inUse = store.loads.some(l => l.truckId === req.params.id && !l.voided);
-  if (inUse) {
-    store.trucks[idx].active = false;
-    await saveData();
-    logAction(req.session.user, 'disabled-truck', req.params.id, { reason: 'in-use' });
-    return res.json({ ok: true, softDeleted: true });
-  }
-  const removed = store.trucks.splice(idx, 1)[0];
-  await saveData();
-  logAction(req.session.user, 'deleted-truck', req.params.id, { removed });
-  res.json({ ok: true });
-});
-
-// ── Drivers CRUD (writes the users table) ──
+// ── Drivers CRUD — roster first, login second ──
+// Creating a driver here makes them dispatchable immediately (roster) and
+// able to log in (users table, when Postgres is available).
 app.post('/api/drivers', reqMgr, async (req, res) => {
-  if (!pg) return res.status(503).json({ error: 'Database not available' });
-  const { username, password, displayName, truckId } = req.body || {};
+  const { username, password, displayName } = req.body || {};
+  const defaultTruckId = req.body?.defaultTruckId ?? req.body?.truckId ?? '';
   const uname = String(username || '').toLowerCase().trim();
   if (!uname || !/^[a-z0-9_.-]+$/.test(uname)) {
     return res.status(400).json({ error: 'username must be lowercase letters/numbers/_.-' });
   }
-  if (!password || String(password).length < 4) {
-    return res.status(400).json({ error: 'password must be at least 4 characters' });
+  if (rosterDriver(uname)) return res.status(409).json({ error: 'A driver with that username already exists' });
+  if (defaultTruckId && !(store.trucks || []).some(t => t.id === defaultTruckId)) {
+    return res.status(400).json({ error: 'Unknown truck for default truck' });
   }
-  const cid    = DEFAULT_COMPANY_ID;
-  const userId = `user-${cid}-${uname}`;
-  const tId    = String(truckId || uname);
-  const dName  = String(displayName || '').trim() || (uname.charAt(0).toUpperCase() + uname.slice(1));
-  try {
-    const existing = await pg.query('SELECT 1 FROM users WHERE company_id=$1 AND username=$2', [cid, uname]);
-    if (existing.rows.length) return res.status(409).json({ error: 'username already exists' });
-    await pg.query(
-      `INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
-       VALUES ($1, $2, $3, $4, 'driver', $5, $6, true)`,
-      [userId, cid, uname, password, tId, dName]
-    );
-    logAction(req.session.user, 'created-driver', uname, { displayName: dName, truckId: tId });
-    const drivers = await listDriversFromDb(cid);
-    res.json({ ok: true, drivers });
-  } catch (e) {
-    console.error('[POST /api/drivers]', e.message);
-    res.status(500).json({ error: e.message });
+  const dName = String(displayName || '').trim() || (uname.charAt(0).toUpperCase() + uname.slice(1));
+  let loginCreated = false;
+  if (pg) {
+    if (!password || String(password).length < 4) return res.status(400).json({ error: 'password must be at least 4 characters' });
+    try {
+      const existing = await pg.query('SELECT 1 FROM users WHERE company_id=$1 AND username=$2', [DEFAULT_COMPANY_ID, uname]);
+      if (existing.rows.length) return res.status(409).json({ error: 'username already exists' });
+      await pg.query(
+        `INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
+         VALUES ($1, $2, $3, $4, 'driver', $5, $6, true)`,
+        [`user-${DEFAULT_COMPANY_ID}-${uname}`, DEFAULT_COMPANY_ID, uname, password, uname, dName]
+      );
+      loginCreated = true;
+    } catch (e) {
+      console.error('[POST /api/drivers]', e.message);
+      return res.status(500).json({ error: 'Could not create the login: ' + e.message });
+    }
   }
+  upsertRosterDriver({ id: uname, name: dName, defaultTruckId: defaultTruckId || null, active: true });
+  logAction(req.session.user, 'created-driver', uname, { displayName: dName, defaultTruckId: defaultTruckId || null, loginCreated });
+  await saveData();
+  res.json({ ok: true, loginCreated, drivers: await fleetDrivers(), roster: driverRoster() });
 });
 
 app.put('/api/drivers/:username', reqMgr, async (req, res) => {
-  if (!pg) return res.status(503).json({ error: 'Database not available' });
-  const cid = DEFAULT_COMPANY_ID;
   const uname = String(req.params.username || '').toLowerCase();
-  const { displayName, truckId, password, active } = req.body || {};
-  const sets = [];
-  const vals = [];
-  let i = 1;
-  if (displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(displayName).trim()); }
-  if (truckId     !== undefined) { sets.push(`truck_id     = $${i++}`); vals.push(String(truckId)); }
-  if (active      !== undefined) { sets.push(`active       = $${i++}`); vals.push(!!active); }
-  if (password    !== undefined && String(password).length >= 4) {
-    sets.push(`password = $${i++}`); vals.push(String(password));
+  const d = rosterDriver(uname);
+  if (!d) return res.status(404).json({ error: 'driver not found' });
+  const b = req.body || {};
+  const defaultTruckId = b.defaultTruckId ?? b.truckId;
+  if (defaultTruckId && !(store.trucks || []).some(t => t.id === defaultTruckId)) {
+    return res.status(400).json({ error: 'Unknown truck for default truck' });
   }
-  if (!sets.length) return res.status(400).json({ error: 'no fields to update' });
-  vals.push(cid, uname);
-  try {
-    const r = await pg.query(
-      `UPDATE users SET ${sets.join(', ')} WHERE company_id = $${i++} AND username = $${i++} RETURNING username`,
-      vals
-    );
-    if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
-    logAction(req.session.user, 'updated-driver', uname, { fields: Object.keys(req.body || {}) });
-    const drivers = await listDriversFromDb(cid);
-    res.json({ ok: true, drivers });
-  } catch (e) {
-    console.error('[PUT /api/drivers]', e.message);
-    res.status(500).json({ error: e.message });
+  if (b.status !== undefined && !DRIVER_STATUSES.includes(b.status)) {
+    return res.status(400).json({ error: `Status must be one of: ${DRIVER_STATUSES.join(', ')}` });
   }
+  upsertRosterDriver({ id: uname, name: b.displayName ?? b.name, defaultTruckId, active: b.active, status: b.status, phone: b.phone, notes: b.notes });
+  if (pg) {
+    const sets = []; const vals = []; let i = 1;
+    if (b.displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(b.displayName).trim()); }
+    if (b.active !== undefined)      { sets.push(`active = $${i++}`); vals.push(!!b.active); }
+    if (b.password !== undefined && String(b.password).length >= 4) { sets.push(`password = $${i++}`); vals.push(String(b.password)); }
+    // truck_id is the driver's roster id, never a vehicle.
+    sets.push(`truck_id = $${i++}`); vals.push(uname);
+    vals.push(DEFAULT_COMPANY_ID, uname);
+    try {
+      await pg.query(`UPDATE users SET ${sets.join(', ')} WHERE company_id = $${i++} AND username = $${i++}`, vals);
+    } catch (e) {
+      console.error('[PUT /api/drivers]', e.message);
+      return res.status(500).json({ error: 'Roster updated but the login could not be updated: ' + e.message });
+    }
+  }
+  logAction(req.session.user, 'updated-driver', uname, { fields: Object.keys(b) });
+  await saveData();
+  res.json({ ok: true, drivers: await fleetDrivers(), roster: driverRoster() });
 });
 
+// Disable by default so historical loads keep their driver. ?hard=1 removes
+// a driver with no load history at all.
 app.delete('/api/drivers/:username', reqMgr, async (req, res) => {
-  if (!pg) return res.status(503).json({ error: 'Database not available' });
-  const cid = DEFAULT_COMPANY_ID;
   const uname = String(req.params.username || '').toLowerCase();
-  // Soft-delete by default so any historical loads keep their driver
-  // attribution. Hard delete only when ?hard=1 and the driver has no loads.
-  try {
-    if (req.query.hard === '1') {
-      const inUse = store.loads.some(l => l.truckId === uname && !l.voided);
-      if (inUse) return res.status(409).json({ error: 'driver has loads — disable instead of deleting' });
-      const r = await pg.query('DELETE FROM users WHERE company_id=$1 AND username=$2', [cid, uname]);
-      if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
-      logAction(req.session.user, 'deleted-driver', uname, {});
-    } else {
-      const r = await pg.query('UPDATE users SET active=false WHERE company_id=$1 AND username=$2', [cid, uname]);
-      if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
-      logAction(req.session.user, 'disabled-driver', uname, {});
-    }
-    const drivers = await listDriversFromDb(cid);
-    res.json({ ok: true, drivers });
-  } catch (e) {
-    console.error('[DELETE /api/drivers]', e.message);
-    res.status(500).json({ error: e.message });
+  const d = rosterDriver(uname);
+  if (!d) return res.status(404).json({ error: 'driver not found' });
+  const inUse = store.loads.some(l => l.truckId === uname);
+  if (req.query.hard === '1') {
+    if (inUse) return res.status(409).json({ error: 'driver has loads — disable instead of deleting' });
+    store.drivers = store.drivers.filter(x => x.id !== uname);
+    if (pg) await pg.query('DELETE FROM users WHERE company_id=$1 AND username=$2', [DEFAULT_COMPANY_ID, uname]).catch(e => console.error('[DELETE /api/drivers]', e.message));
+    logAction(req.session.user, 'deleted-driver', uname, {});
+  } else {
+    d.active = false;
+    if (pg) await pg.query('UPDATE users SET active=false WHERE company_id=$1 AND username=$2', [DEFAULT_COMPANY_ID, uname]).catch(e => console.error('[DELETE /api/drivers]', e.message));
+    logAction(req.session.user, 'disabled-driver', uname, {});
   }
+  await saveData();
+  res.json({ ok: true, drivers: await fleetDrivers(), roster: driverRoster() });
 });
 
 // ── API: CUSTOMER MASTER ────────────────────────────────────────────────────
@@ -4752,23 +4720,6 @@ app.delete('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
   res.json({ success: true, deactivated: false });
 });
 
-app.put('/api/fleet/drivers/:id', reqMgr, async (req, res) => {
-  const d = (store.drivers || []).find(x => x.id === req.params.id);
-  if (!d) return res.status(404).json({ error: 'Driver not found' });
-  const b = req.body || {};
-  if (b.name !== undefined && String(b.name).trim()) d.name = String(b.name).trim();
-  if (b.phone !== undefined) d.phone = b.phone;
-  if (b.notes !== undefined) d.notes = b.notes;
-  if (b.status !== undefined) {
-    if (!DRIVER_STATUSES.includes(b.status)) return res.status(400).json({ error: `Status must be one of: ${DRIVER_STATUSES.join(', ')}` });
-    d.status = b.status;
-  }
-  if (b.defaultTruckId !== undefined) d.defaultTruckId = b.defaultTruckId || null;
-  if (b.active !== undefined) d.active = !!b.active;
-  logAction(req.session.user, 'updated-driver', d.id, { name: d.name });
-  await saveData();
-  res.json({ success: true, driver: d });
-});
 
 // ── QUICK ASSIGN — driver, truck and pickup yard in one mobile-friendly call ──
 // Everything else (customer, job, material, quantity, PO, date) already lives
@@ -4781,8 +4732,10 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   const changes = {};
 
   if (driverId !== undefined) {
-    const drv = driverId ? TRUCKS.find(t => t.id === driverId) : null;
-    if (driverId && !drv) return res.status(400).json({ error: 'Unknown driver' });
+    const drv = driverId ? driverRoster().find(t => t.id === driverId) : null;   // active roster only
+    if (driverId && !drv) return res.status(400).json({ error: 'Unknown or inactive driver' });
+    const rd = driverId ? rosterDriver(driverId) : null;
+    if (rd && rd.status === 'off') return res.status(400).json({ error: `${rd.name} is marked off today` });
     changes.driver = { from: l.driverName || 'Unassigned', to: drv?.label || 'Unassigned' };
     l.truckId = driverId || null;
     l.driverName = drv?.label || '';
@@ -4791,6 +4744,8 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   if (truckUnitId !== undefined) {
     const t = truckUnitId ? (store.trucks || []).find(x => x.id === truckUnitId) : null;
     if (truckUnitId && !t) return res.status(400).json({ error: 'Unknown truck' });
+    if (t && t.active === false) return res.status(400).json({ error: `${t.truckNum} is deactivated` });
+    if (t && (t.status === 'maintenance' || t.status === 'out-of-service')) return res.status(400).json({ error: `${t.truckNum} is ${t.status}` });
     changes.truck = { from: (getTruckForLoad(l) || {}).truckNum || 'none', to: t?.truckNum || 'none' };
     l.truckUnitId = truckUnitId || null;
   }

@@ -5808,33 +5808,41 @@ async function renderFleet() {
 }
 
 function paintFleet() {
-  const trucksRows = fleetState.trucks.map(t => `
+  const trucks  = fleetState.trucks  || [];
+  const drivers = fleetState.drivers || [];
+  const tStatuses = fleetState.truckStatuses  || ['available', 'in-service', 'maintenance', 'out-of-service'];
+  const dStatuses = fleetState.driverStatuses || ['available', 'working', 'off'];
+  const inp = 'style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"';
+  const driverOpts = (sel) => `<option value="">— none —</option>` + drivers.filter(d => d.active).map(d =>
+    `<option value="${escapeAttr(d.id)}" ${d.id === sel ? 'selected' : ''}>${escapeHtml(d.displayName)}</option>`).join('');
+  const truckOpts = (sel) => `<option value="">— none —</option>` + trucks.filter(t => t.active !== false).map(t =>
+    `<option value="${escapeAttr(t.id)}" ${t.id === sel ? 'selected' : ''}>${escapeHtml(t.truckNum || t.id)}</option>`).join('');
+
+  // Trucks are VEHICLES: number, type, status, usual driver. No "label".
+  const trucksRows = trucks.map(t => `
     <tr>
-      <td><code style="font-size:11px;color:var(--txt3)">${escapeHtml(t.id)}</code></td>
-      <td><input type="text" data-truck-id="${escapeAttr(t.id)}" data-field="label"    value="${escapeAttr(t.label || '')}"    style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"></td>
-      <td><input type="text" data-truck-id="${escapeAttr(t.id)}" data-field="truckNum" value="${escapeAttr(t.truckNum || '')}" style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"></td>
+      <td><input type="text" data-truck-id="${escapeAttr(t.id)}" data-field="truckNum" value="${escapeAttr(t.truckNum || '')}" ${inp}></td>
+      <td><input type="text" data-truck-id="${escapeAttr(t.id)}" data-field="type" value="${escapeAttr(t.type || '')}" ${inp}></td>
+      <td><select data-truck-id="${escapeAttr(t.id)}" data-field="status" ${inp}>
+        ${tStatuses.map(st => `<option value="${st}" ${st === t.status ? 'selected' : ''}>${st}</option>`).join('')}</select></td>
+      <td><select data-truck-id="${escapeAttr(t.id)}" data-field="defaultDriverId" ${inp}>${driverOpts(t.defaultDriverId)}</select></td>
       <td style="text-align:center"><input type="checkbox" data-truck-id="${escapeAttr(t.id)}" data-field="active" ${t.active !== false ? 'checked' : ''}></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn ghost" style="padding:5px 10px;font-size:11px" onclick="saveTruck('${escapeAttr(t.id)}')">Save</button>
-        <button class="btn ghost" style="padding:5px 10px;font-size:11px;color:#b42318" onclick="deleteTruck('${escapeAttr(t.id)}')">Delete</button>
+        <button class="btn ghost" style="padding:5px 10px;font-size:11px;color:#b42318" onclick="deleteTruck('${escapeAttr(t.id)}')">Remove</button>
       </td>
     </tr>`).join('');
 
-  const truckOptions = fleetState.trucks
-    .map(t => `<option value="${escapeAttr(t.id)}">${escapeHtml(t.label || t.id)} (${escapeHtml(t.truckNum || t.id)})</option>`)
-    .join('');
-
-  const driversRows = fleetState.drivers.map(d => `
+  // Drivers are PEOPLE on the one roster dispatch uses; the login is attached.
+  const driversRows = drivers.map(d => `
     <tr>
-      <td><code style="font-size:11px;color:var(--txt3)">${escapeHtml(d.username)}</code></td>
-      <td><input type="text" data-driver="${escapeAttr(d.username)}" data-field="displayName" value="${escapeAttr(d.displayName || '')}" style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"></td>
-      <td>
-        <select data-driver="${escapeAttr(d.username)}" data-field="truckId" style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px">
-          <option value="">— none —</option>
-          ${fleetState.trucks.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === d.truckId ? 'selected' : ''}>${escapeHtml(t.label || t.id)} (${escapeHtml(t.truckNum || t.id)})</option>`).join('')}
-        </select>
-      </td>
-      <td><input type="password" data-driver="${escapeAttr(d.username)}" data-field="password" placeholder="leave blank to keep" style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"></td>
+      <td><code style="font-size:11px;color:var(--txt3)">${escapeHtml(d.username)}</code>
+        ${d.hasLogin ? '' : '<div style="font-size:10px;color:#b42318">no login</div>'}</td>
+      <td><input type="text" data-driver="${escapeAttr(d.username)}" data-field="displayName" value="${escapeAttr(d.displayName || '')}" ${inp}></td>
+      <td><select data-driver="${escapeAttr(d.username)}" data-field="defaultTruckId" ${inp}>${truckOpts(d.defaultTruckId)}</select></td>
+      <td><select data-driver="${escapeAttr(d.username)}" data-field="status" ${inp}>
+        ${dStatuses.map(st => `<option value="${st}" ${st === d.status ? 'selected' : ''}>${st}</option>`).join('')}</select></td>
+      <td><input type="password" data-driver="${escapeAttr(d.username)}" data-field="password" placeholder="leave blank to keep" ${inp}></td>
       <td style="text-align:center"><input type="checkbox" data-driver="${escapeAttr(d.username)}" data-field="active" ${d.active !== false ? 'checked' : ''}></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn ghost" style="padding:5px 10px;font-size:11px" onclick="saveDriver('${escapeAttr(d.username)}')">Save</button>
@@ -5842,112 +5850,84 @@ function paintFleet() {
       </td>
     </tr>`).join('');
 
+  const th = (label, extra = '') => `<th style="text-align:left;padding:10px 14px;font-weight:600;${extra}">${label}</th>`;
   document.getElementById('fleet-content').innerHTML = `
     <div style="display:grid;gap:18px">
-      <!-- Trucks -->
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden">
         <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
           <div>
             <div style="font-size:14px;font-weight:700;letter-spacing:-.005em">Trucks</div>
-            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${fleetState.trucks.length} total · edit number, label, or active state</div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${trucks.length} vehicle${trucks.length === 1 ? '' : 's'} · any driver can run any truck; "usual driver" only pre-fills Quick Assign</div>
           </div>
           <button class="btn primary" onclick="addTruckPrompt()" style="padding:7px 14px;font-size:12px">+ Add Truck</button>
         </div>
-        <table style="width:100%;border-collapse:collapse;font-size:13px">
-          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)">
-            <tr>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">ID</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">Label / Driver Name</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">Truck Number</th>
-              <th style="text-align:center;padding:10px 14px;font-weight:600;width:70px">Active</th>
-              <th style="text-align:right;padding:10px 14px;font-weight:600;width:170px"></th>
-            </tr>
-          </thead>
-          <tbody>${trucksRows || `<tr><td colspan="5" style="padding:30px;text-align:center;color:var(--txt3)">No trucks yet — click "Add Truck".</td></tr>`}</tbody>
-        </table>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px">
+          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)"><tr>
+            ${th('Truck number')}${th('Type')}${th('Status', 'width:140px')}${th('Usual driver', 'width:160px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
+          </tr></thead>
+          <tbody>${trucksRows || `<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--txt3)">No trucks yet — click "Add Truck".</td></tr>`}</tbody>
+        </table></div>
       </div>
-
-      <!-- Drivers -->
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden">
         <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
           <div>
             <div style="font-size:14px;font-weight:700;letter-spacing:-.005em">Drivers</div>
-            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${fleetState.drivers.length} total · driver login + assigned truck</div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${drivers.length} on the roster · a driver added here can be dispatched right away</div>
           </div>
           <button class="btn primary" onclick="addDriverPrompt()" style="padding:7px 14px;font-size:12px">+ Add Driver</button>
         </div>
-        <table style="width:100%;border-collapse:collapse;font-size:13px">
-          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)">
-            <tr>
-              <th style="text-align:left;padding:10px 14px;font-weight:600;width:120px">Username</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">Display Name</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">Truck</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600;width:180px">Password</th>
-              <th style="text-align:center;padding:10px 14px;font-weight:600;width:70px">Active</th>
-              <th style="text-align:right;padding:10px 14px;font-weight:600;width:170px"></th>
-            </tr>
-          </thead>
-          <tbody>${driversRows || `<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--txt3)">No drivers yet — click "Add Driver".</td></tr>`}</tbody>
-        </table>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:720px">
+          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)"><tr>
+            ${th('Username', 'width:120px')}${th('Display name')}${th('Usual truck', 'width:140px')}${th('Status', 'width:120px')}${th('Password', 'width:170px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
+          </tr></thead>
+          <tbody>${driversRows || `<tr><td colspan="7" style="padding:30px;text-align:center;color:var(--txt3)">No drivers yet — click "Add Driver".</td></tr>`}</tbody>
+        </table></div>
         <div style="padding:10px 18px;font-size:11px;color:var(--txt3);background:var(--bg2);border-top:1px solid var(--bdr)">
-          Drivers log in with their username + password. Disabling a driver hides them from the Board but keeps their loads in History.
+          Drivers log in with their username + password. "off" hides a driver from Quick Assign for the day. Disabling keeps their history.
         </div>
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
 function escapeAttr(s) { return escapeHtml(s == null ? '' : s); }
 
+async function fleetCall(method, url, body) {
+  const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  return d;
+}
+
 async function addTruckPrompt() {
-  const id = (prompt('New truck ID (lowercase letters/numbers, e.g. "truck-7"):') || '').trim().toLowerCase();
-  if (!id) return;
-  const label = (prompt('Driver/label name (e.g. "Antonio"):') || '').trim();
-  if (!label) return;
   const truckNum = (prompt('Truck number (e.g. "Truck #7"):') || '').trim();
   if (!truckNum) return;
+  const type = (prompt('Type (e.g. "End Dump") — optional:') || '').trim();
   try {
-    const r = await fetch('/api/trucks', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, label, truckNum }),
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    await fleetCall('POST', '/api/fleet/trucks', { truckNum, type });
     toast('Truck added', 'success');
-    await loadAll();
-    renderFleet();
+    await loadAll(); renderFleet();
   } catch (e) { toast('Add truck failed: ' + e.message, 'error'); }
 }
 
 async function saveTruck(id) {
-  const labelEl    = document.querySelector(`[data-truck-id="${id}"][data-field="label"]`);
-  const truckNumEl = document.querySelector(`[data-truck-id="${id}"][data-field="truckNum"]`);
-  const activeEl   = document.querySelector(`[data-truck-id="${id}"][data-field="active"]`);
+  const f = (field) => document.querySelector(`[data-truck-id="${id}"][data-field="${field}"]`);
   try {
-    const r = await fetch('/api/trucks/' + encodeURIComponent(id), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        label: labelEl?.value, truckNum: truckNumEl?.value, active: !!activeEl?.checked,
-      }),
+    await fleetCall('PUT', '/api/fleet/trucks/' + encodeURIComponent(id), {
+      truckNum: f('truckNum')?.value, type: f('type')?.value, status: f('status')?.value,
+      defaultDriverId: f('defaultDriverId')?.value || null, active: !!f('active')?.checked,
     });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     toast('Truck saved', 'success');
-    await loadAll();
-    renderFleet();
+    await loadAll(); renderFleet();
   } catch (e) { toast('Save failed: ' + e.message, 'error'); }
 }
 
 async function deleteTruck(id) {
-  if (!confirm('Delete truck "' + id + '"? If it has loads, it will be disabled instead.')) return;
+  if (!confirm('Remove this truck? If it has delivery history it will be deactivated instead, so past loads keep their truck.')) return;
   try {
-    const r = await fetch('/api/trucks/' + encodeURIComponent(id), { method: 'DELETE' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    toast(d.softDeleted ? 'Truck disabled (had loads)' : 'Truck deleted', 'success');
-    await loadAll();
-    renderFleet();
-  } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
+    const d = await fleetCall('DELETE', '/api/fleet/trucks/' + encodeURIComponent(id));
+    toast(d.deactivated ? 'Truck deactivated (has history)' : 'Truck removed', 'success');
+    await loadAll(); renderFleet();
+  } catch (e) { toast('Remove failed: ' + e.message, 'error'); }
 }
 
 async function addDriverPrompt() {
@@ -5956,58 +5936,42 @@ async function addDriverPrompt() {
   const displayName = (prompt('Display name (shown on the board):') || '').trim();
   const password    = (prompt('Initial password (at least 4 chars):') || '');
   if (!password || password.length < 4) { toast('Password too short', 'error'); return; }
-  let truckId = '';
-  if (fleetState.trucks.length) {
-    const ids = fleetState.trucks.map(t => t.id).join(', ');
-    truckId = (prompt('Truck ID to assign (one of: ' + ids + ') — leave blank for none:') || '').trim();
+  let defaultTruckId = '';
+  const active = (fleetState.trucks || []).filter(t => t.active !== false);
+  if (active.length) {
+    const pick = (prompt('Usual truck — type one of: ' + active.map(t => t.truckNum).join(', ') + '  (blank for none):') || '').trim().toLowerCase();
+    const t = active.find(x => (x.truckNum || '').toLowerCase() === pick || x.id === pick);
+    if (pick && !t) { toast('No truck called "' + pick + '"', 'error'); return; }
+    defaultTruckId = t ? t.id : '';
   }
   try {
-    const r = await fetch('/api/drivers', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, displayName, truckId }),
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    toast('Driver added', 'success');
-    await loadAll();
-    renderFleet();
+    const d = await fleetCall('POST', '/api/drivers', { username, password, displayName, defaultTruckId });
+    toast(d.loginCreated ? 'Driver added — they can log in and be dispatched now' : 'Driver added to the roster (no login: database not available)', d.loginCreated ? 'success' : 'error');
+    await loadAll(); renderFleet();
   } catch (e) { toast('Add driver failed: ' + e.message, 'error'); }
 }
 
 async function saveDriver(username) {
-  const dnEl = document.querySelector(`[data-driver="${username}"][data-field="displayName"]`);
-  const trEl = document.querySelector(`[data-driver="${username}"][data-field="truckId"]`);
-  const pwEl = document.querySelector(`[data-driver="${username}"][data-field="password"]`);
-  const acEl = document.querySelector(`[data-driver="${username}"][data-field="active"]`);
+  const f = (field) => document.querySelector(`[data-driver="${username}"][data-field="${field}"]`);
   const body = {
-    displayName: dnEl?.value,
-    truckId:     trEl?.value,
-    active:      !!acEl?.checked,
+    displayName: f('displayName')?.value, defaultTruckId: f('defaultTruckId')?.value || null,
+    status: f('status')?.value, active: !!f('active')?.checked,
   };
-  if (pwEl?.value) body.password = pwEl.value;
+  if (f('password')?.value) body.password = f('password').value;
   try {
-    const r = await fetch('/api/drivers/' + encodeURIComponent(username), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    if (pwEl) pwEl.value = '';
+    await fleetCall('PUT', '/api/drivers/' + encodeURIComponent(username), body);
+    if (f('password')) f('password').value = '';
     toast('Driver saved', 'success');
-    await loadAll();
-    renderFleet();
+    await loadAll(); renderFleet();
   } catch (e) { toast('Save failed: ' + e.message, 'error'); }
 }
 
 async function disableDriver(username) {
-  if (!confirm('Disable driver "' + username + '"? They will no longer be able to log in. Their history is preserved.')) return;
+  if (!confirm('Disable driver "' + username + '"? They will no longer be able to log in or be dispatched. Their history is preserved.')) return;
   try {
-    const r = await fetch('/api/drivers/' + encodeURIComponent(username), { method: 'DELETE' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    await fleetCall('DELETE', '/api/drivers/' + encodeURIComponent(username));
     toast('Driver disabled', 'success');
-    await loadAll();
-    renderFleet();
+    await loadAll(); renderFleet();
   } catch (e) { toast('Disable failed: ' + e.message, 'error'); }
 }
 
