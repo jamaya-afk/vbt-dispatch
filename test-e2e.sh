@@ -308,7 +308,8 @@ chk "  approval kept as history" "$(echo "$VS"|sed -n 3p)" "approved"
 chk "  ticket PROOF retained"    "$(echo "$VS"|sed -n 4p)" "yes"
 chk "  drops out of Ready to Bill" "$(curl -s -b $M $B/api/ready-to-bill | python3 -c "
 import json,sys;print(len([i for i in json.load(sys.stdin)['items'] if i['id']=='$VL']))")" "0"
-chk "PO now deletable"       "$(curl -s -o /dev/null -w '%{http_code}' -b $M -X DELETE $B/api/pos/$VPO)" "200"
+# Voided ≠ deleted: the PO keeps its approved (voided) load as history.
+chk "PO with voided approved load stays on record (403)" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -X DELETE $B/api/pos/$VPO)" "403"
 
 echo "── 17. Drivers and vehicles are not the same list ──"
 # A branch merge left both the driver roster and the vehicle fleet writing into
@@ -351,6 +352,43 @@ PB=$( (NODE_ENV=production DATABASE_URL=postgres://unused PORT=4698 node server.
 chk "prod boot refuses without SESSION_SECRET/QB_ENCRYPTION_KEY" "$PB" "1"
 PB=$( (NODE_ENV=production SESSION_SECRET=x QB_ENCRYPTION_KEY=y PORT=4698 node server.js >/dev/null 2>&1; echo $?) )
 chk "prod boot refuses without DATABASE_URL" "$PB" "1"
+
+echo "── 22. Approval state machine: locked means locked ──"
+# LOAD was approved in section 6 and batched in section 7.
+chk "manager cannot reassign an approved load"  "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/$LOAD -d '{"truckId":"rigo"}')" "403"
+# A fresh, pending load: the state fields must not be client-controlled.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"poNumber":"SM-CHK","customer":"State Machine","deliveryDate":"'"$(date +%F)"'"},
+ "splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+SM=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+po=[p for p in d['pos'] if p['poNumber']=='SM-CHK'][0]
+print([x for x in d['loads'] if x['poId']==po['id']][0]['id']); print(po['id'])")
+SML=$(echo "$SM"|sed -n 1p); SMP=$(echo "$SM"|sed -n 2p)
+for F in approvalStatus billStatus voided locked billingBatchId trips qbInvoiceId; do
+  case $F in trips) V='[]';; voided|locked) V='true';; *) V='"approved"';; esac
+  chk "PUT $F rejected (400)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/$SML -d "{\"$F\":$V}")" "400"
+done
+chk "  ...and the load is still pending/unlocked" "$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$SML'][0]
+print(l['approvalStatus'], l['locked'], l['billStatus'], l['voided'])")" "pending False not-ready False"
+chk "an honest field still updates (notes)" "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$SML -d '{"notes":"ok"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['load']['notes'])")" "ok"
+# Deliver, approve, void — then the PO must NOT be deletable and the load must survive.
+curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d '{"action":"start-trip"}' -o /dev/null
+curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d '{"action":"arrived-pickup","yardId":"vbt"}' -o /dev/null
+for A in loaded arrived-jobsite trip-complete; do
+  curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d "{\"action\":\"$A\"}" -o /dev/null
+done
+curl -s -b $D -H 'Content-Type: application/json' -X PUT $B/api/loads/$SML -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d '{"action":"delivered"}' -o /dev/null
+chk "submitted load is locked" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='$SML'][0]['locked'])")" "True"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/approve -d '{}' -o /dev/null
+chk "voided with a reason" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/void -d '{"reason":"customer refused"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['load']['voided'])")" "True"
+chk "PO with a voided approved load cannot be deleted" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X DELETE $B/api/pos/$SMP)" "403"
+chk "  ...the voided load is still on record" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(len([x for x in json.load(sys.stdin)['loads'] if x['id']=='$SML']))")" "1"
+chk "  ...and cannot be deleted directly either" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X DELETE $B/api/loads/$SML)" "403"
+chk "PO grouping fields frozen once approved" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/pos/$SMP -d '{"customer":"Someone Else"}')" "403"
+chk "archive refuses without Sheets (nothing deleted)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X POST $B/api/history/archive)" "503"
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
@@ -423,6 +461,20 @@ else
   pkill -f "^node server.js" >/dev/null 2>&1
 fi
 echo
+echo "── 23. Old data: approved-but-unlocked load becomes locked on load ──"
+cat > data.json <<'JSON'
+{"pos":[{"id":"PO-OLD","poNumber":"OLD-1","customer":"Legacy Co","deliveryDate":"2026-01-05","status":"completed"}],
+ "loads":[{"id":"L-OLD","poId":"PO-OLD","truckId":"beryle","material":"Dirt","loadsAssigned":1,"loadsDelivered":1,
+           "deliveryDate":"2026-01-05","status":"completed","approvalStatus":"approved","locked":false}]}
+JSON
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-old.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+chk "legacy approved load is locked after normalize" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='L-OLD'][0]['locked'])")" "True"
+chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/L-OLD -d '{"material":"Sand"}')" "403"
+pkill -f "^node server.js" >/dev/null 2>&1
+rm -f data.json
+
 [ "$SKIPPED" -gt 0 ] && SK=", $SKIPPED section(s) skipped" || SK=""
 echo "════ $PASS passed, $FAIL failed$SK ════"
 [ "$FAIL" -eq 0 ]

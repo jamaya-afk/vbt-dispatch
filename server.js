@@ -836,7 +836,11 @@ function normalizeStore() {
     if (!l.approvalStatus) l.approvalStatus = l.status === 'completed' ? 'approved' : 'pending';
     if (!l.billStatus)     l.billStatus = 'not-ready';
     if (!l.ticketImage)    l.ticketImage = '';
-    if (l.locked === undefined) l.locked = false;
+    // `locked` is DERIVED from the approval state, never stored independently:
+    // submitted and approved loads are locked, everything else is editable.
+    // (Old data had approved loads with locked=false, which let the generic
+    // manager update rewrite approved work.)
+    l.locked = l.approvalStatus === 'approved' || l.approvalStatus === 'submitted';
     if (l.voided === undefined) l.voided = false;
     if (l.loadsDelivered === undefined) l.loadsDelivered = 0;
     // Date-move tracking
@@ -1753,7 +1757,15 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   const idx = store.pos.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const old = store.pos[idx];
-  const updated = { ...old, ...req.body, id: old.id };
+  // Once any load on this PO is approved, the fields that identify the PO on
+  // an invoice are frozen — otherwise approved work could be re-labelled to
+  // another customer or PO number after the fact.
+  const hasApproved = store.loads.some(l => l.poId === old.id && l.approvalStatus === 'approved');
+  if (hasApproved) {
+    const frozen = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'].filter(k => k in req.body && req.body[k] !== old[k]);
+    if (frozen.length) return res.status(403).json({ error: `This PO has approved loads; ${frozen.join(', ')} cannot change.`, frozenFields: frozen });
+  }
+  const updated = { ...old, ...req.body, id: old.id, createdAt: old.createdAt };
   store.pos[idx] = updated;
   // If delivery date changed, sync to all linked loads
   if (req.body.deliveryDate && req.body.deliveryDate !== old.deliveryDate) {
@@ -1772,14 +1784,18 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
 app.delete('/api/pos/:id', reqMgr, async (req, res) => {
   const idx = store.pos.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  // Refuse to delete if any linked loads are approved (data integrity)
+  // Deleting a PO deletes its loads. Approved work — voided or not — is
+  // historical evidence (ticket, signature, GPS, who approved it) and is
+  // never deleted; neither is anything that has reached a billing batch.
+  // Voided ≠ deleted: a voided approved load stays on the record.
   const linked = store.loads.filter(l => l.poId === req.params.id);
-  // A voided load no longer blocks deletion — it has already been written off.
-  const blocking = linked.filter(l => l.approvalStatus === 'approved' && !l.voided);
+  const blocking = linked.filter(l => l.approvalStatus === 'approved' || l.billingBatchId || l.qbInvoiceId);
   if (blocking.length) {
+    const voidedCount = blocking.filter(l => l.voided).length;
     return res.status(403).json({
-      error: `Cannot delete — ${blocking.length} approved load${blocking.length === 1 ? '' : 's'} on this PO. `
-           + 'Void them first (approved deliveries are written off, never deleted), then the PO can go.',
+      error: `Cannot delete — ${blocking.length} approved load${blocking.length === 1 ? '' : 's'} on this PO`
+           + (voidedCount ? ` (${voidedCount} voided)` : '')
+           + '. Approved deliveries are kept as history even after voiding; this PO stays on record.',
       blockingLoadIds: blocking.map(l => l.id),
     });
   }
@@ -1797,6 +1813,13 @@ app.delete('/api/pos/:id', reqMgr, async (req, res) => {
 });
 
 // ── API: UPDATE LOAD (manager: anything | driver: limited) ──────────────────
+const PROTECTED_LOAD_FIELDS = new Set([
+  'id', 'poId',
+  'approvalStatus', 'approvedAt', 'approvedBy', 'submittedAt', 'rejectReason',
+  'billStatus', 'billedAt', 'billingBatchId', 'qbInvoiceId', 'qbInvoiceNumber',
+  'voided', 'voidedAt', 'voidedBy', 'voidReason', 'unvoidedAt', 'unvoidedBy',
+  'locked', 'trips', 'completedAt',
+]);
 app.put('/api/loads/:id', reqAuth, async (req, res) => {
   const u = req.session.user;
   const idx = store.loads.findIndex(l => l.id === req.params.id);
@@ -1817,7 +1840,17 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     if (req.body.notes !== undefined) allowed.notes = req.body.notes;
     store.loads[idx] = { ...l, ...allowed };
   } else {
-    // Manager — anything goes
+    // Manager — most fields, but NEVER the state machine. Approval, billing,
+    // void and trip history change only through their own endpoints
+    // (/approve, /reject, /void, /unvoid, /trip-action, billing batches), so
+    // a generic update can neither approve work nor un-bill it.
+    const touched = Object.keys(req.body || {}).filter(k => PROTECTED_LOAD_FIELDS.has(k));
+    if (touched.length) {
+      return res.status(400).json({
+        error: `These fields cannot be changed through a load update: ${touched.join(', ')}. Use the approve / reject / void / billing actions.`,
+        protectedFields: touched,
+      });
+    }
     const updated = { ...l, ...req.body, id: l.id, poId: l.poId };
     let auditAction = 'updated-load';
     let auditDetails = { changes: Object.keys(req.body) };
@@ -4226,11 +4259,17 @@ app.get('/api/history', reqMgr, (req, res) => {
       const po = store.pos.find(p => p.id === l.poId) || {};
       return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address, pickup: po.pickup };
     });
-  res.json({ billed, archive: store.archive });
+  // Archive batches carry full load copies; keep photo payloads out of this list.
+  const slim = l => ({ ...l, ticketImage: l.ticketImage ? '[stored]' : '', pod: l.pod ? { ...l.pod, signature: l.pod.signature ? '[stored]' : '' } : l.pod });
+  const archive = (store.archive || []).map(b => ({ ...b, loads: (b.loads || []).map(slim) }));
+  res.json({ billed, archive });
 });
 
 // Archive billed loads → push to Sheets and remove from active store
 app.post('/api/history/archive', reqMgr, async (req, res) => {
+  // Archiving moves records out of the active lists. Without Sheets there is
+  // no external copy, so it is refused rather than quietly done anyway.
+  if (!sheets) return res.status(503).json({ error: 'Google Sheets is not configured — nothing was archived. Set GOOGLE_SERVICE_ACCOUNT_JSON.' });
   const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided);
   if (!billed.length) return res.status(400).json({ error: 'No billed loads to archive' });
 
@@ -4242,7 +4281,7 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
   });
   const archivedPos = store.pos.filter(p => fullyBilledPos.includes(p.id));
 
-  // Try to push to Sheets first — only delete if it succeeds
+  // Push to Sheets first — only move records if it succeeds
   let sheetSuccess = false;
   if (sheets) {
     try {
@@ -4296,14 +4335,17 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
     poCount: archivedPos.length,
     loadCount: billed.length,
     syncedToSheet: sheetSuccess,
+    // Full copies, not just counts: the approved evidence stays in the
+    // database even though it leaves the active board.
+    pos: archivedPos,
+    loads: billed,
   });
   logAction(req.session.user, 'archived-batch', batchId, {
     poCount: archivedPos.length,
     loadCount: billed.length,
     syncedToSheet: sheetSuccess,
   });
-  // Cap archive log at 50 batches
-  if (store.archive.length > 50) store.archive = store.archive.slice(0, 50);
+  // No cap: each batch now carries the archived records themselves.
 
   // Remove archived loads + their fully-completed POs from the active store
   const billedIds = new Set(billed.map(l => l.id));

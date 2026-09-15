@@ -2318,9 +2318,10 @@ function openLoadDetail(id) {
       actions += `<button class="btn danger" onclick="voidLoad('${l.id}')">Void Load</button>`;
     }
     // Removing a whole PO (and its loads) had no UI at all, so test POs piled
-    // up with no way to clear them. A voided load no longer blocks it.
+    // up with no way to clear them. Any approved load (voided or not) or
+    // anything billed keeps the PO on record.
     const poLoads = loads.filter(x => x.poId === l.poId);
-    const poBlocking = poLoads.filter(x => x.approvalStatus === 'approved' && !x.voided);
+    const poBlocking = poLoads.filter(x => x.approvalStatus === 'approved' || x.billingBatchId || x.qbInvoiceId);
     if (!poBlocking.length) {
       actions += `<button class="btn danger" onclick="deletePO('${l.poId}', ${poLoads.length})">Delete PO ${escapeHtml(po.poNumber || '')}</button>`;
     }
@@ -2397,7 +2398,7 @@ async function voidPoLoads(poId) {
   if (failed.length) {
     alert(`Voided ${done}. These could not be voided:\n\n${failed.join('\n')}`);
   } else {
-    toast(`Voided ${done} load${done === 1 ? '' : 's'} — the PO can now be deleted`, 'success');
+    toast(`Voided ${done} load${done === 1 ? '' : 's'} — they no longer count toward billing; the PO stays on record`, 'success');
   }
   refreshCurrentView();
 }
@@ -3705,18 +3706,20 @@ function renderPOsList() {
   const wrap = document.getElementById('pos-content');
   const rows = (pos || []).map(p => {
     const mine = (loads || []).filter(l => l.poId === p.id);
-    // A voided load is already written off, so it no longer blocks deleting
-    // the PO. `blocking` is what actually stands in the way.
+    // Approved work is history and is never deleted — voided or not. A PO
+    // with any approved load stays on record; voiding only stops the loads
+    // from counting toward billing and reporting.
     const blocking = mine.filter(l => l.approvalStatus === 'approved' && !l.voided);
     const voided = mine.filter(l => l.voided).length;
     const approved = mine.filter(l => l.approvalStatus === 'approved').length;
+    const billed = mine.filter(l => l.billingBatchId || l.qbInvoiceId).length;
     const delivered = mine.reduce((s, l) => s + (l.loadsDelivered || 0), 0);
     const assigned = mine.reduce((s, l) => s + (l.loadsAssigned || 0), 0);
     return {
       po: p, loadCount: mine.length, approved, voided, delivered, assigned,
-      blocking,                                   // the loads that must be voided first
+      blocking,                                   // approved loads still counting (voidable)
       orphan: mine.length === 0,
-      locked: blocking.length > 0,                // voided loads no longer lock the PO
+      locked: approved > 0 || billed > 0,         // on record permanently
     };
   }).sort((a, b) => String(b.po.deliveryDate || '').localeCompare(String(a.po.deliveryDate || '')));
 
@@ -3772,8 +3775,10 @@ function poCard(r) {
     </div>
     <div class="qa-actions">
       ${r.locked
-        ? `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5"
-             onclick="voidPoLoads('${p.id}')">Void ${r.blocking.length} approved load${r.blocking.length === 1 ? '' : 's'}…</button>`
+        ? (r.blocking.length
+            ? `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5"
+                 onclick="voidPoLoads('${p.id}')">Void ${r.blocking.length} approved load${r.blocking.length === 1 ? '' : 's'}…</button>`
+            : `<span class="qa-fact" style="color:var(--txt2)">Kept as history (approved work is never deleted)</span>`)
         : `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5" onclick="deletePO('${p.id}', ${r.loadCount})">Delete PO</button>`}
     </div>
   </div>`;
