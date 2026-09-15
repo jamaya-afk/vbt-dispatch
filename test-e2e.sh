@@ -436,6 +436,49 @@ curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -
 chk "manual-QB-void release works and is logged" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/void -d '{"reason":"voided by accountant","alreadyVoidedInQuickBooks":true}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('success'), d.get('qbVoided'))")" "True False"
 chk "  ...sync log records the manual void" "$(curl -s -b $M "$B/api/qb-sync-log" | python3 -c "import json,sys;d=json.load(sys.stdin);items=d.get('items') or d.get('log') or d;print(any('manually' in (e.get('requestSummary') or '') for e in items))")" "True"
 
+echo "── 25. One costing engine: preview, invoices, and measured units ──"
+PV=$(curl -s -b $M "$B/api/pricing-preview?customer=Cost%20Check&material=3%2F4%20Rock&vendorId=vulcan" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print(d['vendor']['perLoad']); print(d['calculable']); print(d['tonsPerLoad']); print(d['vendor']['qtyPerLoad'])")
+chk "PO preview cost per load = 38 x 25 (engine, not price*25)" "$(echo "$PV"|sed -n 1p)" "950"
+chk "  ...calculable"        "$(echo "$PV"|sed -n 2p)" "True"
+chk "  ...tons from qtyPerLoad" "$(echo "$PV"|sed -n 3p)-$(echo "$PV"|sed -n 4p)" "25-25"
+chk "no price*25 formula left in the preview" "$(grep -c "cust.price \* tons" server.js)" "0"
+chk "no hour:1 / mile:1 defaults in the engine" "$(grep -cE "^\s+(hour|mile):\s+1," server.js)" "0"
+# A per-mile vendor rate with no miles recorded must NOT become rate x 1.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/vendors/keith/prices -d '{"material":"Haul Test","unit":"mile","price":4}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/customer-prices -d '{"customer":"Mile Customer","material":"Haul Test","unit":"mile","price":9}' -o /dev/null
+MP=$(curl -s -b $M "$B/api/pricing-preview?customer=Mile%20Customer&material=Haul%20Test&vendorId=keith" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print(d['calculable']); print(d['vendor']['perLoad']); print('miles' in d['vendor']['reason'])")
+chk "per-mile preview is not calculable" "$(echo "$MP"|sed -n 1p)" "False"
+chk "  ...perLoad is null, not 4"         "$(echo "$MP"|sed -n 2p)" "None"
+chk "  ...reason names the missing miles" "$(echo "$MP"|sed -n 3p)" "True"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"poNumber":"MILE-1","customer":"Mile Customer","deliveryDate":"'"$(date +%F)"'"},
+ "splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"Haul Test","loadsAssigned":1,"vendorId":"keith"}]}' -o /dev/null
+ML=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([l['id'] for l in json.load(sys.stdin)['loads'] if l['material']=='Haul Test'][0])")
+MD=$(mktemp); curl -s -c $MD -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d '{"action":"start-trip"}' -o /dev/null
+curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d '{"action":"arrived-pickup","yardId":"keith"}' -o /dev/null
+for A in loaded arrived-jobsite trip-complete; do
+  curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d "{\"action\":\"$A\"}" -o /dev/null
+done
+PR=$(curl -s -b $M $B/api/profitability | python3 -c "
+import json,sys;g=json.load(sys.stdin)['grand']
+print(g['costIncomplete']); print('mile' in g['unpricedUnits']); print(g['unpricedRevenueLoads'])")
+chk "profitability flags the mile load as incomplete" "$(echo "$PR"|sed -n 1p)" "True"
+chk "  ...names the unit"                             "$(echo "$PR"|sed -n 2p)" "True"
+chk "  ...and the revenue side too"                   "$(echo "$PR"|sed -n 3p)" "1"
+chk "material-costs flags keith as unconfigured" "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;print(json.load(sys.stdin)['vendors']['keith']['unconfigured'])")" "True"
+# Approve it and try to bill: the engine cannot price it, so no batch, no $0 invoice.
+curl -s -b $MD -H 'Content-Type: application/json' -X PUT $B/api/loads/$ML -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d '{"action":"delivered"}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/approve -d '{}' -o /dev/null
+chk "billing preview marks the group not priceable" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$ML\"]}" | python3 -c "import json,sys;print(json.load(sys.stdin)['groups'][0]['unconfigured'])")" "True"
+chk "batch creation refused (no \$0 invoice)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$ML\"]}")" "400"
+chk "  ...load not attached to any batch" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(repr([l for l in json.load(sys.stdin)['loads'] if l['id']=='$ML'][0].get('billingBatchId','')))")" "''"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -512,13 +555,15 @@ cat > data.json <<'JSON'
 {"pos":[{"id":"PO-OLD","poNumber":"OLD-1","customer":"Legacy Co","deliveryDate":"2026-01-05","status":"completed"}],
  "loads":[{"id":"L-OLD","poId":"PO-OLD","truckId":"beryle","material":"Dirt","loadsAssigned":1,"loadsDelivered":1,
            "deliveryDate":"2026-01-05","status":"completed","approvalStatus":"approved","locked":false,"billingBatchId":"BB-STUCK"}],
- "billingBatches":[{"id":"BB-STUCK","loadIds":["L-OLD"],"syncStatus":"syncing","qbInvoiceId":"","customer":"Legacy Co","totalAmount":0,"lineItems":[]}]}
+ "billingBatches":[{"id":"BB-STUCK","loadIds":["L-OLD"],"syncStatus":"syncing","qbInvoiceId":"","customer":"Legacy Co","totalAmount":0,"lineItems":[]}],
+ "unitConfig":{"byUnit":{"ton":25,"load":1,"hour":1,"mile":1},"byMaterial":{}}}
 JSON
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-old.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
 chk "legacy approved load is locked after normalize" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='L-OLD'][0]['locked'])")" "True"
 chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/L-OLD -d '{"material":"Sand"}')" "403"
+chk "fabricated hour:1 / mile:1 seeds are removed on load" "$(curl -s -b $M $B/api/costing/settings | python3 -c "import json,sys;u=json.load(sys.stdin)['unitConfig']['byUnit'];print('hour' in u, 'mile' in u, u['ton'])")" "False False 25"
 chk "batch stuck in 'syncing' at restart becomes failed" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'])")" "failed True"
 pkill -f "^node server.js" >/dev/null 2>&1
 rm -f data.json

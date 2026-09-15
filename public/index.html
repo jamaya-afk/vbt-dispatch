@@ -1931,6 +1931,12 @@ async function refreshPricingPreview(i) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const loads = Number(s.loadsAssigned) || 1;
+    if (d.calculable === false) {
+      // The engine could not price one side; say why instead of showing $0.
+      const why = [d.customer.unconfigured ? 'Revenue: ' + d.customer.reason : '', d.vendor.unconfigured ? 'Cost: ' + d.vendor.reason : ''].filter(Boolean).join(' · ');
+      el.innerHTML = `<span style="color:var(--R);font-weight:600">Margin cannot be calculated yet.</span> <span style="color:var(--txt2)">${why}</span>`;
+      return;
+    }
     const totalRev   = d.customer.perLoad * loads;
     const totalCost  = d.vendor.perLoad   * loads;
     const totalMargin= totalRev - totalCost;
@@ -1948,7 +1954,7 @@ async function refreshPricingPreview(i) {
         <span><b style="color:var(--G)">Rev:</b> $${d.customer.rate.toFixed(2)}/${d.customer.unit} → <b>$${totalRev.toFixed(2)}</b>${custBadge}</span>
         <span><b style="color:var(--R)">Cost:</b> $${d.vendor.rate.toFixed(2)}/${d.vendor.unit} → <b>$${totalCost.toFixed(2)}</b>${vendBadge}</span>
         <span style="color:${marginColor};font-weight:700">Margin: $${totalMargin.toFixed(2)}${totalRev > 0 ? ' (' + Math.round(totalMargin/totalRev*100) + '%)' : ''}</span>
-        <span style="color:var(--txt3);font-size:10px">${loads} load${loads !== 1 ? 's' : ''} × ${d.tonsPerLoad} tons</span>
+        <span style="color:var(--txt3);font-size:10px">${loads} load${loads !== 1 ? 's' : ''}${d.tonsPerLoad ? ' × ' + d.tonsPerLoad + ' tons' : ''}</span>
       </div>`;
   } catch (e) {
     el.innerHTML = `<span style="color:var(--R);font-size:11px">Could not preview pricing: ${e.message}</span>`;
@@ -3530,18 +3536,20 @@ function showInvoicePreviewModal(groups, allowSend) {
             <div style="font-size:12px;color:var(--txt2);margin-top:2px">PO ${g.poNumber || '—'}${g.jobCode ? ' · Job ' + g.jobCode : ''}${g.city ? ' · ' + g.city : ''}</div>
             <div style="font-size:12px;color:var(--txt2);margin-top:1px">${g.deliveryStart}${g.deliveryEnd && g.deliveryEnd !== g.deliveryStart ? ' to ' + g.deliveryEnd : ''} · ${g.totalLoads} load${g.totalLoads === 1 ? '' : 's'}</div>
           </div>
-          <div style="font-weight:700;font-size:18px">$${g.totalAmount.toFixed(2)}</div>
+          <div style="font-weight:700;font-size:18px;${g.unconfigured ? 'color:var(--R)' : ''}">${g.unconfigured ? 'Not priceable' : '$' + g.totalAmount.toFixed(2)}</div>
         </div>
+        ${g.unconfigured ? `<div style="background:#fee4e2;color:#b42318;border-radius:var(--r);padding:8px 10px;font-size:12px;margin-bottom:8px;font-weight:600">
+          This group cannot be sent: ${(g.unconfiguredReasons || []).join('; ')}. Fix the pricing or unit configuration and preview again.</div>` : ''}
         <table style="width:100%;font-size:13px;border-top:1px solid var(--bdr);border-collapse:collapse">
           ${g.lineItems.map(ln => `<tr>
-            <td style="padding:6px 0">${ln.description}</td>
-            <td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums">$${ln.amount.toFixed(2)}</td>
+            <td style="padding:6px 0;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.description}</td>
+            <td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.unconfigured ? '—' : '$' + ln.amount.toFixed(2)}</td>
           </tr>`).join('')}
         </table>
       </div>
     `).join('')}
   `;
-  document.getElementById('qb-preview-confirm').style.display = allowSend ? '' : 'none';
+  document.getElementById('qb-preview-confirm').style.display = (allowSend && !groups.some(g => g.unconfigured)) ? '' : 'none';
   document.getElementById('qb-preview-confirm').onclick = () => confirmCreateAndSend([...billSelected]);
   modal.style.display = 'flex';
 }
@@ -4839,8 +4847,9 @@ async function renderMaterialCosts() {
               <div class="vendor-panel-sub">${v.location || ''} · ${v.totalLoads} load${v.totalLoads !== 1 ? 's' : ''} delivered</div>
             </div>
             <div style="text-align:right">
-              <div style="font-size:22px;font-weight:700;color:var(--R)">${money(v.totalCost)}</div>
+              <div style="font-size:22px;font-weight:700;color:var(--R)">${money(v.totalCost)}${v.unconfigured ? ' <span style="font-size:11px;color:#b42318">incomplete</span>' : ''}</div>
               <div style="font-size:11px;color:var(--txt3)">${pct}% of total spend</div>
+              ${v.unconfigured ? `<div style="font-size:11px;color:#b42318;font-weight:600">Some loads not costed: unit ${(v.unconfiguredUnits || []).join(', ')} cannot be priced yet</div>` : ''}
             </div>
           </div>
           <table class="price-table">
@@ -4851,7 +4860,7 @@ async function renderMaterialCosts() {
                 <td>${d.unit || '—'}</td>
                 <td>${d.loads}</td>
                 <td>${money(d.unitPrice)}</td>
-                <td style="text-align:right;font-weight:600">${money(d.cost)}</td>
+                <td style="text-align:right;font-weight:600">${d.unconfigured ? '<span style="color:#b42318">not priceable</span>' : money(d.cost)}</td>
               </tr>`).join('')}
             </tbody>
           </table>
@@ -5125,9 +5134,9 @@ async function renderProfitability() {
     if (data.grand.costIncomplete) {
       h += `<div style="background:#fff8ec;border:1px solid #fcd34d;border-radius:var(--rl);padding:12px 16px;margin-bottom:14px;font-size:13px;line-height:1.5">
         <strong>Margin is overstated.</strong> ${data.grand.unpricedCostLoads} load${data.grand.unpricedCostLoads === 1 ? '' : 's'}
-        priced in <strong>${data.grand.unpricedUnits.join(', ').toUpperCase()}</strong> have no material cost yet, because
-        Valley Best hasn't defined how many ${data.grand.unpricedUnits.join('/').toUpperCase()} are in one truck load.
-        Set it under <em>Vendors &amp; Prices → Default Rates</em> and these loads will be costed automatically.
+        priced in <strong>${data.grand.unpricedUnits.join(', ').toUpperCase()}</strong> have no material cost yet.
+        Per-mile and per-hour rates need miles/hours recorded on each load; any other unit needs a quantity per load under
+        <em>Costing settings</em>. Until then those loads count as $0 here.
       </div>`;
     }
     h += `<div style="background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);border-radius:var(--rl);padding:22px 24px;color:#fff;margin-bottom:18px;box-shadow:var(--shadow-md)">

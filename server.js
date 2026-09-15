@@ -777,6 +777,13 @@ function normalizeStore() {
     store.unitConfig = { byUnit: { ...DEFAULT_UNIT_QTY_PER_LOAD }, byMaterial: {} };
   }
   if (!store.unitConfig.byUnit)     store.unitConfig.byUnit = { ...DEFAULT_UNIT_QTY_PER_LOAD };
+  // Earlier builds seeded hour:1 and mile:1 as "quantity per load", which
+  // silently turned a per-mile rate into rate × 1. Those units are measured
+  // per load now; the fabricated seed value is removed (a deliberately
+  // configured different number is left alone).
+  for (const u of Object.keys(MEASURED_UNITS)) {
+    if (Number(store.unitConfig.byUnit[u]) === 1) { delete store.unitConfig.byUnit[u]; console.log(`[normalize] removed fabricated ${u}:1 quantity-per-load seed`); }
+  }
   if (!store.unitConfig.byMaterial) store.unitConfig.byMaterial = {};
 
   // ── COST RATES (P5) ────────────────────────────────────────────────────────
@@ -1130,11 +1137,14 @@ function resolveVendorRate(vendorId, material) {
 // The engine stays open: any other unit can be given a quantity per load in
 // costing settings, and only units actually in use are ever flagged.
 const DEFAULT_UNIT_QTY_PER_LOAD = {
-  ton:  25,
+  ton:  TONS_PER_LOAD,   // the single definition of the 25-ton rule
   load: 1,
-  hour: 1,
-  mile: 1,
 };
+// Units whose quantity is MEASURED on each load, never configured as a
+// constant: a per-mile or per-hour rate needs the miles/hours recorded on
+// that load (load.miles / load.hours). Until they are, the amount is
+// reported as not calculable — never as rate × 1.
+const MEASURED_UNITS = { mile: 'miles', hour: 'hours' };
 
 // Units Valley Best actually operates in. Anything outside this list still
 // works if configured, but these are what the UI offers by default.
@@ -1147,6 +1157,7 @@ function unitKey(unit) { return String(unit || 'ton').trim().toLowerCase(); }
 // Returns null when Valley Best has not defined it.
 function qtyPerLoad(unit, material) {
   const u = unitKey(unit);
+  if (MEASURED_UNITS[u]) return null;   // miles/hours come from the load itself
   const cfg = store.unitConfig || {};
   const perMat = (cfg.byMaterial || {})[material];
   if (perMat && perMat[u] != null && perMat[u] !== '') return Number(perMat[u]);
@@ -1159,23 +1170,37 @@ function qtyPerLoad(unit, material) {
 // The one money calculation. Every screen uses this so the same load can
 // never show two different figures.
 //   { amount, unconfigured, unit, qtyPerLoad, rate, delivered }
-function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride) {
+//   `measured` = { miles, hours } recorded on the load, for mile/hour units.
+//   An unconfigured result carries `reason` so every screen can say WHY the
+//   figure is missing instead of showing $0.
+function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride, measured) {
   const r = Number(rate) || 0;
   const n = Number(delivered) || 0;
   const u = unitKey(unit);
-  // A per-load snapshot of tons wins for ton-priced loads (legacy loads carry it)
-  let qty = (u === 'ton' && tonsPerLoadOverride) ? Number(tonsPerLoadOverride) : qtyPerLoad(u, material);
-  if (qty == null) {
-    return { amount: null, unconfigured: true, unit: u, qtyPerLoad: null, rate: r, delivered: n };
+  const base = { unit: u, rate: r, delivered: n };
+  if (MEASURED_UNITS[u]) {
+    const field = MEASURED_UNITS[u];
+    const m = measured && measured[field];
+    if (m == null || m === '' || !isFinite(Number(m))) {
+      return { ...base, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null,
+               reason: `${field} not recorded on this load — a per-${u} rate cannot be calculated yet` };
+    }
+    return { ...base, amount: r * Number(m), unconfigured: false, qtyPerLoad: null, quantity: Number(m), reason: '' };
   }
-  return { amount: r * qty * n, unconfigured: false, unit: u, qtyPerLoad: qty, rate: r, delivered: n };
+  // A per-load snapshot of tons wins for ton-priced loads (legacy loads carry it)
+  const qty = (u === 'ton' && tonsPerLoadOverride) ? Number(tonsPerLoadOverride) : qtyPerLoad(u, material);
+  if (qty == null) {
+    return { ...base, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null,
+             reason: `no quantity per load configured for unit "${u}" (Costing settings)` };
+  }
+  return { ...base, amount: r * qty * n, unconfigured: false, qtyPerLoad: qty, quantity: qty * n, reason: '' };
 }
 
 function revenueDetail(load) {
-  return computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad);
+  return computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
 }
 function costDetail(load) {
-  return computeAmount(load.vendorRate, load.vendorUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad);
+  return computeAmount(load.vendorRate, load.vendorUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
 }
 
 // Back-compat numeric wrappers. An unconfigured unit yields 0 rather than a
@@ -1753,7 +1778,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       voided: false,
       notes: '',
       // Pricing snapshots
-      tonsPerLoad: TONS_PER_LOAD,
+      tonsPerLoad: qtyPerLoad('ton', s.material),
       customerRate: customerRate.price,
       customerUnit: customerRate.unit,
       customerRateIsDefault: customerRate.isDefault,
@@ -2378,14 +2403,18 @@ function buildBillingGroups(loadIds) {
     const signatureImages = [];
     const approvalStamps = [];
     const loadIdsInGroup = [];
+    const unconfiguredLoadIds = [];
 
     // Group line items by material+unit+rate (so different rates don't collapse)
     const lineMap = new Map();
     for (const { load, po } of g.loads) {
       loadIdsInGroup.push(load.id);
-      const rev = computeRevenue(load);
-      const tons = (Number(load.tonsPerLoad) || TONS_PER_LOAD) * (Number(load.loadsDelivered) || 0);
-      const unit = load.customerUnit || 'ton';
+      const revD = revenueDetail(load);
+      const rev = revD.amount == null ? 0 : revD.amount;
+      // Tons come from the engine's quantity-per-load (per-load snapshot or
+      // configured), not a hardcoded constant.
+      const tons = (revD.unit === 'ton' && revD.qtyPerLoad != null) ? revD.qtyPerLoad * (Number(load.loadsDelivered) || 0) : 0;
+      const unit = revD.unit;
       const rate = Number(load.customerRate) || 0;
       const lk = `${load.material}|${unit}|${rate}`;
       if (!lineMap.has(lk)) {
@@ -2393,6 +2422,7 @@ function buildBillingGroups(loadIds) {
           material: load.material,
           unit, rate,
           loads: 0, tons: 0, amount: 0,
+          unconfigured: false, reasons: [],
           loadIds: [],
         });
       }
@@ -2401,6 +2431,7 @@ function buildBillingGroups(loadIds) {
       ln.tons  += tons;
       ln.amount += rev;
       ln.loadIds.push(load.id);
+      if (revD.unconfigured) { ln.unconfigured = true; if (!ln.reasons.includes(revD.reason)) ln.reasons.push(revD.reason); unconfiguredLoadIds.push(load.id); }
 
       if (load.ticketImageUrl) ticketImages.push({ loadId: load.id, url: load.ticketImageUrl });
       else if (load.ticketImage) ticketImages.push({ loadId: load.id, dataUrl: true });
@@ -2411,13 +2442,20 @@ function buildBillingGroups(loadIds) {
     const lineItems = [...lineMap.values()].map(ln => ({
       ...ln,
       description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}`
-        + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/load)`),
+        + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/${ln.unit})`)
+        + (ln.unconfigured ? ' [NOT PRICEABLE]' : ''),
     }));
     const totalAmount = lineItems.reduce((s, ln) => s + ln.amount, 0);
     const totalLoads  = lineItems.reduce((s, ln) => s + ln.loads, 0);
     const totalTons   = lineItems.reduce((s, ln) => s + ln.tons, 0);
+    const unconfigured = lineItems.some(ln => ln.unconfigured);
 
     groups.push({
+      // A group with any line the engine could not price is flagged so it is
+      // shown as such in the preview and refused as a batch — never sent as $0.
+      unconfigured,
+      unconfiguredLoadIds: [...new Set(unconfiguredLoadIds)],
+      unconfiguredReasons: [...new Set(lineItems.flatMap(ln => ln.reasons || []))],
       key: g.key,
       customer: g.customer,
       poNumber: g.poNumber,
@@ -2552,6 +2590,14 @@ app.post('/api/billing-batches', reqMgr, async (req, res) => {
   if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'loadIds required' });
   const groups = buildBillingGroups(ids);
   if (!groups.length) return res.status(400).json({ error: 'No eligible loads to bill' });
+  const bad = groups.filter(g => g.unconfigured);
+  if (bad.length) {
+    return res.status(400).json({
+      error: 'Some loads cannot be priced yet, so no batch was created: ' + [...new Set(bad.flatMap(g => g.unconfiguredReasons))].join('; ')
+           + '. Fix the pricing or unit configuration, then bill again.',
+      unconfiguredLoadIds: bad.flatMap(g => g.unconfiguredLoadIds),
+    });
+  }
 
   const created = [];
   const now = new Date().toISOString();
@@ -2650,6 +2696,9 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
   }
   if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Cannot send a voided batch' });
   if (b.syncStatus === 'failed') return res.status(400).json({ error: 'This batch failed earlier. Use Retry, which checks it first.', batch: b });
+  if ((b.lineItems || []).some(ln => ln.unconfigured || ln.amount == null)) {
+    return res.status(400).json({ error: 'This batch has a line the costing engine could not price. It will not be sent as $0; void it, fix the pricing, and re-bill.' });
+  }
   const conn = store.qbConnection;
   if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks not connected' });
 
@@ -2921,23 +2970,27 @@ function buildVendorBillGroups(loadIds) {
     const loadIds = [];
     for (const l of g.loads) {
       loadIds.push(l.id);
-      const cost = computeCost(l);
+      const costD = costDetail(l);
+      const cost = costD.amount == null ? 0 : costD.amount;
       total += cost;
-      const lk = `${l.material}|${l.vendorUnit || 'ton'}|${l.vendorRate || 0}`;
+      const lk = `${l.material}|${costD.unit}|${l.vendorRate || 0}`;
       if (!lineMap.has(lk)) {
-        lineMap.set(lk, { material: l.material, unit: l.vendorUnit || 'ton', rate: Number(l.vendorRate) || 0, loads: 0, tons: 0, amount: 0, loadIds: [] });
+        lineMap.set(lk, { material: l.material, unit: costD.unit, rate: Number(l.vendorRate) || 0, loads: 0, tons: 0, amount: 0, loadIds: [], unconfigured: false, reasons: [] });
       }
       const ln = lineMap.get(lk);
       ln.loads += Number(l.loadsDelivered) || 0;
-      ln.tons  += (Number(l.tonsPerLoad) || TONS_PER_LOAD) * (Number(l.loadsDelivered) || 0);
+      ln.tons  += (costD.unit === 'ton' && costD.qtyPerLoad != null) ? costD.qtyPerLoad * (Number(l.loadsDelivered) || 0) : 0;
       ln.amount += cost;
       ln.loadIds.push(l.id);
+      if (costD.unconfigured) { ln.unconfigured = true; if (!ln.reasons.includes(costD.reason)) ln.reasons.push(costD.reason); }
     }
     const lineItems = [...lineMap.values()].map(ln => ({
       ...ln,
-      description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}` + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/load)`),
+      description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}` + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/${ln.unit})`) + (ln.unconfigured ? ' [NOT PRICEABLE]' : ''),
     }));
     groups.push({
+      unconfigured: lineItems.some(ln => ln.unconfigured),
+      unconfiguredReasons: [...new Set(lineItems.flatMap(ln => ln.reasons || []))],
       vendorId: g.vendorId,
       vendorName: g.vendor.name,
       deliveryStart: dates[0] || '',
@@ -2962,6 +3015,8 @@ app.post('/api/vendor-bills', reqMgr, async (req, res) => {
   const ids = req.body?.loadIds || [];
   const groups = buildVendorBillGroups(ids);
   if (!groups.length) return res.status(400).json({ error: 'No eligible vendor costs' });
+  const bad = groups.filter(g => g.unconfigured);
+  if (bad.length) return res.status(400).json({ error: 'Some loads cannot be costed yet: ' + [...new Set(bad.flatMap(g => g.unconfiguredReasons))].join('; ') });
   const created = [];
   const now = new Date().toISOString();
   for (const g of groups) {
@@ -3762,18 +3817,21 @@ app.get('/api/pricing-preview', reqMgr, (req, res) => {
 
   const cust = resolveCustomerRate(customer, material);
   const vend = resolveVendorRate(vendorId || '', material);
-  const tons = TONS_PER_LOAD;
 
-  // Compute per-load revenue, cost, margin (assuming 1 load, 25 tons)
-  const revPerLoad  = cust.unit === 'load' ? cust.price : cust.price * tons;
-  const costPerLoad = vend.unit === 'load' ? vend.price : vend.price * tons;
-  const marginPerLoad = revPerLoad - costPerLoad;
+  // Same engine as billing and profitability, for exactly one load. A unit
+  // that cannot be priced yet comes back as null with the reason — never $0.
+  const revD  = computeAmount(cust.price, cust.unit, 1, material, null, {});
+  const costD = computeAmount(vend.price, vend.unit, 1, material, null, {});
+  const revPerLoad  = revD.amount;
+  const costPerLoad = costD.amount;
+  const marginPerLoad = (revPerLoad == null || costPerLoad == null) ? null : revPerLoad - costPerLoad;
 
   res.json({
-    customer: { rate: cust.price, unit: cust.unit, isDefault: cust.isDefault, perLoad: revPerLoad },
-    vendor:   { rate: vend.price, unit: vend.unit, isDefault: vend.isDefault, isInternal: vend.isInternal || false, perLoad: costPerLoad },
-    margin:   { perLoad: marginPerLoad, percent: revPerLoad > 0 ? (marginPerLoad / revPerLoad * 100) : 0 },
-    tonsPerLoad: tons,
+    customer: { rate: cust.price, unit: cust.unit, isDefault: cust.isDefault, perLoad: revPerLoad, unconfigured: revD.unconfigured, reason: revD.reason, qtyPerLoad: revD.qtyPerLoad },
+    vendor:   { rate: vend.price, unit: vend.unit, isDefault: vend.isDefault, isInternal: vend.isInternal || false, perLoad: costPerLoad, unconfigured: costD.unconfigured, reason: costD.reason, qtyPerLoad: costD.qtyPerLoad },
+    margin:   { perLoad: marginPerLoad, percent: (marginPerLoad != null && revPerLoad > 0) ? (marginPerLoad / revPerLoad * 100) : null },
+    calculable: marginPerLoad != null,
+    tonsPerLoad: qtyPerLoad('ton', material),
   });
 });
 
@@ -4798,10 +4856,11 @@ app.get('/api/costing/settings', reqMgr, (req, res) => {
     unitConfig: store.unitConfig,
     costRates: store.costRates,
     unitsInUse: units,
-    // Only units genuinely in use on real loads AND lacking a quantity are
-    // flagged. Valley Best's units (ton/load/hour/mile) all ship configured,
-    // so this is normally empty.
+    // Units genuinely in use on real loads that cannot be priced: an
+    // unconfigured quantity-per-load, or a measured unit (mile/hour) — those
+    // need miles/hours recorded on each load rather than a setting.
     needsAttention: units.filter(u => !u.configured && u.loads > 0).map(u => u.unit),
+    measuredUnits: MEASURED_UNITS,
     supportedUnits: SUPPORTED_UNITS,
     tonsPerLoadRule: TONS_PER_LOAD,
   });
