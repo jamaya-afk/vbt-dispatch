@@ -7,7 +7,7 @@ set -u
 export PORT=${PORT:-4600}
 B=http://localhost:$PORT
 M=$(mktemp); D=$(mktemp)
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIPPED=0
 chk() { # chk "name" actual expected
   if [ "$2" = "$3" ]; then echo "  PASS  $1 ($2)"; PASS=$((PASS+1));
   else echo "  FAIL  $1 — got '$2' want '$3'"; FAIL=$((FAIL+1)); fi
@@ -15,7 +15,7 @@ chk() { # chk "name" actual expected
 
 cd "$(dirname "$0")"
 rm -f data.json
-(node server.js > /tmp/vbt-test.log 2>&1 &)
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 
 curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
@@ -308,7 +308,8 @@ chk "  approval kept as history" "$(echo "$VS"|sed -n 3p)" "approved"
 chk "  ticket PROOF retained"    "$(echo "$VS"|sed -n 4p)" "yes"
 chk "  drops out of Ready to Bill" "$(curl -s -b $M $B/api/ready-to-bill | python3 -c "
 import json,sys;print(len([i for i in json.load(sys.stdin)['items'] if i['id']=='$VL']))")" "0"
-chk "PO now deletable"       "$(curl -s -o /dev/null -w '%{http_code}' -b $M -X DELETE $B/api/pos/$VPO)" "200"
+# Voided ≠ deleted: the PO keeps its approved (voided) load as history.
+chk "PO with voided approved load stays on record (403)" "$(curl -s -o /dev/null -w '%{http_code}' -b $M -X DELETE $B/api/pos/$VPO)" "403"
 
 echo "── 17. Drivers and vehicles are not the same list ──"
 # A branch merge left both the driver roster and the vehicle fleet writing into
@@ -341,8 +342,351 @@ print(len(d['trucks'])); print(len(d['drivers']))")
 chk "5 trucks seeded" "$(echo "$F"|sed -n 1p)" "5"
 chk "5 drivers seeded" "$(echo "$F"|sed -n 2p)" "5"
 
-pkill -f "node server.js" >/dev/null 2>&1
+echo "── 19. Secrets: no committed credential, no silent defaults ──"
+chk "service-account.json is not tracked by git" "$(git ls-files -- service-account.json | wc -l | tr -d ' ')" "0"
+chk "no literal session secret in source"        "$(grep -c "vbt-2025-secret" server.js)" "0"
+chk "no literal QB key in source"                "$(grep -c "vbt-2025-qb-default-key" qb.js)" "0"
+chk "Sheets never reads a key file from disk"    "$(grep -c "keyFile:" server.js)" "0"
+# Production must refuse to boot when any required secret is missing.
+PB=$( (NODE_ENV=production DATABASE_URL=postgres://unused PORT=4698 node server.js >/dev/null 2>&1; echo $?) )
+chk "prod boot refuses without SESSION_SECRET/QB_ENCRYPTION_KEY" "$PB" "1"
+PB=$( (NODE_ENV=production SESSION_SECRET=x QB_ENCRYPTION_KEY=y PORT=4698 node server.js >/dev/null 2>&1; echo $?) )
+chk "prod boot refuses without DATABASE_URL" "$PB" "1"
+
+echo "── 22. Approval state machine: locked means locked ──"
+# LOAD was approved in section 6 and batched in section 7.
+chk "manager cannot reassign an approved load"  "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/$LOAD -d '{"truckId":"rigo"}')" "403"
+# A fresh, pending load: the state fields must not be client-controlled.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"poNumber":"SM-CHK","customer":"State Machine","deliveryDate":"'"$(date +%F)"'"},
+ "splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+SM=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+po=[p for p in d['pos'] if p['poNumber']=='SM-CHK'][0]
+print([x for x in d['loads'] if x['poId']==po['id']][0]['id']); print(po['id'])")
+SML=$(echo "$SM"|sed -n 1p); SMP=$(echo "$SM"|sed -n 2p)
+for F in approvalStatus billStatus voided locked billingBatchId trips qbInvoiceId; do
+  case $F in trips) V='[]';; voided|locked) V='true';; *) V='"approved"';; esac
+  chk "PUT $F rejected (400)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/$SML -d "{\"$F\":$V}")" "400"
+done
+chk "  ...and the load is still pending/unlocked" "$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$SML'][0]
+print(l['approvalStatus'], l['locked'], l['billStatus'], l['voided'])")" "pending False not-ready False"
+chk "an honest field still updates (notes)" "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$SML -d '{"notes":"ok"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['load']['notes'])")" "ok"
+# Deliver, approve, void — then the PO must NOT be deletable and the load must survive.
+curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d '{"action":"start-trip"}' -o /dev/null
+curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d '{"action":"arrived-pickup","yardId":"vbt"}' -o /dev/null
+for A in loaded arrived-jobsite trip-complete; do
+  curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d "{\"action\":\"$A\"}" -o /dev/null
+done
+curl -s -b $D -H 'Content-Type: application/json' -X PUT $B/api/loads/$SML -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d '{"action":"delivered"}' -o /dev/null
+chk "submitted load is locked" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='$SML'][0]['locked'])")" "True"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/approve -d '{}' -o /dev/null
+chk "voided with a reason" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/void -d '{"reason":"customer refused"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['load']['voided'])")" "True"
+chk "PO with a voided approved load cannot be deleted" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X DELETE $B/api/pos/$SMP)" "403"
+chk "  ...the voided load is still on record" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(len([x for x in json.load(sys.stdin)['loads'] if x['id']=='$SML']))")" "1"
+chk "  ...and cannot be deleted directly either" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X DELETE $B/api/loads/$SML)" "403"
+chk "PO grouping fields frozen once approved" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/pos/$SMP -d '{"customer":"Someone Else"}')" "403"
+chk "archive refuses without Sheets (nothing deleted)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X POST $B/api/history/archive)" "503"
+
+echo "── 24. QuickBooks batches: no duplicate invoices, ever ──"
+# Fake QuickBooks (test hook) so the state machine can be driven end to end.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"slow","delayMs":1500}' -o /dev/null
+BATCH=$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;print(json.load(sys.stdin)['items'][0]['id'])")
+# Two simultaneous sends of the same batch: exactly one may create an invoice.
+R1=$(mktemp); R2=$(mktemp)
+curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/send -d '{}' > $R1 &
+sleep 0.2
+curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/send -d '{}' > $R2 &
+wait
+chk "simultaneous sends: one 200, one 409" "$(cat $R1 $R2 | tr -d '\n' | fold -w3 | sort | tr '\n' ' ')" "200 409 "
+chk "  ...exactly one invoice created"  "$(curl -s -b $M $B/api/_test/qb-fake | python3 -c "import json,sys;print(json.load(sys.stdin)['invoicesCreated'])")" "1"
+chk "  ...batch is sent_to_quickbooks"  "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='$BATCH'][0];print(b['syncStatus'], b['qbInvoiceId'])")" "sent_to_quickbooks INV-1"
+chk "  ...load marked billed with the invoice" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$LOAD'][0];print(l['billStatus'], l['qbInvoiceId'])")" "billed INV-1"
+chk "sending a sent batch again is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/send -d '{}')" "400"
+chk "retry on a sent batch is refused"      "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/retry -d '{}')" "400"
+chk "already-batched load cannot join a new batch" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$LOAD\"]}")" "400"
+# Void with QuickBooks disconnected: the invoice is live, so the loads stay billed.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"ok","connected":false}' -o /dev/null
+chk "void with live invoice + QB disconnected refused (409)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/void -d '{"reason":"wrong price"}')" "409"
+chk "  ...load still billed"  "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$LOAD'][0];print(l['billStatus'], l['billingBatchId']=='$BATCH')")" "billed True"
+# Void fails on the QuickBooks side: nothing changes locally.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"fail"}' -o /dev/null
+chk "QB void failure leaves batch and loads unchanged (502)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/void -d '{"reason":"wrong price"}')" "502"
+chk "  ...batch still sent" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['items'] if x['id']=='$BATCH'][0]['syncStatus'])")" "sent_to_quickbooks"
+# Void with QuickBooks connected: invoice voided, loads released.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+chk "void with QB connected succeeds" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/void -d '{"reason":"wrong price"}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('success'), d.get('qbVoided'))")" "True True"
+chk "  ...QB invoice voided" "$(curl -s -b $M $B/api/_test/qb-fake | python3 -c "import json,sys;print(json.load(sys.stdin)['invoicesVoided'])")" "1"
+chk "  ...load back in Ready to Bill" "$(curl -s -b $M $B/api/ready-to-bill | python3 -c "import json,sys;print(len([x for x in json.load(sys.stdin)['items'] if x['id']=='$LOAD']))")" "1"
+# Failed QuickBooks request → failed batch, nothing billed → retry → success, one more invoice.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"fail"}' -o /dev/null
+B2=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$LOAD\"]}" | python3 -c "import json,sys;print(json.load(sys.stdin)['batches'][0]['id'])")
+chk "QB failure → 500" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/send -d '{}')" "500"
+chk "  ...batch failed, no invoice id" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='$B2'][0];print(b['syncStatus'], repr(b['qbInvoiceId']))")" "failed ''"
+chk "  ...load NOT marked billed" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$LOAD'][0];print(l['billStatus'])")" "ready"
+chk "  ...send on a failed batch says use retry" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/send -d '{}')" "400"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+chk "retry resets a failed batch" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/retry -d '{}' | python3 -c "import json,sys;print(json.load(sys.stdin)['batch']['syncStatus'])")" "ready_to_bill"
+chk "send after retry succeeds"   "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/send -d '{}')" "200"
+chk "  ...total invoices created is 2 (never a duplicate)" "$(curl -s -b $M $B/api/_test/qb-fake | python3 -c "import json,sys;print(json.load(sys.stdin)['invoicesCreated'])")" "2"
+# A batch voided by hand in QuickBooks can be released with an explicit statement.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"connected":false}' -o /dev/null
+chk "manual-QB-void release works and is logged" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/void -d '{"reason":"voided by accountant","alreadyVoidedInQuickBooks":true}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('success'), d.get('qbVoided'))")" "True False"
+chk "  ...sync log records the manual void" "$(curl -s -b $M "$B/api/qb-sync-log" | python3 -c "import json,sys;d=json.load(sys.stdin);items=d.get('items') or d.get('log') or d;print(any('manually' in (e.get('requestSummary') or '') for e in items))")" "True"
+
+echo "── 25. One costing engine: preview, invoices, and measured units ──"
+PV=$(curl -s -b $M "$B/api/pricing-preview?customer=Cost%20Check&material=3%2F4%20Rock&vendorId=vulcan" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print(d['vendor']['perLoad']); print(d['calculable']); print(d['tonsPerLoad']); print(d['vendor']['qtyPerLoad'])")
+chk "PO preview cost per load = 38 x 25 (engine, not price*25)" "$(echo "$PV"|sed -n 1p)" "950"
+chk "  ...calculable"        "$(echo "$PV"|sed -n 2p)" "True"
+chk "  ...tons from qtyPerLoad" "$(echo "$PV"|sed -n 3p)-$(echo "$PV"|sed -n 4p)" "25-25"
+chk "no price*25 formula left in the preview" "$(grep -c "cust.price \* tons" server.js)" "0"
+chk "no hour:1 / mile:1 defaults in the engine" "$(grep -cE "^\s+(hour|mile):\s+1," server.js)" "0"
+# A per-mile vendor rate with no miles recorded must NOT become rate x 1.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/vendors/keith/prices -d '{"material":"Haul Test","unit":"mile","price":4}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/customer-prices -d '{"customer":"Mile Customer","material":"Haul Test","unit":"mile","price":9}' -o /dev/null
+MP=$(curl -s -b $M "$B/api/pricing-preview?customer=Mile%20Customer&material=Haul%20Test&vendorId=keith" | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+print(d['calculable']); print(d['vendor']['perLoad']); print('miles' in d['vendor']['reason'])")
+chk "per-mile preview is not calculable" "$(echo "$MP"|sed -n 1p)" "False"
+chk "  ...perLoad is null, not 4"         "$(echo "$MP"|sed -n 2p)" "None"
+chk "  ...reason names the missing miles" "$(echo "$MP"|sed -n 3p)" "True"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"poNumber":"MILE-1","customer":"Mile Customer","deliveryDate":"'"$(date +%F)"'"},
+ "splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"Haul Test","loadsAssigned":1,"vendorId":"keith"}]}' -o /dev/null
+ML=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([l['id'] for l in json.load(sys.stdin)['loads'] if l['material']=='Haul Test'][0])")
+MD=$(mktemp); curl -s -c $MD -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d '{"action":"start-trip"}' -o /dev/null
+curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d '{"action":"arrived-pickup","yardId":"keith"}' -o /dev/null
+for A in loaded arrived-jobsite trip-complete; do
+  curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d "{\"action\":\"$A\"}" -o /dev/null
+done
+PR=$(curl -s -b $M $B/api/profitability | python3 -c "
+import json,sys;g=json.load(sys.stdin)['grand']
+print(g['costIncomplete']); print('mile' in g['unpricedUnits']); print(g['unpricedRevenueLoads'])")
+chk "profitability flags the mile load as incomplete" "$(echo "$PR"|sed -n 1p)" "True"
+chk "  ...names the unit"                             "$(echo "$PR"|sed -n 2p)" "True"
+chk "  ...and the revenue side too"                   "$(echo "$PR"|sed -n 3p)" "1"
+chk "material-costs flags keith as unconfigured" "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;print(json.load(sys.stdin)['vendors']['keith']['unconfigured'])")" "True"
+# Approve it and try to bill: the engine cannot price it, so no batch, no $0 invoice.
+curl -s -b $MD -H 'Content-Type: application/json' -X PUT $B/api/loads/$ML -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d '{"action":"delivered"}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/approve -d '{}' -o /dev/null
+chk "billing preview marks the group not priceable" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$ML\"]}" | python3 -c "import json,sys;print(json.load(sys.stdin)['groups'][0]['unconfigured'])")" "True"
+chk "batch creation refused (no \$0 invoice)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$ML\"]}")" "400"
+chk "  ...load not attached to any batch" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(repr([l for l in json.load(sys.stdin)['loads'] if l['id']=='$ML'][0].get('billingBatchId','')))")" "''"
+
+echo "── 26. One driver roster: a driver added in Drivers & Trucks is dispatchable ──"
+AD=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/drivers -d '{"username":"antonio","password":"antonio1","displayName":"Antonio","defaultTruckId":"truck-12"}')
+chk "driver created (roster)" "$(echo "$AD" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('ok'), any(r['id']=='antonio' for r in d.get('roster',[])))")" "True True"
+chk "  ...in the PO-form driver dropdown immediately" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(any(t['id']=='antonio' and t['label']=='Antonio' for t in json.load(sys.stdin)['trucks']))")" "True"
+chk "  ...in Quick Assign's driver list"             "$(curl -s -b $M $B/api/today | python3 -c "import json,sys;print(any(d['id']=='antonio' for d in json.load(sys.stdin)['drivers']))")" "True"
+chk "  ...usual truck recorded on the roster"        "$(curl -s -b $M $B/api/fleet | python3 -c "import json,sys;print([d for d in json.load(sys.stdin)['drivers'] if d['id']=='antonio'][0]['defaultTruckId'])")" "truck-12"
+# Quick Assign must accept the new driver (it used to validate against a hardcoded list).
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
+ "po":{"poNumber":"NEWDRV","customer":"New Driver Co","deliveryDate":"'"$(date +%F)"'"},
+ "splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+NL=$(curl -s -b $M $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='NEWDRV'][0]
+print([l['id'] for l in d['loads'] if l['poId']==po['id']][0])")
+AS=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/assign -d '{"driverId":"antonio","truckUnitId":"truck-12"}')
+chk "Quick Assign accepts the new driver" "$(echo "$AS" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('success'), d['load']['driverName'], d['truck']['truckNum'])")" "True Antonio Truck #12"
+# Status and deactivation are honoured by assignment.
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/drivers/antonio -d '{"status":"off"}' -o /dev/null
+chk "driver marked off cannot be assigned" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/assign -d '{"driverId":"antonio"}')" "400"
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/drivers/antonio -d '{"status":"available"}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/fleet/trucks/truck-2b -d '{"status":"maintenance"}' -o /dev/null
+chk "truck in maintenance cannot be assigned" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/assign -d '{"truckUnitId":"truck-2b"}')" "400"
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/fleet/trucks/truck-2b -d '{"status":"available"}' -o /dev/null
+chk "disabled driver leaves the dropdown" "$(curl -s -b $M -X DELETE $B/api/drivers/antonio -o /dev/null; curl -s -b $M $B/api/data | python3 -c "import json,sys;print(any(t['id']=='antonio' for t in json.load(sys.stdin)['trucks']))")" "False"
+chk "  ...and cannot be assigned"          "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/assign -d '{"driverId":"antonio"}')" "400"
+chk "  ...but the load keeps their name as history" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([l for l in json.load(sys.stdin)['loads'] if l['id']=='$NL'][0]['driverName'])")" "Antonio"
+# Trucks: one vehicle API. The legacy label-based one is gone.
+chk "legacy /api/trucks is gone (404)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/trucks -d '{"id":"x","label":"y","truckNum":"z"}')" "404"
+NT=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/fleet/trucks -d '{"truckNum":"Truck #7","type":"End Dump"}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['truck']['id'])")
+chk "new truck is a vehicle record" "$(curl -s -b $M $B/api/fleet | python3 -c "import json,sys;t=[t for t in json.load(sys.stdin)['trucks'] if t['id']=='$NT'][0];print(t['truckNum'], t['status'], 'label' in t)")" "Truck #7 available False"
+chk "  ...offered by Quick Assign"  "$(curl -s -b $M $B/api/today | python3 -c "import json,sys;print(any(t['id']=='$NT' for t in json.load(sys.stdin)['trucks']))")" "True"
+
+echo "── 27. Driver sees only today's own work; the day is Pacific, not UTC ──"
+TZ1=$(curl -s "$B/api/_test/today?at=2026-09-16T00:30:00Z" | python3 -c "import json,sys;print(json.load(sys.stdin)['today'])")
+chk "5:30pm PT on Sep 15 is still Sep 15 (UTC says 16)" "$TZ1" "2026-09-15"
+chk "11:59pm PT is still the same day"     "$(curl -s "$B/api/_test/today?at=2026-09-16T06:59:00Z" | python3 -c "import json,sys;print(json.load(sys.stdin)['today'])")" "2026-09-15"
+chk "12:01am PT rolls to the next day"     "$(curl -s "$B/api/_test/today?at=2026-09-16T07:01:00Z" | python3 -c "import json,sys;print(json.load(sys.stdin)['today'])")" "2026-09-16"
+chk "operating timezone is Pacific"        "$(curl -s "$B/api/_test/today" | python3 -c "import json,sys;print(json.load(sys.stdin)['tz'])")" "America/Los_Angeles"
+# Tomorrow's load for beryle must not reach him today; yesterday's open one must.
+TOM=$(python3 -c "import datetime;print((datetime.date.today()+datetime.timedelta(days=1)).isoformat())")
+YES=$(python3 -c "import datetime;print((datetime.date.today()-datetime.timedelta(days=1)).isoformat())")
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"FUTURE","customer":"Future Co","deliveryDate":"'"$TOM"'"},"splits":[{"truckId":"beryle","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"YESTERDAY","customer":"Late Co","deliveryDate":"'"$YES"'"},"splits":[{"truckId":"beryle","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"OTHERS","customer":"Not Mine","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"rigo","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+DD=$(curl -s -b $D $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+nums=sorted(p['poNumber'] for p in d['pos'])
+print('FUTURE' in nums, 'YESTERDAY' in nums, 'OTHERS' in nums)
+print(any(k in l for l in d['loads'] for k in ('customerRate','vendorRate','pricePerUnit','billStatus','billingBatchId')))
+print(any('notifications' in p for p in d['pos']))")
+chk "/api/data (driver): no future, yes yesterday-open, no other drivers" "$(echo "$DD"|sed -n 1p)" "False True False"
+chk "  ...no rates or billing fields in the driver payload" "$(echo "$DD"|sed -n 2p)" "False"
+chk "  ...no notification config in the driver payload"     "$(echo "$DD"|sed -n 3p)" "False"
+MDV=$(curl -s -b $D $B/api/my-dispatch | python3 -c "import json,sys;n=sorted(l['poNumber'] for l in json.load(sys.stdin)['loads']);print('FUTURE' in n, 'YESTERDAY' in n, 'OTHERS' in n)")
+chk "/api/my-dispatch agrees" "$MDV" "False True False"
+chk "driver cannot read another driver's load" "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"start-trip"}')" "403"
+
+echo "── 28. Driver GPS: the endpoint exists, is authenticated and validated ──"
+chk "driver location accepted"    "$(curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":36.7378,"lng":-119.7871,"accuracy":12}' | python3 -c "import json,sys;print(json.load(sys.stdin)['accepted'])")" "True"
+chk "rapid repeat is throttled (202)" "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":36.7379,"lng":-119.7872}')" "202"
+chk "out-of-range lat rejected"   "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":99,"lng":0}')" "400"
+chk "manager cannot post a location" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":1,"lng":1}')" "403"
+chk "anonymous is redirected"     "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":1,"lng":1}')" "302"
+chk "office sees the last position" "$(curl -s -b $M $B/api/driver-locations | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['locations'] if x['driverId']=='beryle'][0];print(r['lat'], r['driverName'])")" "36.7378 Beryle"
+chk "  ...and Quick Assign carries lastSeen" "$(curl -s -b $M $B/api/today | python3 -c "import json,sys;d=[x for x in json.load(sys.stdin)['drivers'] if x['id']=='beryle'][0];print(d['lastSeen']['lng'])")" "-119.7871"
+chk "  ...drivers cannot read it"  "$(curl -s -b $D -o /dev/null -w '%{http_code}' $B/api/driver-locations)" "403"
+chk "driver app calls the endpoint in driver mode" "$(grep -c "startGPSTracking();" public/index.html)" "1"
+
+echo "── 29. One pickup-yard source for every office screen ──"
+# A load whose stored vendorName is stale must still show the resolved yard.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"YARD-1","customer":"Yard Co","deliveryDate":"'"$(date +%F)"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","material":"Base Rock","loadsAssigned":1,"vendorId":"vulcan"}]}' -o /dev/null
+YL=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='YARD-1'][0];print([l['id'] for l in d['loads'] if l['poId']==po['id']][0])")
+chk "office load carries resolved pickup (vendor wins over PO plan)" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$YL'][0];print(l['pickup']['id'], l['pickup']['name'])")" "vulcan Vulcan"
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$YL -d '{"vendorId":"cemex"}' -o /dev/null
+YP=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$YL'][0];print(l['pickup']['name'], l['vendorName'], l.get('actualYardId'), l['vendorRateIsDefault'])")
+chk "generic PUT of vendorId re-resolves, clears mirror, re-prices" "$YP" "CEMEX CEMEX None False"
+chk "profitability uses the same resolver" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;d=json.load(sys.stdin);print(any('CEMEX' in (v.get('name') or '') for v in d['byVendor']))")" "True"
+chk "no independent yard label left in the UI" "$(grep -cE "l\.vendorName \|\| po\.pickup|l\.actualYardName \|\| \(l\.vendorName\)|l\.actualYardName \|\| l\.pickup" public/index.html)" "0"
+chk "no hand-rolled yard chain left on the server" "$(grep -cE "l\.actualYardId \|\| l\.vendorId|l\.vendorId \|\| l\.yardId" server.js)" "0"
+
+echo "── 30. Nothing assigns before Confirm — drag/drop, reassign modal, Quick Assign ──"
+chk "drag/drop does not PUT on drop"        "$(grep -c "api('PUT', '/api/loads/' + dragId" public/index.html)" "0"
+chk "  ...it opens the Quick Assign sheet"   "$(sed -n '/^async function onDrop/,/^}/p' public/index.html | grep -c 'qaOpen(id)')" "1"
+chk "  ...and the sheet only writes on Confirm" "$(sed -n '/^function qaPaintSheet/,/^}/p' public/index.html | grep -c "api('POST'\|api('PUT'")" "0"
+chk "reassign modal goes through /assign"    "$(sed -n '/^async function confirmReassign/,/^}/p' public/index.html | grep -c '/assign')" "1"
+chk "  ...not the generic load update"       "$(sed -n '/^async function confirmReassign/,/^}/p' public/index.html | grep -c "api('PUT'")" "0"
+
+echo "── 31. Login is rate limited ──"
+curl -s -X POST $B/api/_test/reset-login-limits -o /dev/null
+for i in 1 2 3 4 5 6 7 8; do curl -s -o /dev/null -X POST -d 'username=oscar&password=wrong' $B/login; done
+chk "9th attempt is locked out"               "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=oscar&password=wrong' $B/login | sed 's|http://[^/]*||')" "/login?error=locked"
+chk "  ...even with the right password"      "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=oscar&password=oscar123' $B/login | sed 's|http://[^/]*||')" "/login?error=locked"
+chk "  ...other users unaffected"            "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=perla&password=perla123' $B/login | sed 's|http://[^/]*||')" "/app/"
+curl -s -X POST $B/api/_test/reset-login-limits -o /dev/null
+chk "cleared window logs in again"           "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=oscar&password=oscar123' $B/login | sed 's|http://[^/]*||')" "/app/"
+chk "session cookie is httpOnly + named"     "$(curl -s -i -X POST -d 'username=perla&password=perla123' $B/login | grep -i '^set-cookie' | grep -c 'vbt.sid=.*HttpOnly')" "1"
+
+echo "── 20. Async route errors answer, they never hang ──"
+# Express 4 drops a rejected promise on the floor: the request hangs forever.
+# The central wrapper in server.js turns it into a 500. If someone removes
+# that block again, these curls time out (000) instead of returning 500.
+for R in async-throw async-reject sync-throw; do
+  chk "/api/_test/$R returns 500 within 5s" "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' $B/api/_test/$R)" "500"
+done
+chk "server still alive after the throws" "$(curl -s -o /dev/null -w '%{http_code}' $B/healthz)" "200"
+
+pkill -f "^node server.js" >/dev/null 2>&1
 rm -f data.json
+
+echo "── 21. Postgres: a failed store read must NEVER cause a write ──"
+if [ -z "${TEST_DATABASE_URL:-}" ]; then
+  echo "  SKIP  TEST_DATABASE_URL not set — run ./test-pg-local.sh to exercise this against a throwaway Postgres"
+  SKIPPED=$((SKIPPED+1))
+else
+  PSQL="psql $TEST_DATABASE_URL -tA -q"
+  P2=$((PORT+1)); B2=http://localhost:$P2
+  $PSQL -c "DROP TABLE IF EXISTS dispatch_data, users, companies, user_sessions" >/dev/null
+  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  chk "fresh DB boots loaded" "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "True"
+  PM=$(mktemp); curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{
+   "po":{"poNumber":"PG-REAL","customer":"Real Customer","deliveryDate":"'"$(date +%F)"'"},
+   "splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+  chk "real PO persisted to the store row" "$($PSQL -c "select count(*) from dispatch_data where key='store' and value like '%PG-REAL%'")" "1"
+  # A second save so store_prev exists (it snapshots the value before each save).
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{
+   "po":{"poNumber":"PG-SECOND","customer":"Second Customer","deliveryDate":"'"$(date +%F)"'"},
+   "splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+  chk "store_prev holds the state before the last save" "$($PSQL -c "select count(*) from dispatch_data where key='store_prev' and value like '%PG-REAL%' and value not like '%PG-SECOND%'")" "1"
+  # Legacy seed password must stop working once the users table says otherwise.
+  $PSQL -c "update users set password='changed-in-db' where username='joshua'" >/dev/null
+  chk "old seed password rejected after DB change" "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=joshua123' $B2/login | sed 's|.*//[^/]*||')" "/login?error=1"
+  chk "new DB password accepted"                   "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=changed-in-db' $B2/login | sed 's|.*//[^/]*||')" "/app/"
+  # Passwords: seeded rows are hashed, a plaintext row migrates on first login.
+  chk "no plaintext password rows remain after migration" "$($PSQL -c "select count(*) from users where password not like 'scrypt\$%'")" "0"
+  chk "plaintext row migrated to scrypt on login"      "$($PSQL -c "select count(*) from users where username='joshua' and password like 'scrypt\$%'")" "1"
+  chk "  ...and the migrated hash still verifies"      "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=changed-in-db' $B2/login | sed 's|.*//[^/]*||')" "/app/"
+  chk "  ...wrong password still rejected"             "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=changed-in-dc' $B2/login | sed 's|.*//[^/]*||')" "/login?error=1"
+  curl -s -b $PM -H 'Content-Type: application/json' -X PUT $B2/api/drivers/beryle -d '{"password":"beryle-new"}' -o /dev/null
+  chk "password set from Drivers & Trucks is hashed" "$($PSQL -c "select count(*) from users where username='beryle' and password like 'scrypt\$%'")" "1"
+  chk "  ...and works"  "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=beryle&password=beryle-new' $B2/login | sed 's|.*//[^/]*||')" "/app/"
+  $PSQL -c "update users set password='joshua123' where username='joshua'" >/dev/null
+  # A driver created in Drivers & Trucks gets a login AND is dispatchable.
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/drivers -d '{"username":"nadia","password":"nadia123","displayName":"Nadia","defaultTruckId":"truck-4"}' -o /dev/null
+  chk "new driver login row exists" "$($PSQL -c "select count(*) from users where username='nadia' and role='driver' and truck_id='nadia'")" "1"
+  chk "  ...stored hashed" "$($PSQL -c "select count(*) from users where username='nadia' and password like 'scrypt\$%'")" "1"
+  ND=$(mktemp)
+  chk "new driver can log in" "$(curl -s -c $ND -o /dev/null -w '%{redirect_url}' -X POST -d 'username=nadia&password=nadia123' $B2/login | sed 's|.*//[^/]*||')" "/app/"
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{
+   "po":{"poNumber":"PG-NADIA","customer":"Nadia Co","deliveryDate":"'"$(date +%F)"'"},
+   "splits":[{"truckId":"nadia","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+  chk "  ...and sees her own load, nobody else's" "$(curl -s -b $ND $B2/api/my-dispatch | python3 -c "import json,sys;ls=json.load(sys.stdin)['loads'];print(len(ls), ls[0]['poNumber'] if ls else '')")" "1 PG-NADIA"
+  # users.truck_id holding a vehicle id (old screen) must not blind the driver.
+  $PSQL -c "update users set truck_id='truck-4' where username='nadia'" >/dev/null
+  curl -s -c $ND -o /dev/null -X POST -d 'username=nadia&password=nadia123' $B2/login
+  chk "session truckId self-heals to the roster id" "$(curl -s -b $ND $B2/api/me | python3 -c "import json,sys;print(json.load(sys.stdin)['truckId'])")" "nadia"
+  chk "  ...so the load is still visible" "$(curl -s -b $ND $B2/api/my-dispatch | python3 -c "import json,sys;print(len(json.load(sys.stdin)['loads']))")" "1"
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  # Restart so store_boot exists, then damage the store row and boot again.
+  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  chk "store_boot snapshot written on boot" "$($PSQL -c "select count(*) from dispatch_data where key='store_boot' and value like '%PG-REAL%'")" "1"
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  $PSQL -c "update dispatch_data set value='{not json' where key='store'" >/dev/null
+  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  chk "boot with unreadable store: loaded=false"   "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "False"
+  chk "  ...and healthz no longer claims durable"  "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['persistence']['durable'])")" "False"
+  curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
+  chk "write attempt while locked is refused (503)" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"customer":"Overwriter","deliveryDate":"2026-01-01"},"splits":[]}')" "503"
+  chk "read while locked is refused, not an empty board" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' $B2/api/data)" "503"
+  chk "store row was NOT overwritten"     "$($PSQL -c "select value from dispatch_data where key='store'")" "{not json"
+  chk "store_prev was NOT rotated away"   "$($PSQL -c "select count(*) from dispatch_data where key='store_prev' and value like '%PG-REAL%'")" "1"
+  chk "backups endpoint reachable while locked" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' $B2/api/admin/backups)" "200"
+  chk "restore demands confirm" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/admin/restore -d '{"from":"store_boot"}')" "400"
+  RS=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/admin/restore -d '{"from":"store_boot","confirm":"RESTORE"}')
+  chk "restore from store_boot succeeds" "$(echo "$RS" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('success'), d.get('loaded'))")" "True True"
+  chk "damaged row kept as store_before_restore" "$($PSQL -c "select value from dispatch_data where key='store_before_restore'")" "{not json"
+  chk "real PO is back after restore" "$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;print(len([p for p in json.load(sys.stdin)['pos'] if p['poNumber']=='PG-REAL']))")" "1"
+  chk "writes work again after restore" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"PG-AFTER","customer":"After Restore","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "200"
+  # A missing store row next to existing backups is a lost row, not a new company.
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  $PSQL -c "delete from dispatch_data where key='store'" >/dev/null
+  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  chk "missing store row + backups present: refuses to seed" "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "False"
+  chk "  ...no store row was created" "$($PSQL -c "select count(*) from dispatch_data where key='store'")" "0"
+  pkill -f "^node server.js" >/dev/null 2>&1
+fi
 echo
-echo "════ $PASS passed, $FAIL failed ════"
+echo "── 23. Old data: approved-but-unlocked load becomes locked on load ──"
+cat > data.json <<'JSON'
+{"pos":[{"id":"PO-OLD","poNumber":"OLD-1","customer":"Legacy Co","deliveryDate":"2026-01-05","status":"completed"}],
+ "loads":[{"id":"L-OLD","poId":"PO-OLD","truckId":"beryle","material":"Dirt","loadsAssigned":1,"loadsDelivered":1,
+           "deliveryDate":"2026-01-05","status":"completed","approvalStatus":"approved","locked":false,"billingBatchId":"BB-STUCK"}],
+ "billingBatches":[{"id":"BB-STUCK","loadIds":["L-OLD"],"syncStatus":"syncing","qbInvoiceId":"","customer":"Legacy Co","totalAmount":0,"lineItems":[]}],
+ "unitConfig":{"byUnit":{"ton":25,"load":1,"hour":1,"mile":1},"byMaterial":{}}}
+JSON
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-old.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+chk "legacy approved load is locked after normalize" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='L-OLD'][0]['locked'])")" "True"
+chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/L-OLD -d '{"material":"Sand"}')" "403"
+chk "fabricated hour:1 / mile:1 seeds are removed on load" "$(curl -s -b $M $B/api/costing/settings | python3 -c "import json,sys;u=json.load(sys.stdin)['unitConfig']['byUnit'];print('hour' in u, 'mile' in u, u['ton'])")" "False False 25"
+chk "batch stuck in 'syncing' at restart becomes failed" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'])")" "failed True"
+pkill -f "^node server.js" >/dev/null 2>&1
+rm -f data.json
+
+[ "$SKIPPED" -gt 0 ] && SK=", $SKIPPED section(s) skipped" || SK=""
+echo "════ $PASS passed, $FAIL failed$SK ════"
 [ "$FAIL" -eq 0 ]

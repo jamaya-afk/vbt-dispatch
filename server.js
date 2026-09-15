@@ -4,40 +4,101 @@ const express = require('express');
 const session = require('express-session');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// ── REQUIRED SECRETS ─────────────────────────────────────────────────────────
+// Production refuses to boot without these. There are deliberately no
+// fallback values anywhere in the source: a known default session secret lets
+// anyone forge a login cookie, a known default encryption key makes the stored
+// QuickBooks tokens readable, and a missing DATABASE_URL would silently write
+// the day's dispatch to a disk Railway wipes on the next deploy.
+const REQUIRED_PROD_SECRETS = {
+  DATABASE_URL:      'Postgres connection string — the only durable store',
+  SESSION_SECRET:    'signs login cookies (any long random string)',
+  QB_ENCRYPTION_KEY: 'encrypts QuickBooks OAuth tokens at rest (any long random string)',
+};
+if (IS_PROD) {
+  const missing = Object.keys(REQUIRED_PROD_SECRETS).filter(k => !String(process.env[k] || '').trim());
+  if (missing.length) {
+    console.error('FATAL: required production secrets are not set:');
+    for (const k of missing) console.error(`  ${k.padEnd(18)} — ${REQUIRED_PROD_SECRETS[k]}`);
+    console.error('Set them in the Railway service variables and redeploy.');
+    process.exit(1);
+  }
+}
+// Dev only: a per-process random value, never a literal in the source.
+// Sessions and dev-only QuickBooks tokens reset on each restart, which is fine
+// locally and impossible in production because of the guard above.
+if (!process.env.SESSION_SECRET) {
+  process.env.SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+  console.warn('⚠ SESSION_SECRET not set — using a random per-process value (dev only; sessions reset on restart).');
+}
+if (!process.env.QB_ENCRYPTION_KEY) {
+  process.env.QB_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+  console.warn('⚠ QB_ENCRYPTION_KEY not set — using a random per-process value (dev only; QuickBooks tokens reset on restart).');
+}
+
 const qb = require('./qb');
 const mailer = require('./mailer');
 
 const app = express();
+
+// ── ASYNC ROUTE SAFETY ───────────────────────────────────────────────────────
+// Express 4 does not catch a rejected promise from an async handler: the
+// request hangs forever and the caller sees nothing, while the in-memory
+// store may already be half-changed. Every handler registered through
+// app.<verb>() is wrapped here once, centrally, so a throw becomes next(err)
+// and the error middleware at the bottom answers with a real 500.
+// test-e2e.sh section 20 fails if this block is removed.
+function wrapAsyncHandler(fn) {
+  if (Array.isArray(fn)) return fn.map(wrapAsyncHandler);
+  if (typeof fn !== 'function' || fn.length === 4) return fn;   // error middleware stays as-is
+  return function asyncSafe(req, res, next) {
+    let out;
+    try { out = fn(req, res, next); } catch (e) { return next(e); }
+    if (out && typeof out.then === 'function') out.then(undefined, next);
+  };
+}
+for (const verb of ['get', 'post', 'put', 'delete', 'patch', 'all']) {
+  const original = app[verb].bind(app);
+  app[verb] = function (pathArg, ...handlers) {
+    if (verb === 'get' && handlers.length === 0) return original(pathArg);   // app.get('setting name')
+    return original(pathArg, ...handlers.map(wrapAsyncHandler));
+  };
+}
+
 app.use(express.json({
   limit: '25mb',
 }));
 app.use(express.urlencoded({ extended: true }));
 
-const IS_PROD = process.env.NODE_ENV === 'production';
-
-// Hard-fail at boot in production if DATABASE_URL is missing — we never want
-// to silently fall back to data.json on a Railway deploy and lose data.
-if (IS_PROD && !process.env.DATABASE_URL) {
-  console.error('FATAL: DATABASE_URL is required in production.');
-  process.exit(1);
-}
-
 // ── SESSION (Postgres-backed when DATABASE_URL is set) ───────────────────────
-if (!process.env.SESSION_SECRET) {
-  console.warn('⚠ SECURITY: SESSION_SECRET not set — using a known default. Set it in Railway variables.');
-}
+// Railway terminates TLS at its proxy; trusting one hop lets express-session
+// see the request as https so the cookie can be Secure in production.
+if (IS_PROD) app.set('trust proxy', 1);
 const sessionOpts = {
-  secret: process.env.SESSION_SECRET || 'vbt-2025-secret',
+  secret: process.env.SESSION_SECRET,
+  name: 'vbt.sid',
   resave: false, saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, sameSite: 'lax' }
+  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, sameSite: 'lax', secure: IS_PROD }
 };
+// Railway/Supabase Postgres needs TLS; a local test database does not.
+// `?sslmode=disable` in DATABASE_URL (or PGSSL=disable) turns it off.
+function pgSsl() {
+  const url = String(process.env.DATABASE_URL || '');
+  if (process.env.PGSSL === 'disable' || /sslmode=disable/.test(url)) return false;
+  return { rejectUnauthorized: false };
+}
 let sessionPool = null;
 if (process.env.DATABASE_URL) {
   try {
     const { Pool } = require('pg');
     sessionPool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: pgSsl(),
+      connectionTimeoutMillis: 10000,   // never hang boot forever on a dead host
     });
     sessionPool.on('error', e => console.error('Session pool error:', e.message));
     const pgSession = require('connect-pg-simple')(session);
@@ -209,6 +270,49 @@ function driverRoster() {
   });
 }
 
+// ONE driver roster. store.drivers is the dispatch source of truth (name,
+// default truck, status, active); the Postgres users table only holds the
+// login for that same id (users.truck_id === driver id === load.truckId).
+// Everything that names a driver — Drivers & Trucks, Quick Assign, PO
+// creation, assignment validation, driver login — resolves through here.
+function rosterDriver(id) {
+  return (store.drivers || []).find(d => d.id === id) || null;
+}
+function upsertRosterDriver({ id, name, defaultTruckId, active, status, phone, notes }) {
+  if (!Array.isArray(store.drivers)) store.drivers = [];
+  let d = rosterDriver(id);
+  if (!d) {
+    d = { id, name: name || id, login: id, phone: '', status: 'available', defaultTruckId: null, active: true, notes: '' };
+    store.drivers.push(d);
+  }
+  if (name !== undefined && String(name).trim()) d.name = String(name).trim();
+  if (defaultTruckId !== undefined) d.defaultTruckId = defaultTruckId || null;
+  if (active !== undefined) d.active = !!active;
+  if (status !== undefined && DRIVER_STATUSES.includes(status)) d.status = status;
+  if (phone !== undefined) d.phone = phone;
+  if (notes !== undefined) d.notes = notes;
+  return d;
+}
+// Roster + login state, for the Drivers & Trucks screen.
+async function fleetDrivers() {
+  const logins = new Map();
+  if (pg) {
+    try {
+      const r = await pg.query(`SELECT username, truck_id, active FROM users WHERE company_id = $1 AND role = 'driver'`, [DEFAULT_COMPANY_ID]);
+      r.rows.forEach(row => logins.set(row.truck_id || row.username, { username: row.username, active: row.active !== false }));
+    } catch (e) { console.error('[fleetDrivers] users lookup failed:', e.message); }
+  }
+  return (store.drivers || []).map(d => {
+    const login = logins.get(d.id);
+    return {
+      id: d.id, username: d.id, displayName: d.name || d.id,
+      defaultTruckId: d.defaultTruckId || null, status: d.status || 'available',
+      active: d.active !== false, phone: d.phone || '', notes: d.notes || '',
+      hasLogin: !!login, loginActive: login ? login.active : false,
+    };
+  });
+}
+
 // The truck a load is running on. Falls back to the driver's historical truck
 // so loads created before the fleet existed still show the right vehicle.
 function getTruckForLoad(l) {
@@ -343,7 +447,7 @@ async function initPg() {
       const { Pool } = require('pg');
       pg = new Pool({
         connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false },
+        ssl: pgSsl(),
         connectionTimeoutMillis: 10000,
       });
     } else {
@@ -351,6 +455,8 @@ async function initPg() {
     }
     await pg.query('SELECT 1');
     await pg.query(`CREATE TABLE IF NOT EXISTS dispatch_data (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    // Additive only: lets /api/admin/backups show when each restore point was written.
+    await pg.query(`ALTER TABLE dispatch_data ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`);
 
     // Multi-tenant scaffolding tables. Created here so Phase 2 (per-company
     // stores) can layer on without another migration step.
@@ -415,7 +521,7 @@ async function seedDefaultCompanyAndUsers() {
         INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
         VALUES ($1, $2, $3, $4, $5, $6, $7, true)
         ON CONFLICT (company_id, username) DO NOTHING
-      `, [userId, DEFAULT_COMPANY_ID, uname, u.password, u.role, u.truckId || null, u.displayName || uname]);
+      `, [userId, DEFAULT_COMPANY_ID, uname, hashPassword(u.password), u.role, u.truckId || null, u.displayName || uname]);
     }
     console.log(`✓ Seeded default company "${DEFAULT_COMPANY_ID}" + ${Object.keys(USERS).length} legacy users`);
   } catch (e) {
@@ -424,33 +530,112 @@ async function seedDefaultCompanyAndUsers() {
   }
 }
 
+// A store row must be a JSON object. Anything else (bad JSON, an array, a
+// string) means the row is damaged and must NOT be silently replaced.
+function parseStoreRow(text) {
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('store row is not a JSON object');
+  return parsed;
+}
+
+// Load the store. `persistence.loaded` becomes true ONLY after an existing
+// store row was read and validated, or after the database was proven to be
+// genuinely empty (no store row AND no backup rows). A successful connection
+// is not a successful load: if the read fails for any reason the process
+// stays in a locked state where saveData() refuses to write, so a transient
+// read error can never turn into "seed an empty store over production".
 async function loadData() {
-  let loaded = false;
-  // Postgres first
+  persistence.loaded = false;
+  persistence.loadError = '';
   if (pg) {
-    try {
-      const r = await pg.query("SELECT value FROM dispatch_data WHERE key='store'");
-      if (r.rows.length) {
-        store = JSON.parse(r.rows[0].value);
-        loaded = true;
-        console.log(`✓ Loaded from Postgres: ${store.pos.length} POs, ${store.loads.length} loads`);
-      }
-    } catch (e) { console.error('PG read error:', e.message); }
-  }
-  // File fallback — DEV ONLY. In production we hard-fail above instead of
-  // silently using ephemeral disk that resets on every Railway redeploy.
-  if (!IS_PROD && fs.existsSync(DATA_FILE)) {
-    try {
-      store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      loaded = true;
-      console.log(`✓ Loaded from file: ${store.pos.length} POs`);
-      if (pg) { await saveData(); console.log('✓ Migrated file data to Postgres'); }
+    const r = await pg.query("SELECT value FROM dispatch_data WHERE key='store'");
+    if (r.rows.length) {
+      store = parseStoreRow(r.rows[0].value);
+      normalizeStore();
+      persistence.loaded = true;
+      console.log(`✓ Loaded from Postgres: ${store.pos.length} POs, ${store.loads.length} loads`);
       return;
-    } catch (e) { console.warn('File read error:', e.message); }
+    }
+    // No store row. Before treating this as a brand-new database, make sure
+    // there is no backup row either — a missing store next to an existing
+    // backup means the row was lost, not that the company is new.
+    const backups = await pg.query("SELECT key FROM dispatch_data WHERE key LIKE 'store_%'");
+    if (backups.rows.length) {
+      throw new Error(`'store' row is missing but backups exist (${backups.rows.map(x => x.key).join(', ')}) — refusing to seed. Restore a backup instead.`);
+    }
+    // Genuinely empty database: seed defaults, and in dev migrate data.json.
+    if (!IS_PROD && fs.existsSync(DATA_FILE)) {
+      try {
+        store = parseStoreRow(fs.readFileSync(DATA_FILE, 'utf8'));
+        normalizeStore();
+        persistence.loaded = true;
+        await saveData();
+        console.log(`✓ Migrated data.json to Postgres: ${store.pos.length} POs`);
+        return;
+      } catch (e) { console.warn('File read error (ignored, DB is empty):', e.message); }
+    }
+    normalizeStore();
+    persistence.loaded = true;
+    console.log('✓ Empty database — seeded defaults (no store row, no backups)');
+    return;
   }
-  // Nothing loaded — still normalize so the seed defaults (trucks, vendors,
-  // etc.) populate even on a brand-new database.
+  // File mode — DEV ONLY (production exits at boot without DATABASE_URL).
+  if (fs.existsSync(DATA_FILE)) {
+    store = parseStoreRow(fs.readFileSync(DATA_FILE, 'utf8'));
+    normalizeStore();
+    persistence.loaded = true;
+    console.log(`✓ Loaded from file: ${store.pos.length} POs`);
+    return;
+  }
   normalizeStore();
+  persistence.loaded = true;
+}
+
+// One extra restore point that a couple of quick saves cannot rotate away:
+// the store exactly as it was when this process booted. Written once, after
+// a successful load, never on a locked process.
+async function snapshotBootStore() {
+  if (!pg || !persistence.loaded) return;
+  try {
+    await pg.query(`
+      INSERT INTO dispatch_data(key, value, updated_at)
+      SELECT 'store_boot', value, now() FROM dispatch_data WHERE key = 'store'
+      ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    `);
+  } catch (e) { console.warn('store_boot snapshot skipped:', e.message); }
+}
+
+const RESTORE_KEYS = ['store_prev', 'store_boot'];
+async function listBackups() {
+  if (!pg) return [];
+  const r = await pg.query(`SELECT key, length(value) AS bytes, updated_at FROM dispatch_data WHERE key = 'store' OR key LIKE 'store_%' ORDER BY key`);
+  // Sizes and timestamps only — a backup is never parsed into the live store here.
+  return r.rows.map(row => ({ key: row.key, bytes: Number(row.bytes), updatedAt: row.updated_at }));
+}
+
+// Restore the live store from a backup row. Safe by construction:
+//   1. the current 'store' row (whatever state it is in) is copied to
+//      'store_before_restore' first, so the restore itself is reversible;
+//   2. the backup is parsed and validated BEFORE anything is written;
+//   3. the in-memory store is reloaded from the database afterwards, which
+//      also clears the locked state if the process booted with a bad row.
+async function restoreFromBackup(key) {
+  if (!pg) throw new Error('Restore requires Postgres');
+  if (!RESTORE_KEYS.includes(key)) throw new Error(`Unknown backup "${key}"`);
+  const r = await pg.query('SELECT value FROM dispatch_data WHERE key = $1', [key]);
+  if (!r.rows.length) throw new Error(`Backup "${key}" does not exist`);
+  const candidate = parseStoreRow(r.rows[0].value);   // validate first
+  await pg.query(`
+    INSERT INTO dispatch_data(key, value, updated_at)
+    SELECT 'store_before_restore', value, now() FROM dispatch_data WHERE key = 'store'
+    ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+  `);
+  await pg.query(
+    "INSERT INTO dispatch_data(key, value, updated_at) VALUES('store', $1, now()) ON CONFLICT(key) DO UPDATE SET value = $1, updated_at = now()",
+    [r.rows[0].value]
+  );
+  await loadData();
+  return { restoredFrom: key, pos: (candidate.pos || []).length, loads: (candidate.loads || []).length };
 }
 
 // Persistence health, surfaced to /healthz and to the dispatcher's screen.
@@ -460,6 +645,8 @@ async function loadData() {
 const persistence = {
   mode: 'unknown',        // 'postgres' | 'file' | 'unknown'
   durable: false,
+  loaded: false,          // true ONLY after the existing store was read and validated
+  loadError: '',
   lastSaveOk: null,
   lastSaveAt: '',
   lastError: '',
@@ -467,20 +654,41 @@ const persistence = {
 };
 
 async function saveData() {
+  // The single most important line in this file. If the store was never
+  // successfully loaded, whatever is in memory is seed data or nothing, and
+  // writing it would overwrite the company's real records.
+  if (!persistence.loaded) {
+    const msg = 'REFUSED: store was never loaded from the database — writing now would overwrite production data';
+    persistence.lastSaveOk = false;
+    persistence.lastError = msg;
+    throw new Error(msg);
+  }
   const j = JSON.stringify(store);
   if (pg) {
     try {
       // Snapshot the previous value before overwriting. The whole operation
       // lives in one row, so a bad write would otherwise be unrecoverable.
-      await pg.query(`
-        INSERT INTO dispatch_data(key, value)
-        SELECT 'store_prev', value FROM dispatch_data WHERE key = 'store'
-        ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
-      `).catch(() => {});
-      await pg.query(
-        "INSERT INTO dispatch_data(key,value) VALUES('store',$1) ON CONFLICT(key) DO UPDATE SET value=$1",
-        [j]
-      );
+      // Both statements run in one transaction so the backup and the new
+      // value can never disagree.
+      const client = await pg.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`
+          INSERT INTO dispatch_data(key, value, updated_at)
+          SELECT 'store_prev', value, now() FROM dispatch_data WHERE key = 'store'
+          ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        `);
+        await client.query(
+          "INSERT INTO dispatch_data(key,value,updated_at) VALUES('store',$1,now()) ON CONFLICT(key) DO UPDATE SET value=$1, updated_at=now()",
+          [j]
+        );
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        client.release();
+      }
       persistence.lastSaveOk = true;
       persistence.lastSaveAt = new Date().toISOString();
       persistence.lastError = '';
@@ -491,11 +699,12 @@ async function saveData() {
       persistence.lastSaveOk = false;
       persistence.lastError = e.message;
       if (!persistence.degradedSince) persistence.degradedSince = new Date().toISOString();
-      // In prod, never fall back to local disk — the next deploy will wipe it.
-      if (IS_PROD) throw e;
+      // Never fall back to local disk when Postgres is the configured store —
+      // a file write would look like success and vanish on the next deploy.
+      throw e;
     }
   }
-  if (!IS_PROD) {
+  {
     try {
       fs.writeFileSync(DATA_FILE, j);
       persistence.lastSaveOk = true;
@@ -615,6 +824,13 @@ function normalizeStore() {
     store.unitConfig = { byUnit: { ...DEFAULT_UNIT_QTY_PER_LOAD }, byMaterial: {} };
   }
   if (!store.unitConfig.byUnit)     store.unitConfig.byUnit = { ...DEFAULT_UNIT_QTY_PER_LOAD };
+  // Earlier builds seeded hour:1 and mile:1 as "quantity per load", which
+  // silently turned a per-mile rate into rate × 1. Those units are measured
+  // per load now; the fabricated seed value is removed (a deliberately
+  // configured different number is left alone).
+  for (const u of Object.keys(MEASURED_UNITS)) {
+    if (Number(store.unitConfig.byUnit[u]) === 1) { delete store.unitConfig.byUnit[u]; console.log(`[normalize] removed fabricated ${u}:1 quantity-per-load seed`); }
+  }
   if (!store.unitConfig.byMaterial) store.unitConfig.byMaterial = {};
 
   // ── COST RATES (P5) ────────────────────────────────────────────────────────
@@ -674,7 +890,11 @@ function normalizeStore() {
     if (!l.approvalStatus) l.approvalStatus = l.status === 'completed' ? 'approved' : 'pending';
     if (!l.billStatus)     l.billStatus = 'not-ready';
     if (!l.ticketImage)    l.ticketImage = '';
-    if (l.locked === undefined) l.locked = false;
+    // `locked` is DERIVED from the approval state, never stored independently:
+    // submitted and approved loads are locked, everything else is editable.
+    // (Old data had approved loads with locked=false, which let the generic
+    // manager update rewrite approved work.)
+    l.locked = l.approvalStatus === 'approved' || l.approvalStatus === 'submitted';
     if (l.voided === undefined) l.voided = false;
     if (l.loadsDelivered === undefined) l.loadsDelivered = 0;
     // Date-move tracking
@@ -746,7 +966,18 @@ function normalizeStore() {
       lastSyncAt: '',
     };
   }
+  if (!store.driverLocations || typeof store.driverLocations !== 'object') store.driverLocations = {};
   if (!Array.isArray(store.billingBatches)) store.billingBatches = [];
+  // A batch still 'syncing' when the process starts was interrupted mid-send.
+  // The invoice may or may not exist in QuickBooks, so it becomes 'failed'
+  // with an explicit instruction rather than silently re-sendable.
+  store.billingBatches.forEach(b => {
+    if (b.syncStatus === 'syncing') {
+      b.syncStatus = 'failed';
+      b.errorMessage = 'Send was interrupted by a server restart. Check QuickBooks for an invoice for this batch before retrying.';
+      b.syncingSince = '';
+    }
+  });
   if (!Array.isArray(store.qbSyncLog))      store.qbSyncLog = [];
   if (!Array.isArray(store.vendorBills))    store.vendorBills = [];
 
@@ -761,7 +992,45 @@ function normalizeStore() {
   });
 }
 
-function todayStr() { return new Date().toISOString().slice(0, 10); }
+// Valley Best runs on Pacific time. "Today" is the Pacific calendar date,
+// never the UTC one (which flips to tomorrow at 4–5pm in Fresno and would
+// end every driver's day mid-afternoon).
+const OPERATING_TZ = process.env.OPERATING_TZ || 'America/Los_Angeles';
+function todayStrAt(d) {
+  // en-CA formats as YYYY-MM-DD
+  return new Intl.DateTimeFormat('en-CA', { timeZone: OPERATING_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function todayStr() { return todayStrAt(new Date()); }
+
+// The driver's workday: their own loads that are today or earlier and still
+// open. Never future work, never other drivers' work. One definition, used by
+// every endpoint the driver app reads.
+function driverWorkdayLoads(u) {
+  const today = todayStr();
+  return store.loads.filter(l =>
+    l.truckId === u.truckId &&
+    !l.voided &&
+    l.status !== 'completed' &&
+    l.approvalStatus !== 'approved' &&
+    (l.deliveryDate || today) <= today
+  );
+}
+// Rates and billing state are office information; the driver payload never
+// carries them.
+const DRIVER_HIDDEN_LOAD_FIELDS = [
+  'customerRate', 'customerUnit', 'customerRateIsDefault', 'vendorRate', 'vendorUnit', 'vendorRateIsDefault',
+  'vendorIsInternal', 'pricePerUnit', 'tonsPerLoad', 'billStatus', 'billedAt', 'billingBatchId',
+  'qbInvoiceId', 'qbInvoiceNumber', 'sentToQuickBooksAt',
+];
+function driverSafeLoad(l) {
+  const out = { ...l };
+  for (const k of DRIVER_HIDDEN_LOAD_FIELDS) delete out[k];
+  return out;
+}
+function driverSafePo(p) {
+  const { notifications, ...rest } = p;
+  return rest;
+}
 
 // ── PRICING HELPERS ──────────────────────────────────────────────────────────
 // Customer key uses lowercase for case-insensitive lookup
@@ -916,6 +1185,14 @@ function resolvePickupYard(load, po, trip) {
   };
 }
 
+// Office-facing view of a load: the load plus its ONE authoritative pickup
+// yard. Every manager screen reads `load.pickup`, never vendorName /
+// actualYardName / po.pickup on its own.
+function withPickup(l) {
+  const po = store.pos.find(p => p.id === l.poId) || {};
+  return { ...l, pickup: resolvePickupYard(l, po) };
+}
+
 function resolveVendorRate(vendorId, material) {
   if (vendorId === 'vbt') return { unit: 'ton', price: 0, isDefault: false, isInternal: true };
   const list = store.vendorPrices[vendorId] || [];
@@ -954,11 +1231,14 @@ function resolveVendorRate(vendorId, material) {
 // The engine stays open: any other unit can be given a quantity per load in
 // costing settings, and only units actually in use are ever flagged.
 const DEFAULT_UNIT_QTY_PER_LOAD = {
-  ton:  25,
+  ton:  TONS_PER_LOAD,   // the single definition of the 25-ton rule
   load: 1,
-  hour: 1,
-  mile: 1,
 };
+// Units whose quantity is MEASURED on each load, never configured as a
+// constant: a per-mile or per-hour rate needs the miles/hours recorded on
+// that load (load.miles / load.hours). Until they are, the amount is
+// reported as not calculable — never as rate × 1.
+const MEASURED_UNITS = { mile: 'miles', hour: 'hours' };
 
 // Units Valley Best actually operates in. Anything outside this list still
 // works if configured, but these are what the UI offers by default.
@@ -971,6 +1251,7 @@ function unitKey(unit) { return String(unit || 'ton').trim().toLowerCase(); }
 // Returns null when Valley Best has not defined it.
 function qtyPerLoad(unit, material) {
   const u = unitKey(unit);
+  if (MEASURED_UNITS[u]) return null;   // miles/hours come from the load itself
   const cfg = store.unitConfig || {};
   const perMat = (cfg.byMaterial || {})[material];
   if (perMat && perMat[u] != null && perMat[u] !== '') return Number(perMat[u]);
@@ -983,23 +1264,37 @@ function qtyPerLoad(unit, material) {
 // The one money calculation. Every screen uses this so the same load can
 // never show two different figures.
 //   { amount, unconfigured, unit, qtyPerLoad, rate, delivered }
-function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride) {
+//   `measured` = { miles, hours } recorded on the load, for mile/hour units.
+//   An unconfigured result carries `reason` so every screen can say WHY the
+//   figure is missing instead of showing $0.
+function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride, measured) {
   const r = Number(rate) || 0;
   const n = Number(delivered) || 0;
   const u = unitKey(unit);
-  // A per-load snapshot of tons wins for ton-priced loads (legacy loads carry it)
-  let qty = (u === 'ton' && tonsPerLoadOverride) ? Number(tonsPerLoadOverride) : qtyPerLoad(u, material);
-  if (qty == null) {
-    return { amount: null, unconfigured: true, unit: u, qtyPerLoad: null, rate: r, delivered: n };
+  const base = { unit: u, rate: r, delivered: n };
+  if (MEASURED_UNITS[u]) {
+    const field = MEASURED_UNITS[u];
+    const m = measured && measured[field];
+    if (m == null || m === '' || !isFinite(Number(m))) {
+      return { ...base, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null,
+               reason: `${field} not recorded on this load — a per-${u} rate cannot be calculated yet` };
+    }
+    return { ...base, amount: r * Number(m), unconfigured: false, qtyPerLoad: null, quantity: Number(m), reason: '' };
   }
-  return { amount: r * qty * n, unconfigured: false, unit: u, qtyPerLoad: qty, rate: r, delivered: n };
+  // A per-load snapshot of tons wins for ton-priced loads (legacy loads carry it)
+  const qty = (u === 'ton' && tonsPerLoadOverride) ? Number(tonsPerLoadOverride) : qtyPerLoad(u, material);
+  if (qty == null) {
+    return { ...base, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null,
+             reason: `no quantity per load configured for unit "${u}" (Costing settings)` };
+  }
+  return { ...base, amount: r * qty * n, unconfigured: false, qtyPerLoad: qty, quantity: qty * n, reason: '' };
 }
 
 function revenueDetail(load) {
-  return computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad);
+  return computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
 }
 function costDetail(load) {
-  return computeAmount(load.vendorRate, load.vendorUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad);
+  return computeAmount(load.vendorRate, load.vendorUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
 }
 
 // Back-compat numeric wrappers. An unconfigured unit yields 0 rather than a
@@ -1069,9 +1364,16 @@ function reqAdmin(req, res, next) {
 app.get('/healthz', (req, res) => res.json({
   ok: true,
   hasDb: !!process.env.DATABASE_URL,
+  // `loaded` is the truth about the data: durable=true only says Postgres is
+  // reachable. A process that could not read its store reports loaded=false
+  // and refuses every write.
+  loaded: persistence.loaded,
+  loadError: persistence.loadError,
   persistence: {
     mode: persistence.mode,
-    durable: persistence.durable,
+    durable: persistence.durable && persistence.loaded,
+    loaded: persistence.loaded,
+    loadError: persistence.loadError,
     lastSaveOk: persistence.lastSaveOk,
     lastSaveAt: persistence.lastSaveAt,
     lastError: persistence.lastError,
@@ -1092,17 +1394,150 @@ app.get('/api/persistence', reqAuth, (req, res) => {
   res.json({
     ...persistence,
     fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
-    warning: !persistence.durable
+    warning: !persistence.loaded
+      ? 'LOCKED: the dispatch data could not be read from the database. Nothing has been changed or overwritten. An admin can restore a backup from Settings.'
+      : !persistence.durable
       ? 'Data is NOT in Postgres — it will be lost on the next redeploy. Set DATABASE_URL.'
       : persistence.lastSaveOk === false
         ? 'The last save did not reach Postgres. Recent changes may be at risk.'
         : '',
   });
 });
+
+// ── STORE LOCK ───────────────────────────────────────────────────────────────
+// While the store is not loaded, every dispatch API answers 503 instead of
+// serving an empty board that the office could mistake for lost data, and
+// instead of accepting a write that saveData() would refuse anyway. Health,
+// identity and the backup/restore endpoints stay reachable so the situation
+// can be seen and fixed.
+const LOCK_EXEMPT = new Set(['/api/persistence', '/api/me', '/api/admin/backups', '/api/admin/restore']);
+app.use('/api', (req, res, next) => {
+  if (persistence.loaded || LOCK_EXEMPT.has(req.originalUrl.split('?')[0])) return next();
+  res.status(503).json({
+    error: 'Dispatch data is locked: the store could not be loaded from the database. Nothing was overwritten.',
+    locked: true,
+    loadError: persistence.loadError,
+  });
+});
+
+// ── BACKUP / RESTORE (admin) ─────────────────────────────────────────────────
+// store_prev = the value before the most recent save; store_boot = the value
+// when this process last started. Restoring first copies the current row to
+// store_before_restore, so a restore is itself undoable.
+app.get('/api/admin/backups', reqAdmin, async (req, res) => {
+  const rows = await listBackups();
+  res.json({ loaded: persistence.loaded, loadError: persistence.loadError, restorable: RESTORE_KEYS, backups: rows });
+});
+app.post('/api/admin/restore', reqAdmin, async (req, res) => {
+  const { from, confirm } = req.body || {};
+  if (!RESTORE_KEYS.includes(from)) return res.status(400).json({ error: `from must be one of ${RESTORE_KEYS.join(', ')}` });
+  if (confirm !== 'RESTORE') return res.status(400).json({ error: 'Pass confirm: "RESTORE" to replace the live dispatch data with this backup' });
+  try {
+    const result = await restoreFromBackup(from);
+    logAction(req.session.user, 'restore-backup', from, { pos: result.pos, loads: result.loads });
+    await saveData();   // persists the audit entry; also proves the store is writable again
+    res.json({ success: true, ...result, loaded: persistence.loaded });
+  } catch (e) {
+    res.status(409).json({ error: e.message, loaded: persistence.loaded });
+  }
+});
+
+// Test-only hooks. Never mounted in production; used by test-e2e.sh to prove
+// the async wrapper above is still in place (a hung request = missing wrapper).
+if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
+  // Fake QuickBooks: replaces the qb module's network calls so the billing
+  // state machine (concurrency, failure, retry, void) can be exercised
+  // without Intuit. `mode` = ok | fail | slow.
+  const fakeQb = { mode: 'ok', delayMs: 0, invoicesCreated: 0, invoicesVoided: 0, invoices: [] };
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  app.post('/api/_test/qb-fake', reqMgr, async (req, res) => {
+    Object.assign(fakeQb, { mode: req.body?.mode || 'ok', delayMs: Number(req.body?.delayMs || 0) });
+    if (req.body?.connected !== false) {
+      store.qbConnection = { ...(store.qbConnection || {}), realmId: 'test-realm', status: 'connected', companyName: 'Fake QB', connectedAt: new Date().toISOString() };
+    } else if (store.qbConnection) {
+      store.qbConnection.status = 'disconnected';
+    }
+    qb.findOrCreateCustomer = async (conn, c) => ({ customer: { Id: 'CUST-' + (c.name || 'x').replace(/\W/g, ''), DisplayName: c.name }, created: false });
+    qb.createInvoice = async (conn, args) => {
+      if (fakeQb.mode === 'slow') await wait(fakeQb.delayMs || 1500);
+      if (fakeQb.mode === 'fail') { const e = new Error('Fake QuickBooks: invoice rejected'); e.statusCode = 400; throw e; }
+      fakeQb.invoicesCreated++;
+      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: String(1000 + fakeQb.invoicesCreated), memo: args.memo };
+      fakeQb.invoices.push(inv);
+      return inv;
+    };
+    qb.voidInvoice = async (conn, id) => {
+      if (fakeQb.mode === 'fail') throw new Error('Fake QuickBooks: void rejected');
+      fakeQb.invoicesVoided++;
+      return { Id: id, status: 'Voided' };
+    };
+    qb.createBill = async () => ({ Id: 'BILL-1' });
+    res.json({ ok: true, fakeQb });
+  });
+  app.get('/api/_test/qb-fake', reqMgr, (req, res) => res.json(fakeQb));
+  app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
+  app.get('/api/_test/today', (req, res) => res.json({ tz: OPERATING_TZ, today: todayStrAt(req.query.at ? new Date(String(req.query.at)) : new Date()) }));
+  app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
+  app.get('/api/_test/async-reject', (req, res) => Promise.reject(new Error('test: rejected promise')));
+  app.get('/api/_test/sync-throw', (req, res) => { throw new Error('test: sync throw'); });
+}
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
 
+// ── PASSWORDS ────────────────────────────────────────────────────────────────
+// scrypt (Node built-in, no dependency). Stored form: scrypt$<salt>$<hash>.
+// Rows written before this existed hold plaintext; verifyPassword accepts
+// them ONCE and the login handler immediately rewrites the row hashed, so
+// every account migrates on its next successful login with no reset.
+function hashPassword(plain) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(String(plain), salt, 64, { N: 16384, r: 8, p: 1 });
+  return `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`;
+}
+function verifyPassword(plain, stored) {
+  if (!stored) return { ok: false, needsRehash: false };
+  if (String(stored).startsWith('scrypt$')) {
+    const [, saltHex, hashHex] = String(stored).split('$');
+    try {
+      const salt = Buffer.from(saltHex, 'hex');
+      const expected = Buffer.from(hashHex, 'hex');
+      const actual = crypto.scryptSync(String(plain), salt, expected.length, { N: 16384, r: 8, p: 1 });
+      return { ok: actual.length === expected.length && crypto.timingSafeEqual(actual, expected), needsRehash: false };
+    } catch { return { ok: false, needsRehash: false }; }
+  }
+  // Legacy plaintext row: constant-time compare, then rehash on success.
+  const a = Buffer.from(String(plain)), b = Buffer.from(String(stored));
+  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+  return { ok, needsRehash: ok };
+}
+
+// ── LOGIN RATE LIMIT ─────────────────────────────────────────────────────────
+// In-memory, per username and per source address. Enough to stop password
+// guessing against a five-driver company; a distributed limiter would need
+// shared state this single-process app does not have.
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_PER_USER = 8;
+const LOGIN_MAX_PER_IP = 40;
+const loginFailures = new Map();   // key -> [timestamps]
+function loginKeyFailures(key) {
+  const now = Date.now();
+  const arr = (loginFailures.get(key) || []).filter(t => now - t < LOGIN_WINDOW_MS);
+  loginFailures.set(key, arr);
+  return arr;
+}
+function loginBlocked(ip, user) {
+  return loginKeyFailures('u:' + user).length >= LOGIN_MAX_PER_USER || loginKeyFailures('ip:' + ip).length >= LOGIN_MAX_PER_IP;
+}
+function loginFailed(ip, user) {
+  loginKeyFailures('u:' + user).push(Date.now());
+  loginKeyFailures('ip:' + ip).push(Date.now());
+}
+function loginSucceeded(user) { loginFailures.delete('u:' + user); }
+setInterval(() => { for (const k of loginFailures.keys()) loginKeyFailures(k); }, LOGIN_WINDOW_MS).unref();
+
 app.get('/login', (req, res) => {
-  const err = req.query.error ? '<p class="err">Invalid username or password</p>' : '';
+  const err = req.query.error === 'locked'
+    ? '<p class="err">Too many sign-in attempts. Wait 15 minutes and try again.</p>'
+    : req.query.error ? '<p class="err">Invalid username or password</p>' : '';
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Valley Best Concrete — Dispatch</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -1136,6 +1571,11 @@ app.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const cleanName = username?.toLowerCase().trim();
   if (!cleanName || !password) return res.redirect('/login?error=1');
+  const ip = req.ip || req.socket?.remoteAddress || '';
+  if (loginBlocked(ip, cleanName)) {
+    console.warn(`[LOGIN] RATE LIMITED: username="${cleanName}" ip=${ip}`);
+    return res.redirect('/login?error=locked');   // a 4xx would not be followed by the browser
+  }
 
   // 1) DB-backed users — the real driver/office login store, written by the
   //    Drivers & Trucks screen.
@@ -1145,29 +1585,58 @@ app.post('/login', async (req, res) => {
         'SELECT id, company_id, username, password, role, truck_id, display_name, active FROM users WHERE username = $1',
         [cleanName]
       );
-      const dbUser = r.rows.find(row => row.active && row.password === password);
+      let dbUser = null;
+      for (const row of r.rows) {
+        if (!row.active) continue;
+        const v = verifyPassword(password, row.password);
+        if (!v.ok) continue;
+        dbUser = row;
+        if (v.needsRehash) {
+          await pg.query('UPDATE users SET password = $1 WHERE id = $2', [hashPassword(password), row.id]);
+          console.log(`[LOGIN] migrated plaintext password to scrypt for "${row.username}"`);
+        }
+        break;
+      }
       if (dbUser) {
+        loginSucceeded(cleanName);
+        // A driver's session truckId must be a roster id (that is what
+        // load.truckId holds). users.truck_id normally equals the username;
+        // if it was ever set to something that is not a roster driver (an
+        // old screen let it hold a vehicle id), fall back to the username so
+        // the driver still sees their own loads.
+        let sessTruckId = dbUser.truck_id;
+        if (dbUser.role === 'driver' && !rosterDriver(sessTruckId)) sessTruckId = dbUser.username;
         req.session.user = {
           username:    dbUser.username,
           role:        dbUser.role,
-          truckId:     dbUser.truck_id,
+          truckId:     sessTruckId,
           displayName: dbUser.display_name || dbUser.username,
         };
         console.log(`[LOGIN] SUCCESS (db): username="${dbUser.username}", role="${dbUser.role}"`);
         return res.redirect('/app/');
       }
+      // The users table answered and did not accept this login. That is the
+      // final word: it must NOT fall through to the hardcoded legacy map,
+      // otherwise a changed password or a deactivated account would still be
+      // openable with the original seed password.
+      console.log(`[LOGIN] FAILED (db): username="${cleanName}"`);
+      loginFailed(ip, cleanName);
+      return res.redirect('/login?error=1');
     } catch (e) {
       console.error('[LOGIN] DB lookup error:', e.message);
-      // fall through to hardcoded users
+      if (IS_PROD) return res.redirect('/login?error=1');
+      // dev only: fall through to the hardcoded map if the table is unreachable
     }
   }
 
-  // 2) Legacy fallback: hardcoded VBT users (still works if seed hasn't run).
+  // 2) Legacy fallback: hardcoded VBT users (dev / no-database mode only).
   const u = USERS[cleanName];
-  if (!u || u.password !== password) {
+  if (!u || !verifyPassword(password, u.password).ok) {
     console.log(`[LOGIN] FAILED: username="${cleanName}"`);
+    loginFailed(ip, cleanName);
     return res.redirect('/login?error=1');
   }
+  loginSucceeded(cleanName);
   req.session.user = {
     username:    cleanName,
     role:        u.role,
@@ -1231,6 +1700,53 @@ app.post('/api/upload-photo', reqAuth, async (req, res) => {
   }
 });
 
+// ── API: DRIVER LOCATION ─────────────────────────────────────────────────────
+// Last-known position per driver, sent by the driver app in the background.
+// Only the latest point is kept (no track history — that is ELD territory and
+// deliberately not built here), so the store stays small. Throttled to one
+// accepted point per driver per 20s; more frequent posts are acknowledged
+// and dropped.
+const LOCATION_MIN_INTERVAL_MS = 20 * 1000;
+app.post('/api/driver-location', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  if (u.role !== 'driver') return res.status(403).json({ error: 'Driver only' });
+  const lat = Number(req.body?.lat), lng = Number(req.body?.lng);
+  const accuracy = req.body?.accuracy == null ? null : Number(req.body.accuracy);
+  if (!isFinite(lat) || !isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return res.status(400).json({ error: 'lat/lng out of range' });
+  }
+  if (accuracy != null && (!isFinite(accuracy) || accuracy < 0 || accuracy > 100000)) {
+    return res.status(400).json({ error: 'accuracy out of range' });
+  }
+  if (!store.driverLocations) store.driverLocations = {};
+  const prev = store.driverLocations[u.truckId];
+  const now = Date.now();
+  if (prev && now - Date.parse(prev.at) < LOCATION_MIN_INTERVAL_MS) {
+    return res.status(202).json({ accepted: false, reason: 'throttled' });
+  }
+  const current = driverWorkdayLoads(u).find(l => (l.trips || []).length && !l.locked) || null;
+  store.driverLocations[u.truckId] = {
+    driverId: u.truckId, lat: Math.round(lat * 1e6) / 1e6, lng: Math.round(lng * 1e6) / 1e6,
+    accuracy: accuracy == null ? null : Math.round(accuracy), at: new Date(now).toISOString(),
+    loadId: current ? current.id : null,
+  };
+  // The office reads positions from memory. Persisting the whole store for
+  // every ping would write megabytes to Postgres every few seconds across
+  // five trucks, so location-only changes are flushed at most every 5 min
+  // (any other save carries them along anyway).
+  if (now - lastLocationFlush > 5 * 60 * 1000) { lastLocationFlush = now; await saveData(); }
+  res.json({ accepted: true });
+});
+let lastLocationFlush = 0;
+// Office view: where each driver was last seen.
+app.get('/api/driver-locations', reqMgr, (req, res) => {
+  const rows = Object.values(store.driverLocations || {}).map(loc => {
+    const d = rosterDriver(loc.driverId);
+    return { ...loc, driverName: d ? d.name : loc.driverId, ageSeconds: Math.max(0, Math.round((Date.now() - Date.parse(loc.at)) / 1000)) };
+  });
+  res.json({ locations: rows });
+});
+
 // ── API: DATA (board, lists, etc.) ──────────────────────────────────────────
 app.get('/api/data', reqAuth, async (req, res) => {
   const u = req.session.user;
@@ -1246,23 +1762,24 @@ app.get('/api/data', reqAuth, async (req, res) => {
   const yards = store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, location: v.location }));
 
   if (u.role === 'driver') {
-    const myLoads = store.loads.filter(l => l.truckId === u.truckId && !l.voided);
+    // Same workday scope as /api/my-dispatch, and no pricing/billing fields.
+    const myLoads = driverWorkdayLoads(u).map(driverSafeLoad);
     const myPoIds = new Set(myLoads.map(l => l.poId));
-    const myPos = store.pos.filter(p => myPoIds.has(p.id));
+    const myPos = store.pos.filter(p => myPoIds.has(p.id)).map(driverSafePo);
     return res.json({ trucks: driverRoster(), materials: MATERIALS, yards, pos: myPos, loads: myLoads });
   }
   // Manager sees full vendor data
   res.json({
     trucks: driverRoster(),          // legacy contract: the DRIVER dropdown
     fleet:  store.trucks || [],      // the actual vehicles
-    drivers: listDrivers(),
+    drivers: store.drivers || [],    // the roster (same list Quick Assign uses)
     materials: MATERIALS,
     yards,
     vendors: store.vendors,
     vendorPrices: store.vendorPrices,
     customers: store.customers || [],
     pos: store.pos,
-    loads: store.loads
+    loads: store.loads.map(withPickup)
   });
 });
 
@@ -1292,14 +1809,7 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
   // Drivers see only their CURRENT WORKDAY — today's loads, plus anything
   // older still open (a load that ran past midnight or was left unfinished
   // must not silently vanish on the driver). Never future work.
-  const today = todayStr();
-  const myLoads = store.loads.filter(l =>
-    l.truckId === u.truckId &&
-    !l.voided &&
-    l.status !== 'completed' &&
-    l.approvalStatus !== 'approved' &&
-    (l.deliveryDate || today) <= today
-  );
+  const myLoads = driverWorkdayLoads(u);
 
   console.log(`[my-dispatch] Loads after filtering (not voided, not completed, not approved): ${myLoads.length}`);
 
@@ -1485,7 +1995,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       voided: false,
       notes: '',
       // Pricing snapshots
-      tonsPerLoad: TONS_PER_LOAD,
+      tonsPerLoad: qtyPerLoad('ton', s.material),
       customerRate: customerRate.price,
       customerUnit: customerRate.unit,
       customerRateIsDefault: customerRate.isDefault,
@@ -1529,7 +2039,15 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   const idx = store.pos.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const old = store.pos[idx];
-  const updated = { ...old, ...req.body, id: old.id };
+  // Once any load on this PO is approved, the fields that identify the PO on
+  // an invoice are frozen — otherwise approved work could be re-labelled to
+  // another customer or PO number after the fact.
+  const hasApproved = store.loads.some(l => l.poId === old.id && l.approvalStatus === 'approved');
+  if (hasApproved) {
+    const frozen = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'].filter(k => k in req.body && req.body[k] !== old[k]);
+    if (frozen.length) return res.status(403).json({ error: `This PO has approved loads; ${frozen.join(', ')} cannot change.`, frozenFields: frozen });
+  }
+  const updated = { ...old, ...req.body, id: old.id, createdAt: old.createdAt };
   store.pos[idx] = updated;
   // If delivery date changed, sync to all linked loads
   if (req.body.deliveryDate && req.body.deliveryDate !== old.deliveryDate) {
@@ -1548,14 +2066,18 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
 app.delete('/api/pos/:id', reqMgr, async (req, res) => {
   const idx = store.pos.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  // Refuse to delete if any linked loads are approved (data integrity)
+  // Deleting a PO deletes its loads. Approved work — voided or not — is
+  // historical evidence (ticket, signature, GPS, who approved it) and is
+  // never deleted; neither is anything that has reached a billing batch.
+  // Voided ≠ deleted: a voided approved load stays on the record.
   const linked = store.loads.filter(l => l.poId === req.params.id);
-  // A voided load no longer blocks deletion — it has already been written off.
-  const blocking = linked.filter(l => l.approvalStatus === 'approved' && !l.voided);
+  const blocking = linked.filter(l => l.approvalStatus === 'approved' || l.billingBatchId || l.qbInvoiceId);
   if (blocking.length) {
+    const voidedCount = blocking.filter(l => l.voided).length;
     return res.status(403).json({
-      error: `Cannot delete — ${blocking.length} approved load${blocking.length === 1 ? '' : 's'} on this PO. `
-           + 'Void them first (approved deliveries are written off, never deleted), then the PO can go.',
+      error: `Cannot delete — ${blocking.length} approved load${blocking.length === 1 ? '' : 's'} on this PO`
+           + (voidedCount ? ` (${voidedCount} voided)` : '')
+           + '. Approved deliveries are kept as history even after voiding; this PO stays on record.',
       blockingLoadIds: blocking.map(l => l.id),
     });
   }
@@ -1573,6 +2095,13 @@ app.delete('/api/pos/:id', reqMgr, async (req, res) => {
 });
 
 // ── API: UPDATE LOAD (manager: anything | driver: limited) ──────────────────
+const PROTECTED_LOAD_FIELDS = new Set([
+  'id', 'poId',
+  'approvalStatus', 'approvedAt', 'approvedBy', 'submittedAt', 'rejectReason',
+  'billStatus', 'billedAt', 'billingBatchId', 'qbInvoiceId', 'qbInvoiceNumber',
+  'voided', 'voidedAt', 'voidedBy', 'voidReason', 'unvoidedAt', 'unvoidedBy',
+  'locked', 'trips', 'completedAt',
+]);
 app.put('/api/loads/:id', reqAuth, async (req, res) => {
   const u = req.session.user;
   const idx = store.loads.findIndex(l => l.id === req.params.id);
@@ -1593,10 +2122,35 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     if (req.body.notes !== undefined) allowed.notes = req.body.notes;
     store.loads[idx] = { ...l, ...allowed };
   } else {
-    // Manager — anything goes
+    // Manager — most fields, but NEVER the state machine. Approval, billing,
+    // void and trip history change only through their own endpoints
+    // (/approve, /reject, /void, /unvoid, /trip-action, billing batches), so
+    // a generic update can neither approve work nor un-bill it.
+    const touched = Object.keys(req.body || {}).filter(k => PROTECTED_LOAD_FIELDS.has(k));
+    if (touched.length) {
+      return res.status(400).json({
+        error: `These fields cannot be changed through a load update: ${touched.join(', ')}. Use the approve / reject / void / billing actions.`,
+        protectedFields: touched,
+      });
+    }
     const updated = { ...l, ...req.body, id: l.id, poId: l.poId };
     let auditAction = 'updated-load';
     let auditDetails = { changes: Object.keys(req.body) };
+    if (req.body.vendorId !== undefined && req.body.vendorId !== l.vendorId) {
+      // Same rule as /assign: a new yard wins over the current-trip mirror
+      // and re-prices the load. Trip history is untouched.
+      const v = req.body.vendorId ? store.vendors.find(x => x.id === req.body.vendorId) : null;
+      if (req.body.vendorId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
+      updated.vendorName = v?.name || '';
+      updated.actualYardId = null;
+      updated.actualYardName = '';
+      if (v) {
+        const vr = resolveVendorRate(v.id, updated.material);
+        updated.vendorRate = vr.price; updated.vendorUnit = vr.unit; updated.vendorRateIsDefault = vr.isDefault;
+        updated.vendorIsInternal = !!vr.isInternal; updated.pricePerUnit = vr.price;
+      }
+      auditDetails.yard = { from: resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).name, to: v?.name || '' };
+    }
     if (req.body.truckId !== undefined) {
       const t = driverRoster().find(t => t.id === req.body.truckId);   // DRIVER
       updated.driverName = t?.label || '';
@@ -2081,14 +2635,18 @@ function buildBillingGroups(loadIds) {
     const signatureImages = [];
     const approvalStamps = [];
     const loadIdsInGroup = [];
+    const unconfiguredLoadIds = [];
 
     // Group line items by material+unit+rate (so different rates don't collapse)
     const lineMap = new Map();
     for (const { load, po } of g.loads) {
       loadIdsInGroup.push(load.id);
-      const rev = computeRevenue(load);
-      const tons = (Number(load.tonsPerLoad) || TONS_PER_LOAD) * (Number(load.loadsDelivered) || 0);
-      const unit = load.customerUnit || 'ton';
+      const revD = revenueDetail(load);
+      const rev = revD.amount == null ? 0 : revD.amount;
+      // Tons come from the engine's quantity-per-load (per-load snapshot or
+      // configured), not a hardcoded constant.
+      const tons = (revD.unit === 'ton' && revD.qtyPerLoad != null) ? revD.qtyPerLoad * (Number(load.loadsDelivered) || 0) : 0;
+      const unit = revD.unit;
       const rate = Number(load.customerRate) || 0;
       const lk = `${load.material}|${unit}|${rate}`;
       if (!lineMap.has(lk)) {
@@ -2096,6 +2654,7 @@ function buildBillingGroups(loadIds) {
           material: load.material,
           unit, rate,
           loads: 0, tons: 0, amount: 0,
+          unconfigured: false, reasons: [],
           loadIds: [],
         });
       }
@@ -2104,6 +2663,7 @@ function buildBillingGroups(loadIds) {
       ln.tons  += tons;
       ln.amount += rev;
       ln.loadIds.push(load.id);
+      if (revD.unconfigured) { ln.unconfigured = true; if (!ln.reasons.includes(revD.reason)) ln.reasons.push(revD.reason); unconfiguredLoadIds.push(load.id); }
 
       if (load.ticketImageUrl) ticketImages.push({ loadId: load.id, url: load.ticketImageUrl });
       else if (load.ticketImage) ticketImages.push({ loadId: load.id, dataUrl: true });
@@ -2114,13 +2674,20 @@ function buildBillingGroups(loadIds) {
     const lineItems = [...lineMap.values()].map(ln => ({
       ...ln,
       description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}`
-        + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/load)`),
+        + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/${ln.unit})`)
+        + (ln.unconfigured ? ' [NOT PRICEABLE]' : ''),
     }));
     const totalAmount = lineItems.reduce((s, ln) => s + ln.amount, 0);
     const totalLoads  = lineItems.reduce((s, ln) => s + ln.loads, 0);
     const totalTons   = lineItems.reduce((s, ln) => s + ln.tons, 0);
+    const unconfigured = lineItems.some(ln => ln.unconfigured);
 
     groups.push({
+      // A group with any line the engine could not price is flagged so it is
+      // shown as such in the preview and refused as a batch — never sent as $0.
+      unconfigured,
+      unconfiguredLoadIds: [...new Set(unconfiguredLoadIds)],
+      unconfiguredReasons: [...new Set(lineItems.flatMap(ln => ln.reasons || []))],
       key: g.key,
       customer: g.customer,
       poNumber: g.poNumber,
@@ -2255,6 +2822,14 @@ app.post('/api/billing-batches', reqMgr, async (req, res) => {
   if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'loadIds required' });
   const groups = buildBillingGroups(ids);
   if (!groups.length) return res.status(400).json({ error: 'No eligible loads to bill' });
+  const bad = groups.filter(g => g.unconfigured);
+  if (bad.length) {
+    return res.status(400).json({
+      error: 'Some loads cannot be priced yet, so no batch was created: ' + [...new Set(bad.flatMap(g => g.unconfiguredReasons))].join('; ')
+           + '. Fix the pricing or unit configuration, then bill again.',
+      unconfiguredLoadIds: bad.flatMap(g => g.unconfiguredLoadIds),
+    });
+  }
 
   const created = [];
   const now = new Date().toISOString();
@@ -2341,14 +2916,26 @@ app.get('/api/billing-batches/:id', reqMgr, (req, res) => {
 app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
   const b = store.billingBatches.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Batch not found' });
-  if (b.syncStatus === 'sent_to_quickbooks' && b.qbInvoiceId) {
-    return res.status(400).json({ error: `Already sent (invoice ${b.qbInvoiceNumber || b.qbInvoiceId})` });
+  // Duplicate-invoice guards, checked BEFORE the first await so two
+  // simultaneous requests cannot both pass (Node runs this section without
+  // interleaving). Any batch that already has a QuickBooks invoice id is
+  // never re-sent, whatever its status says.
+  if (b.qbInvoiceId) {
+    return res.status(400).json({ error: `Already sent (invoice ${b.qbInvoiceNumber || b.qbInvoiceId}). Void the batch to correct it.` });
+  }
+  if (b.syncStatus === 'syncing') {
+    return res.status(409).json({ error: 'This batch is already being sent to QuickBooks. Wait for it to finish.', batch: b });
   }
   if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Cannot send a voided batch' });
+  if (b.syncStatus === 'failed') return res.status(400).json({ error: 'This batch failed earlier. Use Retry, which checks it first.', batch: b });
+  if ((b.lineItems || []).some(ln => ln.unconfigured || ln.amount == null)) {
+    return res.status(400).json({ error: 'This batch has a line the costing engine could not price. It will not be sent as $0; void it, fix the pricing, and re-bill.' });
+  }
   const conn = store.qbConnection;
   if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks not connected' });
 
   b.syncStatus = 'syncing';
+  b.syncingSince = new Date().toISOString();
   b.errorMessage = '';
   await saveData();
 
@@ -2408,6 +2995,7 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
     b.sentAt = new Date().toISOString();
     b.sentBy = user;
     b.syncStatus = 'sent_to_quickbooks';
+    b.syncingSince = '';
 
     logQbSync({
       actionType: 'create_invoice',
@@ -2487,7 +3075,10 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
   } catch (e) {
     console.error('[qb send]', e);
     b.syncStatus = 'failed';
-    b.errorMessage = e.message;
+    b.syncingSince = '';
+    b.errorMessage = b.qbInvoiceId
+      ? `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} was created in QuickBooks but finishing the batch failed: ${e.message}. Do not resend; void the batch to correct it.`
+      : e.message;
     if (store.qbConnection) store.qbConnection.lastError = e.message;
     logQbSync({
       actionType: 'create_invoice',
@@ -2512,16 +3103,34 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
   const reason = (req.body?.reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'Reason required' });
 
+  if (b.syncStatus === 'syncing') return res.status(409).json({ error: 'This batch is being sent right now. Wait for it to finish, then void it.' });
+
+  // A batch that has a QuickBooks invoice can only be voided here if that
+  // invoice is voided too — otherwise the loads would go back to Ready to
+  // Bill while a live invoice for them still exists in QuickBooks. The one
+  // exception is an explicit statement that the invoice was already voided
+  // in QuickBooks by hand (alreadyVoidedInQuickBooks: true), which is logged.
   const conn = store.qbConnection;
   let qbVoided = false;
-  if (b.qbInvoiceId && conn?.status === 'connected' && req.body?.voidInQuickBooks !== false) {
-    try {
-      await qb.voidInvoice(conn, b.qbInvoiceId);
-      qbVoided = true;
-      logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, requestSummary: reason, user: req.session.user.username });
-    } catch (e) {
-      logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, responseStatus: 'error', errorMessage: e.message, user: req.session.user.username });
-      return res.status(500).json({ error: `Failed to void in QuickBooks: ${e.message}` });
+  if (b.qbInvoiceId) {
+    if (req.body?.alreadyVoidedInQuickBooks === true) {
+      logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, requestSummary: `Operator states invoice was voided in QuickBooks manually: ${reason}`, user: req.session.user.username });
+    } else {
+      if (!conn || conn.status !== 'connected') {
+        return res.status(409).json({
+          error: `QuickBooks invoice ${b.qbInvoiceNumber || b.qbInvoiceId} exists for this batch and QuickBooks is not connected. `
+               + 'Reconnect QuickBooks so the invoice can be voided, or void it in QuickBooks yourself and then void this batch with "already voided in QuickBooks".',
+          qbInvoiceId: b.qbInvoiceId, qbInvoiceNumber: b.qbInvoiceNumber,
+        });
+      }
+      try {
+        await qb.voidInvoice(conn, b.qbInvoiceId);
+        qbVoided = true;
+        logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, requestSummary: reason, user: req.session.user.username });
+      } catch (e) {
+        logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, responseStatus: 'error', errorMessage: e.message, user: req.session.user.username });
+        return res.status(502).json({ error: `Failed to void in QuickBooks: ${e.message}. The batch and its loads are unchanged.` });
+      }
     }
   }
 
@@ -2543,7 +3152,7 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
       l.billedAt = '';
     }
   }
-  logAction(req.session.user, 'voided-billing-batch', b.id, { reason, qbVoided, loads: b.loadIds.length });
+  logAction(req.session.user, 'voided-billing-batch', b.id, { reason, qbVoided, manualQbVoid: req.body?.alreadyVoidedInQuickBooks === true, loads: b.loadIds.length });
   await saveData();
   res.json({ success: true, batch: b, qbVoided });
 });
@@ -2553,9 +3162,14 @@ app.post('/api/billing-batches/:id/retry', reqMgr, async (req, res) => {
   const b = store.billingBatches.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Batch not found' });
   if (b.syncStatus !== 'failed') return res.status(400).json({ error: 'Only failed batches can be retried' });
-  // Reset and forward to /send via internal redirect-style call
+  if (b.qbInvoiceId) {
+    return res.status(409).json({ error: `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} already exists in QuickBooks for this batch. Retrying would create a second one; void the batch instead.` });
+  }
+  // Reset so the client can POST /send again.
   b.syncStatus = 'ready_to_bill';
   b.errorMessage = '';
+  b.syncingSince = '';
+  logAction(req.session.user, 'retry-billing-batch', b.id, {});
   await saveData();
   // Re-issue a request to /send by calling the handler directly is tricky; the
   // simpler approach is to have the client POST to /send after /retry. So just
@@ -2572,7 +3186,7 @@ function buildVendorBillGroups(loadIds) {
     if (l.approvalStatus !== 'approved') continue;
     if (l.voided) continue;
     if (l.vendorBillId) continue;  // already in a bill
-    const vendorId = l.vendorId || l.yardId || '';
+    const vendorId = resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).id;
     if (!vendorId || vendorId === 'vbt') continue;  // skip internal yard
     const v = store.vendors.find(x => x.id === vendorId);
     if (!v) continue;
@@ -2588,23 +3202,27 @@ function buildVendorBillGroups(loadIds) {
     const loadIds = [];
     for (const l of g.loads) {
       loadIds.push(l.id);
-      const cost = computeCost(l);
+      const costD = costDetail(l);
+      const cost = costD.amount == null ? 0 : costD.amount;
       total += cost;
-      const lk = `${l.material}|${l.vendorUnit || 'ton'}|${l.vendorRate || 0}`;
+      const lk = `${l.material}|${costD.unit}|${l.vendorRate || 0}`;
       if (!lineMap.has(lk)) {
-        lineMap.set(lk, { material: l.material, unit: l.vendorUnit || 'ton', rate: Number(l.vendorRate) || 0, loads: 0, tons: 0, amount: 0, loadIds: [] });
+        lineMap.set(lk, { material: l.material, unit: costD.unit, rate: Number(l.vendorRate) || 0, loads: 0, tons: 0, amount: 0, loadIds: [], unconfigured: false, reasons: [] });
       }
       const ln = lineMap.get(lk);
       ln.loads += Number(l.loadsDelivered) || 0;
-      ln.tons  += (Number(l.tonsPerLoad) || TONS_PER_LOAD) * (Number(l.loadsDelivered) || 0);
+      ln.tons  += (costD.unit === 'ton' && costD.qtyPerLoad != null) ? costD.qtyPerLoad * (Number(l.loadsDelivered) || 0) : 0;
       ln.amount += cost;
       ln.loadIds.push(l.id);
+      if (costD.unconfigured) { ln.unconfigured = true; if (!ln.reasons.includes(costD.reason)) ln.reasons.push(costD.reason); }
     }
     const lineItems = [...lineMap.values()].map(ln => ({
       ...ln,
-      description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}` + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/load)`),
+      description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}` + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/${ln.unit})`) + (ln.unconfigured ? ' [NOT PRICEABLE]' : ''),
     }));
     groups.push({
+      unconfigured: lineItems.some(ln => ln.unconfigured),
+      unconfiguredReasons: [...new Set(lineItems.flatMap(ln => ln.reasons || []))],
       vendorId: g.vendorId,
       vendorName: g.vendor.name,
       deliveryStart: dates[0] || '',
@@ -2629,6 +3247,8 @@ app.post('/api/vendor-bills', reqMgr, async (req, res) => {
   const ids = req.body?.loadIds || [];
   const groups = buildVendorBillGroups(ids);
   if (!groups.length) return res.status(400).json({ error: 'No eligible vendor costs' });
+  const bad = groups.filter(g => g.unconfigured);
+  if (bad.length) return res.status(400).json({ error: 'Some loads cannot be costed yet: ' + [...new Set(bad.flatMap(g => g.unconfiguredReasons))].join('; ') });
   const created = [];
   const now = new Date().toISOString();
   for (const g of groups) {
@@ -3000,183 +3620,101 @@ app.get('/api/audit-log', reqMgr, (req, res) => {
 // Helper: list all driver-role users for the active company. Falls back to
 // the legacy hardcoded USERS map when the DB isn't reachable so the dispatch
 // board never goes blank.
-function listDrivers() {
-  // Hardcoded legacy fallback used when DB lookup fails.
-  return Object.entries(USERS)
-    .filter(([, u]) => u.role === 'driver')
-    .map(([username, u]) => ({
-      username,
-      role: u.role,
-      truckId: u.truckId || username,
-      displayName: u.displayName || username,
-      active: true,
-    }));
-}
-
-async function listDriversFromDb(companyId) {
-  if (!pg) return listDrivers();
-  try {
-    const r = await pg.query(
-      `SELECT username, role, truck_id, display_name, active
-         FROM users
-        WHERE company_id = $1 AND role = 'driver'
-        ORDER BY display_name`,
-      [companyId]
-    );
-    return r.rows.map(row => ({
-      username:    row.username,
-      role:        row.role,
-      truckId:     row.truck_id || row.username,
-      displayName: row.display_name || row.username,
-      active:      row.active !== false,
-    }));
-  } catch (e) {
-    console.error('[listDriversFromDb] failed:', e.message);
-    return listDrivers();
-  }
-}
-
-// GET /api/fleet — admins only. Returns trucks + drivers.
+// GET /api/fleet — office only. Vehicles + the driver roster with login state.
 app.get('/api/fleet', reqMgr, async (req, res) => {
-  const cid = DEFAULT_COMPANY_ID;
-  const drivers = await listDriversFromDb(cid);
-  res.json({ trucks: store.trucks, drivers });
+  res.json({ trucks: store.trucks || [], drivers: await fleetDrivers(), truckStatuses: TRUCK_STATUSES, driverStatuses: DRIVER_STATUSES });
 });
 
-// ── Trucks CRUD ──
-app.post('/api/trucks', reqMgr, async (req, res) => {
-  const { id, label, truckNum } = req.body || {};
-  const cleanId = String(id || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
-  if (!cleanId)  return res.status(400).json({ error: 'id is required (e.g. "truck-7")' });
-  if (!label)    return res.status(400).json({ error: 'label is required (driver display name)' });
-  if (!truckNum) return res.status(400).json({ error: 'truckNum is required (e.g. "Truck #7")' });
-  if (store.trucks.some(t => t.id === cleanId)) {
-    return res.status(409).json({ error: 'A truck with that id already exists' });
-  }
-  const truck = { id: cleanId, label: String(label).trim(), truckNum: String(truckNum).trim(), active: true };
-  store.trucks.push(truck);
-  await saveData();
-  logAction(req.session.user, 'created-truck', cleanId, { truck });
-  res.json({ ok: true, truck });
-});
-
-app.put('/api/trucks/:id', reqMgr, async (req, res) => {
-  const truck = store.trucks.find(t => t.id === req.params.id);
-  if (!truck) return res.status(404).json({ error: 'Truck not found' });
-  const before = { ...truck };
-  if (req.body.label    !== undefined) truck.label    = String(req.body.label).trim();
-  if (req.body.truckNum !== undefined) truck.truckNum = String(req.body.truckNum).trim();
-  if (req.body.active   !== undefined) truck.active   = !!req.body.active;
-  await saveData();
-  logAction(req.session.user, 'updated-truck', truck.id, { before, after: truck });
-  res.json({ ok: true, truck });
-});
-
-app.delete('/api/trucks/:id', reqMgr, async (req, res) => {
-  const idx = store.trucks.findIndex(t => t.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Truck not found' });
-  // Refuse to hard-delete if any non-voided load references this truck —
-  // historical attribution would break. Soft-disable instead.
-  const inUse = store.loads.some(l => l.truckId === req.params.id && !l.voided);
-  if (inUse) {
-    store.trucks[idx].active = false;
-    await saveData();
-    logAction(req.session.user, 'disabled-truck', req.params.id, { reason: 'in-use' });
-    return res.json({ ok: true, softDeleted: true });
-  }
-  const removed = store.trucks.splice(idx, 1)[0];
-  await saveData();
-  logAction(req.session.user, 'deleted-truck', req.params.id, { removed });
-  res.json({ ok: true });
-});
-
-// ── Drivers CRUD (writes the users table) ──
+// ── Drivers CRUD — roster first, login second ──
+// Creating a driver here makes them dispatchable immediately (roster) and
+// able to log in (users table, when Postgres is available).
 app.post('/api/drivers', reqMgr, async (req, res) => {
-  if (!pg) return res.status(503).json({ error: 'Database not available' });
-  const { username, password, displayName, truckId } = req.body || {};
+  const { username, password, displayName } = req.body || {};
+  const defaultTruckId = req.body?.defaultTruckId ?? req.body?.truckId ?? '';
   const uname = String(username || '').toLowerCase().trim();
   if (!uname || !/^[a-z0-9_.-]+$/.test(uname)) {
     return res.status(400).json({ error: 'username must be lowercase letters/numbers/_.-' });
   }
-  if (!password || String(password).length < 4) {
-    return res.status(400).json({ error: 'password must be at least 4 characters' });
+  if (rosterDriver(uname)) return res.status(409).json({ error: 'A driver with that username already exists' });
+  if (defaultTruckId && !(store.trucks || []).some(t => t.id === defaultTruckId)) {
+    return res.status(400).json({ error: 'Unknown truck for default truck' });
   }
-  const cid    = DEFAULT_COMPANY_ID;
-  const userId = `user-${cid}-${uname}`;
-  const tId    = String(truckId || uname);
-  const dName  = String(displayName || '').trim() || (uname.charAt(0).toUpperCase() + uname.slice(1));
-  try {
-    const existing = await pg.query('SELECT 1 FROM users WHERE company_id=$1 AND username=$2', [cid, uname]);
-    if (existing.rows.length) return res.status(409).json({ error: 'username already exists' });
-    await pg.query(
-      `INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
-       VALUES ($1, $2, $3, $4, 'driver', $5, $6, true)`,
-      [userId, cid, uname, password, tId, dName]
-    );
-    logAction(req.session.user, 'created-driver', uname, { displayName: dName, truckId: tId });
-    const drivers = await listDriversFromDb(cid);
-    res.json({ ok: true, drivers });
-  } catch (e) {
-    console.error('[POST /api/drivers]', e.message);
-    res.status(500).json({ error: e.message });
+  const dName = String(displayName || '').trim() || (uname.charAt(0).toUpperCase() + uname.slice(1));
+  let loginCreated = false;
+  if (pg) {
+    if (!password || String(password).length < 4) return res.status(400).json({ error: 'password must be at least 4 characters' });
+    try {
+      const existing = await pg.query('SELECT 1 FROM users WHERE company_id=$1 AND username=$2', [DEFAULT_COMPANY_ID, uname]);
+      if (existing.rows.length) return res.status(409).json({ error: 'username already exists' });
+      await pg.query(
+        `INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
+         VALUES ($1, $2, $3, $4, 'driver', $5, $6, true)`,
+        [`user-${DEFAULT_COMPANY_ID}-${uname}`, DEFAULT_COMPANY_ID, uname, hashPassword(password), uname, dName]
+      );
+      loginCreated = true;
+    } catch (e) {
+      console.error('[POST /api/drivers]', e.message);
+      return res.status(500).json({ error: 'Could not create the login: ' + e.message });
+    }
   }
+  upsertRosterDriver({ id: uname, name: dName, defaultTruckId: defaultTruckId || null, active: true });
+  logAction(req.session.user, 'created-driver', uname, { displayName: dName, defaultTruckId: defaultTruckId || null, loginCreated });
+  await saveData();
+  res.json({ ok: true, loginCreated, drivers: await fleetDrivers(), roster: driverRoster() });
 });
 
 app.put('/api/drivers/:username', reqMgr, async (req, res) => {
-  if (!pg) return res.status(503).json({ error: 'Database not available' });
-  const cid = DEFAULT_COMPANY_ID;
   const uname = String(req.params.username || '').toLowerCase();
-  const { displayName, truckId, password, active } = req.body || {};
-  const sets = [];
-  const vals = [];
-  let i = 1;
-  if (displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(displayName).trim()); }
-  if (truckId     !== undefined) { sets.push(`truck_id     = $${i++}`); vals.push(String(truckId)); }
-  if (active      !== undefined) { sets.push(`active       = $${i++}`); vals.push(!!active); }
-  if (password    !== undefined && String(password).length >= 4) {
-    sets.push(`password = $${i++}`); vals.push(String(password));
+  const d = rosterDriver(uname);
+  if (!d) return res.status(404).json({ error: 'driver not found' });
+  const b = req.body || {};
+  const defaultTruckId = b.defaultTruckId ?? b.truckId;
+  if (defaultTruckId && !(store.trucks || []).some(t => t.id === defaultTruckId)) {
+    return res.status(400).json({ error: 'Unknown truck for default truck' });
   }
-  if (!sets.length) return res.status(400).json({ error: 'no fields to update' });
-  vals.push(cid, uname);
-  try {
-    const r = await pg.query(
-      `UPDATE users SET ${sets.join(', ')} WHERE company_id = $${i++} AND username = $${i++} RETURNING username`,
-      vals
-    );
-    if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
-    logAction(req.session.user, 'updated-driver', uname, { fields: Object.keys(req.body || {}) });
-    const drivers = await listDriversFromDb(cid);
-    res.json({ ok: true, drivers });
-  } catch (e) {
-    console.error('[PUT /api/drivers]', e.message);
-    res.status(500).json({ error: e.message });
+  if (b.status !== undefined && !DRIVER_STATUSES.includes(b.status)) {
+    return res.status(400).json({ error: `Status must be one of: ${DRIVER_STATUSES.join(', ')}` });
   }
+  upsertRosterDriver({ id: uname, name: b.displayName ?? b.name, defaultTruckId, active: b.active, status: b.status, phone: b.phone, notes: b.notes });
+  if (pg) {
+    const sets = []; const vals = []; let i = 1;
+    if (b.displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(b.displayName).trim()); }
+    if (b.active !== undefined)      { sets.push(`active = $${i++}`); vals.push(!!b.active); }
+    if (b.password !== undefined && String(b.password).length >= 4) { sets.push(`password = $${i++}`); vals.push(hashPassword(String(b.password))); }
+    // truck_id is the driver's roster id, never a vehicle.
+    sets.push(`truck_id = $${i++}`); vals.push(uname);
+    vals.push(DEFAULT_COMPANY_ID, uname);
+    try {
+      await pg.query(`UPDATE users SET ${sets.join(', ')} WHERE company_id = $${i++} AND username = $${i++}`, vals);
+    } catch (e) {
+      console.error('[PUT /api/drivers]', e.message);
+      return res.status(500).json({ error: 'Roster updated but the login could not be updated: ' + e.message });
+    }
+  }
+  logAction(req.session.user, 'updated-driver', uname, { fields: Object.keys(b) });
+  await saveData();
+  res.json({ ok: true, drivers: await fleetDrivers(), roster: driverRoster() });
 });
 
+// Disable by default so historical loads keep their driver. ?hard=1 removes
+// a driver with no load history at all.
 app.delete('/api/drivers/:username', reqMgr, async (req, res) => {
-  if (!pg) return res.status(503).json({ error: 'Database not available' });
-  const cid = DEFAULT_COMPANY_ID;
   const uname = String(req.params.username || '').toLowerCase();
-  // Soft-delete by default so any historical loads keep their driver
-  // attribution. Hard delete only when ?hard=1 and the driver has no loads.
-  try {
-    if (req.query.hard === '1') {
-      const inUse = store.loads.some(l => l.truckId === uname && !l.voided);
-      if (inUse) return res.status(409).json({ error: 'driver has loads — disable instead of deleting' });
-      const r = await pg.query('DELETE FROM users WHERE company_id=$1 AND username=$2', [cid, uname]);
-      if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
-      logAction(req.session.user, 'deleted-driver', uname, {});
-    } else {
-      const r = await pg.query('UPDATE users SET active=false WHERE company_id=$1 AND username=$2', [cid, uname]);
-      if (!r.rowCount) return res.status(404).json({ error: 'driver not found' });
-      logAction(req.session.user, 'disabled-driver', uname, {});
-    }
-    const drivers = await listDriversFromDb(cid);
-    res.json({ ok: true, drivers });
-  } catch (e) {
-    console.error('[DELETE /api/drivers]', e.message);
-    res.status(500).json({ error: e.message });
+  const d = rosterDriver(uname);
+  if (!d) return res.status(404).json({ error: 'driver not found' });
+  const inUse = store.loads.some(l => l.truckId === uname);
+  if (req.query.hard === '1') {
+    if (inUse) return res.status(409).json({ error: 'driver has loads — disable instead of deleting' });
+    store.drivers = store.drivers.filter(x => x.id !== uname);
+    if (pg) await pg.query('DELETE FROM users WHERE company_id=$1 AND username=$2', [DEFAULT_COMPANY_ID, uname]).catch(e => console.error('[DELETE /api/drivers]', e.message));
+    logAction(req.session.user, 'deleted-driver', uname, {});
+  } else {
+    d.active = false;
+    if (pg) await pg.query('UPDATE users SET active=false WHERE company_id=$1 AND username=$2', [DEFAULT_COMPANY_ID, uname]).catch(e => console.error('[DELETE /api/drivers]', e.message));
+    logAction(req.session.user, 'disabled-driver', uname, {});
   }
+  await saveData();
+  res.json({ ok: true, drivers: await fleetDrivers(), roster: driverRoster() });
 });
 
 // ── API: CUSTOMER MASTER ────────────────────────────────────────────────────
@@ -3429,18 +3967,21 @@ app.get('/api/pricing-preview', reqMgr, (req, res) => {
 
   const cust = resolveCustomerRate(customer, material);
   const vend = resolveVendorRate(vendorId || '', material);
-  const tons = TONS_PER_LOAD;
 
-  // Compute per-load revenue, cost, margin (assuming 1 load, 25 tons)
-  const revPerLoad  = cust.unit === 'load' ? cust.price : cust.price * tons;
-  const costPerLoad = vend.unit === 'load' ? vend.price : vend.price * tons;
-  const marginPerLoad = revPerLoad - costPerLoad;
+  // Same engine as billing and profitability, for exactly one load. A unit
+  // that cannot be priced yet comes back as null with the reason — never $0.
+  const revD  = computeAmount(cust.price, cust.unit, 1, material, null, {});
+  const costD = computeAmount(vend.price, vend.unit, 1, material, null, {});
+  const revPerLoad  = revD.amount;
+  const costPerLoad = costD.amount;
+  const marginPerLoad = (revPerLoad == null || costPerLoad == null) ? null : revPerLoad - costPerLoad;
 
   res.json({
-    customer: { rate: cust.price, unit: cust.unit, isDefault: cust.isDefault, perLoad: revPerLoad },
-    vendor:   { rate: vend.price, unit: vend.unit, isDefault: vend.isDefault, isInternal: vend.isInternal || false, perLoad: costPerLoad },
-    margin:   { perLoad: marginPerLoad, percent: revPerLoad > 0 ? (marginPerLoad / revPerLoad * 100) : 0 },
-    tonsPerLoad: tons,
+    customer: { rate: cust.price, unit: cust.unit, isDefault: cust.isDefault, perLoad: revPerLoad, unconfigured: revD.unconfigured, reason: revD.reason, qtyPerLoad: revD.qtyPerLoad },
+    vendor:   { rate: vend.price, unit: vend.unit, isDefault: vend.isDefault, isInternal: vend.isInternal || false, perLoad: costPerLoad, unconfigured: costD.unconfigured, reason: costD.reason, qtyPerLoad: costD.qtyPerLoad },
+    margin:   { perLoad: marginPerLoad, percent: (marginPerLoad != null && revPerLoad > 0) ? (marginPerLoad / revPerLoad * 100) : null },
+    calculable: marginPerLoad != null,
+    tonsPerLoad: qtyPerLoad('ton', material),
   });
 });
 
@@ -3488,7 +4029,7 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
     if (from && (l.deliveryDate || '') < from) return false;
     if (to   && (l.deliveryDate || '') > to)   return false;
     if (driver   && l.truckId !== driver)                                 return false;
-    if (yard     && (l.actualYardId || l.vendorId) !== yard)              return false;
+    if (yard     && resolvePickupYard(l, poRow).id !== yard)             return false;
     if (customer && !lcEq(poRow.customer, customer))                      return false;
     if (city     && !lcEq(poRow.city, city))                              return false;
     if (material && l.material !== material)                              return false;
@@ -3574,7 +4115,7 @@ app.get('/api/duration-analytics', reqMgr, (req, res) => {
         load: l,
         tripNum: t.tripNum || (i + 1),
         // Per-trip yard wins, then the load's actual yard, then the assignment
-        yardId: t.actualYardId || l.actualYardId || l.vendorId || '',
+        yardId: resolvePickupYard(l, store.pos.find(p => p.id === l.poId), t).id,
         d: durationsForTrip(l, t),
       });
     });
@@ -3744,7 +4285,7 @@ app.get('/api/profitability', reqMgr, (req, res) => {
     }
 
     // By vendor (where the cost goes — payables)
-    const vId = l.actualYardId || l.vendorId || po.plannedVendorId;
+    const vId = resolvePickupYard(l, po).id;
     if (vId) {
       const v = store.vendors.find(x => x.id === vId);
       if (!byVendor[vId]) byVendor[vId] = {
@@ -3770,7 +4311,7 @@ app.get('/api/profitability', reqMgr, (req, res) => {
       delivered: Number(l.loadsDelivered) || 0,
       assigned:  Number(l.loadsAssigned)  || 0,
       isPartial: !!l.isPartial,
-      vendorName: l.actualYardName || l.vendorName || '',
+      vendorName: resolvePickupYard(l, po).name,
       vendorIsInternal: vId === 'vbt',
       deliveryDate: l.deliveryDate || '',
       revenue: rev,
@@ -3837,7 +4378,7 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
 
   eligible.forEach(l => {
     // Determine which vendor this load was picked up from
-    const vendorId = l.actualYardId || l.vendorId || (store.pos.find(p => p.id === l.poId) || {}).plannedVendorId;
+    const vendorId = resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).id;
     if (!vendorId) return;
     if (vendorId === 'vbt') return;  // VBT Yard = internal, no cost
 
@@ -4000,13 +4541,19 @@ app.get('/api/history', reqMgr, (req, res) => {
   const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided)
     .map(l => {
       const po = store.pos.find(p => p.id === l.poId) || {};
-      return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address, pickup: po.pickup };
+      return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address, pickup: resolvePickupYard(l, po) };
     });
-  res.json({ billed, archive: store.archive });
+  // Archive batches carry full load copies; keep photo payloads out of this list.
+  const slim = l => ({ ...l, ticketImage: l.ticketImage ? '[stored]' : '', pod: l.pod ? { ...l.pod, signature: l.pod.signature ? '[stored]' : '' } : l.pod });
+  const archive = (store.archive || []).map(b => ({ ...b, loads: (b.loads || []).map(slim) }));
+  res.json({ billed, archive });
 });
 
 // Archive billed loads → push to Sheets and remove from active store
 app.post('/api/history/archive', reqMgr, async (req, res) => {
+  // Archiving moves records out of the active lists. Without Sheets there is
+  // no external copy, so it is refused rather than quietly done anyway.
+  if (!sheets) return res.status(503).json({ error: 'Google Sheets is not configured — nothing was archived. Set GOOGLE_SERVICE_ACCOUNT_JSON.' });
   const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided);
   if (!billed.length) return res.status(400).json({ error: 'No billed loads to archive' });
 
@@ -4018,7 +4565,7 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
   });
   const archivedPos = store.pos.filter(p => fullyBilledPos.includes(p.id));
 
-  // Try to push to Sheets first — only delete if it succeeds
+  // Push to Sheets first — only move records if it succeeds
   let sheetSuccess = false;
   if (sheets) {
     try {
@@ -4029,7 +4576,7 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
           new Date().toISOString(),
           po.poNumber || '', po.customer || '', po.city || '',
           l.material, l.loadsDelivered, l.driverName, l.deliveryDate,
-          l.actualYardName || po.pickup || '',
+          resolvePickupYard(l, po).name,
           l.approvedBy || '', l.billedAt || ''
         ]);
       });
@@ -4072,14 +4619,17 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
     poCount: archivedPos.length,
     loadCount: billed.length,
     syncedToSheet: sheetSuccess,
+    // Full copies, not just counts: the approved evidence stays in the
+    // database even though it leaves the active board.
+    pos: archivedPos,
+    loads: billed,
   });
   logAction(req.session.user, 'archived-batch', batchId, {
     poCount: archivedPos.length,
     loadCount: billed.length,
     syncedToSheet: sheetSuccess,
   });
-  // Cap archive log at 50 batches
-  if (store.archive.length > 50) store.archive = store.archive.slice(0, 50);
+  // No cap: each batch now carries the archived records themselves.
 
   // Remove archived loads + their fully-completed POs from the active store
   const billedIds = new Set(billed.map(l => l.id));
@@ -4095,16 +4645,37 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
 
 // ── API: GOOGLE SHEETS SYNC ──────────────────────────────────────────────────
 const SHEET_ID = process.env.SHEET_ID || '1T5pOeXmLmZyKKfq4YRl9aymXn9MQnNrqmcuyJluMhQs';
+// The service-account credential comes ONLY from the environment
+// (GOOGLE_SERVICE_ACCOUNT_JSON: the key file's JSON, raw or base64). A
+// service-account.json on disk is deliberately ignored — one was committed to
+// this repo's history and has to be treated as compromised, so the app must
+// never quietly pick a file like that back up.
 let sheets = null;
+function loadGoogleCredentials() {
+  const raw = String(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '').trim();
+  if (!raw) return null;
+  const text = raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
+  const creds = JSON.parse(text);
+  if (creds.type !== 'service_account' || !creds.client_email || !creds.private_key) {
+    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not a service-account key');
+  }
+  return creds;
+}
 try {
   if (fs.existsSync(path.join(__dirname, 'service-account.json'))) {
+    console.warn('⚠ SECURITY: service-account.json is present on disk and is IGNORED. Delete it; use GOOGLE_SERVICE_ACCOUNT_JSON.');
+  }
+  const credentials = loadGoogleCredentials();
+  if (credentials) {
     const { google } = require('googleapis');
     const auth = new google.auth.GoogleAuth({
-      keyFile: path.join(__dirname, 'service-account.json'),
+      credentials,
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
     sheets = google.sheets({ version: 'v4', auth });
-    console.log('✓ Google Sheets ready');
+    console.log(`✓ Google Sheets ready (${credentials.client_email})`);
+  } else {
+    console.log('· Google Sheets not configured (GOOGLE_SERVICE_ACCOUNT_JSON unset) — archive/sync disabled');
   }
 } catch (e) { console.warn('Sheets init failed:', e.message); }
 
@@ -4175,9 +4746,7 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
   const u = req.session.user;
   const today = todayStr();
   const scope = u.role === 'driver'
-    ? store.loads.filter(l => l.truckId === u.truckId && !l.voided &&
-        l.status !== 'completed' && l.approvalStatus !== 'approved' &&
-        (l.deliveryDate || today) <= today)
+    ? driverWorkdayLoads(u)
     : store.loads.filter(l => !l.voided && l.deliveryDate === today);
   res.json({ version: dispatchFingerprint(scope), count: scope.length, at: new Date().toISOString() });
 });
@@ -4238,6 +4807,7 @@ app.get('/api/today', reqMgr, (req, res) => {
     id: d.id, name: d.name, status: d.status,
     openLoadIds: busyBy.get(d.id) || [],
     available: (busyBy.get(d.id) || []).length === 0 && d.status !== 'off',
+    lastSeen: (store.driverLocations || {})[d.id] || null,
   }));
 
   const truckBusy = new Map();
@@ -4331,23 +4901,6 @@ app.delete('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
   res.json({ success: true, deactivated: false });
 });
 
-app.put('/api/fleet/drivers/:id', reqMgr, async (req, res) => {
-  const d = (store.drivers || []).find(x => x.id === req.params.id);
-  if (!d) return res.status(404).json({ error: 'Driver not found' });
-  const b = req.body || {};
-  if (b.name !== undefined && String(b.name).trim()) d.name = String(b.name).trim();
-  if (b.phone !== undefined) d.phone = b.phone;
-  if (b.notes !== undefined) d.notes = b.notes;
-  if (b.status !== undefined) {
-    if (!DRIVER_STATUSES.includes(b.status)) return res.status(400).json({ error: `Status must be one of: ${DRIVER_STATUSES.join(', ')}` });
-    d.status = b.status;
-  }
-  if (b.defaultTruckId !== undefined) d.defaultTruckId = b.defaultTruckId || null;
-  if (b.active !== undefined) d.active = !!b.active;
-  logAction(req.session.user, 'updated-driver', d.id, { name: d.name });
-  await saveData();
-  res.json({ success: true, driver: d });
-});
 
 // ── QUICK ASSIGN — driver, truck and pickup yard in one mobile-friendly call ──
 // Everything else (customer, job, material, quantity, PO, date) already lives
@@ -4360,8 +4913,10 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   const changes = {};
 
   if (driverId !== undefined) {
-    const drv = driverId ? TRUCKS.find(t => t.id === driverId) : null;
-    if (driverId && !drv) return res.status(400).json({ error: 'Unknown driver' });
+    const drv = driverId ? driverRoster().find(t => t.id === driverId) : null;   // active roster only
+    if (driverId && !drv) return res.status(400).json({ error: 'Unknown or inactive driver' });
+    const rd = driverId ? rosterDriver(driverId) : null;
+    if (rd && rd.status === 'off') return res.status(400).json({ error: `${rd.name} is marked off today` });
     changes.driver = { from: l.driverName || 'Unassigned', to: drv?.label || 'Unassigned' };
     l.truckId = driverId || null;
     l.driverName = drv?.label || '';
@@ -4370,6 +4925,8 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   if (truckUnitId !== undefined) {
     const t = truckUnitId ? (store.trucks || []).find(x => x.id === truckUnitId) : null;
     if (truckUnitId && !t) return res.status(400).json({ error: 'Unknown truck' });
+    if (t && t.active === false) return res.status(400).json({ error: `${t.truckNum} is deactivated` });
+    if (t && (t.status === 'maintenance' || t.status === 'out-of-service')) return res.status(400).json({ error: `${t.truckNum} is ${t.status}` });
     changes.truck = { from: (getTruckForLoad(l) || {}).truckNum || 'none', to: t?.truckNum || 'none' };
     l.truckUnitId = truckUnitId || null;
   }
@@ -4435,10 +4992,11 @@ app.get('/api/costing/settings', reqMgr, (req, res) => {
     unitConfig: store.unitConfig,
     costRates: store.costRates,
     unitsInUse: units,
-    // Only units genuinely in use on real loads AND lacking a quantity are
-    // flagged. Valley Best's units (ton/load/hour/mile) all ship configured,
-    // so this is normally empty.
+    // Units genuinely in use on real loads that cannot be priced: an
+    // unconfigured quantity-per-load, or a measured unit (mile/hour) — those
+    // need miles/hours recorded on each load rather than a setting.
     needsAttention: units.filter(u => !u.configured && u.loads > 0).map(u => u.unit),
+    measuredUnits: MEASURED_UNITS,
     supportedUnits: SUPPORTED_UNITS,
     tonsPerLoadRule: TONS_PER_LOAD,
   });
@@ -4626,9 +5184,20 @@ const PORT = process.env.PORT || 3000;
 (async () => {
   await initPg();
   await seedDefaultCompanyAndUsers();
-  await loadData();
+  try {
+    await loadData();
+    await snapshotBootStore();
+  } catch (e) {
+    // Fail SAFE, not fail closed: the process stays up so /healthz and the
+    // dispatcher's screen show exactly what happened and an admin can restore
+    // a backup — but every read of dispatch data and every write is refused
+    // (see the lock middleware and saveData) until a load succeeds.
+    persistence.loaded = false;
+    persistence.loadError = e.message;
+    console.error('✗ STORE LOAD FAILED — running LOCKED, nothing will be written:', e.message);
+  }
   app.listen(PORT, () => {
-    console.log(`VBT Dispatch on port ${PORT}`);
+    console.log(`VBT Dispatch on port ${PORT}${persistence.loaded ? '' : ' (LOCKED — store not loaded)'}`);
     if (!pg) console.warn('⚠ No Postgres — data will reset on redeploy');
   });
 })();

@@ -1192,9 +1192,13 @@ async function refreshQbStatusBadge() {
 function startGPSTracking() {
   if (!navigator.geolocation || !navigator.geolocation.watchPosition) return;
   try {
+    let lastSent = 0;
     navigator.geolocation.watchPosition(
       (pos) => {
-        // Send GPS to server (best-effort, don't block on errors)
+        // The server keeps one point per driver and throttles to 20s; don't
+        // hammer it from here either.
+        if (Date.now() - lastSent < 20000) return;
+        lastSent = Date.now();
         fetch('/api/driver-location', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1203,7 +1207,8 @@ function startGPSTracking() {
             lng: pos.coords.longitude,
             accuracy: pos.coords.accuracy
           })
-        }).catch(() => {});
+        }).then(r => { if (!r.ok && r.status !== 202) console.warn('[GPS] server refused location:', r.status); })
+          .catch(() => {});
       },
       (err) => { console.warn('[GPS] watch error:', err.message); },
       { enableHighAccuracy: true, maximumAge: 30000, timeout: 10000 }
@@ -1259,6 +1264,7 @@ async function init() {
     if (role === 'driver') {
       document.body.classList.add('driver-mode');
       applyDriverDarkPref();
+      startGPSTracking();   // background last-known position for the office (POST /api/driver-location)
       document.getElementById('page-title').textContent = 'My Trips';
       goTab('driver');
     } else {
@@ -1694,11 +1700,10 @@ function loadCard(l) {
   }
 
   // Vendor / pickup yard chip — VBT Yard rendered as INTERNAL
+  // One source: the server's resolvePickupYard, delivered as l.pickup.
   let vendorHtml = '';
-  const pickupName = l.vendorName || po.pickup || '';
-  if (pickupName) {
-    const isInternal = (l.vendorId === 'vbt') || /vbt/i.test(pickupName);
-    vendorHtml = `<span class="lc-vendor ${isInternal ? 'internal' : ''}">${isInternal ? 'VBT Yard' : escapeHtml(pickupName)}</span>`;
+  if (l.pickup && l.pickup.name) {
+    vendorHtml = `<span class="lc-vendor ${l.pickup.isInternal ? 'internal' : ''}">${escapeHtml(l.pickup.name)}${l.pickup.isActual ? '' : ''}</span>`;
   }
 
   // City / address line
@@ -1747,14 +1752,21 @@ function onDragStart(e, id) {
   e.target.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
 }
+// Dropping a card never assigns by itself. It opens the same Quick Assign
+// sheet as the Assign button, pre-selecting the drop target, and nothing is
+// written until Confirm — so a stray touch on a phone cannot move a load.
 async function onDrop(e, truckId) {
   e.preventDefault();
   e.currentTarget.classList.remove('drop-target');
-  if (!dragId) return;
-  const d = await api('PUT', '/api/loads/' + dragId, { truckId: truckId || null });
-  if (d.ok) { await loadAll(); renderBoard(); toast('Load reassigned', 'success'); }
-  else toast(d.error || 'Failed', 'error');
-  dragId = null;
+  const id = dragId; dragId = null;
+  if (!id) return;
+  const l = loads.find(x => x.id === id); if (!l) return;
+  if (l.locked) { toast('This load is locked', 'error'); return; }
+  const d = await api('GET', '/api/today?date=' + encodeURIComponent(l.deliveryDate || ''));
+  if (!d.ok) return toast(d.error || 'Could not open assignment', 'error');
+  todayData = d;
+  qaOpen(id);
+  if (qaPick) { qaPick.driverId = truckId || null; qaPaintSheet(); }
 }
 
 // ── PO MODAL ─────────────────────────────────────────────────────────────────
@@ -1931,6 +1943,12 @@ async function refreshPricingPreview(i) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const loads = Number(s.loadsAssigned) || 1;
+    if (d.calculable === false) {
+      // The engine could not price one side; say why instead of showing $0.
+      const why = [d.customer.unconfigured ? 'Revenue: ' + d.customer.reason : '', d.vendor.unconfigured ? 'Cost: ' + d.vendor.reason : ''].filter(Boolean).join(' · ');
+      el.innerHTML = `<span style="color:var(--R);font-weight:600">Margin cannot be calculated yet.</span> <span style="color:var(--txt2)">${why}</span>`;
+      return;
+    }
     const totalRev   = d.customer.perLoad * loads;
     const totalCost  = d.vendor.perLoad   * loads;
     const totalMargin= totalRev - totalCost;
@@ -1948,7 +1966,7 @@ async function refreshPricingPreview(i) {
         <span><b style="color:var(--G)">Rev:</b> $${d.customer.rate.toFixed(2)}/${d.customer.unit} → <b>$${totalRev.toFixed(2)}</b>${custBadge}</span>
         <span><b style="color:var(--R)">Cost:</b> $${d.vendor.rate.toFixed(2)}/${d.vendor.unit} → <b>$${totalCost.toFixed(2)}</b>${vendBadge}</span>
         <span style="color:${marginColor};font-weight:700">Margin: $${totalMargin.toFixed(2)}${totalRev > 0 ? ' (' + Math.round(totalMargin/totalRev*100) + '%)' : ''}</span>
-        <span style="color:var(--txt3);font-size:10px">${loads} load${loads !== 1 ? 's' : ''} × ${d.tonsPerLoad} tons</span>
+        <span style="color:var(--txt3);font-size:10px">${loads} load${loads !== 1 ? 's' : ''}${d.tonsPerLoad ? ' × ' + d.tonsPerLoad + ' tons' : ''}</span>
       </div>`;
   } catch (e) {
     el.innerHTML = `<span style="color:var(--R);font-size:11px">Could not preview pricing: ${e.message}</span>`;
@@ -2174,8 +2192,7 @@ function openLoadDetail(id) {
   html += `<dt style="color:var(--txt3)">Date</dt><dd>${fmtDate(l.deliveryDate)}</dd>`;
   if (po.jobCode) html += `<dt style="color:var(--txt3)">Job Code</dt><dd>${po.jobCode}</dd>`;
   if (po.address) html += `<dt style="color:var(--txt3)">Address</dt><dd>${po.address}, ${po.city || ''}</dd>`;
-  if (po.pickup) html += `<dt style="color:var(--txt3)">Planned Pickup</dt><dd>${po.pickup}</dd>`;
-  if (l.actualYardName && l.actualYardName !== po.pickup) html += `<dt style="color:var(--txt3)">Actual Pickup</dt><dd style="color:var(--A);font-weight:600">${l.actualYardName}</dd>`;
+  if (l.pickup) html += `<dt style="color:var(--txt3)">Pickup Yard</dt><dd style="${l.pickup.isActual ? 'color:var(--A);font-weight:600' : ''}">${escapeHtml(l.pickup.name)}${l.pickup.isActual ? ' <span style="font-size:10px;color:var(--txt3)">(driver confirmed)</span>' : ''}</dd>`;
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
   html += `</dl>`;
@@ -2200,7 +2217,7 @@ function openLoadDetail(id) {
       const h = Math.floor(m / 60), r = m % 60;
       return r ? `${h}h ${r}m` : `${h}h`;
     };
-    const yardName = l.actualYardName || (l.vendorName) || '';
+    const yardName = l.pickup ? l.pickup.name : '';
     html += `<div style="margin-top:14px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:6px">Trip Timeline ${_trips.length > 1 ? `· ${_trips.filter(t=>t.timestamps?.completed).length}/${_trips.length} delivered` : ''}</div>`;
     _trips.forEach((t, i) => {
       const ts = t.timestamps || {};
@@ -2318,9 +2335,10 @@ function openLoadDetail(id) {
       actions += `<button class="btn danger" onclick="voidLoad('${l.id}')">Void Load</button>`;
     }
     // Removing a whole PO (and its loads) had no UI at all, so test POs piled
-    // up with no way to clear them. A voided load no longer blocks it.
+    // up with no way to clear them. Any approved load (voided or not) or
+    // anything billed keeps the PO on record.
     const poLoads = loads.filter(x => x.poId === l.poId);
-    const poBlocking = poLoads.filter(x => x.approvalStatus === 'approved' && !x.voided);
+    const poBlocking = poLoads.filter(x => x.approvalStatus === 'approved' || x.billingBatchId || x.qbInvoiceId);
     if (!poBlocking.length) {
       actions += `<button class="btn danger" onclick="deletePO('${l.poId}', ${poLoads.length})">Delete PO ${escapeHtml(po.poNumber || '')}</button>`;
     }
@@ -2397,7 +2415,7 @@ async function voidPoLoads(poId) {
   if (failed.length) {
     alert(`Voided ${done}. These could not be voided:\n\n${failed.join('\n')}`);
   } else {
-    toast(`Voided ${done} load${done === 1 ? '' : 's'} — the PO can now be deleted`, 'success');
+    toast(`Voided ${done} load${done === 1 ? '' : 's'} — they no longer count toward billing; the PO stays on record`, 'success');
   }
   refreshCurrentView();
 }
@@ -2534,10 +2552,8 @@ async function confirmReassign() {
   document.getElementById('reassign-confirm-btn').disabled = true;
   let success = 0, failed = 0;
   for (const id of loadIds) {
-    const d = await api('PUT', '/api/loads/' + id, {
-      truckId: reassignTarget || null,
-      driverName,
-    });
+    // Same endpoint as Quick Assign, so the same validation and audit apply.
+    const d = await api('POST', `/api/loads/${id}/assign`, { driverId: reassignTarget || null });
     if (d.ok) success++; else failed++;
   }
 
@@ -3310,7 +3326,7 @@ function renderApprovals() {
         <div class="am-info">
           <div class="am-po">${po.poNumber}</div>
           <div class="am-customer">${po.customer}</div>
-          <div class="am-detail">${l.material} · <b style="color:${l.isPartial ? 'var(--A)' : 'var(--txt)'}">${l.loadsDelivered}/${l.loadsAssigned} loads${l.isPartial ? ' ⚠ partial' : ''}</b> · ${l.driverName}${l.actualYardName ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + l.actualYardName : ''}</div>
+          <div class="am-detail">${l.material} · <b style="color:${l.isPartial ? 'var(--A)' : 'var(--txt)'}">${l.loadsDelivered}/${l.loadsAssigned} loads${l.isPartial ? ' ⚠ partial' : ''}</b> · ${l.driverName}${(l.pickup && l.pickup.name) ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + escapeHtml(l.pickup.name) : ''}</div>
         </div>
         <div class="am-thumbs">
           ${(() => {
@@ -3529,18 +3545,20 @@ function showInvoicePreviewModal(groups, allowSend) {
             <div style="font-size:12px;color:var(--txt2);margin-top:2px">PO ${g.poNumber || '—'}${g.jobCode ? ' · Job ' + g.jobCode : ''}${g.city ? ' · ' + g.city : ''}</div>
             <div style="font-size:12px;color:var(--txt2);margin-top:1px">${g.deliveryStart}${g.deliveryEnd && g.deliveryEnd !== g.deliveryStart ? ' to ' + g.deliveryEnd : ''} · ${g.totalLoads} load${g.totalLoads === 1 ? '' : 's'}</div>
           </div>
-          <div style="font-weight:700;font-size:18px">$${g.totalAmount.toFixed(2)}</div>
+          <div style="font-weight:700;font-size:18px;${g.unconfigured ? 'color:var(--R)' : ''}">${g.unconfigured ? 'Not priceable' : '$' + g.totalAmount.toFixed(2)}</div>
         </div>
+        ${g.unconfigured ? `<div style="background:#fee4e2;color:#b42318;border-radius:var(--r);padding:8px 10px;font-size:12px;margin-bottom:8px;font-weight:600">
+          This group cannot be sent: ${(g.unconfiguredReasons || []).join('; ')}. Fix the pricing or unit configuration and preview again.</div>` : ''}
         <table style="width:100%;font-size:13px;border-top:1px solid var(--bdr);border-collapse:collapse">
           ${g.lineItems.map(ln => `<tr>
-            <td style="padding:6px 0">${ln.description}</td>
-            <td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums">$${ln.amount.toFixed(2)}</td>
+            <td style="padding:6px 0;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.description}</td>
+            <td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.unconfigured ? '—' : '$' + ln.amount.toFixed(2)}</td>
           </tr>`).join('')}
         </table>
       </div>
     `).join('')}
   `;
-  document.getElementById('qb-preview-confirm').style.display = allowSend ? '' : 'none';
+  document.getElementById('qb-preview-confirm').style.display = (allowSend && !groups.some(g => g.unconfigured)) ? '' : 'none';
   document.getElementById('qb-preview-confirm').onclick = () => confirmCreateAndSend([...billSelected]);
   modal.style.display = 'flex';
 }
@@ -3579,11 +3597,13 @@ async function confirmCreateAndSend(loadIds) {
 }
 
 // ── BILLING BATCHES VIEW ────────────────────────────────────────────────────
+let billBatchesCache = [];
 async function renderBillBatches() {
   const wrap = document.getElementById('bill-list');
   wrap.innerHTML = `<div style="padding:20px;text-align:center;color:var(--txt2)">Loading…</div>`;
   const r = await api('GET', '/api/billing-batches');
   const items = r.items || [];
+  billBatchesCache = items;
   if (!items.length) {
     wrap.innerHTML = `<div class="empty-state"><h3>No billing batches yet</h3><p>Create batches by selecting approved loads in the Ready to Bill tab and clicking Send to QuickBooks.</p></div>`;
     return;
@@ -3630,17 +3650,32 @@ async function sendBatch(id) {
 }
 
 async function retryBatch(id) {
-  await api('POST', `/api/billing-batches/${id}/retry`, {});
+  // Retry refuses when an invoice already exists for the batch; only send
+  // again if the reset was accepted.
+  const rt = await api('POST', `/api/billing-batches/${id}/retry`, {});
+  if (!rt.ok) { toast(rt.error || 'Retry refused', 'error'); renderBillBatches(); return; }
   const r = await api('POST', `/api/billing-batches/${id}/send`, {});
   if (r.ok) toast('Sent to QuickBooks', 'success'); else toast(r.error || 'Retry failed', 'error');
   renderBillBatches();
 }
 
 async function voidBatch(id) {
+  const b = (billBatchesCache || []).find(x => x.id === id);
   const reason = prompt('Reason for voiding this batch (required)?');
   if (!reason || !reason.trim()) return;
-  const voidInQb = confirm('Also void the invoice in QuickBooks?\n\nOK = Void in QuickBooks. Cancel = Only mark voided locally.');
-  const r = await api('POST', `/api/billing-batches/${id}/void`, { reason: reason.trim(), voidInQuickBooks: voidInQb });
+  const body = { reason: reason.trim() };
+  if (b && b.qbInvoiceId) {
+    // The loads only go back to Ready to Bill once the QuickBooks invoice is
+    // voided too — either here, or by hand in QuickBooks first.
+    const manual = confirm(`Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} exists in QuickBooks.\n\n`
+      + 'OK = Void it in QuickBooks now (QuickBooks must be connected).\n'
+      + 'Cancel = I already voided it in QuickBooks myself.');
+    if (!manual) {
+      if (!confirm('Confirm: the QuickBooks invoice has ALREADY been voided by hand. This is recorded in the sync log.')) return;
+      body.alreadyVoidedInQuickBooks = true;
+    }
+  }
+  const r = await api('POST', `/api/billing-batches/${id}/void`, body);
   if (r.ok) toast('Batch voided', 'success'); else toast(r.error || 'Failed', 'error');
   await loadAll();
   renderBillBatches();
@@ -3661,9 +3696,38 @@ async function checkPersistence() {
     bar.style.cssText = 'position:sticky;top:0;z-index:250;background:#b42318;color:#fff;padding:11px 16px;'
       + 'font-size:13px;font-weight:650;line-height:1.45;display:flex;gap:10px;align-items:center';
     bar.innerHTML = `<span style="font-size:17px">&#9888;</span>
-      <span>${escapeHtml(p.warning)}</span>`;
+      <span style="flex:1">${escapeHtml(p.warning)}</span>`;
+    // Only an office login can restore, and only when the store failed to load
+    // (the one situation where nothing else in the app will work anyway).
+    if (p.loaded === false && (me?.role === 'admin' || me?.role === 'manager')) {
+      const b = document.createElement('button');
+      b.textContent = 'Restore backup…';
+      b.style.cssText = 'background:#fff;color:#b42318;border:0;border-radius:6px;padding:7px 12px;font-weight:700;cursor:pointer';
+      b.onclick = restoreBackupPrompt;
+      bar.appendChild(b);
+    }
     document.querySelector('.content')?.prepend(bar);
   } catch (e) { /* ignore */ }
+}
+
+// Restore the live dispatch data from one of the server-side backups.
+// store_prev = the value before the most recent save; store_boot = the value
+// when the server last started. The server copies the current row aside first,
+// so this can itself be undone.
+async function restoreBackupPrompt() {
+  let info;
+  try { info = await (await fetch('/api/admin/backups')).json(); } catch { alert('Could not list backups.'); return; }
+  const lines = (info.backups || []).map(b => `${b.key}: ${(b.bytes / 1024).toFixed(1)} KB, written ${b.updatedAt ? new Date(b.updatedAt).toLocaleString() : 'unknown'}`);
+  const from = prompt(`Restore dispatch data from which backup?\n\n${lines.join('\n')}\n\nType store_prev or store_boot:`);
+  if (!from) return;
+  if (!(info.restorable || []).includes(from.trim())) { alert('Not a restorable backup: ' + from); return; }
+  if (!confirm(`Replace the live dispatch data with "${from.trim()}"?\nThe current row is kept as store_before_restore.`)) return;
+  const r = await fetch('/api/admin/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: from.trim(), confirm: 'RESTORE' }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert('Restore failed: ' + (d.error || r.status)); return; }
+  alert(`Restored from ${d.restoredFrom}: ${d.pos} POs, ${d.loads} loads. Reloading.`);
+  location.reload();
 }
 
 // ── PURCHASE ORDERS ─────────────────────────────────────────────────────────
@@ -3676,18 +3740,20 @@ function renderPOsList() {
   const wrap = document.getElementById('pos-content');
   const rows = (pos || []).map(p => {
     const mine = (loads || []).filter(l => l.poId === p.id);
-    // A voided load is already written off, so it no longer blocks deleting
-    // the PO. `blocking` is what actually stands in the way.
+    // Approved work is history and is never deleted — voided or not. A PO
+    // with any approved load stays on record; voiding only stops the loads
+    // from counting toward billing and reporting.
     const blocking = mine.filter(l => l.approvalStatus === 'approved' && !l.voided);
     const voided = mine.filter(l => l.voided).length;
     const approved = mine.filter(l => l.approvalStatus === 'approved').length;
+    const billed = mine.filter(l => l.billingBatchId || l.qbInvoiceId).length;
     const delivered = mine.reduce((s, l) => s + (l.loadsDelivered || 0), 0);
     const assigned = mine.reduce((s, l) => s + (l.loadsAssigned || 0), 0);
     return {
       po: p, loadCount: mine.length, approved, voided, delivered, assigned,
-      blocking,                                   // the loads that must be voided first
+      blocking,                                   // approved loads still counting (voidable)
       orphan: mine.length === 0,
-      locked: blocking.length > 0,                // voided loads no longer lock the PO
+      locked: approved > 0 || billed > 0,         // on record permanently
     };
   }).sort((a, b) => String(b.po.deliveryDate || '').localeCompare(String(a.po.deliveryDate || '')));
 
@@ -3743,8 +3809,10 @@ function poCard(r) {
     </div>
     <div class="qa-actions">
       ${r.locked
-        ? `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5"
-             onclick="voidPoLoads('${p.id}')">Void ${r.blocking.length} approved load${r.blocking.length === 1 ? '' : 's'}…</button>`
+        ? (r.blocking.length
+            ? `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5"
+                 onclick="voidPoLoads('${p.id}')">Void ${r.blocking.length} approved load${r.blocking.length === 1 ? '' : 's'}…</button>`
+            : `<span class="qa-fact" style="color:var(--txt2)">Kept as history (approved work is never deleted)</span>`)
         : `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5" onclick="deletePO('${p.id}', ${r.loadCount})">Delete PO</button>`}
     </div>
   </div>`;
@@ -3902,8 +3970,8 @@ async function qaConfirm() {
   const truck = r.truck ? r.truck.truckNum : 'no truck';
   qaClose();
   toast(`${who} → ${truck} → ${r.pickup.name}`, 'success');
-  await renderToday();
   await loadAll();
+  if (currentTab === 'today') await renderToday(); else if (currentTab === 'board') renderBoard();
 }
 
 // ── CUSTOMER NOTIFICATIONS (per PO) ─────────────────────────────────────────
@@ -4788,8 +4856,9 @@ async function renderMaterialCosts() {
               <div class="vendor-panel-sub">${v.location || ''} · ${v.totalLoads} load${v.totalLoads !== 1 ? 's' : ''} delivered</div>
             </div>
             <div style="text-align:right">
-              <div style="font-size:22px;font-weight:700;color:var(--R)">${money(v.totalCost)}</div>
+              <div style="font-size:22px;font-weight:700;color:var(--R)">${money(v.totalCost)}${v.unconfigured ? ' <span style="font-size:11px;color:#b42318">incomplete</span>' : ''}</div>
               <div style="font-size:11px;color:var(--txt3)">${pct}% of total spend</div>
+              ${v.unconfigured ? `<div style="font-size:11px;color:#b42318;font-weight:600">Some loads not costed: unit ${(v.unconfiguredUnits || []).join(', ')} cannot be priced yet</div>` : ''}
             </div>
           </div>
           <table class="price-table">
@@ -4800,7 +4869,7 @@ async function renderMaterialCosts() {
                 <td>${d.unit || '—'}</td>
                 <td>${d.loads}</td>
                 <td>${money(d.unitPrice)}</td>
-                <td style="text-align:right;font-weight:600">${money(d.cost)}</td>
+                <td style="text-align:right;font-weight:600">${d.unconfigured ? '<span style="color:#b42318">not priceable</span>' : money(d.cost)}</td>
               </tr>`).join('')}
             </tbody>
           </table>
@@ -5074,9 +5143,9 @@ async function renderProfitability() {
     if (data.grand.costIncomplete) {
       h += `<div style="background:#fff8ec;border:1px solid #fcd34d;border-radius:var(--rl);padding:12px 16px;margin-bottom:14px;font-size:13px;line-height:1.5">
         <strong>Margin is overstated.</strong> ${data.grand.unpricedCostLoads} load${data.grand.unpricedCostLoads === 1 ? '' : 's'}
-        priced in <strong>${data.grand.unpricedUnits.join(', ').toUpperCase()}</strong> have no material cost yet, because
-        Valley Best hasn't defined how many ${data.grand.unpricedUnits.join('/').toUpperCase()} are in one truck load.
-        Set it under <em>Vendors &amp; Prices → Default Rates</em> and these loads will be costed automatically.
+        priced in <strong>${data.grand.unpricedUnits.join(', ').toUpperCase()}</strong> have no material cost yet.
+        Per-mile and per-hour rates need miles/hours recorded on each load; any other unit needs a quantity per load under
+        <em>Costing settings</em>. Until then those loads count as $0 here.
       </div>`;
     }
     h += `<div style="background:linear-gradient(135deg,#1a2342 0%,#2d3a5e 100%);border-radius:var(--rl);padding:22px 24px;color:#fff;margin-bottom:18px;box-shadow:var(--shadow-md)">
@@ -5661,7 +5730,7 @@ async function renderHistory() {
           <td>${l.material}</td>
           <td>${l.loadsDelivered}</td>
           <td>${l.driverName}</td>
-          <td>${l.actualYardName || l.pickup || '—'}</td>
+          <td>${(l.pickup && l.pickup.name) || '—'}</td>
           <td>${fmtDate(l.deliveryDate)}</td>
           <td style="font-size:11px;color:var(--txt2)">${l.billedAt ? new Date(l.billedAt).toLocaleDateString() : ''}</td>
         </tr>`).join('')}
@@ -5748,33 +5817,41 @@ async function renderFleet() {
 }
 
 function paintFleet() {
-  const trucksRows = fleetState.trucks.map(t => `
+  const trucks  = fleetState.trucks  || [];
+  const drivers = fleetState.drivers || [];
+  const tStatuses = fleetState.truckStatuses  || ['available', 'in-service', 'maintenance', 'out-of-service'];
+  const dStatuses = fleetState.driverStatuses || ['available', 'working', 'off'];
+  const inp = 'style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"';
+  const driverOpts = (sel) => `<option value="">— none —</option>` + drivers.filter(d => d.active).map(d =>
+    `<option value="${escapeAttr(d.id)}" ${d.id === sel ? 'selected' : ''}>${escapeHtml(d.displayName)}</option>`).join('');
+  const truckOpts = (sel) => `<option value="">— none —</option>` + trucks.filter(t => t.active !== false).map(t =>
+    `<option value="${escapeAttr(t.id)}" ${t.id === sel ? 'selected' : ''}>${escapeHtml(t.truckNum || t.id)}</option>`).join('');
+
+  // Trucks are VEHICLES: number, type, status, usual driver. No "label".
+  const trucksRows = trucks.map(t => `
     <tr>
-      <td><code style="font-size:11px;color:var(--txt3)">${escapeHtml(t.id)}</code></td>
-      <td><input type="text" data-truck-id="${escapeAttr(t.id)}" data-field="label"    value="${escapeAttr(t.label || '')}"    style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"></td>
-      <td><input type="text" data-truck-id="${escapeAttr(t.id)}" data-field="truckNum" value="${escapeAttr(t.truckNum || '')}" style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"></td>
+      <td><input type="text" data-truck-id="${escapeAttr(t.id)}" data-field="truckNum" value="${escapeAttr(t.truckNum || '')}" ${inp}></td>
+      <td><input type="text" data-truck-id="${escapeAttr(t.id)}" data-field="type" value="${escapeAttr(t.type || '')}" ${inp}></td>
+      <td><select data-truck-id="${escapeAttr(t.id)}" data-field="status" ${inp}>
+        ${tStatuses.map(st => `<option value="${st}" ${st === t.status ? 'selected' : ''}>${st}</option>`).join('')}</select></td>
+      <td><select data-truck-id="${escapeAttr(t.id)}" data-field="defaultDriverId" ${inp}>${driverOpts(t.defaultDriverId)}</select></td>
       <td style="text-align:center"><input type="checkbox" data-truck-id="${escapeAttr(t.id)}" data-field="active" ${t.active !== false ? 'checked' : ''}></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn ghost" style="padding:5px 10px;font-size:11px" onclick="saveTruck('${escapeAttr(t.id)}')">Save</button>
-        <button class="btn ghost" style="padding:5px 10px;font-size:11px;color:#b42318" onclick="deleteTruck('${escapeAttr(t.id)}')">Delete</button>
+        <button class="btn ghost" style="padding:5px 10px;font-size:11px;color:#b42318" onclick="deleteTruck('${escapeAttr(t.id)}')">Remove</button>
       </td>
     </tr>`).join('');
 
-  const truckOptions = fleetState.trucks
-    .map(t => `<option value="${escapeAttr(t.id)}">${escapeHtml(t.label || t.id)} (${escapeHtml(t.truckNum || t.id)})</option>`)
-    .join('');
-
-  const driversRows = fleetState.drivers.map(d => `
+  // Drivers are PEOPLE on the one roster dispatch uses; the login is attached.
+  const driversRows = drivers.map(d => `
     <tr>
-      <td><code style="font-size:11px;color:var(--txt3)">${escapeHtml(d.username)}</code></td>
-      <td><input type="text" data-driver="${escapeAttr(d.username)}" data-field="displayName" value="${escapeAttr(d.displayName || '')}" style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"></td>
-      <td>
-        <select data-driver="${escapeAttr(d.username)}" data-field="truckId" style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px">
-          <option value="">— none —</option>
-          ${fleetState.trucks.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === d.truckId ? 'selected' : ''}>${escapeHtml(t.label || t.id)} (${escapeHtml(t.truckNum || t.id)})</option>`).join('')}
-        </select>
-      </td>
-      <td><input type="password" data-driver="${escapeAttr(d.username)}" data-field="password" placeholder="leave blank to keep" style="width:100%;padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:13px"></td>
+      <td><code style="font-size:11px;color:var(--txt3)">${escapeHtml(d.username)}</code>
+        ${d.hasLogin ? '' : '<div style="font-size:10px;color:#b42318">no login</div>'}</td>
+      <td><input type="text" data-driver="${escapeAttr(d.username)}" data-field="displayName" value="${escapeAttr(d.displayName || '')}" ${inp}></td>
+      <td><select data-driver="${escapeAttr(d.username)}" data-field="defaultTruckId" ${inp}>${truckOpts(d.defaultTruckId)}</select></td>
+      <td><select data-driver="${escapeAttr(d.username)}" data-field="status" ${inp}>
+        ${dStatuses.map(st => `<option value="${st}" ${st === d.status ? 'selected' : ''}>${st}</option>`).join('')}</select></td>
+      <td><input type="password" data-driver="${escapeAttr(d.username)}" data-field="password" placeholder="leave blank to keep" ${inp}></td>
       <td style="text-align:center"><input type="checkbox" data-driver="${escapeAttr(d.username)}" data-field="active" ${d.active !== false ? 'checked' : ''}></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn ghost" style="padding:5px 10px;font-size:11px" onclick="saveDriver('${escapeAttr(d.username)}')">Save</button>
@@ -5782,112 +5859,84 @@ function paintFleet() {
       </td>
     </tr>`).join('');
 
+  const th = (label, extra = '') => `<th style="text-align:left;padding:10px 14px;font-weight:600;${extra}">${label}</th>`;
   document.getElementById('fleet-content').innerHTML = `
     <div style="display:grid;gap:18px">
-      <!-- Trucks -->
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden">
         <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
           <div>
             <div style="font-size:14px;font-weight:700;letter-spacing:-.005em">Trucks</div>
-            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${fleetState.trucks.length} total · edit number, label, or active state</div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${trucks.length} vehicle${trucks.length === 1 ? '' : 's'} · any driver can run any truck; "usual driver" only pre-fills Quick Assign</div>
           </div>
           <button class="btn primary" onclick="addTruckPrompt()" style="padding:7px 14px;font-size:12px">+ Add Truck</button>
         </div>
-        <table style="width:100%;border-collapse:collapse;font-size:13px">
-          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)">
-            <tr>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">ID</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">Label / Driver Name</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">Truck Number</th>
-              <th style="text-align:center;padding:10px 14px;font-weight:600;width:70px">Active</th>
-              <th style="text-align:right;padding:10px 14px;font-weight:600;width:170px"></th>
-            </tr>
-          </thead>
-          <tbody>${trucksRows || `<tr><td colspan="5" style="padding:30px;text-align:center;color:var(--txt3)">No trucks yet — click "Add Truck".</td></tr>`}</tbody>
-        </table>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px">
+          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)"><tr>
+            ${th('Truck number')}${th('Type')}${th('Status', 'width:140px')}${th('Usual driver', 'width:160px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
+          </tr></thead>
+          <tbody>${trucksRows || `<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--txt3)">No trucks yet — click "Add Truck".</td></tr>`}</tbody>
+        </table></div>
       </div>
-
-      <!-- Drivers -->
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden">
         <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
           <div>
             <div style="font-size:14px;font-weight:700;letter-spacing:-.005em">Drivers</div>
-            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${fleetState.drivers.length} total · driver login + assigned truck</div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${drivers.length} on the roster · a driver added here can be dispatched right away</div>
           </div>
           <button class="btn primary" onclick="addDriverPrompt()" style="padding:7px 14px;font-size:12px">+ Add Driver</button>
         </div>
-        <table style="width:100%;border-collapse:collapse;font-size:13px">
-          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)">
-            <tr>
-              <th style="text-align:left;padding:10px 14px;font-weight:600;width:120px">Username</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">Display Name</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600">Truck</th>
-              <th style="text-align:left;padding:10px 14px;font-weight:600;width:180px">Password</th>
-              <th style="text-align:center;padding:10px 14px;font-weight:600;width:70px">Active</th>
-              <th style="text-align:right;padding:10px 14px;font-weight:600;width:170px"></th>
-            </tr>
-          </thead>
-          <tbody>${driversRows || `<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--txt3)">No drivers yet — click "Add Driver".</td></tr>`}</tbody>
-        </table>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:720px">
+          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)"><tr>
+            ${th('Username', 'width:120px')}${th('Display name')}${th('Usual truck', 'width:140px')}${th('Status', 'width:120px')}${th('Password', 'width:170px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
+          </tr></thead>
+          <tbody>${driversRows || `<tr><td colspan="7" style="padding:30px;text-align:center;color:var(--txt3)">No drivers yet — click "Add Driver".</td></tr>`}</tbody>
+        </table></div>
         <div style="padding:10px 18px;font-size:11px;color:var(--txt3);background:var(--bg2);border-top:1px solid var(--bdr)">
-          Drivers log in with their username + password. Disabling a driver hides them from the Board but keeps their loads in History.
+          Drivers log in with their username + password. "off" hides a driver from Quick Assign for the day. Disabling keeps their history.
         </div>
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
 function escapeAttr(s) { return escapeHtml(s == null ? '' : s); }
 
+async function fleetCall(method, url, body) {
+  const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  return d;
+}
+
 async function addTruckPrompt() {
-  const id = (prompt('New truck ID (lowercase letters/numbers, e.g. "truck-7"):') || '').trim().toLowerCase();
-  if (!id) return;
-  const label = (prompt('Driver/label name (e.g. "Antonio"):') || '').trim();
-  if (!label) return;
   const truckNum = (prompt('Truck number (e.g. "Truck #7"):') || '').trim();
   if (!truckNum) return;
+  const type = (prompt('Type (e.g. "End Dump") — optional:') || '').trim();
   try {
-    const r = await fetch('/api/trucks', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, label, truckNum }),
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    await fleetCall('POST', '/api/fleet/trucks', { truckNum, type });
     toast('Truck added', 'success');
-    await loadAll();
-    renderFleet();
+    await loadAll(); renderFleet();
   } catch (e) { toast('Add truck failed: ' + e.message, 'error'); }
 }
 
 async function saveTruck(id) {
-  const labelEl    = document.querySelector(`[data-truck-id="${id}"][data-field="label"]`);
-  const truckNumEl = document.querySelector(`[data-truck-id="${id}"][data-field="truckNum"]`);
-  const activeEl   = document.querySelector(`[data-truck-id="${id}"][data-field="active"]`);
+  const f = (field) => document.querySelector(`[data-truck-id="${id}"][data-field="${field}"]`);
   try {
-    const r = await fetch('/api/trucks/' + encodeURIComponent(id), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        label: labelEl?.value, truckNum: truckNumEl?.value, active: !!activeEl?.checked,
-      }),
+    await fleetCall('PUT', '/api/fleet/trucks/' + encodeURIComponent(id), {
+      truckNum: f('truckNum')?.value, type: f('type')?.value, status: f('status')?.value,
+      defaultDriverId: f('defaultDriverId')?.value || null, active: !!f('active')?.checked,
     });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     toast('Truck saved', 'success');
-    await loadAll();
-    renderFleet();
+    await loadAll(); renderFleet();
   } catch (e) { toast('Save failed: ' + e.message, 'error'); }
 }
 
 async function deleteTruck(id) {
-  if (!confirm('Delete truck "' + id + '"? If it has loads, it will be disabled instead.')) return;
+  if (!confirm('Remove this truck? If it has delivery history it will be deactivated instead, so past loads keep their truck.')) return;
   try {
-    const r = await fetch('/api/trucks/' + encodeURIComponent(id), { method: 'DELETE' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    toast(d.softDeleted ? 'Truck disabled (had loads)' : 'Truck deleted', 'success');
-    await loadAll();
-    renderFleet();
-  } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
+    const d = await fleetCall('DELETE', '/api/fleet/trucks/' + encodeURIComponent(id));
+    toast(d.deactivated ? 'Truck deactivated (has history)' : 'Truck removed', 'success');
+    await loadAll(); renderFleet();
+  } catch (e) { toast('Remove failed: ' + e.message, 'error'); }
 }
 
 async function addDriverPrompt() {
@@ -5896,58 +5945,42 @@ async function addDriverPrompt() {
   const displayName = (prompt('Display name (shown on the board):') || '').trim();
   const password    = (prompt('Initial password (at least 4 chars):') || '');
   if (!password || password.length < 4) { toast('Password too short', 'error'); return; }
-  let truckId = '';
-  if (fleetState.trucks.length) {
-    const ids = fleetState.trucks.map(t => t.id).join(', ');
-    truckId = (prompt('Truck ID to assign (one of: ' + ids + ') — leave blank for none:') || '').trim();
+  let defaultTruckId = '';
+  const active = (fleetState.trucks || []).filter(t => t.active !== false);
+  if (active.length) {
+    const pick = (prompt('Usual truck — type one of: ' + active.map(t => t.truckNum).join(', ') + '  (blank for none):') || '').trim().toLowerCase();
+    const t = active.find(x => (x.truckNum || '').toLowerCase() === pick || x.id === pick);
+    if (pick && !t) { toast('No truck called "' + pick + '"', 'error'); return; }
+    defaultTruckId = t ? t.id : '';
   }
   try {
-    const r = await fetch('/api/drivers', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, displayName, truckId }),
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    toast('Driver added', 'success');
-    await loadAll();
-    renderFleet();
+    const d = await fleetCall('POST', '/api/drivers', { username, password, displayName, defaultTruckId });
+    toast(d.loginCreated ? 'Driver added — they can log in and be dispatched now' : 'Driver added to the roster (no login: database not available)', d.loginCreated ? 'success' : 'error');
+    await loadAll(); renderFleet();
   } catch (e) { toast('Add driver failed: ' + e.message, 'error'); }
 }
 
 async function saveDriver(username) {
-  const dnEl = document.querySelector(`[data-driver="${username}"][data-field="displayName"]`);
-  const trEl = document.querySelector(`[data-driver="${username}"][data-field="truckId"]`);
-  const pwEl = document.querySelector(`[data-driver="${username}"][data-field="password"]`);
-  const acEl = document.querySelector(`[data-driver="${username}"][data-field="active"]`);
+  const f = (field) => document.querySelector(`[data-driver="${username}"][data-field="${field}"]`);
   const body = {
-    displayName: dnEl?.value,
-    truckId:     trEl?.value,
-    active:      !!acEl?.checked,
+    displayName: f('displayName')?.value, defaultTruckId: f('defaultTruckId')?.value || null,
+    status: f('status')?.value, active: !!f('active')?.checked,
   };
-  if (pwEl?.value) body.password = pwEl.value;
+  if (f('password')?.value) body.password = f('password').value;
   try {
-    const r = await fetch('/api/drivers/' + encodeURIComponent(username), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    if (pwEl) pwEl.value = '';
+    await fleetCall('PUT', '/api/drivers/' + encodeURIComponent(username), body);
+    if (f('password')) f('password').value = '';
     toast('Driver saved', 'success');
-    await loadAll();
-    renderFleet();
+    await loadAll(); renderFleet();
   } catch (e) { toast('Save failed: ' + e.message, 'error'); }
 }
 
 async function disableDriver(username) {
-  if (!confirm('Disable driver "' + username + '"? They will no longer be able to log in. Their history is preserved.')) return;
+  if (!confirm('Disable driver "' + username + '"? They will no longer be able to log in or be dispatched. Their history is preserved.')) return;
   try {
-    const r = await fetch('/api/drivers/' + encodeURIComponent(username), { method: 'DELETE' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    await fleetCall('DELETE', '/api/drivers/' + encodeURIComponent(username));
     toast('Driver disabled', 'success');
-    await loadAll();
-    renderFleet();
+    await loadAll(); renderFleet();
   } catch (e) { toast('Disable failed: ' + e.message, 'error'); }
 }
 

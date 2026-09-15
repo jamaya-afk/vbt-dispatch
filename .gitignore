@@ -4,3 +4,9 @@ data.json
 .DS_Store
 *.log
 .env
+.env.*
+# Google service-account keys must never be committed; use GOOGLE_SERVICE_ACCOUNT_JSON
+service-account.json
+*service-account*.json
+*.pem
+*.p12
