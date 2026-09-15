@@ -70,7 +70,7 @@ console.log(`\nDependencies (checked against deploy target Node ${targetMajor}):
 for (const name of Object.keys(pkg.dependencies || {})) {
   const declaredRange = pkg.dependencies[name];
   // Read the manifest off disk rather than require()-ing it. Packages with a
-  // restrictive "exports" map (stripe, for one) refuse
+  // restrictive "exports" map refuse
   // require('pkg/package.json') even when perfectly installed.
   let dep;
   const manifest = path.join(__dirname, 'node_modules', name, 'package.json');
