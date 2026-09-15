@@ -913,6 +913,16 @@ function normalizeStore() {
     };
   }
   if (!Array.isArray(store.billingBatches)) store.billingBatches = [];
+  // A batch still 'syncing' when the process starts was interrupted mid-send.
+  // The invoice may or may not exist in QuickBooks, so it becomes 'failed'
+  // with an explicit instruction rather than silently re-sendable.
+  store.billingBatches.forEach(b => {
+    if (b.syncStatus === 'syncing') {
+      b.syncStatus = 'failed';
+      b.errorMessage = 'Send was interrupted by a server restart. Check QuickBooks for an invoice for this batch before retrying.';
+      b.syncingSince = '';
+    }
+  });
   if (!Array.isArray(store.qbSyncLog))      store.qbSyncLog = [];
   if (!Array.isArray(store.vendorBills))    store.vendorBills = [];
 
@@ -1316,6 +1326,36 @@ app.post('/api/admin/restore', reqAdmin, async (req, res) => {
 // Test-only hooks. Never mounted in production; used by test-e2e.sh to prove
 // the async wrapper above is still in place (a hung request = missing wrapper).
 if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
+  // Fake QuickBooks: replaces the qb module's network calls so the billing
+  // state machine (concurrency, failure, retry, void) can be exercised
+  // without Intuit. `mode` = ok | fail | slow.
+  const fakeQb = { mode: 'ok', delayMs: 0, invoicesCreated: 0, invoicesVoided: 0, invoices: [] };
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  app.post('/api/_test/qb-fake', reqMgr, async (req, res) => {
+    Object.assign(fakeQb, { mode: req.body?.mode || 'ok', delayMs: Number(req.body?.delayMs || 0) });
+    if (req.body?.connected !== false) {
+      store.qbConnection = { ...(store.qbConnection || {}), realmId: 'test-realm', status: 'connected', companyName: 'Fake QB', connectedAt: new Date().toISOString() };
+    } else if (store.qbConnection) {
+      store.qbConnection.status = 'disconnected';
+    }
+    qb.findOrCreateCustomer = async (conn, c) => ({ customer: { Id: 'CUST-' + (c.name || 'x').replace(/\W/g, ''), DisplayName: c.name }, created: false });
+    qb.createInvoice = async (conn, args) => {
+      if (fakeQb.mode === 'slow') await wait(fakeQb.delayMs || 1500);
+      if (fakeQb.mode === 'fail') { const e = new Error('Fake QuickBooks: invoice rejected'); e.statusCode = 400; throw e; }
+      fakeQb.invoicesCreated++;
+      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: String(1000 + fakeQb.invoicesCreated), memo: args.memo };
+      fakeQb.invoices.push(inv);
+      return inv;
+    };
+    qb.voidInvoice = async (conn, id) => {
+      if (fakeQb.mode === 'fail') throw new Error('Fake QuickBooks: void rejected');
+      fakeQb.invoicesVoided++;
+      return { Id: id, status: 'Voided' };
+    };
+    qb.createBill = async () => ({ Id: 'BILL-1' });
+    res.json({ ok: true, fakeQb });
+  });
+  app.get('/api/_test/qb-fake', reqMgr, (req, res) => res.json(fakeQb));
   app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
   app.get('/api/_test/async-reject', (req, res) => Promise.reject(new Error('test: rejected promise')));
   app.get('/api/_test/sync-throw', (req, res) => { throw new Error('test: sync throw'); });
@@ -2598,14 +2638,23 @@ app.get('/api/billing-batches/:id', reqMgr, (req, res) => {
 app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
   const b = store.billingBatches.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Batch not found' });
-  if (b.syncStatus === 'sent_to_quickbooks' && b.qbInvoiceId) {
-    return res.status(400).json({ error: `Already sent (invoice ${b.qbInvoiceNumber || b.qbInvoiceId})` });
+  // Duplicate-invoice guards, checked BEFORE the first await so two
+  // simultaneous requests cannot both pass (Node runs this section without
+  // interleaving). Any batch that already has a QuickBooks invoice id is
+  // never re-sent, whatever its status says.
+  if (b.qbInvoiceId) {
+    return res.status(400).json({ error: `Already sent (invoice ${b.qbInvoiceNumber || b.qbInvoiceId}). Void the batch to correct it.` });
+  }
+  if (b.syncStatus === 'syncing') {
+    return res.status(409).json({ error: 'This batch is already being sent to QuickBooks. Wait for it to finish.', batch: b });
   }
   if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Cannot send a voided batch' });
+  if (b.syncStatus === 'failed') return res.status(400).json({ error: 'This batch failed earlier. Use Retry, which checks it first.', batch: b });
   const conn = store.qbConnection;
   if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks not connected' });
 
   b.syncStatus = 'syncing';
+  b.syncingSince = new Date().toISOString();
   b.errorMessage = '';
   await saveData();
 
@@ -2665,6 +2714,7 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
     b.sentAt = new Date().toISOString();
     b.sentBy = user;
     b.syncStatus = 'sent_to_quickbooks';
+    b.syncingSince = '';
 
     logQbSync({
       actionType: 'create_invoice',
@@ -2744,7 +2794,10 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
   } catch (e) {
     console.error('[qb send]', e);
     b.syncStatus = 'failed';
-    b.errorMessage = e.message;
+    b.syncingSince = '';
+    b.errorMessage = b.qbInvoiceId
+      ? `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} was created in QuickBooks but finishing the batch failed: ${e.message}. Do not resend; void the batch to correct it.`
+      : e.message;
     if (store.qbConnection) store.qbConnection.lastError = e.message;
     logQbSync({
       actionType: 'create_invoice',
@@ -2769,16 +2822,34 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
   const reason = (req.body?.reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'Reason required' });
 
+  if (b.syncStatus === 'syncing') return res.status(409).json({ error: 'This batch is being sent right now. Wait for it to finish, then void it.' });
+
+  // A batch that has a QuickBooks invoice can only be voided here if that
+  // invoice is voided too — otherwise the loads would go back to Ready to
+  // Bill while a live invoice for them still exists in QuickBooks. The one
+  // exception is an explicit statement that the invoice was already voided
+  // in QuickBooks by hand (alreadyVoidedInQuickBooks: true), which is logged.
   const conn = store.qbConnection;
   let qbVoided = false;
-  if (b.qbInvoiceId && conn?.status === 'connected' && req.body?.voidInQuickBooks !== false) {
-    try {
-      await qb.voidInvoice(conn, b.qbInvoiceId);
-      qbVoided = true;
-      logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, requestSummary: reason, user: req.session.user.username });
-    } catch (e) {
-      logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, responseStatus: 'error', errorMessage: e.message, user: req.session.user.username });
-      return res.status(500).json({ error: `Failed to void in QuickBooks: ${e.message}` });
+  if (b.qbInvoiceId) {
+    if (req.body?.alreadyVoidedInQuickBooks === true) {
+      logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, requestSummary: `Operator states invoice was voided in QuickBooks manually: ${reason}`, user: req.session.user.username });
+    } else {
+      if (!conn || conn.status !== 'connected') {
+        return res.status(409).json({
+          error: `QuickBooks invoice ${b.qbInvoiceNumber || b.qbInvoiceId} exists for this batch and QuickBooks is not connected. `
+               + 'Reconnect QuickBooks so the invoice can be voided, or void it in QuickBooks yourself and then void this batch with "already voided in QuickBooks".',
+          qbInvoiceId: b.qbInvoiceId, qbInvoiceNumber: b.qbInvoiceNumber,
+        });
+      }
+      try {
+        await qb.voidInvoice(conn, b.qbInvoiceId);
+        qbVoided = true;
+        logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, requestSummary: reason, user: req.session.user.username });
+      } catch (e) {
+        logQbSync({ actionType: 'void_invoice', relatedBatchId: b.id, qbEntityType: 'Invoice', qbEntityId: b.qbInvoiceId, responseStatus: 'error', errorMessage: e.message, user: req.session.user.username });
+        return res.status(502).json({ error: `Failed to void in QuickBooks: ${e.message}. The batch and its loads are unchanged.` });
+      }
     }
   }
 
@@ -2800,7 +2871,7 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
       l.billedAt = '';
     }
   }
-  logAction(req.session.user, 'voided-billing-batch', b.id, { reason, qbVoided, loads: b.loadIds.length });
+  logAction(req.session.user, 'voided-billing-batch', b.id, { reason, qbVoided, manualQbVoid: req.body?.alreadyVoidedInQuickBooks === true, loads: b.loadIds.length });
   await saveData();
   res.json({ success: true, batch: b, qbVoided });
 });
@@ -2810,9 +2881,14 @@ app.post('/api/billing-batches/:id/retry', reqMgr, async (req, res) => {
   const b = store.billingBatches.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Batch not found' });
   if (b.syncStatus !== 'failed') return res.status(400).json({ error: 'Only failed batches can be retried' });
-  // Reset and forward to /send via internal redirect-style call
+  if (b.qbInvoiceId) {
+    return res.status(409).json({ error: `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} already exists in QuickBooks for this batch. Retrying would create a second one; void the batch instead.` });
+  }
+  // Reset so the client can POST /send again.
   b.syncStatus = 'ready_to_bill';
   b.errorMessage = '';
+  b.syncingSince = '';
+  logAction(req.session.user, 'retry-billing-batch', b.id, {});
   await saveData();
   // Re-issue a request to /send by calling the handler directly is tricky; the
   // simpler approach is to have the client POST to /send after /retry. So just

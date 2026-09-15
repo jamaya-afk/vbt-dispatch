@@ -3580,11 +3580,13 @@ async function confirmCreateAndSend(loadIds) {
 }
 
 // ── BILLING BATCHES VIEW ────────────────────────────────────────────────────
+let billBatchesCache = [];
 async function renderBillBatches() {
   const wrap = document.getElementById('bill-list');
   wrap.innerHTML = `<div style="padding:20px;text-align:center;color:var(--txt2)">Loading…</div>`;
   const r = await api('GET', '/api/billing-batches');
   const items = r.items || [];
+  billBatchesCache = items;
   if (!items.length) {
     wrap.innerHTML = `<div class="empty-state"><h3>No billing batches yet</h3><p>Create batches by selecting approved loads in the Ready to Bill tab and clicking Send to QuickBooks.</p></div>`;
     return;
@@ -3631,17 +3633,32 @@ async function sendBatch(id) {
 }
 
 async function retryBatch(id) {
-  await api('POST', `/api/billing-batches/${id}/retry`, {});
+  // Retry refuses when an invoice already exists for the batch; only send
+  // again if the reset was accepted.
+  const rt = await api('POST', `/api/billing-batches/${id}/retry`, {});
+  if (!rt.ok) { toast(rt.error || 'Retry refused', 'error'); renderBillBatches(); return; }
   const r = await api('POST', `/api/billing-batches/${id}/send`, {});
   if (r.ok) toast('Sent to QuickBooks', 'success'); else toast(r.error || 'Retry failed', 'error');
   renderBillBatches();
 }
 
 async function voidBatch(id) {
+  const b = (billBatchesCache || []).find(x => x.id === id);
   const reason = prompt('Reason for voiding this batch (required)?');
   if (!reason || !reason.trim()) return;
-  const voidInQb = confirm('Also void the invoice in QuickBooks?\n\nOK = Void in QuickBooks. Cancel = Only mark voided locally.');
-  const r = await api('POST', `/api/billing-batches/${id}/void`, { reason: reason.trim(), voidInQuickBooks: voidInQb });
+  const body = { reason: reason.trim() };
+  if (b && b.qbInvoiceId) {
+    // The loads only go back to Ready to Bill once the QuickBooks invoice is
+    // voided too — either here, or by hand in QuickBooks first.
+    const manual = confirm(`Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} exists in QuickBooks.\n\n`
+      + 'OK = Void it in QuickBooks now (QuickBooks must be connected).\n'
+      + 'Cancel = I already voided it in QuickBooks myself.');
+    if (!manual) {
+      if (!confirm('Confirm: the QuickBooks invoice has ALREADY been voided by hand. This is recorded in the sync log.')) return;
+      body.alreadyVoidedInQuickBooks = true;
+    }
+  }
+  const r = await api('POST', `/api/billing-batches/${id}/void`, body);
   if (r.ok) toast('Batch voided', 'success'); else toast(r.error || 'Failed', 'error');
   await loadAll();
   renderBillBatches();

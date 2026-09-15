@@ -390,6 +390,52 @@ chk "  ...and cannot be deleted directly either" "$(curl -s -b $M -o /dev/null -
 chk "PO grouping fields frozen once approved" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/pos/$SMP -d '{"customer":"Someone Else"}')" "403"
 chk "archive refuses without Sheets (nothing deleted)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X POST $B/api/history/archive)" "503"
 
+echo "── 24. QuickBooks batches: no duplicate invoices, ever ──"
+# Fake QuickBooks (test hook) so the state machine can be driven end to end.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"slow","delayMs":1500}' -o /dev/null
+BATCH=$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;print(json.load(sys.stdin)['items'][0]['id'])")
+# Two simultaneous sends of the same batch: exactly one may create an invoice.
+R1=$(mktemp); R2=$(mktemp)
+curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/send -d '{}' > $R1 &
+sleep 0.2
+curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/send -d '{}' > $R2 &
+wait
+chk "simultaneous sends: one 200, one 409" "$(cat $R1 $R2 | tr -d '\n' | fold -w3 | sort | tr '\n' ' ')" "200 409 "
+chk "  ...exactly one invoice created"  "$(curl -s -b $M $B/api/_test/qb-fake | python3 -c "import json,sys;print(json.load(sys.stdin)['invoicesCreated'])")" "1"
+chk "  ...batch is sent_to_quickbooks"  "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='$BATCH'][0];print(b['syncStatus'], b['qbInvoiceId'])")" "sent_to_quickbooks INV-1"
+chk "  ...load marked billed with the invoice" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$LOAD'][0];print(l['billStatus'], l['qbInvoiceId'])")" "billed INV-1"
+chk "sending a sent batch again is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/send -d '{}')" "400"
+chk "retry on a sent batch is refused"      "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/retry -d '{}')" "400"
+chk "already-batched load cannot join a new batch" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$LOAD\"]}")" "400"
+# Void with QuickBooks disconnected: the invoice is live, so the loads stay billed.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"ok","connected":false}' -o /dev/null
+chk "void with live invoice + QB disconnected refused (409)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/void -d '{"reason":"wrong price"}')" "409"
+chk "  ...load still billed"  "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$LOAD'][0];print(l['billStatus'], l['billingBatchId']=='$BATCH')")" "billed True"
+# Void fails on the QuickBooks side: nothing changes locally.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"fail"}' -o /dev/null
+chk "QB void failure leaves batch and loads unchanged (502)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/void -d '{"reason":"wrong price"}')" "502"
+chk "  ...batch still sent" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['items'] if x['id']=='$BATCH'][0]['syncStatus'])")" "sent_to_quickbooks"
+# Void with QuickBooks connected: invoice voided, loads released.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+chk "void with QB connected succeeds" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$BATCH/void -d '{"reason":"wrong price"}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('success'), d.get('qbVoided'))")" "True True"
+chk "  ...QB invoice voided" "$(curl -s -b $M $B/api/_test/qb-fake | python3 -c "import json,sys;print(json.load(sys.stdin)['invoicesVoided'])")" "1"
+chk "  ...load back in Ready to Bill" "$(curl -s -b $M $B/api/ready-to-bill | python3 -c "import json,sys;print(len([x for x in json.load(sys.stdin)['items'] if x['id']=='$LOAD']))")" "1"
+# Failed QuickBooks request → failed batch, nothing billed → retry → success, one more invoice.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"fail"}' -o /dev/null
+B2=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$LOAD\"]}" | python3 -c "import json,sys;print(json.load(sys.stdin)['batches'][0]['id'])")
+chk "QB failure → 500" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/send -d '{}')" "500"
+chk "  ...batch failed, no invoice id" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='$B2'][0];print(b['syncStatus'], repr(b['qbInvoiceId']))")" "failed ''"
+chk "  ...load NOT marked billed" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$LOAD'][0];print(l['billStatus'])")" "ready"
+chk "  ...send on a failed batch says use retry" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/send -d '{}')" "400"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+chk "retry resets a failed batch" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/retry -d '{}' | python3 -c "import json,sys;print(json.load(sys.stdin)['batch']['syncStatus'])")" "ready_to_bill"
+chk "send after retry succeeds"   "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/send -d '{}')" "200"
+chk "  ...total invoices created is 2 (never a duplicate)" "$(curl -s -b $M $B/api/_test/qb-fake | python3 -c "import json,sys;print(json.load(sys.stdin)['invoicesCreated'])")" "2"
+# A batch voided by hand in QuickBooks can be released with an explicit statement.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/qb-fake -d '{"connected":false}' -o /dev/null
+chk "manual-QB-void release works and is logged" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/billing-batches/$B2/void -d '{"reason":"voided by accountant","alreadyVoidedInQuickBooks":true}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('success'), d.get('qbVoided'))")" "True False"
+chk "  ...sync log records the manual void" "$(curl -s -b $M "$B/api/qb-sync-log" | python3 -c "import json,sys;d=json.load(sys.stdin);items=d.get('items') or d.get('log') or d;print(any('manually' in (e.get('requestSummary') or '') for e in items))")" "True"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -465,13 +511,15 @@ echo "── 23. Old data: approved-but-unlocked load becomes locked on load ─
 cat > data.json <<'JSON'
 {"pos":[{"id":"PO-OLD","poNumber":"OLD-1","customer":"Legacy Co","deliveryDate":"2026-01-05","status":"completed"}],
  "loads":[{"id":"L-OLD","poId":"PO-OLD","truckId":"beryle","material":"Dirt","loadsAssigned":1,"loadsDelivered":1,
-           "deliveryDate":"2026-01-05","status":"completed","approvalStatus":"approved","locked":false}]}
+           "deliveryDate":"2026-01-05","status":"completed","approvalStatus":"approved","locked":false,"billingBatchId":"BB-STUCK"}],
+ "billingBatches":[{"id":"BB-STUCK","loadIds":["L-OLD"],"syncStatus":"syncing","qbInvoiceId":"","customer":"Legacy Co","totalAmount":0,"lineItems":[]}]}
 JSON
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-old.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
 chk "legacy approved load is locked after normalize" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='L-OLD'][0]['locked'])")" "True"
 chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/L-OLD -d '{"material":"Sand"}')" "403"
+chk "batch stuck in 'syncing' at restart becomes failed" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'])")" "failed True"
 pkill -f "^node server.js" >/dev/null 2>&1
 rm -f data.json
 
