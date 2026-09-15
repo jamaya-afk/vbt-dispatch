@@ -962,6 +962,7 @@ function normalizeStore() {
       lastSyncAt: '',
     };
   }
+  if (!store.driverLocations || typeof store.driverLocations !== 'object') store.driverLocations = {};
   if (!Array.isArray(store.billingBatches)) store.billingBatches = [];
   // A batch still 'syncing' when the process starts was interrupted mid-send.
   // The invoice may or may not exist in QuickBooks, so it becomes 'failed'
@@ -987,7 +988,45 @@ function normalizeStore() {
   });
 }
 
-function todayStr() { return new Date().toISOString().slice(0, 10); }
+// Valley Best runs on Pacific time. "Today" is the Pacific calendar date,
+// never the UTC one (which flips to tomorrow at 4–5pm in Fresno and would
+// end every driver's day mid-afternoon).
+const OPERATING_TZ = process.env.OPERATING_TZ || 'America/Los_Angeles';
+function todayStrAt(d) {
+  // en-CA formats as YYYY-MM-DD
+  return new Intl.DateTimeFormat('en-CA', { timeZone: OPERATING_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function todayStr() { return todayStrAt(new Date()); }
+
+// The driver's workday: their own loads that are today or earlier and still
+// open. Never future work, never other drivers' work. One definition, used by
+// every endpoint the driver app reads.
+function driverWorkdayLoads(u) {
+  const today = todayStr();
+  return store.loads.filter(l =>
+    l.truckId === u.truckId &&
+    !l.voided &&
+    l.status !== 'completed' &&
+    l.approvalStatus !== 'approved' &&
+    (l.deliveryDate || today) <= today
+  );
+}
+// Rates and billing state are office information; the driver payload never
+// carries them.
+const DRIVER_HIDDEN_LOAD_FIELDS = [
+  'customerRate', 'customerUnit', 'customerRateIsDefault', 'vendorRate', 'vendorUnit', 'vendorRateIsDefault',
+  'vendorIsInternal', 'pricePerUnit', 'tonsPerLoad', 'billStatus', 'billedAt', 'billingBatchId',
+  'qbInvoiceId', 'qbInvoiceNumber', 'sentToQuickBooksAt',
+];
+function driverSafeLoad(l) {
+  const out = { ...l };
+  for (const k of DRIVER_HIDDEN_LOAD_FIELDS) delete out[k];
+  return out;
+}
+function driverSafePo(p) {
+  const { notifications, ...rest } = p;
+  return rest;
+}
 
 // ── PRICING HELPERS ──────────────────────────────────────────────────────────
 // Customer key uses lowercase for case-insensitive lookup
@@ -1424,6 +1463,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     res.json({ ok: true, fakeQb });
   });
   app.get('/api/_test/qb-fake', reqMgr, (req, res) => res.json(fakeQb));
+  app.get('/api/_test/today', (req, res) => res.json({ tz: OPERATING_TZ, today: todayStrAt(req.query.at ? new Date(String(req.query.at)) : new Date()) }));
   app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
   app.get('/api/_test/async-reject', (req, res) => Promise.reject(new Error('test: rejected promise')));
   app.get('/api/_test/sync-throw', (req, res) => { throw new Error('test: sync throw'); });
@@ -1574,6 +1614,53 @@ app.post('/api/upload-photo', reqAuth, async (req, res) => {
   }
 });
 
+// ── API: DRIVER LOCATION ─────────────────────────────────────────────────────
+// Last-known position per driver, sent by the driver app in the background.
+// Only the latest point is kept (no track history — that is ELD territory and
+// deliberately not built here), so the store stays small. Throttled to one
+// accepted point per driver per 20s; more frequent posts are acknowledged
+// and dropped.
+const LOCATION_MIN_INTERVAL_MS = 20 * 1000;
+app.post('/api/driver-location', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  if (u.role !== 'driver') return res.status(403).json({ error: 'Driver only' });
+  const lat = Number(req.body?.lat), lng = Number(req.body?.lng);
+  const accuracy = req.body?.accuracy == null ? null : Number(req.body.accuracy);
+  if (!isFinite(lat) || !isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return res.status(400).json({ error: 'lat/lng out of range' });
+  }
+  if (accuracy != null && (!isFinite(accuracy) || accuracy < 0 || accuracy > 100000)) {
+    return res.status(400).json({ error: 'accuracy out of range' });
+  }
+  if (!store.driverLocations) store.driverLocations = {};
+  const prev = store.driverLocations[u.truckId];
+  const now = Date.now();
+  if (prev && now - Date.parse(prev.at) < LOCATION_MIN_INTERVAL_MS) {
+    return res.status(202).json({ accepted: false, reason: 'throttled' });
+  }
+  const current = driverWorkdayLoads(u).find(l => (l.trips || []).length && !l.locked) || null;
+  store.driverLocations[u.truckId] = {
+    driverId: u.truckId, lat: Math.round(lat * 1e6) / 1e6, lng: Math.round(lng * 1e6) / 1e6,
+    accuracy: accuracy == null ? null : Math.round(accuracy), at: new Date(now).toISOString(),
+    loadId: current ? current.id : null,
+  };
+  // The office reads positions from memory. Persisting the whole store for
+  // every ping would write megabytes to Postgres every few seconds across
+  // five trucks, so location-only changes are flushed at most every 5 min
+  // (any other save carries them along anyway).
+  if (now - lastLocationFlush > 5 * 60 * 1000) { lastLocationFlush = now; await saveData(); }
+  res.json({ accepted: true });
+});
+let lastLocationFlush = 0;
+// Office view: where each driver was last seen.
+app.get('/api/driver-locations', reqMgr, (req, res) => {
+  const rows = Object.values(store.driverLocations || {}).map(loc => {
+    const d = rosterDriver(loc.driverId);
+    return { ...loc, driverName: d ? d.name : loc.driverId, ageSeconds: Math.max(0, Math.round((Date.now() - Date.parse(loc.at)) / 1000)) };
+  });
+  res.json({ locations: rows });
+});
+
 // ── API: DATA (board, lists, etc.) ──────────────────────────────────────────
 app.get('/api/data', reqAuth, async (req, res) => {
   const u = req.session.user;
@@ -1589,9 +1676,10 @@ app.get('/api/data', reqAuth, async (req, res) => {
   const yards = store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, location: v.location }));
 
   if (u.role === 'driver') {
-    const myLoads = store.loads.filter(l => l.truckId === u.truckId && !l.voided);
+    // Same workday scope as /api/my-dispatch, and no pricing/billing fields.
+    const myLoads = driverWorkdayLoads(u).map(driverSafeLoad);
     const myPoIds = new Set(myLoads.map(l => l.poId));
-    const myPos = store.pos.filter(p => myPoIds.has(p.id));
+    const myPos = store.pos.filter(p => myPoIds.has(p.id)).map(driverSafePo);
     return res.json({ trucks: driverRoster(), materials: MATERIALS, yards, pos: myPos, loads: myLoads });
   }
   // Manager sees full vendor data
@@ -1635,14 +1723,7 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
   // Drivers see only their CURRENT WORKDAY — today's loads, plus anything
   // older still open (a load that ran past midnight or was left unfinished
   // must not silently vanish on the driver). Never future work.
-  const today = todayStr();
-  const myLoads = store.loads.filter(l =>
-    l.truckId === u.truckId &&
-    !l.voided &&
-    l.status !== 'completed' &&
-    l.approvalStatus !== 'approved' &&
-    (l.deliveryDate || today) <= today
-  );
+  const myLoads = driverWorkdayLoads(u);
 
   console.log(`[my-dispatch] Loads after filtering (not voided, not completed, not approved): ${myLoads.length}`);
 
@@ -4564,9 +4645,7 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
   const u = req.session.user;
   const today = todayStr();
   const scope = u.role === 'driver'
-    ? store.loads.filter(l => l.truckId === u.truckId && !l.voided &&
-        l.status !== 'completed' && l.approvalStatus !== 'approved' &&
-        (l.deliveryDate || today) <= today)
+    ? driverWorkdayLoads(u)
     : store.loads.filter(l => !l.voided && l.deliveryDate === today);
   res.json({ version: dispatchFingerprint(scope), count: scope.length, at: new Date().toISOString() });
 });
@@ -4627,6 +4706,7 @@ app.get('/api/today', reqMgr, (req, res) => {
     id: d.id, name: d.name, status: d.status,
     openLoadIds: busyBy.get(d.id) || [],
     available: (busyBy.get(d.id) || []).length === 0 && d.status !== 'off',
+    lastSeen: (store.driverLocations || {})[d.id] || null,
   }));
 
   const truckBusy = new Map();

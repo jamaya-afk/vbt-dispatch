@@ -1192,9 +1192,13 @@ async function refreshQbStatusBadge() {
 function startGPSTracking() {
   if (!navigator.geolocation || !navigator.geolocation.watchPosition) return;
   try {
+    let lastSent = 0;
     navigator.geolocation.watchPosition(
       (pos) => {
-        // Send GPS to server (best-effort, don't block on errors)
+        // The server keeps one point per driver and throttles to 20s; don't
+        // hammer it from here either.
+        if (Date.now() - lastSent < 20000) return;
+        lastSent = Date.now();
         fetch('/api/driver-location', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1203,7 +1207,8 @@ function startGPSTracking() {
             lng: pos.coords.longitude,
             accuracy: pos.coords.accuracy
           })
-        }).catch(() => {});
+        }).then(r => { if (!r.ok && r.status !== 202) console.warn('[GPS] server refused location:', r.status); })
+          .catch(() => {});
       },
       (err) => { console.warn('[GPS] watch error:', err.message); },
       { enableHighAccuracy: true, maximumAge: 30000, timeout: 10000 }
@@ -1259,6 +1264,7 @@ async function init() {
     if (role === 'driver') {
       document.body.classList.add('driver-mode');
       applyDriverDarkPref();
+      startGPSTracking();   // background last-known position for the office (POST /api/driver-location)
       document.getElementById('page-title').textContent = 'My Trips';
       goTab('driver');
     } else {

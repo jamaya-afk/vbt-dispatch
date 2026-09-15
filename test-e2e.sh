@@ -510,6 +510,42 @@ NT=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/fleet/truc
 chk "new truck is a vehicle record" "$(curl -s -b $M $B/api/fleet | python3 -c "import json,sys;t=[t for t in json.load(sys.stdin)['trucks'] if t['id']=='$NT'][0];print(t['truckNum'], t['status'], 'label' in t)")" "Truck #7 available False"
 chk "  ...offered by Quick Assign"  "$(curl -s -b $M $B/api/today | python3 -c "import json,sys;print(any(t['id']=='$NT' for t in json.load(sys.stdin)['trucks']))")" "True"
 
+echo "── 27. Driver sees only today's own work; the day is Pacific, not UTC ──"
+TZ1=$(curl -s "$B/api/_test/today?at=2026-09-16T00:30:00Z" | python3 -c "import json,sys;print(json.load(sys.stdin)['today'])")
+chk "5:30pm PT on Sep 15 is still Sep 15 (UTC says 16)" "$TZ1" "2026-09-15"
+chk "11:59pm PT is still the same day"     "$(curl -s "$B/api/_test/today?at=2026-09-16T06:59:00Z" | python3 -c "import json,sys;print(json.load(sys.stdin)['today'])")" "2026-09-15"
+chk "12:01am PT rolls to the next day"     "$(curl -s "$B/api/_test/today?at=2026-09-16T07:01:00Z" | python3 -c "import json,sys;print(json.load(sys.stdin)['today'])")" "2026-09-16"
+chk "operating timezone is Pacific"        "$(curl -s "$B/api/_test/today" | python3 -c "import json,sys;print(json.load(sys.stdin)['tz'])")" "America/Los_Angeles"
+# Tomorrow's load for beryle must not reach him today; yesterday's open one must.
+TOM=$(python3 -c "import datetime;print((datetime.date.today()+datetime.timedelta(days=1)).isoformat())")
+YES=$(python3 -c "import datetime;print((datetime.date.today()-datetime.timedelta(days=1)).isoformat())")
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"FUTURE","customer":"Future Co","deliveryDate":"'"$TOM"'"},"splits":[{"truckId":"beryle","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"YESTERDAY","customer":"Late Co","deliveryDate":"'"$YES"'"},"splits":[{"truckId":"beryle","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"OTHERS","customer":"Not Mine","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"rigo","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+DD=$(curl -s -b $D $B/api/data | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+nums=sorted(p['poNumber'] for p in d['pos'])
+print('FUTURE' in nums, 'YESTERDAY' in nums, 'OTHERS' in nums)
+print(any(k in l for l in d['loads'] for k in ('customerRate','vendorRate','pricePerUnit','billStatus','billingBatchId')))
+print(any('notifications' in p for p in d['pos']))")
+chk "/api/data (driver): no future, yes yesterday-open, no other drivers" "$(echo "$DD"|sed -n 1p)" "False True False"
+chk "  ...no rates or billing fields in the driver payload" "$(echo "$DD"|sed -n 2p)" "False"
+chk "  ...no notification config in the driver payload"     "$(echo "$DD"|sed -n 3p)" "False"
+MDV=$(curl -s -b $D $B/api/my-dispatch | python3 -c "import json,sys;n=sorted(l['poNumber'] for l in json.load(sys.stdin)['loads']);print('FUTURE' in n, 'YESTERDAY' in n, 'OTHERS' in n)")
+chk "/api/my-dispatch agrees" "$MDV" "False True False"
+chk "driver cannot read another driver's load" "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"start-trip"}')" "403"
+
+echo "── 28. Driver GPS: the endpoint exists, is authenticated and validated ──"
+chk "driver location accepted"    "$(curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":36.7378,"lng":-119.7871,"accuracy":12}' | python3 -c "import json,sys;print(json.load(sys.stdin)['accepted'])")" "True"
+chk "rapid repeat is throttled (202)" "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":36.7379,"lng":-119.7872}')" "202"
+chk "out-of-range lat rejected"   "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":99,"lng":0}')" "400"
+chk "manager cannot post a location" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":1,"lng":1}')" "403"
+chk "anonymous is redirected"     "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":1,"lng":1}')" "302"
+chk "office sees the last position" "$(curl -s -b $M $B/api/driver-locations | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['locations'] if x['driverId']=='beryle'][0];print(r['lat'], r['driverName'])")" "36.7378 Beryle"
+chk "  ...and Quick Assign carries lastSeen" "$(curl -s -b $M $B/api/today | python3 -c "import json,sys;d=[x for x in json.load(sys.stdin)['drivers'] if x['id']=='beryle'][0];print(d['lastSeen']['lng'])")" "-119.7871"
+chk "  ...drivers cannot read it"  "$(curl -s -b $D -o /dev/null -w '%{http_code}' $B/api/driver-locations)" "403"
+chk "driver app calls the endpoint in driver mode" "$(grep -c "startGPSTracking();" public/index.html)" "1"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
