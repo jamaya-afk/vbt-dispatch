@@ -9,7 +9,7 @@ Clean rebuild — focused on the essentials.
 - All steps auto-capture GPS + timestamps
 - Loads must have ticket photo + signature before delivery is allowed
 - Approved loads are locked and immutable
-- Push everything to Google Sheets with one click
+- Archive billed loads into the database's history with one click
 
 ## Users
 
@@ -33,15 +33,15 @@ carlos / carlos123
 - `server.js` — backend (~580 lines)
 - `public/index.html` — frontend (single page app)
 - `public/logo.png` — VBC logo
-- `service-account.json` — Google Sheets service account (optional, for sync)
 
-## Sheet Sync
+## Data
 
-Sync writes two tabs:
-- **POs** — all purchase orders
-- **Loads** — all individual load records with status/approval/billing
-
-Sync replaces the contents — it doesn't append. Run as needed.
+Postgres (Supabase in production, via `DATABASE_URL`) is the single source of
+truth for every operational record: POs, loads, trips, drivers, trucks,
+vendors and yards, saved coordinates, GPS points, approvals, billing batches,
+QuickBooks sync history, void/audit history and customers. There is no
+spreadsheet export or sync; archiving billed loads moves them into the
+database's history where reports still read them.
 
 ## QuickBooks Online Integration
 

@@ -1360,8 +1360,7 @@ function goTab(tab) {
   // Update topbar actions
   const actions = document.getElementById('topbar-actions');
   if ((role === 'manager' || role === 'admin') && tab === 'board') {
-    actions.innerHTML = `<button class="btn primary" onclick="openNewPO()">+ New PO</button>
-      <button class="btn ghost" onclick="syncSheets()" title="Push to Google Sheets"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Sync</button>`;
+    actions.innerHTML = `<button class="btn primary" onclick="openNewPO()">+ New PO</button>`;
   } else if (role === 'driver') {
     const isDark = document.body.classList.contains('drv-dark');
     const moonSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
@@ -5661,20 +5660,19 @@ function actionLabel(action) {
     'rejected-load':    'Rejected load',
     'moved-loads':      'Moved date',
     'marked-billed':    'Marked billed',
-    'archived-batch':   'Archived to Sheets',
+    'archived-batch':   'Archived billed loads',
     'created-vendor':   'Created vendor',
     'updated-vendor':   'Updated vendor',
     'deleted-vendor':   'Deleted vendor',
     'added-price':      'Added price',
     'edited-price':     'Edited price',
     'deleted-price':    'Removed price',
-    'synced-sheets':    'Synced to Sheets',
   };
   return map[action] || action;
 }
 
 function actionColor(action) {
-  if (action.startsWith('created') || action === 'approved-load' || action === 'synced-sheets' || action === 'archived-batch' || action === 'marked-billed') return 'var(--G)';
+  if (action.startsWith('created') || action === 'approved-load' || action === 'archived-batch' || action === 'marked-billed') return 'var(--G)';
   if (action.startsWith('deleted') || action === 'rejected-load') return 'var(--R)';
   if (action.startsWith('updated') || action.startsWith('edited') || action === 'reassigned-load' || action === 'moved-loads') return 'var(--B)';
   if (action.startsWith('added')) return 'var(--P)';
@@ -5715,7 +5713,7 @@ function auditEntryHtml(e) {
       summary = `${d.count} load${d.count !== 1 ? 's' : ''} marked billed`;
       break;
     case 'archived-batch':
-      summary = `${d.poCount || 0} POs · ${d.loadCount || 0} loads · ${d.syncedToSheet ? 'synced to Sheets' : 'local only'}`;
+      summary = `${d.poCount || 0} POs · ${d.loadCount || 0} loads moved to history`;
       break;
     case 'created-vendor':
       summary = d.name || '';
@@ -5734,9 +5732,6 @@ function auditEntryHtml(e) {
       break;
     case 'deleted-price':
       summary = `${d.vendorName || ''} — ${d.material || ''} ($${d.price || 0})`;
-      break;
-    case 'synced-sheets':
-      summary = `${d.pos || 0} POs · ${d.loads || 0} loads pushed`;
       break;
     default:
       summary = JSON.stringify(d);
@@ -5776,9 +5771,9 @@ async function renderHistory() {
       <div class="history-head">
         <div>
           <h2>Billed Loads (${billed.length})</h2>
-          <p>These loads have been billed. Send to Google Sheets to permanently archive them and clear from the app.</p>
+          <p>These loads have been billed. Archiving moves them off the active board into History; every record stays in the database.</p>
         </div>
-        ${billed.length ? `<button class="btn success" onclick="archiveToSheets()"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Send to Sheets & Archive</button>` : ''}
+        ${billed.length ? `<button class="btn success" onclick="archiveBilledLoads()">Archive billed loads</button>` : ''}
       </div>`;
 
     if (billed.length === 0) {
@@ -5807,7 +5802,7 @@ async function renderHistory() {
       <div class="history-head">
         <div>
           <h2>Archive Log</h2>
-          <p>Past archive batches (kept in Google Sheets forever).</p>
+          <p>Past archive batches. Archived loads stay in the database and still count in Reports.</p>
         </div>
       </div>`;
     if (archive.length === 0) {
@@ -5819,7 +5814,7 @@ async function renderHistory() {
             <div style="font-weight:600">${b.poCount} POs · ${b.loadCount} loads</div>
             <div class="batch-info">${b.batchId} · ${new Date(b.archivedAt).toLocaleString()} · by ${b.archivedBy}</div>
           </div>
-          <span class="batch-status ${b.syncedToSheet ? 'synced' : 'local'}">${b.syncedToSheet ? `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg> Synced to Sheets` : `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Local only`}</span>
+          <span class="batch-status synced">${(b.loads || []).length} load record${(b.loads || []).length === 1 ? '' : 's'} kept</span>
         </div>`;
       });
     }
@@ -5832,23 +5827,14 @@ async function renderHistory() {
   }
 }
 
-async function archiveToSheets() {
-  if (!confirm('This will push all billed loads to Google Sheets (Archive tab) and remove them from the app.\n\nThis cannot be undone. Continue?')) return;
-  toast('Archiving to Google Sheets...');
+async function archiveBilledLoads() {
+  if (!confirm('Move all billed loads (and POs whose loads are all billed) off the active board into History?\n\nEvery record stays in the database and still counts in Reports. Continue?')) return;
   const d = await api('POST', '/api/history/archive', {});
   if (d.ok) {
     toast(`Archived ${d.archived.loads} loads in batch ${d.archived.batchId}`, 'success');
     await loadAll();
     renderHistory();
   } else toast(d.error || 'Failed to archive', 'error');
-}
-
-// ── SHEETS SYNC ──────────────────────────────────────────────────────────────
-async function syncSheets() {
-  toast('Syncing to Google Sheets...');
-  const d = await api('POST', '/api/sync', {});
-  if (d.ok) toast(`Synced ${d.pos} POs and ${d.loads} loads`, 'success');
-  else toast(d.error || 'Sync failed', 'error');
 }
 
 // ── DRIVERS & TRUCKS (admin only) ────────────────────────────────────────────
