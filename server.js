@@ -92,23 +92,63 @@ function pgSsl() {
   if (process.env.PGSSL === 'disable' || /sslmode=disable/.test(url)) return false;
   return { rejectUnauthorized: false };
 }
+// Database condition, for /healthz and for naming failures honestly.
+const dbState = { lastOkAt: '', lastFailAt: '', lastFailMessage: '', failures: 0 };
+const DB_ERROR_CODES = new Set(['ETIMEDOUT', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE',
+  '57P01', '57P02', '57P03', '08000', '08003', '08006', '08001', '08004', '53300']);
+function isDbError(err) {
+  if (!err) return false;
+  if (err.dbUnreachable) return true;
+  if (DB_ERROR_CODES.has(err.code)) return true;
+  if (err.name === 'AggregateError' && Array.isArray(err.errors) && err.errors.some(isDbError)) return true;
+  return /timeout exceeded when trying to connect|Connection terminated|connect ETIMEDOUT|connect ECONNREFUSED|the database system is (starting|shutting)/i.test(String(err.message || ''));
+}
+function noteDbFailure(err) {
+  dbState.failures++;
+  dbState.lastFailAt = new Date().toISOString();
+  dbState.lastFailMessage = String(err && err.message || err || '').slice(0, 200);
+}
+
 let sessionPool = null;
 if (process.env.DATABASE_URL) {
   try {
     const { Pool } = require('pg');
+    // ONE pool for the whole app (the dispatch store reuses it in initPg).
+    // Small and long-lived: Supabase's pooler hands out a limited number of
+    // server connections, and every fresh TCP connect is a chance to time out
+    // on a flaky path, so keep a few warm sockets instead of churning.
     sessionPool = new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: pgSsl(),
-      connectionTimeoutMillis: 10000,   // never hang boot forever on a dead host
+      max: Number(process.env.PG_POOL_MAX || 5),
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
+      idleTimeoutMillis: 60000,         // hold idle sockets a minute rather than reconnecting per request
+      connectionTimeoutMillis: 8000,    // fail a dead host fast; never hang boot or a request forever
+      allowExitOnIdle: false,
     });
-    sessionPool.on('error', e => console.error('Session pool error:', e.message));
+    sessionPool.on('error', e => { noteDbFailure(e); console.error('Pool error:', e.message); });
+    sessionPool.on('connect', () => { dbState.lastOkAt = new Date().toISOString(); });
     const pgSession = require('connect-pg-simple')(session);
-    sessionOpts.store = new pgSession({
+    const pgStore = new pgSession({
       pool: sessionPool,
       tableName: 'user_sessions',
       createTableIfMissing: true,
-      pruneSessionInterval: 60 * 15
+      pruneSessionInterval: 60 * 15,
+      errorLog: (...a) => console.error('[session store]', ...a),
     });
+    // Resilience: a session-store READ failure must not turn every request
+    // into a 500. It is treated as "no session" — the caller is anonymous,
+    // sees the login page, and protected routes still refuse them. Nothing
+    // is ever fabricated: a login WRITE that fails still fails loudly.
+    const rawGet = pgStore.get.bind(pgStore), rawTouch = pgStore.touch.bind(pgStore), rawSet = pgStore.set.bind(pgStore);
+    pgStore.get = (sid, cb) => rawGet(sid, (err, sess) => {
+      if (err) { noteDbFailure(err); console.error('[session store] read failed, treating request as anonymous:', err.message); return cb(null, null); }
+      cb(null, sess);
+    });
+    pgStore.touch = (sid, sess, cb) => rawTouch(sid, sess, (err) => { if (err) noteDbFailure(err); cb(); });
+    pgStore.set = (sid, sess, cb) => rawSet(sid, sess, (err) => { if (err) { noteDbFailure(err); err.dbUnreachable = true; } cb(err); });
+    sessionOpts.store = pgStore;
     console.log('✓ Session store: Postgres');
   } catch (e) {
     console.error('⚠ Postgres session store failed:', e.message);
@@ -449,7 +489,9 @@ async function initPg() {
       pg = new Pool({
         connectionString: process.env.DATABASE_URL,
         ssl: pgSsl(),
-        connectionTimeoutMillis: 10000,
+        max: Number(process.env.PG_POOL_MAX || 5),
+        keepAlive: true, keepAliveInitialDelayMillis: 10000,
+        idleTimeoutMillis: 60000, connectionTimeoutMillis: 8000,
       });
     } else {
       pg = sessionPool;  // reuse same pool
@@ -1435,8 +1477,36 @@ function reqAdmin(req, res, next) {
   res.status(403).json({ error: 'Admin access required' });
 }
 
-app.get('/healthz', (req, res) => res.json({
-  ok: true,
+// Live database probe with its own short timeout, so /healthz answers in
+// under ~3 s even when the host is silently dropping packets.
+async function probeDatabase() {
+  if (!pg) return { configured: false, reachable: false, latencyMs: null, error: 'not configured (file mode)' };
+  const t0 = Date.now();
+  try {
+    await Promise.race([
+      pg.query('SELECT 1'),
+      new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('health probe timed out after 3000 ms'), { code: 'ETIMEDOUT' })), 3000)),
+    ]);
+    dbState.lastOkAt = new Date().toISOString();
+    return { configured: true, reachable: true, latencyMs: Date.now() - t0, error: '' };
+  } catch (e) {
+    noteDbFailure(e);
+    return { configured: true, reachable: false, latencyMs: Date.now() - t0, error: String(e.message || e).slice(0, 200) };
+  }
+}
+
+app.get('/healthz', async (req, res) => {
+  const db = await probeDatabase();
+  const dbDown = db.configured && !db.reachable;
+  const notLoaded = !persistence.loaded;
+  const reason = dbDown ? 'database_unreachable' : notLoaded ? 'store_not_loaded' : '';
+  res.status(reason ? 503 : 200).json({
+  ok: !reason,
+  status: reason ? 'degraded' : 'ok',
+  reason,
+  app: 'running',
+  db: { ...db, lastOkAt: dbState.lastOkAt, lastFailAt: dbState.lastFailAt, lastFailMessage: dbState.lastFailMessage, failures: dbState.failures },
+  sessionStore: { backend: pg ? 'postgres' : 'memory', condition: dbDown ? 'unreachable — requests are treated as anonymous until it returns' : 'ok' },
   hasDb: !!process.env.DATABASE_URL,
   // `loaded` is the truth about the data: durable=true only says Postgres is
   // reachable. A process that could not read its store reports loaded=false
@@ -1464,7 +1534,8 @@ app.get('/healthz', (req, res) => res.json({
   storeSummary: persistence.loaded ? { pos: store.pos.length, loads: store.loads.length, archiveBatches: (store.archive || []).length, bytes: Buffer.byteLength(JSON.stringify(store)) } : null,
   recentErrors,
   time: new Date().toISOString(),
-}));
+  });
+});
 
 // Persistence banner for the dispatcher. If data is not reaching Postgres,
 // the person entering loads is the one who needs to know — not just the log.
@@ -1628,8 +1699,11 @@ function loginSucceeded(user) { loginFailures.delete('u:' + user); }
 setInterval(() => { for (const k of loginFailures.keys()) loginKeyFailures(k); }, LOGIN_WINDOW_MS).unref();
 
 app.get('/login', (req, res) => {
+  const ref = String(req.query.ref || '').replace(/[^A-Z0-9]/g, '').slice(0, 12);
   const err = req.query.error === 'locked'
     ? '<p class="err">Too many sign-in attempts. Wait 15 minutes and try again.</p>'
+    : req.query.error === 'db'
+    ? `<p class="err">Database unreachable — reference ${ref || 'n/a'}. Your password was not checked; nothing is wrong with it. Try again in a minute.</p>`
     : req.query.error ? '<p class="err">Invalid username or password</p>' : '';
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Valley Best Concrete — Dispatch</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -1716,9 +1790,15 @@ app.post('/login', async (req, res) => {
       loginFailed(ip, cleanName);
       return res.redirect('/login?error=1');
     } catch (e) {
+      // The database could not be asked. Say so — never "wrong password", and
+      // never a fallback login: with Postgres configured there is no other
+      // source of truth for who may sign in.
       console.error('[LOGIN] DB lookup error:', e.message);
-      if (IS_PROD) return res.redirect('/login?error=1');
-      // dev only: fall through to the hardcoded map if the table is unreachable
+      noteDbFailure(e);
+      const ref = 'E' + Date.now().toString(36).slice(-6).toUpperCase();
+      recentErrors.unshift({ ref, at: new Date().toISOString(), method: 'POST', path: '/login', role: 'anonymous', kind: 'database', message: String(e.message || e).slice(0, 300), where: 'login: users lookup' });
+      if (recentErrors.length > 10) recentErrors.length = 10;
+      return res.redirect('/login?error=db&ref=' + ref);
     }
   }
 
@@ -5409,13 +5489,18 @@ app.use((err, req, res, next) => {
   // Keep the last few failures in memory and surface them on /healthz, so a
   // generic 500 can be traced without access to the host's log stream.
   const ref = 'E' + Date.now().toString(36).slice(-6).toUpperCase();
+  const dbErr = isDbError(err);
+  if (dbErr) noteDbFailure(err);
   const frame = String(err && err.stack || '').split('\n').slice(1).find(l => l.includes('server.js') || l.includes('qb.js') || l.includes('mailer.js') || l.includes('geocode.js'));
   recentErrors.unshift({
     ref, at: new Date().toISOString(), method: req.method, path: req.originalUrl.split('?')[0],
-    role: req.session?.user?.role || 'anonymous', message: String(err && err.message || err).slice(0, 300),
+    role: req.session?.user?.role || 'anonymous', kind: dbErr ? 'database' : 'application', message: String(err && err.message || err).slice(0, 300),
     where: frame ? frame.trim().replace(/^at\s+/, '').replace(__dirname + '/', '') : '',
   });
   if (recentErrors.length > 10) recentErrors.length = 10;
+  if (dbErr) {
+    return res.status(503).json({ error: `Database unreachable — reference ${ref}. The dispatch data is safe; retry in a moment or check /healthz.`, ref, reason: 'database_unreachable' });
+  }
   res.status(500).json({ error: `Server error — please retry. If it persists, check the server log. (ref ${ref})`, ref });
 });
 const recentErrors = [];

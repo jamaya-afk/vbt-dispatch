@@ -746,6 +746,7 @@ for R in async-throw async-reject sync-throw; do
   chk "/api/_test/$R returns 500 within 5s" "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' $B/api/_test/$R)" "500"
 done
 chk "server still alive after the throws" "$(curl -s -o /dev/null -w '%{http_code}' $B/healthz)" "200"
+chk "healthz shape: status, db, sessionStore, no secrets" "$(curl -s $B/healthz | python3 -c "import json,sys;d=json.load(sys.stdin);t=json.dumps(d);print(d['status'], d['app'], 'reachable' in d['db'], 'backend' in d['sessionStore'], any(k in t for k in ('DATABASE_URL','postgres://','SESSION_SECRET','QB_ENCRYPTION')))")" "ok running True True False"
 chk "healthz reports the failing route and message" "$(curl -s $B/healthz | python3 -c "import json,sys;e=json.load(sys.stdin)['recentErrors'];print(len(e)>=3, e[0]['path'], e[0]['message'], bool(e[0]['ref']), 'server.js' in e[0]['where'])")" "True /api/_test/sync-throw test: sync throw True True"
 chk "  ...and the 500 body carries the reference"  "$(curl -s --max-time 5 $B/api/_test/async-throw | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['ref'] in d['error'])")" "True"
 
@@ -830,6 +831,28 @@ else
   chk "9. history table gone: driver post still answers 200 in <5s" "$(curl -s --max-time 5 -b $ND -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":36.76,"lng":-119.77}')" "200"
   chk "   ...last-known still updated, server alive"   "$(curl -s -b $PM $B2/api/driver-locations | python3 -c "import json,sys;print([x['lat'] for x in json.load(sys.stdin)['locations'] if x['driverId']=='nadia'][0])")|$(curl -s -o /dev/null -w '%{http_code}' $B2/healthz)" "36.76|200"
   chk "   ...trail read reports the failure, not a hang" "$(curl -s --max-time 5 -b $PM -o /dev/null -w '%{http_code}' $B2/api/loads/$NLD2/track)" "500"
+  # ── Database outage after a healthy boot ──
+  if [ -n "${TEST_PG_STOP:-}" ]; then
+    chk "A. healthy: /healthz 200, db reachable with latency" "$(curl -s -o /tmp/hz.json -w '%{http_code}' $B2/healthz)|$(python3 -c "import json;d=json.load(open('/tmp/hz.json'));print(d['status'], d['db']['reachable'], isinstance(d['db']['latencyMs'], int), d['sessionStore']['backend'])")" "200|ok True True postgres"
+    POS_BEFORE=$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;print(len(json.load(sys.stdin)['pos']))")
+    eval "$TEST_PG_STOP" >/dev/null 2>&1; sleep 1
+    chk "B/D. database down: /healthz 503 with a machine-readable reason" "$(curl -s --max-time 10 -o /tmp/hz.json -w '%{http_code}' $B2/healthz)|$(python3 -c "import json;d=json.load(open('/tmp/hz.json'));print(d['ok'], d['reason'], d['app'], d['db']['reachable'], 'unreachable' in d['sessionStore']['condition'])")" "503|False database_unreachable running False True"
+    chk "C. login page still renders (not a 500)"        "$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' $B2/login)" "200"
+    chk "   / redirects to login for an anonymous visitor" "$(curl -s --max-time 10 -o /dev/null -w '%{http_code} %{redirect_url}' $B2/ | sed 's|http://[^/]*||')" "302 /login"
+    chk "E. protected API with an existing cookie is refused, not served" "$(curl -s --max-time 10 -b $PM -o /dev/null -w '%{http_code}' $B2/api/data)" "302"
+    chk "   manager API without session → 403"          "$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' $B2/api/fleet/live)" "403"
+    LG=$(curl -s -i --max-time 15 -X POST -d 'username=joshua&password=joshua123' $B2/login)
+    chk "F. login attempt while down: redirect to a database message, no session" "$(echo "$LG" | grep -i '^location' | sed 's|.*/login?||; s/&ref=.*//' | tr -d '\r')|$(echo "$LG" | grep -ci '^set-cookie')" "error=db|0"
+    chk "   login page explains it and names the reference" "$(curl -s --max-time 10 "$B2/login?error=db&ref=EABC123" | grep -c 'Database unreachable — reference EABC123')" "1"
+    chk "   healthz records the database failure"        "$(curl -s --max-time 10 $B2/healthz | python3 -c "import json,sys;d=json.load(sys.stdin);e=[x for x in d['recentErrors'] if x['path']=='/login'];print(e[0]['kind'] if e else 'none', d['db']['failures']>0)")" "database True"
+    eval "$TEST_PG_START" >/dev/null 2>&1; sleep 3
+    chk "G. recovered: /healthz 200 again"               "$(curl -s -o /dev/null -w '%{http_code}' $B2/healthz)" "200"
+    chk "   existing session works again"                "$(curl -s -b $PM -o /dev/null -w '%{http_code}' $B2/api/data)" "200"
+    chk "   fresh login works again"                     "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=joshua&password=joshua123' $B2/login | sed 's|.*//[^/]*||')" "/app/"
+    chk "   data untouched by the outage"                "$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;print(len(json.load(sys.stdin)['pos']))")" "$POS_BEFORE"
+  else
+    echo "  SKIP  database-outage checks (TEST_PG_STOP not set — run ./test-pg-local.sh)"
+  fi
   # users.truck_id holding a vehicle id (old screen) must not blind the driver.
   $PSQL -c "update users set truck_id='truck-4' where username='nadia'" >/dev/null
   curl -s -c $ND -o /dev/null -X POST -d 'username=nadia&password=nadia123' $B2/login
