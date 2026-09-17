@@ -1459,6 +1459,10 @@ app.get('/healthz', (req, res) => res.json({
   pgConnected: !!pg,
   supabaseEnabled,
   prod: IS_PROD,
+  node: process.version,
+  uptimeSeconds: Math.round(process.uptime()),
+  storeSummary: persistence.loaded ? { pos: store.pos.length, loads: store.loads.length, archiveBatches: (store.archive || []).length, bytes: Buffer.byteLength(JSON.stringify(store)) } : null,
+  recentErrors,
   time: new Date().toISOString(),
 }));
 
@@ -5402,8 +5406,19 @@ app.use((err, req, res, next) => {
     return res.status(413).json({ error: 'Upload too large (limit 25MB)' });
   }
   console.error(`[express error] ${req.method} ${req.originalUrl}:`, err && err.stack || err);
-  res.status(500).json({ error: 'Server error — please retry. If it persists, check the server log.' });
+  // Keep the last few failures in memory and surface them on /healthz, so a
+  // generic 500 can be traced without access to the host's log stream.
+  const ref = 'E' + Date.now().toString(36).slice(-6).toUpperCase();
+  const frame = String(err && err.stack || '').split('\n').slice(1).find(l => l.includes('server.js') || l.includes('qb.js') || l.includes('mailer.js') || l.includes('geocode.js'));
+  recentErrors.unshift({
+    ref, at: new Date().toISOString(), method: req.method, path: req.originalUrl.split('?')[0],
+    role: req.session?.user?.role || 'anonymous', message: String(err && err.message || err).slice(0, 300),
+    where: frame ? frame.trim().replace(/^at\s+/, '').replace(__dirname + '/', '') : '',
+  });
+  if (recentErrors.length > 10) recentErrors.length = 10;
+  res.status(500).json({ error: `Server error — please retry. If it persists, check the server log. (ref ${ref})`, ref });
 });
+const recentErrors = [];
 
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection] staying alive:', reason && reason.stack || reason);
