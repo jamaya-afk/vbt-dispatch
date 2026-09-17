@@ -620,6 +620,24 @@ curl -s -X POST $B/api/_test/reset-login-limits -o /dev/null
 chk "cleared window logs in again"           "$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=oscar&password=oscar123' $B/login | sed 's|http://[^/]*||')" "/app/"
 chk "session cookie is httpOnly + named"     "$(curl -s -i -X POST -d 'username=perla&password=perla123' $B/login | grep -i '^set-cookie' | grep -c 'vbt.sid=.*HttpOnly')" "1"
 
+echo "── 32. Fleet Map screen: access, data, and no second status system ──"
+chk "manager loads fleet data (5 drivers)"   "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['count'], len(d['trucks']))")" "5 5"
+chk "driver gets 403"                        "$(curl -s -b $D -o /dev/null -w '%{http_code}' $B/api/fleet/live)" "403"
+chk "anonymous gets 403"                     "$(curl -s -o /dev/null -w '%{http_code}' $B/api/fleet/live)" "403"
+chk "driver cannot read a trail"             "$(curl -s -b $D -o /dev/null -w '%{http_code}' $B/api/loads/$LOAD/track)" "403"
+chk "no all-day driver trail route exists"   "$(grep -cE "app\.get\('/api/(drivers/:[a-z]+/(track|trail|history)|driver-locations/history)" server.js)" "0"
+chk "Fleet Map tab hidden until an office role is confirmed" "$(grep -c 'id="nav-map" style="display:none"' public/index.html)" "1"
+chk "  ...unhidden only for admin/manager"   "$(sed -n "/if (role === 'admin' || role === 'manager') {/,/}/p" public/index.html | grep -c "nav-map")" "1"
+chk "Leaflet 1.9.4 vendored and served locally" "$(grep -c "'/app/vendor/leaflet/leaflet.js'" public/index.html)|$(curl -s -b $M -o /dev/null -w '%{http_code}' $B/app/vendor/leaflet/leaflet.js)|$(head -c 60 public/vendor/leaflet/leaflet.js | grep -c 'Leaflet 1.9.4')" "1|200|1"
+chk "tile provider is one swappable object"  "$(grep -c "^const FM_TILES = {" public/index.html)" "1"
+chk "map colours keyed by the server's statusKey only" "$(python3 -c "
+import re;s=open('public/index.html').read()
+keys=set(re.findall(r'(\w+):\s*\'#', s[s.index('const FM_COLORS'):s.index('};', s.index('const FM_COLORS'))]))
+srv=set(re.findall(r'^\s+(\w+):\s+\'', open('server.js').read()[open('server.js').read().index('const FLEET_STATUS = {'):][:600], re.M))
+print(keys==srv)")" "True"
+chk "no fallback coordinates for trucks (home view is not a truck)" "$(grep -c "FM_HOME.lat, FM_HOME.lng" public/index.html)" "1"
+chk "  ...markers only from t.gps"           "$(sed -n '/^function fmPaintMarkers/,/^}/p' public/index.html | grep -c "if (!t.gps) return;")" "1"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -640,7 +658,7 @@ else
   PSQL="psql $TEST_DATABASE_URL -tA -q"
   P2=$((PORT+1)); B2=http://localhost:$P2
   $PSQL -c "DROP TABLE IF EXISTS dispatch_data, users, companies, user_sessions" >/dev/null
-  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  (VBT_TEST_HOOKS=1 DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
   for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
   chk "fresh DB boots loaded" "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "True"
   PM=$(mktemp); curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
@@ -676,19 +694,53 @@ else
    "po":{"poNumber":"PG-NADIA","customer":"Nadia Co","deliveryDate":"'"$(date +%F)"'"},
    "splits":[{"truckId":"nadia","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
   chk "  ...and sees her own load, nobody else's" "$(curl -s -b $ND $B2/api/my-dispatch | python3 -c "import json,sys;ls=json.load(sys.stdin)['loads'];print(len(ls), ls[0]['poNumber'] if ls else '')")" "1 PG-NADIA"
+  # ── Location history (driver_locations) ──
+  chk "history table + indexes exist" "$($PSQL -c "select count(*) from pg_indexes where tablename='driver_locations' and indexname in ('driver_locations_driver_at','driver_locations_load_trip_at','driver_locations_at')")" "3"
+  NLD=$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='PG-NADIA'][0];print([l['id'] for l in d['loads'] if l['poId']==po['id']][0])")
+  curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":36.7000,"lng":-119.7000,"accuracy":5}' -o /dev/null
+  chk "4. GPS before any trip: last-known kept, NO history row" "$($PSQL -c "select count(*) from driver_locations where driver_id='nadia'")|$(curl -s -b $PM $B2/api/driver-locations | python3 -c "import json,sys;print([x['lat'] for x in json.load(sys.stdin)['locations'] if x['driverId']=='nadia'][0])")" "0|36.7"
+  curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/loads/$NLD/trip-action -d '{"action":"start-trip"}' -o /dev/null
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/backdate-location -d '{"driverId":"nadia","seconds":25}' -o /dev/null
+  R1=$(curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":36.7101,"lng":-119.7202,"accuracy":7.4,"driverId":"joshua","loadId":"FAKE","tripNumber":9}' | python3 -c "import json,sys;print(json.load(sys.stdin)['accepted'])"); sleep 0.5
+  chk "1. GPS during an open trip → history row"   "$R1|$($PSQL -c "select count(*) from driver_locations where driver_id='nadia'")" "True|1"
+  chk "2/3. driver id, load and trip come from the session, not the body" "$($PSQL -c "select driver_id, load_id, trip_number from driver_locations order by id desc limit 1")" "nadia|$NLD|1"
+  chk "6. lat/lng/accuracy/timestamp stored as sent"  "$($PSQL -c "select lat, lng, accuracy, (at > now() - interval '1 minute') from driver_locations order by id desc limit 1")" "36.7101|-119.7202|7|t"
+  chk "8. throttled repeat: 202 and no extra row"   "$(curl -s -b $ND -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":36.7102,"lng":-119.7203}')|$($PSQL -c "select count(*) from driver_locations where driver_id='nadia'")" "202|1"
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/backdate-location -d '{"driverId":"nadia","seconds":25}' -o /dev/null
+  curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":36.7300,"lng":-119.7400,"accuracy":6}' -o /dev/null; sleep 0.5
+  chk "5. points retained chronologically for the trip" "$($PSQL -c "select string_agg(lat::text, ',' order by at) from driver_locations where load_id='$NLD' and trip_number=1")" "36.7101,36.73"
+  chk "7. last-known position is the newest point"     "$(curl -s -b $PM $B2/api/driver-locations | python3 -c "import json,sys;print([x['lat'] for x in json.load(sys.stdin)['locations'] if x['driverId']=='nadia'][0])")" "36.73"
+  chk "   manager can read the load's trail"           "$(curl -s -b $PM $B2/api/loads/$NLD/track | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d['points']), d['points'][0]['tripNumber'])")" "2 1"
+  chk "10. driver cannot read a trail"                 "$(curl -s -b $ND -o /dev/null -w '%{http_code}' $B2/api/loads/$NLD/track)" "403"
+  chk "10. manager still cannot post a location"       "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":1,"lng":1}')" "403"
+  # Between trips (returning) the return leg is attributed to the trip just delivered.
+  for A in arrived-pickup loaded arrived-jobsite trip-complete; do curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/loads/$NLD/trip-action -d "{\"action\":\"$A\",\"yardId\":\"vbt\"}" -o /dev/null; done
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/backdate-location -d '{"driverId":"nadia","seconds":25}' -o /dev/null
+  curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":36.7500,"lng":-119.7600}' -o /dev/null; sleep 0.5
+  chk "   all trips done on the load → no further history" "$($PSQL -c "select count(*) from driver_locations where driver_id='nadia'")" "2"
+  # 9. Postgres failure on the history table must not hang or break the driver.
+  $PSQL -c "drop table driver_locations" >/dev/null
+  curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/loads/$NLD/trip-action -d '{"action":"start-trip"}' -o /dev/null   # rejected (all delivered) — fine; use a fresh load instead
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"PG-NADIA2","customer":"Nadia Co","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"nadia","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+  NLD2=$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='PG-NADIA2'][0];print([l['id'] for l in d['loads'] if l['poId']==po['id']][0])")
+  curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/loads/$NLD2/trip-action -d '{"action":"start-trip"}' -o /dev/null
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/backdate-location -d '{"driverId":"nadia","seconds":25}' -o /dev/null
+  chk "9. history table gone: driver post still answers 200 in <5s" "$(curl -s --max-time 5 -b $ND -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":36.76,"lng":-119.77}')" "200"
+  chk "   ...last-known still updated, server alive"   "$(curl -s -b $PM $B2/api/driver-locations | python3 -c "import json,sys;print([x['lat'] for x in json.load(sys.stdin)['locations'] if x['driverId']=='nadia'][0])")|$(curl -s -o /dev/null -w '%{http_code}' $B2/healthz)" "36.76|200"
+  chk "   ...trail read reports the failure, not a hang" "$(curl -s --max-time 5 -b $PM -o /dev/null -w '%{http_code}' $B2/api/loads/$NLD2/track)" "500"
   # users.truck_id holding a vehicle id (old screen) must not blind the driver.
   $PSQL -c "update users set truck_id='truck-4' where username='nadia'" >/dev/null
   curl -s -c $ND -o /dev/null -X POST -d 'username=nadia&password=nadia123' $B2/login
   chk "session truckId self-heals to the roster id" "$(curl -s -b $ND $B2/api/me | python3 -c "import json,sys;print(json.load(sys.stdin)['truckId'])")" "nadia"
-  chk "  ...so the load is still visible" "$(curl -s -b $ND $B2/api/my-dispatch | python3 -c "import json,sys;print(len(json.load(sys.stdin)['loads']))")" "1"
+  chk "  ...so her loads are still visible" "$(curl -s -b $ND $B2/api/my-dispatch | python3 -c "import json,sys;print(len(json.load(sys.stdin)['loads']))")" "2"
   pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
   # Restart so store_boot exists, then damage the store row and boot again.
-  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  (VBT_TEST_HOOKS=1 DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
   for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
   chk "store_boot snapshot written on boot" "$($PSQL -c "select count(*) from dispatch_data where key='store_boot' and value like '%PG-REAL%'")" "1"
   pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
   $PSQL -c "update dispatch_data set value='{not json' where key='store'" >/dev/null
-  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  (VBT_TEST_HOOKS=1 DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
   for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
   chk "boot with unreadable store: loaded=false"   "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "False"
   chk "  ...and healthz no longer claims durable"  "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['persistence']['durable'])")" "False"
@@ -707,7 +759,7 @@ else
   # A missing store row next to existing backups is a lost row, not a new company.
   pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
   $PSQL -c "delete from dispatch_data where key='store'" >/dev/null
-  (DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  (VBT_TEST_HOOKS=1 DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
   for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
   chk "missing store row + backups present: refuses to seed" "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "False"
   chk "  ...no store row was created" "$($PSQL -c "select count(*) from dispatch_data where key='store'")" "0"

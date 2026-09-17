@@ -457,6 +457,24 @@ async function initPg() {
     await pg.query(`CREATE TABLE IF NOT EXISTS dispatch_data (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
     // Additive only: lets /api/admin/backups show when each restore point was written.
     await pg.query(`ALTER TABLE dispatch_data ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`);
+    // GPS history: one row per accepted driver point while a trip is open.
+    // Rows, not the JSON store, so the trail never bloats dispatch_data or
+    // its backups. Future mileage/route analytics read from here.
+    await pg.query(`
+      CREATE TABLE IF NOT EXISTS driver_locations (
+        id          BIGSERIAL PRIMARY KEY,
+        driver_id   TEXT NOT NULL,
+        load_id     TEXT NOT NULL,
+        trip_number INTEGER NOT NULL,
+        lat         DOUBLE PRECISION NOT NULL,
+        lng         DOUBLE PRECISION NOT NULL,
+        accuracy    REAL,
+        at          TIMESTAMPTZ NOT NULL
+      )
+    `);
+    await pg.query(`CREATE INDEX IF NOT EXISTS driver_locations_driver_at ON driver_locations (driver_id, at)`);
+    await pg.query(`CREATE INDEX IF NOT EXISTS driver_locations_load_trip_at ON driver_locations (load_id, trip_number, at)`);
+    await pg.query(`CREATE INDEX IF NOT EXISTS driver_locations_at ON driver_locations (at)`);
 
     // Multi-tenant scaffolding tables. Created here so Phase 2 (per-company
     // stores) can layer on without another migration step.
@@ -1730,12 +1748,17 @@ app.post('/api/driver-location', reqAuth, async (req, res) => {
   if (prev && now - Date.parse(prev.at) < LOCATION_MIN_INTERVAL_MS) {
     return res.status(202).json({ accepted: false, reason: 'throttled' });
   }
-  const current = driverWorkdayLoads(u).find(l => (l.trips || []).length && !l.locked) || null;
-  store.driverLocations[u.truckId] = {
+  // The load and trip this point belongs to come from the driver's own
+  // workday records — never from the request body. A driver without an
+  // open trip gets a last-known position only, no history row.
+  const active = activeTripForDriver(u);
+  const point = {
     driverId: u.truckId, lat: Math.round(lat * 1e6) / 1e6, lng: Math.round(lng * 1e6) / 1e6,
     accuracy: accuracy == null ? null : Math.round(accuracy), at: new Date(now).toISOString(),
-    loadId: current ? current.id : null,
+    loadId: active ? active.load.id : null,
   };
+  store.driverLocations[u.truckId] = point;
+  if (active) recordLocationHistory(point, active);
   // The office reads positions from memory. Persisting the whole store for
   // every ping would write megabytes to Postgres every few seconds across
   // five trucks, so location-only changes are flushed at most every 5 min
@@ -1744,6 +1767,59 @@ app.post('/api/driver-location', reqAuth, async (req, res) => {
   res.json({ accepted: true });
 });
 let lastLocationFlush = 0;
+
+// The driver's open trip, if any: a load they are working today whose
+// current trip has started and not completed, OR a load between trips (the
+// last trip completed, more loads still to run) — that return leg belongs
+// to the trip just delivered. Returns null when the driver is not mid-work,
+// so idle GPS activity is never recorded.
+function activeTripForDriver(u) {
+  for (const l of driverWorkdayLoads(u)) {
+    const trips = l.trips || [];
+    if (!trips.length || l.approvalStatus === 'submitted') continue;
+    const idx = activeTripIdx(l);
+    const t = trips[idx];
+    if (t && t.timestamps?.start && !t.timestamps?.completed) return { load: l, tripNumber: t.tripNum || idx + 1 };
+    if (!t && idx > 0 && (l.loadsDelivered || 0) < (l.loadsAssigned || 0)) {
+      const prev = trips[idx - 1];
+      return { load: l, tripNumber: prev.tripNum || idx };   // returning: attribute to the trip just completed
+    }
+  }
+  return null;
+}
+
+// Fire-and-forget insert. The driver's request must never wait on, or fail
+// because of, the history table: the last-known position is already in
+// memory, and a lost history row is logged, not surfaced to the phone.
+function recordLocationHistory(point, active) {
+  if (!pg) return;
+  pg.query(
+    `INSERT INTO driver_locations (driver_id, load_id, trip_number, lat, lng, accuracy, at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [point.driverId, active.load.id, active.tripNumber, point.lat, point.lng, point.accuracy, point.at]
+  ).catch(e => console.error('[driver_locations] insert failed:', e.message));
+}
+
+// Retention: rows older than DRIVER_LOCATION_RETENTION_DAYS (default 180)
+// are removed at boot and once a day. Nothing else ever deletes history.
+const DRIVER_LOCATION_RETENTION_DAYS = Math.max(1, parseInt(process.env.DRIVER_LOCATION_RETENTION_DAYS || '180', 10) || 180);
+async function pruneLocationHistory() {
+  if (!pg) return 0;
+  try {
+    const r = await pg.query(`DELETE FROM driver_locations WHERE at < now() - ($1 || ' days')::interval`, [String(DRIVER_LOCATION_RETENTION_DAYS)]);
+    if (r.rowCount) console.log(`[driver_locations] pruned ${r.rowCount} row(s) older than ${DRIVER_LOCATION_RETENTION_DAYS} days`);
+    return r.rowCount;
+  } catch (e) { console.error('[driver_locations] prune failed:', e.message); return 0; }
+}
+
+// Office read of a load's GPS trail (for the map's route line later).
+app.get('/api/loads/:id/track', reqMgr, async (req, res) => {
+  if (!pg) return res.json({ loadId: req.params.id, points: [], note: 'history requires Postgres' });
+  const r = await pg.query(
+    `SELECT id, driver_id AS "driverId", trip_number AS "tripNumber", lat, lng, accuracy, at
+       FROM driver_locations WHERE load_id = $1 ORDER BY at ASC LIMIT 5000`, [req.params.id]);
+  res.json({ loadId: req.params.id, points: r.rows });
+});
+
 // Office view: where each driver was last seen.
 app.get('/api/driver-locations', reqMgr, (req, res) => {
   const rows = Object.values(store.driverLocations || {}).map(loc => {
@@ -5314,6 +5390,8 @@ const PORT = process.env.PORT || 3000;
   try {
     await loadData();
     await snapshotBootStore();
+    await pruneLocationHistory();
+    setInterval(pruneLocationHistory, 24 * 60 * 60 * 1000).unref();
   } catch (e) {
     // Fail SAFE, not fail closed: the process stays up so /healthz and the
     // dispatcher's screen show exactly what happened and an admin can restore
