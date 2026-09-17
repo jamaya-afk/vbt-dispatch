@@ -729,6 +729,8 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 .fm-marker.sel{transform:scale(1.22);box-shadow:0 0 0 4px rgba(59,130,246,.45),0 2px 8px rgba(0,0,0,.35)}
 .fm-marker.offline{filter:grayscale(1);opacity:.7}
 .fm-marker-label{position:absolute;top:40px;left:50%;transform:translateX(-50%);white-space:nowrap;background:#0f1729;color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.fm-place{position:relative;width:34px;height:34px;border-radius:8px;background:#fff;border:2px solid #0f1729;box-shadow:0 2px 6px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;font-size:17px}
+.fm-place.pickup{border-color:#eab308}.fm-place.jobsite{border-color:#f97316}
 .leaflet-div-icon{background:transparent;border:0}
 @media(max-width:900px){.fm-wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:auto}.fm-side{border-right:0;border-bottom:1px solid var(--bdr);max-height:46vh}.fm-map{height:52vh}.fm-card{max-height:none}}
 </style>
@@ -3861,8 +3863,10 @@ function poCard(r) {
       ${r.approved ? `<div class="qa-fact"><b>${r.approved}</b> approved</div>` : ''}
       ${r.voided ? `<div class="qa-fact"><b>${r.voided}</b> voided</div>` : ''}
       ${p.createdAt ? `<div class="qa-fact">Created ${new Date(p.createdAt).toLocaleDateString()}</div>` : ''}
+      <div class="qa-fact">Jobsite: <b>${p.geo ? `${p.geo.lat.toFixed(5)}, ${p.geo.lng.toFixed(5)}` : 'no coordinates'}</b>${geoLabel(p.geo)}</div>
     </div>
     <div class="qa-actions">
+      <button class="qa-btn ghost" onclick="setLocationPrompt('po', '${p.id}')">📍 Set jobsite location</button>
       ${r.locked
         ? (r.blocking.length
             ? `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5"
@@ -4481,9 +4485,10 @@ function renderVendors() {
     <div class="vendor-panel-head">
       <div>
         <div class="vendor-panel-title" id="v-title">${v.name} Material Prices</div>
-        <div class="vendor-panel-sub">${v.location || 'No location set'}</div>
+        <div class="vendor-panel-sub">${v.location || 'No location set'}${geoLabel(v.geo)}</div>
       </div>
       <div class="vendor-panel-actions">
+        <button class="btn ghost" onclick="setLocationPrompt('vendor', '${v.id}')">📍 Set Location</button>
         <button class="btn ghost" onclick="editVendorInfo('${v.id}')">✏️ Edit Vendor</button>
         <button class="btn ghost" onclick="toggleVendorActive('${v.id}')">${v.active ? 'Mark Inactive' : 'Mark Active'}</button>
         <button class="btn danger" onclick="deleteVendorConfirm('${v.id}')">Delete</button>
@@ -6042,6 +6047,47 @@ async function disableDriver(username) {
   } catch (e) { toast('Disable failed: ' + e.message, 'error'); }
 }
 
+// ── SAVED LOCATIONS (yards / jobsites) ──────────────────────────────────────
+// One office action sets or corrects a location. Geocoding happens ONLY from
+// here, never automatically. A hand-confirmed location is never replaced by
+// a geocoded result unless the manager says so explicitly.
+function geoLabel(geo) {
+  if (!geo) return '';
+  const tag = geo.source === 'manual' ? 'manual' : (geo.confirmed ? 'geocoded · confirmed' : 'geocoded · unconfirmed');
+  return ` <span style="font-size:10px;font-weight:700;color:${geo.confirmed ? 'var(--G)' : 'var(--A)'}">📍 ${tag}</span>`;
+}
+async function setLocationPrompt(kind, id) {
+  const rec = kind === 'vendor' ? vendors.find(v => v.id === id) : pos.find(p => p.id === id);
+  if (!rec) return;
+  const label = kind === 'vendor' ? rec.name : `PO ${rec.poNumber || ''} — ${rec.customer || ''}`;
+  const addr = kind === 'vendor' ? [rec.name, rec.location].filter(Boolean).join(', ') : [rec.address, rec.city].filter(Boolean).join(', ');
+  const cur = rec.geo ? `Current: ${rec.geo.lat}, ${rec.geo.lng} (${rec.geo.source}${rec.geo.confirmed ? ', confirmed' : ''})` : 'No coordinates saved.';
+  const choice = prompt(`Set location for ${label}\n${cur}\n\nType:\n  1 = geocode the address "${addr || '(none)'}"\n  2 = enter latitude, longitude by hand\n  3 = confirm the current geocoded result\n  4 = clear coordinates`);
+  if (!choice) return;
+  const url = `/api/${kind === 'vendor' ? 'vendors' : 'pos'}/${encodeURIComponent(id)}/location`;
+  let body = null;
+  if (choice.trim() === '1') {
+    body = { geocode: true };
+    if (rec.geo && rec.geo.confirmed) {
+      if (!confirm('This location was confirmed by hand. Replace it with a geocoded result?')) return;
+      body.overwrite = true;
+    }
+  } else if (choice.trim() === '2') {
+    const raw = prompt('Latitude, longitude (e.g. 36.7378, -119.7871):', rec.geo ? `${rec.geo.lat}, ${rec.geo.lng}` : '');
+    if (!raw) return;
+    const [lat, lng] = raw.split(',').map(x => Number(String(x).trim()));
+    body = { lat, lng };
+  } else if (choice.trim() === '3') body = { confirm: true };
+  else if (choice.trim() === '4') { if (!confirm('Remove the saved coordinates?')) return; body = { clear: true }; }
+  else return toast('Choose 1, 2, 3 or 4', 'error');
+  const r = await api('PUT', url, body);
+  if (!r.ok) return toast(r.error || 'Could not set location', 'error');
+  if (r.action === 'geocoded') toast(`Geocoded (${r.match.precision}): ${r.match.displayName}. Check it on the map, then Confirm.`, 'success');
+  else toast(r.action === 'cleared' ? 'Coordinates removed' : 'Location saved', 'success');
+  await loadAll();
+  if (kind === 'vendor') renderVendors(); else if (currentTab === 'pos') renderPOsList();
+}
+
 // ── FLEET MAP (command center) ───────────────────────────────────────────────
 // Reads /api/fleet/live (manager only). Every status, colour and label comes
 // from the server's statusKey — nothing is derived here. Leaflet is loaded on
@@ -6068,7 +6114,7 @@ const FM_COLORS = {
 };
 const FM_HOME = { lat: 36.7378, lng: -119.7871, zoom: 9 };   // Fresno — initial view only, never a truck position
 
-const fm = { map: null, markers: {}, trail: null, trailKey: '', selected: null, data: null, fetchedAt: 0, ticker: null, leaflet: null, refreshes: 0 };
+const fm = { map: null, markers: {}, trail: null, trailKey: '', selected: null, data: null, fetchedAt: 0, ticker: null, leaflet: null, refreshes: 0, places: [] };
 
 function fmLoadLeaflet() {
   if (fm.leaflet) return fm.leaflet;
@@ -6109,7 +6155,7 @@ async function refreshFleetMap(fit) {
   fm.data = r; fm.fetchedAt = Date.now(); fm.refreshes++;
   fmPaintList();
   if (fm.map) fmPaintMarkers(fit);
-  if (fm.selected) { fmPaintCard(); if (changed) fmLoadTrail(true); }
+  if (fm.selected) { fmPaintCard(); fmPaintPlaces(); if (changed) fmLoadTrail(true); }
   fmTick();
 }
 
@@ -6196,6 +6242,32 @@ function fmSelect(driverId, center) {
   if (center && t && t.gps && fm.map) fm.map.flyTo([t.gps.lat, t.gps.lng], Math.max(fm.map.getZoom(), 13), { duration: 0.6 });
   fmPaintCard();
   fmLoadTrail();
+  fmPaintPlaces();
+}
+
+// Pickup yard and jobsite of the SELECTED truck's current load, drawn only
+// when that record has saved coordinates. Missing coordinates → nothing is
+// drawn for that place; the card still names it. Dashed lines show
+// Truck → Pickup → Jobsite for whichever of the three points exist.
+function fmPaintPlaces() {
+  const L = window.L; if (!L || !fm.map) return;
+  fm.places.forEach(x => fm.map.removeLayer(x)); fm.places = [];
+  const t = (fm.data?.trucks || []).find(x => x.driverId === fm.selected);
+  if (!t || !t.load) return;
+  const pin = (geo, emoji, label, cls) => {
+    const m = L.marker([geo.lat, geo.lng], { icon: L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 17],
+      html: `<div class="fm-place ${cls}" data-place="${cls}">${emoji}<span class="fm-marker-label">${escapeHtml(label)}</span></div>` }), zIndexOffset: -100 }).addTo(fm.map);
+    fm.places.push(m); return m;
+  };
+  const pk = t.load.pickup && t.load.pickup.geo;
+  const js = t.load.destination && t.load.destination.geo;
+  if (pk) pin(pk, '🏭', t.load.pickup.name, 'pickup');
+  if (js) pin(js, '🎯', t.load.destination.city || t.load.destination.address || 'Jobsite', 'jobsite');
+  const chain = [];
+  if (t.gps) chain.push([t.gps.lat, t.gps.lng]);
+  if (pk) chain.push([pk.lat, pk.lng]);
+  if (js) chain.push([js.lat, js.lng]);
+  if (chain.length >= 2) fm.places.push(L.polyline(chain, { color: '#0f1729', weight: 2, dashArray: '6 6', opacity: .7 }).addTo(fm.map));
 }
 
 function fmPaintCard() {
@@ -6215,8 +6287,8 @@ function fmPaintCard() {
       ${l ? row('Material', l.material) : ''}
       ${l ? row('Load', `${l.loadNumber} of ${l.loadsAssigned}`) : ''}
       ${l ? row('Trip', l.tripNumber) : ''}
-      ${l && l.pickup ? row('Pickup', l.pickup.name) : ''}
-      ${l ? row('Destination', [l.address, l.city].filter(Boolean).join(', ') || '—') : ''}
+      ${l && l.pickup ? row('Pickup', l.pickup.name + (l.pickup.geo ? ' 📍' : ' (no coordinates)')) : ''}
+      ${l ? row('Destination', ([l.address, l.city].filter(Boolean).join(', ') || '—') + (l.destination && l.destination.geo ? ' 📍' : ' (no coordinates)')) : ''}
       ${l && l.tripStartedAt ? row('Trip started', new Date(l.tripStartedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
       ${t.since ? row('Stage since', new Date(t.since).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
       ${row('Updated', t.gps ? `${new Date(t.gps.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} (${fmAgeText(t).replace('Updated ', '').replace('Last seen ', '')})` : 'No GPS')}

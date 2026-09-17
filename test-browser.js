@@ -163,6 +163,32 @@ async function call(cookie, method, path, body) {
   chk('    ...without a page reload', after.navs, loadsBefore);
   if (hasHistory) chk('    ...trail grew with the trip', after.trail, 3);
 
+  // Step 4: pickup yard + jobsite coordinates around the selected truck
+  console.log('── Fleet Map: Truck → Pickup → Jobsite ──');
+  const gcBefore = (await call(mgr, 'GET', '/api/_test/geocode-calls')).data.calls;
+  let places = await page.evaluate(() => ({ pins: document.querySelectorAll('.fm-place').length, lines: fm.places.length }));
+  chk('no coordinates → no pickup/jobsite pins, no invented markers', places.pins, 0);
+  await call(mgr, 'PUT', '/api/vendors/vulcan/location', { lat: 36.6900, lng: -119.7300 });   // only pickup
+  await page.evaluate(() => refreshFleetMap()); await page.waitForTimeout(700);
+  places = await page.evaluate(() => ({ pickup: !!document.querySelector('.fm-place.pickup'), jobsite: !!document.querySelector('.fm-place.jobsite'), chain: fm.places.length, card: document.getElementById('fm-card').innerText.replace(/\s+/g, ' ') }));
+  chk('only pickup coordinates → pickup pin, no jobsite pin', `${places.pickup} ${places.jobsite}`, 'true false');
+  chk('   card names the jobsite without coordinates', /Destination 500 Main St, Merced \(no coordinates\)/.test(places.card), true);
+  await call(mgr, 'PUT', `/api/pos/${po.id}/location`, { lat: 37.3022, lng: -120.4830 });
+  await page.evaluate(() => refreshFleetMap()); await page.waitForTimeout(700);
+  places = await page.evaluate(() => {
+    const line = fm.places.find(x => x.getLatLngs);
+    return { pickup: !!document.querySelector('.fm-place.pickup'), jobsite: !!document.querySelector('.fm-place.jobsite'), chain: line ? line.getLatLngs().map(p => `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`).join(' > ') : '', card: document.getElementById('fm-card').innerText.replace(/\s+/g, ' ') };
+  });
+  chk('both → pickup and jobsite pins', `${places.pickup} ${places.jobsite}`, 'true true');
+  chk('Truck → Pickup → Jobsite chain drawn in that order', places.chain, '36.750,-119.750 > 36.690,-119.730 > 37.302,-120.483');
+  chk('   card marks both as located', /Pickup Vulcan 📍.*Destination 500 Main St, Merced 📍/.test(places.card), true);
+  await call(mgr, 'PUT', '/api/vendors/vulcan/location', { clear: true });
+  await page.evaluate(() => refreshFleetMap()); await page.waitForTimeout(700);
+  places = await page.evaluate(() => { const line = fm.places.find(x => x.getLatLngs); return { pickup: !!document.querySelector('.fm-place.pickup'), jobsite: !!document.querySelector('.fm-place.jobsite'), n: line ? line.getLatLngs().length : 0 }; });
+  chk('only jobsite coordinates → jobsite pin, chain Truck → Jobsite', `${places.pickup} ${places.jobsite} ${places.n}`, 'false true 2');
+  chk('map refreshes never called the geocoder', (await call(mgr, 'GET', '/api/_test/geocode-calls')).data.calls - gcBefore, 0);
+  chk('no geocode request left the browser', requests.some(r => /geocod/i.test(r)), false);
+
   // 6. stale → Offline, grey, last-known kept
   await call(mgr, 'POST', '/api/_test/backdate-location', { driverId: 'beryle', seconds: 301 });
   await page.evaluate(() => refreshFleetMap());

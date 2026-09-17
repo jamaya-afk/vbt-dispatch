@@ -42,6 +42,7 @@ if (!process.env.QB_ENCRYPTION_KEY) {
 
 const qb = require('./qb');
 const mailer = require('./mailer');
+const geocoder = require('./geocode');
 
 const app = express();
 
@@ -764,7 +765,10 @@ function normalizeStore() {
     store.vendorPrices = JSON.parse(JSON.stringify(DEFAULT_VENDOR_PRICES));
   } else {
     // Make sure every existing vendor has an entry (even if empty)
-    store.vendors.forEach(v => {
+    // Saved coordinates: drop anything that is not a valid point.
+  store.vendors.forEach(v => { if (v.geo && !validLatLng(v.geo.lat, v.geo.lng)) delete v.geo; });
+  store.pos.forEach(p => { if (p.geo && !validLatLng(p.geo.lat, p.geo.lng)) delete p.geo; });
+  store.vendors.forEach(v => {
       if (!Array.isArray(store.vendorPrices[v.id])) store.vendorPrices[v.id] = [];
     });
   }
@@ -1200,7 +1204,59 @@ function resolvePickupYard(load, po, trip) {
     location: v?.location || '',
     isInternal: id === 'vbt',
     isActual,
+    // Saved coordinates for this yard, or null. Never a guess.
+    geo: geoPublic(v?.geo),
   };
+}
+
+// ── SAVED LOCATIONS (yards, vendors, jobsites) ───────────────────────────────
+// A record's `geo` is optional: { lat, lng, source: 'manual'|'geocoded',
+// confirmed, setAt, setBy, address, precision }. Missing geo means "no
+// coordinates known" and every screen must cope with that. Coordinates are
+// only ever written through the /location endpoints (office only).
+function validLatLng(lat, lng) {
+  const la = Number(lat), ln = Number(lng);
+  return isFinite(la) && isFinite(ln) && la >= -90 && la <= 90 && ln >= -180 && ln <= 180 && !(la === 0 && ln === 0);
+}
+function geoPublic(g) {
+  if (!g || !validLatLng(g.lat, g.lng)) return null;
+  return { lat: g.lat, lng: g.lng, source: g.source || 'manual', confirmed: !!g.confirmed, setAt: g.setAt || '', precision: g.precision || '' };
+}
+// Apply a Set Location request to a record. Returns { geo } or throws with
+// a status. Rules:
+//   manual  → stored as source 'manual', confirmed true.
+//   geocode → refused with 409 when the existing geo is confirmed unless
+//             overwrite:true; stored as 'geocoded', confirmed false.
+//   confirm → marks the current geocoded result confirmed (locks it).
+//   clear   → removes coordinates (requires clear:true).
+async function applyLocationRequest(rec, body, user, addressText) {
+  const b = body || {};
+  const existing = rec.geo && validLatLng(rec.geo.lat, rec.geo.lng) ? rec.geo : null;
+  const stamp = () => ({ setAt: new Date().toISOString(), setBy: user.username });
+  if (b.clear === true) { delete rec.geo; return { action: 'cleared', geo: null }; }
+  if (b.confirm === true) {
+    if (!existing) { const e = new Error('No coordinates to confirm'); e.status = 400; throw e; }
+    rec.geo = { ...existing, confirmed: true, ...stamp() };
+    return { action: 'confirmed', geo: geoPublic(rec.geo) };
+  }
+  if (b.geocode === true) {
+    if (existing && existing.confirmed && b.overwrite !== true) {
+      const e = new Error('This location was confirmed by hand. Pass overwrite:true to replace it with a geocoded result.'); e.status = 409; e.geo = geoPublic(existing); throw e;
+    }
+    const text = String(b.address || addressText || '').trim();
+    if (!text) { const e = new Error('No address on record to geocode'); e.status = 400; throw e; }
+    const hit = await geocoder.geocodeAddress(text);
+    if (!hit) { const e = new Error(`Geocoder found nothing for "${text}". Enter the coordinates manually.`); e.status = 404; throw e; }
+    if (!validLatLng(hit.lat, hit.lng)) { const e = new Error('Geocoder returned an invalid point'); e.status = 502; throw e; }
+    rec.geo = { lat: Math.round(hit.lat * 1e6) / 1e6, lng: Math.round(hit.lng * 1e6) / 1e6, source: 'geocoded', confirmed: false, address: text, precision: hit.precision || '', provider: hit.provider || '', displayName: hit.displayName || '', ...stamp() };
+    return { action: 'geocoded', geo: geoPublic(rec.geo), match: { displayName: rec.geo.displayName, precision: rec.geo.precision } };
+  }
+  if (b.lat !== undefined || b.lng !== undefined) {
+    if (!validLatLng(b.lat, b.lng)) { const e = new Error('lat must be -90..90 and lng -180..180'); e.status = 400; throw e; }
+    rec.geo = { lat: Math.round(Number(b.lat) * 1e6) / 1e6, lng: Math.round(Number(b.lng) * 1e6) / 1e6, source: 'manual', confirmed: true, address: String(b.address || addressText || '').trim(), ...stamp() };
+    return { action: 'set', geo: geoPublic(rec.geo) };
+  }
+  const e = new Error('Send {lat,lng} to set, {geocode:true} to geocode the address, {confirm:true} or {clear:true}'); e.status = 400; throw e;
 }
 
 // Office-facing view of a load: the load plus its ONE authoritative pickup
@@ -1493,6 +1549,15 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     res.json({ ok: true, fakeQb });
   });
   app.get('/api/_test/qb-fake', reqMgr, (req, res) => res.json(fakeQb));
+  const fakeGeo = { calls: 0, mode: 'ok' };
+  geocoder.setGeocoderForTests(async (q) => {
+    fakeGeo.calls++;
+    if (fakeGeo.mode === 'none') return null;
+    if (fakeGeo.mode === 'fail') throw new Error('fake geocoder down');
+    return { lat: 36.6, lng: -119.6, displayName: 'FAKE MATCH: ' + q, precision: 'city', provider: 'fake' };
+  });
+  app.get('/api/_test/geocode-calls', reqMgr, (req, res) => res.json(fakeGeo));
+  app.post('/api/_test/geocode-mode', reqMgr, (req, res) => { fakeGeo.mode = req.body?.mode || 'ok'; res.json(fakeGeo); });
   app.post('/api/_test/backdate-location', reqMgr, (req, res) => {
     const loc = (store.driverLocations || {})[req.body?.driverId];
     if (!loc) return res.status(404).json({ error: 'no location' });
@@ -1928,6 +1993,8 @@ function fleetLiveRows(now = Date.now()) {
         tripNumber,
         tripStartedAt: (trip && trip.isoStamps && trip.isoStamps.start) || null,
         pickup: resolvePickupYard(load, po, trip),
+        // Jobsite from the PO: address always, coordinates only when saved.
+        destination: { address: po.address || '', city: po.city || '', geo: geoPublic(po.geo) },
         approvalStatus: load.approvalStatus,
       } : null,
       gps: loc ? {
@@ -1940,7 +2007,8 @@ function fleetLiveRows(now = Date.now()) {
 
 app.get('/api/fleet/live', reqMgr, (req, res) => {
   const rows = fleetLiveRows();
-  const version = crypto.createHash('sha1').update(rows.map(r => [r.driverId, r.statusKey, r.since, r.load?.id, r.gps?.at, r.gps?.stale].join(':')).join('|')).digest('hex').slice(0, 16);
+  const version = crypto.createHash('sha1').update(rows.map(r => [r.driverId, r.statusKey, r.since, r.load?.id, r.gps?.at, r.gps?.stale,
+    r.load?.pickup?.id, r.load?.pickup?.geo?.lat, r.load?.pickup?.geo?.lng, r.load?.destination?.geo?.lat, r.load?.destination?.geo?.lng].join(':')).join('|')).digest('hex').slice(0, 16);
   res.json({
     generatedAt: new Date().toISOString(),
     staleAfterSeconds: FLEET_STALE_MS / 1000,
@@ -2250,7 +2318,9 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
     const frozen = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'].filter(k => k in req.body && req.body[k] !== old[k]);
     if (frozen.length) return res.status(403).json({ error: `This PO has approved loads; ${frozen.join(', ')} cannot change.`, frozenFields: frozen });
   }
-  const updated = { ...old, ...req.body, id: old.id, createdAt: old.createdAt };
+  // Coordinates change only through /location, never through a generic update.
+  const { geo: _ignoredGeo, ...poBody } = req.body || {};
+  const updated = { ...old, ...poBody, id: old.id, createdAt: old.createdAt };
   store.pos[idx] = updated;
   // If delivery date changed, sync to all linked loads
   if (req.body.deliveryDate && req.body.deliveryDate !== old.deliveryDate) {
@@ -2264,6 +2334,29 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   await saveData();
   res.json({ success: true, po: updated });
 });
+
+// ── API: SAVED LOCATIONS (office only) ──────────────────────────────────────
+// PUT /api/vendors/:id/location   PUT /api/pos/:id/location
+//   { lat, lng }            manual set (confirmed)
+//   { geocode: true }       geocode the stored address (explicit action only)
+//   { geocode: true, overwrite: true }   replace a confirmed location
+//   { confirm: true }       confirm the current geocoded result
+//   { clear: true }         remove coordinates
+async function locationHandler(kind, req, res) {
+  const rec = kind === 'vendor' ? store.vendors.find(v => v.id === req.params.id) : store.pos.find(p => p.id === req.params.id);
+  if (!rec) return res.status(404).json({ error: 'Not found' });
+  const addressText = kind === 'vendor' ? [rec.name, rec.location].filter(Boolean).join(', ') : [rec.address, rec.city].filter(Boolean).join(', ');
+  try {
+    const result = await applyLocationRequest(rec, req.body, req.session.user, addressText);
+    logAction(req.session.user, 'set-location', `${kind}:${rec.id}`, { action: result.action, geo: result.geo, name: rec.name || rec.poNumber || rec.customer });
+    await saveData();
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, geo: e.geo || geoPublic(rec.geo) });
+  }
+}
+app.put('/api/vendors/:id/location', reqMgr, (req, res) => locationHandler('vendor', req, res));
+app.put('/api/pos/:id/location',     reqMgr, (req, res) => locationHandler('po', req, res));
 
 // ── API: DELETE PO ──────────────────────────────────────────────────────────
 app.delete('/api/pos/:id', reqMgr, async (req, res) => {

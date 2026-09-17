@@ -638,6 +638,51 @@ print(keys==srv)")" "True"
 chk "no fallback coordinates for trucks (home view is not a truck)" "$(grep -c "FM_HOME.lat, FM_HOME.lng" public/index.html)" "1"
 chk "  ...markers only from t.gps"           "$(sed -n '/^function fmPaintMarkers/,/^}/p' public/index.html | grep -c "if (!t.gps) return;")" "1"
 
+echo "── 33. Saved locations: yards, vendors, jobsites — real coordinates only ──"
+GC() { curl -s -b $M $B/api/_test/geocode-calls | python3 -c "import json,sys;print(json.load(sys.stdin)['calls'])"; }
+chk "map refresh with zero coordinates: no pickup/jobsite geo, no geocoding" "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;d=json.load(sys.stdin);print(all((not t['load']) or (t['load']['pickup']['geo'] is None and t['load']['destination']['geo'] is None) for t in d['trucks']))")|$(GC)" "True|0"
+chk "1. VBT yard can store coordinates (manual)" "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/vendors/vbt/location -d '{"lat":36.7000,"lng":-119.7000}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['action'], d['geo']['source'], d['geo']['confirmed'])")" "set manual True"
+chk "2. vendor yard can store coordinates"      "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/vendors/vulcan/location -d '{"lat":36.8000,"lng":-119.8000}' | python3 -c "import json,sys;print(json.load(sys.stdin)['geo']['lat'])")" "36.8"
+chk "   ...visible on the vendor record"        "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;v=[v for v in json.load(sys.stdin)['vendors'] if v['id']=='vulcan'][0];print(v['geo']['lat'], v['geo']['lng'], v['geo']['source'])")" "36.8 -119.8 manual"
+# 4. a PO without coordinates still works
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"GEO-1","customer":"Geo Co","deliveryDate":"'"$(date +%F)"'","address":"500 Main St","city":"Merced","plannedVendorId":"vulcan"},"splits":[{"truckId":"carlos","truckUnitId":"truck-2b","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}' -o /dev/null
+GP=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='GEO-1'][0];print(po['id']); print([l['id'] for l in d['loads'] if l['poId']==po['id']][0]); print('geo' in po)")
+GPO=$(echo "$GP"|sed -n 1p); GL=$(echo "$GP"|sed -n 2p)
+LD2=$(mktemp); curl -s -c $LD2 -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
+tg() { curl -s -b $LD2 -H 'Content-Type: application/json' -X POST $B/api/loads/$GL/trip-action -d "$1" -o /dev/null; }
+tg '{"action":"start-trip"}'   # makes GEO-1 the driver's current load
+chk "4. PO created without coordinates works, has no geo" "$(echo "$GP"|sed -n 3p)" "False"
+chk "   fleet row: pickup geo from the yard, destination geo null" "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['trucks'] if x['driverId']=='carlos'][0];l=r['load'];print(l['pickup']['geo']['lat'], l['destination']['geo'], l['destination']['city'])")" "36.8 None Merced"
+chk "3. PO/jobsite can store coordinates"       "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/pos/$GPO/location -d '{"lat":37.3022,"lng":-120.4830}' | python3 -c "import json,sys;print(json.load(sys.stdin)['geo']['lng'])")" "-120.483"
+chk "   fleet row now carries the jobsite point" "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['trucks'] if x['driverId']=='carlos'][0];print(r['load']['destination']['geo']['lat'])")" "37.3022"
+chk "invalid latitude rejected"                 "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/vendors/cemex/location -d '{"lat":91,"lng":0}')" "400"
+chk "invalid longitude rejected"                "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/vendors/cemex/location -d '{"lat":36,"lng":-181}')" "400"
+chk "0,0 rejected (null island is never a yard)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/vendors/cemex/location -d '{"lat":0,"lng":0}')" "400"
+chk "12. driver cannot set a yard location"     "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/vendors/cemex/location -d '{"lat":36,"lng":-119}')" "403"
+chk "    driver cannot set a jobsite location"  "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/pos/$GPO/location -d '{"lat":36,"lng":-119}')" "403"
+chk "    generic PO update cannot smuggle geo"  "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/pos/$GPO -d '{"geo":{"lat":1,"lng":1},"notes":"x"}' -o /dev/null; curl -s -b $M $B/api/data | python3 -c "import json,sys;print([p for p in json.load(sys.stdin)['pos'] if p['id']=='$GPO'][0]['geo']['lat'])")" "37.3022"
+# geocoding: explicit only, never over a confirmed location
+chk "geocode is an explicit action (1 call, stored unconfirmed)" "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/vendors/cemex/location -d '{"geocode":true}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['action'], d['geo']['source'], d['geo']['confirmed'], d['match']['precision'])")|$(GC)" "geocoded geocoded False city|1"
+chk "confirm locks the geocoded result"         "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/vendors/cemex/location -d '{"confirm":true}' | python3 -c "import json,sys;print(json.load(sys.stdin)['geo']['confirmed'])")" "True"
+chk "6. geocode over a confirmed location is refused (409), value unchanged" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/vendors/vulcan/location -d '{"geocode":true}')|$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([v for v in json.load(sys.stdin)['vendors'] if v['id']=='vulcan'][0]['geo']['lat'])")|$(GC)" "409|36.8|1"
+chk "   ...explicit overwrite is honoured"      "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/vendors/vulcan/location -d '{"geocode":true,"overwrite":true}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['geo']['lat'], d['geo']['confirmed'])")|$(GC)" "36.6 False|2"
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/vendors/vulcan/location -d '{"lat":36.8000,"lng":-119.8000}' -o /dev/null
+chk "geocoder miss → 404, nothing stored"       "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/geocode-mode -d '{"mode":"none"}' -o /dev/null; curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/vendors/keith/location -d '{"geocode":true}')|$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print('geo' in [v for v in json.load(sys.stdin)['vendors'] if v['id']=='keith'][0])")" "404|False"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/geocode-mode -d '{"mode":"ok"}' -o /dev/null
+# 7. fleet refresh never geocodes
+C0=$(GC); for i in 1 2 3; do curl -s -b $M $B/api/fleet/live -o /dev/null; curl -s -b $M $B/api/data -o /dev/null; done
+chk "7. fleet refresh / data loads never call the geocoder" "$(( $(GC) - C0 ))" "0"
+# 9/11. selected trip uses the actual resolved pickup yard; different trips, different yards
+tg '{"action":"arrived-pickup","yardId":"cemex"}'
+chk "9. trip at CEMEX → pickup is CEMEX with CEMEX's point (not the PO's Vulcan plan)" "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['trucks'] if x['driverId']=='carlos'][0];p=r['load']['pickup'];print(p['id'], p['isActual'], p['geo']['lat'])")" "cemex True 36.6"
+tg '{"action":"loaded"}'; tg '{"action":"arrived-jobsite"}'; tg '{"action":"trip-complete"}'
+tg '{"action":"start-trip"}'; tg '{"action":"arrived-pickup","yardId":"vulcan"}'
+chk "11. next trip at Vulcan → pickup follows the trip" "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['trucks'] if x['driverId']=='carlos'][0];p=r['load']['pickup'];print(p['id'], p['geo']['lat'], r['load']['tripNumber'])")" "vulcan 36.8 2"
+chk "10. destination is the PO's jobsite point"  "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['trucks'] if x['driverId']=='carlos'][0];d=r['load']['destination'];print(d['address'], d['geo']['lat'], d['geo']['lng'])")" "500 Main St 37.3022 -120.483"
+chk "clear removes coordinates"                 "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/vendors/cemex/location -d '{"clear":true}' | python3 -c "import json,sys;print(json.load(sys.stdin)['geo'])")" "None"
+chk "no geocoder call inside the map or refresh code" "$(sed -n '/^const FM_TILES/,/^\/\/ ── START/p' public/index.html | grep -c 'geocode')" "0"
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$GL/void -d '{"reason":"geo fixture"}' -o /dev/null
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
