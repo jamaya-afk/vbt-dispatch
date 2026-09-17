@@ -433,7 +433,7 @@ chk "PO with a voided approved load cannot be deleted" "$(curl -s -b $M -o /dev/
 chk "  ...the voided load is still on record" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(len([x for x in json.load(sys.stdin)['loads'] if x['id']=='$SML']))")" "1"
 chk "  ...and cannot be deleted directly either" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X DELETE $B/api/loads/$SML)" "403"
 chk "PO grouping fields frozen once approved" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/pos/$SMP -d '{"customer":"Someone Else"}')" "403"
-chk "archive refuses without Sheets (nothing deleted)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X POST $B/api/history/archive)" "503"
+chk "archive with nothing billed → 400 (nothing moved)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X POST $B/api/history/archive)" "400"
 
 echo "── 24. QuickBooks batches: no duplicate invoices, ever ──"
 # Fake QuickBooks (test hook) so the state machine can be driven end to end.
@@ -682,6 +682,29 @@ chk "10. destination is the PO's jobsite point"  "$(curl -s -b $M $B/api/fleet/l
 chk "clear removes coordinates"                 "$(curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/vendors/cemex/location -d '{"clear":true}' | python3 -c "import json,sys;print(json.load(sys.stdin)['geo'])")" "None"
 chk "no geocoder call inside the map or refresh code" "$(sed -n '/^const FM_TILES/,/^\/\/ ── START/p' public/index.html | grep -c 'geocode')" "0"
 curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$GL/void -d '{"reason":"geo fixture"}' -o /dev/null
+
+echo "── 34. Archive is Postgres-only: no Google Sheets anywhere ──"
+chk "/api/sync is gone"                      "$(curl -s -b $M -o /dev/null -w '%{http_code}' -X POST $B/api/sync)" "404"
+chk "googleapis is not a dependency"         "$(grep -c '"googleapis"' package.json)" "0"
+chk "server never requires googleapis"       "$(grep -c "require('googleapis')" server.js)" "0"
+chk "no SHEET_ID / Sheets client in server"  "$(grep -c "SHEET_ID\|spreadsheets\.\|writeSheet" server.js)" "0"
+chk "no Sheets wording in the UI"            "$(grep -ci "google sheets\|synced to sheets\|syncSheets\|archiveToSheets" public/index.html)" "0"
+chk "key-file guard kept"                    "$(grep -c "service-account.json is present on disk" server.js)|$(grep -c 'service-account.json' .gitignore)" "1|1"
+# Real archive: LOAD is approved and back in Ready to Bill after section 24. Mark it billed and archive.
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/bill -d "{\"loadIds\":[\"$LOAD\"]}" -o /dev/null
+AR=$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/history/archive -d '{}')
+chk "archive billed loads → 200, batch created" "$(echo "$AR" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['success'], d['archived']['loads']>=1, 'syncedToSheet' in d['archived'])")" "True True False"
+AB=$(echo "$AR" | python3 -c "import json,sys;print(json.load(sys.stdin)['archived']['batchId'])")
+HB=$(curl -s -b $M $B/api/history | python3 -c "
+import json,sys;d=json.load(sys.stdin);b=[x for x in d['archive'] if x['batchId']=='$AB'][0]
+print(any(l['id']=='$LOAD' for l in b['loads'])); print(len(b['pos'])>=1); print('syncedToSheet' in b); print(b['loads'][0]['ticketImage'])")
+chk "  ...archived load kept in full in the database" "$(echo "$HB"|sed -n 1p)" "True"
+chk "  ...its PO archived with it"                    "$(echo "$HB"|sed -n 2p)" "True"
+chk "  ...no Sheets flag on the batch"                "$(echo "$HB"|sed -n 3p)" "False"
+chk "  ...photo payload kept (shown as stored)"       "$(echo "$HB"|sed -n 4p)" "[stored]"
+chk "  ...load left the active board"                 "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(any(l['id']=='$LOAD' for l in json.load(sys.stdin)['loads']))")" "False"
+chk "  ...still counted by Reports (profitability)"   "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;d=json.load(sys.stdin);print(any(l['id']=='$LOAD' for l in d.get('topLoads',[])+d.get('bottomLoads',[])) or d['grand']['loadCount']>0)")" "True"
+chk "  ...audit entry recorded"                       "$(curl -s -b $M "$B/api/audit-log" | python3 -c "import json,sys;d=json.load(sys.stdin);print(any(e.get('action')=='archived-batch' and e.get('target')=='$AB' for e in d['entries']))")" "True"
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.

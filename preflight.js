@@ -116,7 +116,6 @@ const cfg = [
   ['DATABASE_URL',       !!process.env.DATABASE_URL, 'REQUIRED in production — without it data dies on redeploy'],
   ['SESSION_SECRET',     !!process.env.SESSION_SECRET, 'REQUIRED in production — signs login cookies'],
   ['QB_ENCRYPTION_KEY',  !!process.env.QB_ENCRYPTION_KEY && !process.env.QB_ENCRYPTION_KEY.startsWith('preflight-only-'), 'REQUIRED in production — encrypts QuickBooks tokens'],
-  ['GOOGLE_SERVICE_ACCOUNT_JSON', !!process.env.GOOGLE_SERVICE_ACCOUNT_JSON, 'Google Sheets archive/sync disabled without it'],
   ['SUPABASE_URL',       !!process.env.SUPABASE_URL, 'ticket/signature photos fall back to base64 without it'],
   ['QB_CLIENT_ID',       !!process.env.QB_CLIENT_ID, 'QuickBooks stays disconnected without it'],
   ['GMAIL_USER',         !!process.env.GMAIL_USER, 'customer email disabled without it'],
@@ -131,7 +130,7 @@ if (missingProd.length) {
 }
 // 5. A committed credential file must never come back
 if (fs.existsSync(path.join(__dirname, 'service-account.json'))) {
-  console.log('\n  SECURITY  service-account.json exists on disk. The app ignores it; delete it and use GOOGLE_SERVICE_ACCOUNT_JSON.');
+  console.log('\n  SECURITY  service-account.json exists on disk. Nothing uses it — delete it and rotate the key.');
   warnings++;
 }
 try {

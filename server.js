@@ -1,5 +1,5 @@
 // VBT Dispatch — Clean Build
-// Core scope: Login, POs, Board, Driver guided flow, Approvals, Ready to Bill, Sheets sync
+// Core scope: Login, POs, Board, Driver guided flow, Approvals, Ready to Bill
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
@@ -4845,11 +4845,11 @@ app.get('/api/history', reqMgr, (req, res) => {
   res.json({ billed, archive });
 });
 
-// Archive billed loads → push to Sheets and remove from active store
+// Archive billed loads → move into store.archive[] (Postgres) and off the active board
 app.post('/api/history/archive', reqMgr, async (req, res) => {
-  // Archiving moves records out of the active lists. Without Sheets there is
-  // no external copy, so it is refused rather than quietly done anyway.
-  if (!sheets) return res.status(503).json({ error: 'Google Sheets is not configured — nothing was archived. Set GOOGLE_SERVICE_ACCOUNT_JSON.' });
+  // Archiving moves billed loads (and POs whose loads are all billed) out of
+  // the active lists into store.archive[] — full copies, in Postgres, the
+  // single source of truth. Nothing leaves the database.
   const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided);
   if (!billed.length) return res.status(400).json({ error: 'No billed loads to archive' });
 
@@ -4861,52 +4861,6 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
   });
   const archivedPos = store.pos.filter(p => fullyBilledPos.includes(p.id));
 
-  // Push to Sheets first — only move records if it succeeds
-  let sheetSuccess = false;
-  if (sheets) {
-    try {
-      const archiveRows = [['Archived At', 'PO', 'Customer', 'City', 'Material', 'Loads', 'Driver', 'Date', 'Yard', 'Approved By', 'Billed At']];
-      billed.forEach(l => {
-        const po = store.pos.find(p => p.id === l.poId) || {};
-        archiveRows.push([
-          new Date().toISOString(),
-          po.poNumber || '', po.customer || '', po.city || '',
-          l.material, l.loadsDelivered, l.driverName, l.deliveryDate,
-          resolvePickupYard(l, po).name,
-          l.approvedBy || '', l.billedAt || ''
-        ]);
-      });
-      // Append (don't clear) so history accumulates over time
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SHEET_ID,
-        range: 'Archive!A1',
-        valueInputOption: 'USER_ENTERED',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: { values: archiveRows },
-      }).catch(async err => {
-        // If tab doesn't exist, create it then retry
-        if (String(err.message).includes('Unable to parse range')) {
-          await sheets.spreadsheets.batchUpdate({
-            spreadsheetId: SHEET_ID,
-            requestBody: { requests: [{ addSheet: { properties: { title: 'Archive' } } }] }
-          }).catch(() => {});
-          await sheets.spreadsheets.values.append({
-            spreadsheetId: SHEET_ID,
-            range: 'Archive!A1',
-            valueInputOption: 'USER_ENTERED',
-            insertDataOption: 'INSERT_ROWS',
-            requestBody: { values: archiveRows },
-          });
-        } else { throw err; }
-      });
-      sheetSuccess = true;
-    } catch (e) {
-      console.error('Archive sync error:', e.message);
-      return res.status(500).json({ error: 'Failed to push to Sheets: ' + e.message + '. Nothing was archived.' });
-    }
-  }
-
-  // Move archived data to archive[] for in-app reference
   const batchId = 'BATCH-' + Date.now();
   store.archive.unshift({
     batchId,
@@ -4914,7 +4868,6 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
     archivedBy: req.session.user.username,
     poCount: archivedPos.length,
     loadCount: billed.length,
-    syncedToSheet: sheetSuccess,
     // Full copies, not just counts: the approved evidence stays in the
     // database even though it leaves the active board.
     pos: archivedPos,
@@ -4923,9 +4876,7 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
   logAction(req.session.user, 'archived-batch', batchId, {
     poCount: archivedPos.length,
     loadCount: billed.length,
-    syncedToSheet: sheetSuccess,
   });
-  // No cap: each batch now carries the archived records themselves.
 
   // Remove archived loads + their fully-completed POs from the active store
   const billedIds = new Set(billed.map(l => l.id));
@@ -4933,91 +4884,15 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
   store.pos   = store.pos.filter(p => !fullyBilledPos.includes(p.id));
 
   await saveData();
-  res.json({
-    success: true,
-    archived: { pos: archivedPos.length, loads: billed.length, batchId, syncedToSheet: sheetSuccess }
-  });
+  res.json({ success: true, archived: { pos: archivedPos.length, loads: billed.length, batchId } });
 });
 
-// ── API: GOOGLE SHEETS SYNC ──────────────────────────────────────────────────
-const SHEET_ID = process.env.SHEET_ID || '1T5pOeXmLmZyKKfq4YRl9aymXn9MQnNrqmcuyJluMhQs';
-// The service-account credential comes ONLY from the environment
-// (GOOGLE_SERVICE_ACCOUNT_JSON: the key file's JSON, raw or base64). A
-// service-account.json on disk is deliberately ignored — one was committed to
-// this repo's history and has to be treated as compromised, so the app must
-// never quietly pick a file like that back up.
-let sheets = null;
-function loadGoogleCredentials() {
-  const raw = String(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '').trim();
-  if (!raw) return null;
-  const text = raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
-  const creds = JSON.parse(text);
-  if (creds.type !== 'service_account' || !creds.client_email || !creds.private_key) {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not a service-account key');
-  }
-  return creds;
-}
-try {
-  if (fs.existsSync(path.join(__dirname, 'service-account.json'))) {
-    console.warn('⚠ SECURITY: service-account.json is present on disk and is IGNORED. Delete it; use GOOGLE_SERVICE_ACCOUNT_JSON.');
-  }
-  const credentials = loadGoogleCredentials();
-  if (credentials) {
-    const { google } = require('googleapis');
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    });
-    sheets = google.sheets({ version: 'v4', auth });
-    console.log(`✓ Google Sheets ready (${credentials.client_email})`);
-  } else {
-    console.log('· Google Sheets not configured (GOOGLE_SERVICE_ACCOUNT_JSON unset) — archive/sync disabled');
-  }
-} catch (e) { console.warn('Sheets init failed:', e.message); }
-
-app.post('/api/sync', reqMgr, async (req, res) => {
-  if (!sheets) return res.status(503).json({ error: 'Sheets not configured' });
-  try {
-    // POs sheet
-    const poRows = [['PO Number', 'Customer', 'Job', 'Address', 'City', 'Delivery Date', 'Status', 'Created']];
-    store.pos.forEach(p => poRows.push([p.poNumber, p.customer, p.job, p.address, p.city, p.deliveryDate, p.status, p.createdAt]));
-    await writeSheet('POs', poRows);
-
-    // Loads sheet
-    const loadRows = [['Load ID', 'PO Number', 'Material', 'Driver', 'Truck', 'Loads Assigned', 'Loads Delivered', 'Date', 'Status', 'Approval', 'Bill Status', 'Submitted', 'Approved By']];
-    store.loads.forEach(l => {
-      const po = store.pos.find(p => p.id === l.poId) || {};
-      loadRows.push([l.id, po.poNumber || '', l.material, l.driverName, l.truckId, l.loadsAssigned, l.loadsDelivered, l.deliveryDate, l.status, l.approvalStatus, l.billStatus, l.submittedAt, l.approvedBy]);
-    });
-    await writeSheet('Loads', loadRows);
-
-    logAction(req.session.user, 'synced-sheets', '', {
-      pos: store.pos.length,
-      loads: store.loads.length,
-    });
-    res.json({ success: true, pos: store.pos.length, loads: store.loads.length });
-  } catch (e) {
-    console.error('Sync error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-async function writeSheet(tab, rows) {
-  // Make sure tab exists
-  try {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SHEET_ID,
-      requestBody: { requests: [{ addSheet: { properties: { title: tab } } }] }
-    });
-  } catch (e) { /* tab already exists */ }
-  // Clear and write
-  await sheets.spreadsheets.values.clear({ spreadsheetId: SHEET_ID, range: `${tab}!A:Z` });
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SHEET_ID,
-    range: `${tab}!A1`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: rows },
-  });
+// ── CREDENTIAL FILE GUARD ────────────────────────────────────────────────────
+// A Google service-account key was once committed to this repository. The
+// app no longer uses Google at all, but a key file appearing on disk is still
+// a sign something went wrong, so it is called out loudly and never read.
+if (fs.existsSync(path.join(__dirname, 'service-account.json'))) {
+  console.warn('⚠ SECURITY: service-account.json is present on disk. Nothing uses it — delete it and rotate the key.');
 }
 
 // ── LIVE REFRESH ─────────────────────────────────────────────────────────────

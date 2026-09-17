@@ -64,7 +64,7 @@ async function call(cookie, method, path, body) {
     const requests = [];
     page.on('pageerror', e => problems.push(`[${user}] pageerror: ${e.message}`));
     page.on('console', m => { if (m.type() === 'error' && !/ERR_CERT_AUTHORITY_INVALID|net::ERR_/.test(m.text())) problems.push(`[${user}] console.error: ${m.text().slice(0, 160)}`); });
-    page.on('request', r => { if (r.url().startsWith(B)) requests.push(`${r.method()} ${r.url().replace(B, '')}`); });
+    page.on('request', r => { if (r.url().startsWith(B)) requests.push(`${r.method()} ${r.url().replace(B, '')}`); else if (/googleapis\.com\/(?!css)|sheets\.google/.test(r.url())) problems.push(`[${user}] Google Sheets request: ${r.url()}`); });
     page.on('response', r => { const u = r.url(); if (u.includes('/api/') && r.status() >= 400 && r.status() !== 202) problems.push(`[${user}] ${r.request().method()} ${u.replace(B, '')} -> ${r.status()}`); });
     await page.goto(B + '/login');
     await page.fill('input[name=username]', user);
@@ -82,6 +82,10 @@ async function call(cookie, method, path, body) {
     const visible = await page.evaluate(tab => { const el = document.getElementById('sec-' + tab); return el ? getComputedStyle(el).display !== 'none' : null; }, t);
     chk(`tab ${t} visible`, visible, true);
   }
+
+  chk('no /api/sync call and no Google Sheets request from the app', requests.some(r => /\/api\/sync\b/.test(r)) || problems.some(p => /Google Sheets request/.test(p)), false);
+  chk('History tab has no Sheets wording', await page.evaluate(() => { goTab('history'); return new Promise(r => setTimeout(() => r(/Sheets/i.test(document.getElementById('sec-history').innerText)), 600)); }), false);
+  chk('Board topbar has no Sync button', await page.evaluate(() => { goTab('board'); return /Sync/.test(document.getElementById('topbar-actions').innerText); }), false);
 
   console.log('── Office: drag/drop never assigns by itself ──');
   const writesBefore = requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length;
