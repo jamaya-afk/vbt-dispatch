@@ -698,6 +698,39 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 .toast.success{background:var(--G)}
 .toast.error{background:var(--R)}
 @keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* ── Fleet Map ─────────────────────────────────────────────────────────── */
+.fm-wrap{display:grid;grid-template-columns:340px 1fr;gap:0;height:calc(100vh - 120px);min-height:480px;background:var(--bg);border:1px solid var(--bdr);border-radius:var(--rl);overflow:hidden;box-shadow:var(--shadow)}
+.fm-side{display:flex;flex-direction:column;border-right:1px solid var(--bdr);background:#0f1729;color:#e6ebf5;min-width:0}
+.fm-side-head{display:flex;justify-content:space-between;align-items:flex-start;padding:14px 16px 10px;border-bottom:1px solid rgba(255,255,255,.08)}
+.fm-title{font-size:12px;font-weight:800;letter-spacing:.14em;color:#8fa3c7}
+.fm-sub{font-size:13px;font-weight:700;margin-top:2px}
+.fm-updated{font-size:11px;color:#8fa3c7;text-align:right;line-height:1.4}
+.fm-list{flex:1;overflow-y:auto;padding:6px}
+.fm-row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:10px 10px;border-radius:10px;cursor:pointer;border:1px solid transparent}
+.fm-row:hover{background:rgba(255,255,255,.05)}
+.fm-row.sel{background:rgba(59,130,246,.18);border-color:rgba(59,130,246,.55)}
+.fm-row.offline{opacity:.62}
+.fm-dot{width:11px;height:11px;border-radius:50%;background:var(--fm-c,#6b7280);box-shadow:0 0 0 3px rgba(255,255,255,.06)}
+.fm-row-main{min-width:0}
+.fm-row-name{font-weight:700;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fm-row-status{font-size:12px;color:#c3cde0;margin-top:1px}
+.fm-row-age{font-size:11px;color:#8fa3c7;white-space:nowrap;text-align:right}
+.fm-card{border-top:1px solid rgba(255,255,255,.08);padding:12px 16px 14px;background:#0b1222;max-height:46%;overflow-y:auto}
+.fm-card-empty{font-size:12px;color:#8fa3c7;padding:6px 0}
+.fm-card-truck{font-size:17px;font-weight:800}
+.fm-card-status{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:var(--fm-c,#6b7280);color:#0b1222;margin:6px 0 10px}
+.fm-card dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12.5px;margin:0}
+.fm-card dt{color:#8fa3c7}.fm-card dd{margin:0;font-weight:600}
+.fm-map{position:relative;min-height:320px;background:#dfe6ef}
+.fm-map .leaflet-container{width:100%;height:100%;font-family:var(--f)}
+.fm-map-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--txt2);font-size:13px;z-index:1}
+.fm-marker{position:relative;width:38px;height:38px;border-radius:50%;background:var(--fm-c,#6b7280);border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:18px;transition:transform .15s}
+.fm-marker.sel{transform:scale(1.22);box-shadow:0 0 0 4px rgba(59,130,246,.45),0 2px 8px rgba(0,0,0,.35)}
+.fm-marker.offline{filter:grayscale(1);opacity:.7}
+.fm-marker-label{position:absolute;top:40px;left:50%;transform:translateX(-50%);white-space:nowrap;background:#0f1729;color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.leaflet-div-icon{background:transparent;border:0}
+@media(max-width:900px){.fm-wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:auto}.fm-side{border-right:0;border-bottom:1px solid var(--bdr);max-height:46vh}.fm-map{height:52vh}.fm-card{max-height:none}}
 </style>
 </head>
 <body>
@@ -715,6 +748,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
         <span>Quick Assign</span>
         <span class="nav-badge" id="today-badge" style="display:none">0</span>
+      </button>
+      <button class="nav-item" data-tab="map" onclick="goTab('map')" id="nav-map" style="display:none">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+        <span>Fleet Map</span>
       </button>
       <button class="nav-item" data-tab="pos" onclick="goTab('pos')" id="nav-pos">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
@@ -808,6 +845,20 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <!-- REPORTS / FINANCE -->
       <div class="section" id="sec-reports">
         <div id="reports-content"></div>
+      </div>
+      <!-- FLEET MAP (command center) -->
+      <div class="section" id="sec-map">
+        <div class="fm-wrap" id="fm-wrap">
+          <aside class="fm-side">
+            <div class="fm-side-head">
+              <div><div class="fm-title">LIVE FLEET</div><div class="fm-sub" id="fm-count">—</div></div>
+              <div class="fm-updated" id="fm-updated">—</div>
+            </div>
+            <div class="fm-list" id="fm-list"></div>
+            <div class="fm-card" id="fm-card"><div class="fm-card-empty">Select a truck to see its load.</div></div>
+          </aside>
+          <div class="fm-map" id="fm-map"><div class="fm-map-loading" id="fm-map-loading">Loading map…</div></div>
+        </div>
       </div>
       <!-- FLEET (Drivers + Trucks) -->
       <div class="section" id="sec-fleet">
@@ -1257,6 +1308,8 @@ async function init() {
     if (role === 'admin' || role === 'manager') {
       const navFleet = document.getElementById('nav-fleet');
       if (navFleet) navFleet.style.display = '';
+      const navMap = document.getElementById('nav-map');
+      if (navMap) navMap.style.display = '';
     }
 
     await loadAll();
@@ -1295,6 +1348,8 @@ function goTab(tab) {
   if (tab === 'vendors')  { document.getElementById('sec-vendors').classList.add('active'); document.getElementById('page-title').textContent = 'Vendors & Prices'; renderVendors(); }
   if (tab === 'quickbooks'){ document.getElementById('sec-quickbooks').classList.add('active'); document.getElementById('page-title').textContent = 'QuickBooks'; renderQuickBooks(); }
   if (tab === 'fleet')    { document.getElementById('sec-fleet').classList.add('active'); document.getElementById('page-title').textContent = 'Drivers & Trucks'; renderFleet(); }
+  if (tab === 'map')      { document.getElementById('sec-map').classList.add('active'); document.getElementById('page-title').textContent = 'Fleet Map'; renderFleetMap(); }
+  if (tab !== 'map') fmStopTicker();
   if (tab === 'driver')   { document.getElementById('sec-driver').classList.add('active'); document.getElementById('page-title').textContent = 'My Trips'; renderDriver(); }
 
   const navBtn = document.querySelector(`[data-tab="${tab}"]`);
@@ -4093,6 +4148,9 @@ async function notifySave() {
 let liveTimer = null, liveVersion = null;
 
 async function liveCheck(force) {
+  // The fleet map refreshes on every tick: GPS movement does not change the
+  // dispatch version, and the screen must never do a full reload.
+  if (currentTab === 'map' && role !== 'driver') { refreshFleetMap().catch(() => {}); }
   try {
     const r = await fetch('/api/dispatch-version');
     if (!r.ok) return;
@@ -5983,6 +6041,213 @@ async function disableDriver(username) {
     await loadAll(); renderFleet();
   } catch (e) { toast('Disable failed: ' + e.message, 'error'); }
 }
+
+// ── FLEET MAP (command center) ───────────────────────────────────────────────
+// Reads /api/fleet/live (manager only). Every status, colour and label comes
+// from the server's statusKey — nothing is derived here. Leaflet is loaded on
+// first use from a pinned CDN build; the tile provider is one object so it
+// can be swapped without touching the rest.
+const FM_TILES = {
+  // Provider module — change these four lines to switch tile providers.
+  url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  maxZoom: 19,
+  subdomains: '',
+};
+// Leaflet 1.9.4 is vendored under public/vendor/leaflet so the map works
+// on a locked-down network and never depends on a third-party CDN being up.
+// Only the tiles come from outside (FM_TILES).
+const FM_LEAFLET = {
+  js:  '/app/vendor/leaflet/leaflet.js',
+  css: '/app/vendor/leaflet/leaflet.css',
+};
+// Colour per server statusKey. Keys are the server's; no local status exists.
+const FM_COLORS = {
+  available: '#3b82f6', assigned: '#8b5cf6', toYard: '#eab308', atYard: '#eab308',
+  enRoute: '#16a066', atJobsite: '#f97316', returning: '#14b8a6', completed: '#64748b', offline: '#6b7280',
+};
+const FM_HOME = { lat: 36.7378, lng: -119.7871, zoom: 9 };   // Fresno — initial view only, never a truck position
+
+const fm = { map: null, markers: {}, trail: null, trailKey: '', selected: null, data: null, fetchedAt: 0, ticker: null, leaflet: null, refreshes: 0 };
+
+function fmLoadLeaflet() {
+  if (fm.leaflet) return fm.leaflet;
+  fm.leaflet = new Promise((resolve, reject) => {
+    if (window.L) return resolve(window.L);
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = FM_LEAFLET.css; document.head.appendChild(css);
+    const js = document.createElement('script'); js.src = FM_LEAFLET.js;
+    js.onload = () => resolve(window.L);
+    js.onerror = () => reject(new Error('Map library failed to load'));
+    document.head.appendChild(js);
+  });
+  return fm.leaflet;
+}
+
+async function renderFleetMap() {
+  if (role !== 'admin' && role !== 'manager') return;
+  try {
+    const L = await fmLoadLeaflet();
+    if (!fm.map) {
+      fm.map = L.map('fm-map', { zoomControl: true }).setView([FM_HOME.lat, FM_HOME.lng], FM_HOME.zoom);
+      L.tileLayer(FM_TILES.url, { attribution: FM_TILES.attribution, maxZoom: FM_TILES.maxZoom, subdomains: FM_TILES.subdomains }).addTo(fm.map);
+      document.getElementById('fm-map-loading')?.remove();
+    }
+    setTimeout(() => fm.map && fm.map.invalidateSize(), 50);
+  } catch (e) {
+    const el = document.getElementById('fm-map-loading'); if (el) el.textContent = e.message;
+  }
+  await refreshFleetMap(true);
+  fmStartTicker();
+}
+
+// Fetch the live rows and repaint. Never reloads the page; markers move in
+// place. `fit` = frame all live trucks (first paint only).
+async function refreshFleetMap(fit) {
+  const r = await api('GET', '/api/fleet/live');
+  if (!r.ok) { toast(r.error || 'Fleet data unavailable', 'error'); return; }
+  const changed = !fm.data || fm.data.version !== r.version;
+  fm.data = r; fm.fetchedAt = Date.now(); fm.refreshes++;
+  fmPaintList();
+  if (fm.map) fmPaintMarkers(fit);
+  if (fm.selected) { fmPaintCard(); if (changed) fmLoadTrail(true); }
+  fmTick();
+}
+
+function fmAgeText(t) {
+  if (!t.gps) return 'No GPS';
+  const secs = t.gps.ageSeconds + Math.round((Date.now() - fm.fetchedAt) / 1000);
+  if (secs < 60) return `Updated ${secs} sec ago`;
+  if (secs < 3600) return `${t.gps.stale ? 'Last seen' : 'Updated'} ${Math.round(secs / 60)} min ago`;
+  return `Last seen ${Math.round(secs / 3600)} h ago`;
+}
+function fmColor(t) { return FM_COLORS[t.statusKey] || FM_COLORS.offline; }
+function fmStatusText(t) {
+  if (t.statusKey !== 'offline') return t.status;
+  return t.gps ? `Offline · was ${t.workflowStatus}` : 'Offline · No GPS';
+}
+
+function fmPaintList() {
+  const d = fm.data; if (!d) return;
+  document.getElementById('fm-count').textContent = `${d.count} TRUCK${d.count === 1 ? '' : 'S'} · ${d.trucks.filter(t => t.live).length} live`;
+  document.getElementById('fm-list').innerHTML = d.trucks.map(t => `
+    <div class="fm-row ${t.driverId === fm.selected ? 'sel' : ''} ${t.statusKey === 'offline' ? 'offline' : ''}" data-driver="${escapeAttr(t.driverId)}" style="--fm-c:${fmColor(t)}" onclick="fmSelect('${escapeAttr(t.driverId)}', true)">
+      <span class="fm-dot"></span>
+      <div class="fm-row-main">
+        <div class="fm-row-name">🚚 ${escapeHtml(t.driverName)} — ${escapeHtml(t.truckNum || 'no truck')}</div>
+        <div class="fm-row-status">${escapeHtml(fmStatusText(t))}</div>
+      </div>
+      <div class="fm-row-age" data-age="${escapeAttr(t.driverId)}">${escapeHtml(fmAgeText(t))}</div>
+    </div>`).join('');
+}
+
+function fmIcon(t) {
+  return window.L.divIcon({
+    className: '', iconSize: [38, 38], iconAnchor: [19, 19],
+    html: `<div class="fm-marker ${t.driverId === fm.selected ? 'sel' : ''} ${t.statusKey === 'offline' ? 'offline' : ''}" style="--fm-c:${fmColor(t)}" data-marker="${escapeAttr(t.driverId)}">🚚<span class="fm-marker-label">${escapeHtml(t.truckNum || t.driverName)}</span></div>`,
+  });
+}
+
+// One marker per truck WITH a real GPS point. No point, no marker.
+function fmPaintMarkers(fit) {
+  const L = window.L, d = fm.data;
+  const seen = new Set();
+  d.trucks.forEach(t => {
+    if (!t.gps) return;
+    seen.add(t.driverId);
+    const to = L.latLng(t.gps.lat, t.gps.lng);
+    let m = fm.markers[t.driverId];
+    if (!m) {
+      m = L.marker(to, { icon: fmIcon(t), title: `${t.driverName} — ${t.truckNum}` }).addTo(fm.map);
+      m.on('click', () => fmSelect(t.driverId, false));
+      fm.markers[t.driverId] = m;
+    } else {
+      m.setIcon(fmIcon(t));
+      fmAnimateMarker(m, to);
+    }
+  });
+  Object.keys(fm.markers).forEach(id => { if (!seen.has(id)) { fm.map.removeLayer(fm.markers[id]); delete fm.markers[id]; } });
+  if (fit) {
+    const pts = d.trucks.filter(t => t.gps && t.live).map(t => [t.gps.lat, t.gps.lng]);
+    if (pts.length) fm.map.fitBounds(pts, { padding: [40, 40], maxZoom: 13 });
+  }
+}
+
+// Glide a marker from where it was to where it is now (~800 ms) instead of jumping.
+function fmAnimateMarker(marker, to) {
+  const from = marker.getLatLng();
+  if (from.equals(to)) return;
+  if (marker._fmAnim) cancelAnimationFrame(marker._fmAnim);
+  const t0 = performance.now(), dur = 800;
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    marker.setLatLng([from.lat + (to.lat - from.lat) * e, from.lng + (to.lng - from.lng) * e]);
+    if (k < 1) marker._fmAnim = requestAnimationFrame(step); else marker._fmAnim = null;
+  };
+  marker._fmAnim = requestAnimationFrame(step);
+}
+
+// Select from the list (center=true) or from a marker (center=false). Both
+// paths end in the same state: row highlighted, marker highlighted, card shown.
+function fmSelect(driverId, center) {
+  fm.selected = driverId;
+  fmPaintList();
+  const t = (fm.data?.trucks || []).find(x => x.driverId === driverId);
+  Object.entries(fm.markers).forEach(([id, m]) => { const tt = fm.data.trucks.find(x => x.driverId === id); if (tt) m.setIcon(fmIcon(tt)); });
+  if (center && t && t.gps && fm.map) fm.map.flyTo([t.gps.lat, t.gps.lng], Math.max(fm.map.getZoom(), 13), { duration: 0.6 });
+  fmPaintCard();
+  fmLoadTrail();
+}
+
+function fmPaintCard() {
+  const el = document.getElementById('fm-card');
+  const t = (fm.data?.trucks || []).find(x => x.driverId === fm.selected);
+  if (!t) { el.innerHTML = '<div class="fm-card-empty">Select a truck to see its load.</div>'; return; }
+  const l = t.load;
+  const row = (k, v) => v ? `<dt>${k}</dt><dd>${escapeHtml(String(v))}</dd>` : '';
+  el.innerHTML = `
+    <div class="fm-card-truck">${escapeHtml(t.truckNum || 'No truck')}${t.truckIsAssigned ? '' : ' <span style="font-size:11px;color:#8fa3c7;font-weight:600">(usual truck)</span>'}</div>
+    <span class="fm-card-status" style="--fm-c:${fmColor(t)}">${escapeHtml(fmStatusText(t))}</span>
+    <dl>
+      ${row('Driver', t.driverName)}
+      ${t.statusKey === 'offline' && t.gps ? row('Stage', t.workflowStatus) : row('Stage', t.workflowStatus)}
+      ${l ? row('PO', l.poNumber || '—') : ''}
+      ${l ? row('Customer', l.customer) : ''}
+      ${l ? row('Material', l.material) : ''}
+      ${l ? row('Load', `${l.loadNumber} of ${l.loadsAssigned}`) : ''}
+      ${l ? row('Trip', l.tripNumber) : ''}
+      ${l && l.pickup ? row('Pickup', l.pickup.name) : ''}
+      ${l ? row('Destination', [l.address, l.city].filter(Boolean).join(', ') || '—') : ''}
+      ${l && l.tripStartedAt ? row('Trip started', new Date(l.tripStartedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
+      ${t.since ? row('Stage since', new Date(t.since).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
+      ${row('Updated', t.gps ? `${new Date(t.gps.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} (${fmAgeText(t).replace('Updated ', '').replace('Last seen ', '')})` : 'No GPS')}
+      ${t.gps && t.gps.accuracy != null ? row('GPS accuracy', `±${t.gps.accuracy} m`) : ''}
+    </dl>`;
+}
+
+// Trail for the SELECTED truck's CURRENT trip only — one load, one trip
+// number, taken from the live row. Nothing else is ever requested.
+async function fmLoadTrail(force) {
+  const t = (fm.data?.trucks || []).find(x => x.driverId === fm.selected);
+  const key = t && t.load && t.live ? `${t.load.id}:${t.load.tripNumber}` : '';
+  if (key === fm.trailKey && !force) return;   // force = data changed, redraw the same trip with new points
+  fm.trailKey = key;
+  if (fm.trail) { fm.map && fm.map.removeLayer(fm.trail); fm.trail = null; }
+  if (!key || !fm.map) return;
+  const r = await api('GET', `/api/loads/${encodeURIComponent(t.load.id)}/track`);
+  if (!r.ok || fm.trailKey !== key) return;
+  const pts = (r.points || []).filter(p => p.tripNumber === t.load.tripNumber).map(p => [p.lat, p.lng]);
+  if (pts.length < 2) return;
+  fm.trail = window.L.polyline(pts, { color: fmColor(t), weight: 4, opacity: .8 }).addTo(fm.map);
+}
+
+// Age labels tick every second locally; data itself comes on the 12 s cycle.
+function fmTick() {
+  const d = fm.data; if (!d) return;
+  document.getElementById('fm-updated').textContent = `Updated ${Math.max(0, Math.round((Date.now() - fm.fetchedAt) / 1000))}s ago · stale after ${Math.round(d.staleAfterSeconds / 60)} min`;
+  d.trucks.forEach(t => { const el = document.querySelector(`[data-age="${t.driverId}"]`); if (el) el.textContent = fmAgeText(t); });
+}
+function fmStartTicker() { fmStopTicker(); fm.ticker = setInterval(fmTick, 1000); }
+function fmStopTicker() { if (fm.ticker) { clearInterval(fm.ticker); fm.ticker = null; } }
 
 // ── START ────────────────────────────────────────────────────────────────────
 init();

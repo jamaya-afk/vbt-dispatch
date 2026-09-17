@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "preflight": "node preflight.js",
-    "test": "bash test-e2e.sh"
+    "test": "bash test-e2e.sh",
+    "test:pg": "bash test-pg-local.sh",
+    "test:browser": "node test-browser.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.78.0",
