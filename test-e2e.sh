@@ -706,6 +706,38 @@ chk "  ...load left the active board"                 "$(curl -s -b $M $B/api/da
 chk "  ...still counted by Reports (profitability)"   "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;d=json.load(sys.stdin);print(any(l['id']=='$LOAD' for l in d.get('topLoads',[])+d.get('bottomLoads',[])) or d['grand']['loadCount']>0)")" "True"
 chk "  ...audit entry recorded"                       "$(curl -s -b $M "$B/api/audit-log" | python3 -c "import json,sys;d=json.load(sys.stdin);print(any(e.get('action')=='archived-batch' and e.get('target')=='$AB' for e in d['entries']))")" "True"
 
+echo "── 35. PO numbers are unique per order; customers are reusable ──"
+mk() { curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d "$1" -o /tmp/po.json -w '%{http_code}'; }
+BODY1='{"po":{"poNumber":"45021","customer":"Repeat Customer","deliveryDate":"'"$(date +%F)"'","address":"900 Elm St","city":"Clovis","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}'
+chk "first PO #45021 created"                       "$(mk "$BODY1")" "200"
+chk "duplicate PO #45021 refused with the exact message" "$(mk "$BODY1")|$(python3 -c "import json;d=json.load(open('/tmp/po.json'));print(d['error'], d.get('duplicate'))")" "409|PO #45021 already exists. Please enter a different PO number. True"
+chk "  ...case/whitespace variant is the same number" "$(mk "$(echo "$BODY1" | sed 's/"45021"/" 45021 "/')")" "409"
+chk "  ...still exactly one PO #45021"               "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print(len([p for p in json.load(sys.stdin)['pos'] if p['poNumber']=='45021']))")" "1"
+chk "same customer, same jobsite, same date, new number → OK" "$(mk "$(echo "$BODY1" | sed 's/"45021"/"45022"/')")" "200"
+chk "same customer, third PO → OK"                   "$(mk "$(echo "$BODY1" | sed 's/"45021"/"45023"/; s/900 Elm St/12 Oak Ave/; s/Clovis/Sanger/')")" "200"
+chk "  ...three POs, one customer record"            "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(len([p for p in d['pos'] if p['customer']=='Repeat Customer']), len([c for c in d['customers'] if c['name']=='Repeat Customer']))")" "3 1"
+chk "blank number auto-assigns a free one"           "$(mk "$(echo "$BODY1" | sed 's/"45021"/""/')")|$(python3 -c "import json;d=json.load(open('/tmp/po.json'));print(d['po']['poNumber'].startswith('PO-'))")" "200|True"
+P1=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([p['id'] for p in json.load(sys.stdin)['pos'] if p['poNumber']=='45021'][0])")
+P2=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([p['id'] for p in json.load(sys.stdin)['pos'] if p['poNumber']=='45022'][0])")
+chk "renaming a PO to an existing number → 409"      "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/pos/$P2 -d '{"poNumber":"45021"}')" "409"
+chk "renaming to a free number → 200"                "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/pos/$P2 -d '{"poNumber":"45022-B"}')" "200"
+chk "live check: taken"                              "$(curl -s -b $M "$B/api/pos/check-number?poNumber=45021" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['exists'], d['customer'])")" "True Repeat Customer"
+chk "live check: free"                               "$(curl -s -b $M "$B/api/pos/check-number?poNumber=99999" | python3 -c "import json,sys;print(json.load(sys.stdin)['exists'])")" "False"
+chk "driver cannot use the check"                    "$(curl -s -b $D -o /dev/null -w '%{http_code}' "$B/api/pos/check-number?poNumber=45021")" "403"
+chk "form split records the chosen truck"            "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['poId']=='$P1'][0];print(l['truckUnitId'], l['driverName'])")" "truck-14 Rigo"
+chk "unknown truck on a split → 400"                 "$(mk "$(echo "$BODY1" | sed 's/"45021"/"45030"/; s/truck-14/truck-99/')")" "400"
+chk "inactive/unknown driver on a split → 400"       "$(mk "$(echo "$BODY1" | sed 's/"45021"/"45031"/; s/"rigo"/"nobody"/')")" "400"
+# Jobsites: previous addresses for the customer; coordinates inherited on request only.
+curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/pos/$P1/location -d '{"lat":36.8252,"lng":-119.7029}' -o /dev/null
+JS=$(curl -s -b $M "$B/api/jobsites?customer=Repeat%20Customer" | python3 -c "
+import json,sys;j=json.load(sys.stdin)['jobsites']
+elm=[x for x in j if x['address']=='900 Elm St'][0]
+print(len(j)); print(elm['count'], elm['geo']['lat'] if elm['geo'] else None, elm['geoPoId']=='$P1')")
+chk "jobsites: two distinct sites for the customer"  "$(echo "$JS"|sed -n 1p)" "2"
+chk "  ...Elm St used by 3 POs, carries the saved point" "$(echo "$JS"|sed -n 2p)" "3 36.8252 True"
+chk "new PO for the same site inherits the point when asked" "$(mk "$(echo "$BODY1" | sed 's/"45021"/"45040"/; s/"plannedVendorId":"vulcan"/"plannedVendorId":"vulcan","jobsiteFromPoId":"'"$P1"'"/')")|$(python3 -c "import json;d=json.load(open('/tmp/po.json'));print(d['po']['geo']['lat'], d['po']['geo']['inheritedFromPoId']=='$P1')")" "200|36.8252 True"
+chk "  ...and not when not asked"                    "$(mk "$(echo "$BODY1" | sed 's/"45021"/"45041"/')")|$(python3 -c "import json;d=json.load(open('/tmp/po.json'));print('geo' in d['po'])")" "200|False"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
