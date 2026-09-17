@@ -87,6 +87,37 @@ async function call(cookie, method, path, body) {
   chk('History tab has no Sheets wording', await page.evaluate(() => { goTab('history'); return new Promise(r => setTimeout(() => r(/Sheets/i.test(document.getElementById('sec-history').innerText)), 600)); }), false);
   chk('Board topbar has no Sync button', await page.evaluate(() => { goTab('board'); return /Sync/.test(document.getElementById('topbar-actions').innerText); }), false);
 
+  console.log('── New PO form: two steps, unique PO number, truck per load ──');
+  await page.evaluate(() => goTab('board')); await page.waitForTimeout(300);
+  await page.evaluate(() => openNewPO()); await page.waitForTimeout(500);
+  let f = await page.evaluate(() => ({ open: document.getElementById('po-modal').style.display !== 'none', step2hidden: document.getElementById('po-body-2').style.display === 'none', date: document.getElementById('po-date').value, yard: document.getElementById('po-vendor').value }));
+  chk('modal opens on step 1 with today and VBT yard preset', `${f.open} ${f.step2hidden} ${f.date === today} ${f.yard}`, 'true true true vbt');
+  await page.fill('#po-number', '10482'); await page.waitForTimeout(500);
+  chk('typing an existing PO number shows the message inline', /^PO #10482 already exists \(ABC Materials, .+\)\. Please enter a different PO number\.$/.test(await page.evaluate(() => document.getElementById('po-number-msg').innerText)), true);
+  await page.fill('#po-customer', 'ABC Materials'); await page.evaluate(() => onPoCustomerInput('ABC Materials')); await page.waitForTimeout(400);
+  chk('Next is refused while the number is a duplicate', await page.evaluate(() => { poStep(2); return document.getElementById('po-body-2').style.display === 'none'; }), true);
+  await page.fill('#po-number', '10483'); await page.waitForTimeout(500);
+  chk('   ...a free number is confirmed available', await page.evaluate(() => document.getElementById('po-number-msg').innerText), 'PO #10483 is available.');
+  chk('jobsite picker lists the customer\'s previous address', await page.evaluate(() => Array.from(document.querySelectorAll('#po-jobsite option')).some(o => /500 Main St, Merced/.test(o.textContent))), true);
+  await page.evaluate(() => { const sel = document.getElementById('po-jobsite'); sel.value = '0'; onPoJobsitePick('0'); });
+  chk('   ...picking it fills address and city', await page.evaluate(() => document.getElementById('po-address').value + ' / ' + document.getElementById('po-city').value), '500 Main St / Merced');
+  await page.evaluate(() => poStep(2)); await page.waitForTimeout(600);
+  f = await page.evaluate(() => ({ step2: document.getElementById('po-body-2').style.display !== 'none', cards: document.querySelectorAll('.po-card').length, jobline: document.getElementById('po-jobline').innerText.replace(/\s+/g, ' ') }));
+  chk('step 2 shows the job line and one load card', `${f.step2} ${f.cards}`, 'true 1');
+  chk('   job line names PO, customer, site, yard', /PO 10483.*ABC Materials.*500 Main St, Merced.*Yard: VBT Yard/.test(f.jobline), true);
+  await page.evaluate(() => { onSplitDriverChange(0, 'rigo'); });
+  await page.waitForTimeout(600);
+  f = await page.evaluate(() => ({ truck: splits[0].truckUnitId, drvOpt: document.querySelector('.po-card select option[value="beryle"]').textContent, money: document.getElementById('pricing-preview-0').innerText.replace(/\s+/g, ' '), summary: document.getElementById('po-summary').innerText.replace(/\s+/g, ' ') }));
+  chk('choosing a driver pre-fills the usual truck', f.truck, 'truck-14');
+  chk('driver list shows availability for that day', /Beryle — 1 load that day/.test(f.drvOpt), true);
+  chk('card shows quantity in tons and money from the engine', /1 load × 25 t = 25 tons.*Rev.*Cost.*VBT internal.*Margin/.test(f.money), true);
+  chk('summary bar totals loads, drivers and margin', /1 load · 25 tons 1 driver Revenue \$.*Margin/.test(f.summary), true);
+  await page.evaluate(() => savePO()); await page.waitForTimeout(1200);
+  const created = (await call(mgr, 'GET', '/api/data')).data;
+  const np = created.pos.find(p => p.poNumber === '10483'); const nl = np && created.loads.find(l => l.poId === np.id);
+  chk('Save creates the PO with driver and truck from the form', np && nl ? `${np.customer} ${nl.truckId} ${nl.truckUnitId}` : 'missing', 'ABC Materials rigo truck-14');
+  chk('   modal closed', await page.evaluate(() => document.getElementById('po-modal').style.display), 'none');
+
   console.log('── Office: drag/drop never assigns by itself ──');
   const writesBefore = requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length;
   await page.evaluate(() => goTab('board')); await page.waitForTimeout(400);

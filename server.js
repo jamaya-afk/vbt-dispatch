@@ -2146,6 +2146,47 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
 });
 
 // ── API: CREATE PO ──────────────────────────────────────────────────────────
+// ── PO NUMBERS ───────────────────────────────────────────────────────────────
+// The customer is the reusable record; the PO number identifies ONE order and
+// must be unique across active and archived POs. Same customer, same jobsite,
+// same date with different PO numbers is normal.
+function poNumberKey(n) { return String(n || '').trim().toLowerCase(); }
+function findPoByNumber(n, excludeId) {
+  const k = poNumberKey(n); if (!k) return null;
+  const all = [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])];
+  return all.find(p => p.id !== excludeId && poNumberKey(p.poNumber) === k) || null;
+}
+function duplicatePoMessage(n) { return `PO #${String(n).trim()} already exists. Please enter a different PO number.`; }
+
+// Live check for the PO form: does this number already belong to an order?
+app.get('/api/pos/check-number', reqMgr, (req, res) => {
+  const n = String(req.query.poNumber || '').trim();
+  if (!n) return res.json({ poNumber: '', exists: false });
+  const hit = findPoByNumber(n, req.query.excludeId || null);
+  res.json({ poNumber: n, exists: !!hit, poId: hit?.id || null, customer: hit?.customer || '', deliveryDate: hit?.deliveryDate || '', message: hit ? duplicatePoMessage(n) : '' });
+});
+
+// Jobsites a customer has been delivered to before (active + archived POs),
+// so a dispatcher picks an existing address instead of retyping it. Saved
+// coordinates ride along so a new PO for the same site can inherit them.
+app.get('/api/jobsites', reqMgr, (req, res) => {
+  const cust = customerKey(req.query.customer || '');
+  const all = [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])]
+    .filter(p => !cust || customerKey(p.customer) === cust)
+    .filter(p => (p.address || '').trim() || (p.city || '').trim());
+  const sites = new Map();
+  all.forEach(p => {
+    const key = [String(p.address || '').trim().toLowerCase(), String(p.city || '').trim().toLowerCase()].join('|');
+    const cur = sites.get(key) || { address: (p.address || '').trim(), city: (p.city || '').trim(), customer: p.customer || '', count: 0, lastUsed: '', lastPoId: null, geo: null, geoPoId: null };
+    cur.count++;
+    if ((p.deliveryDate || '') >= cur.lastUsed) { cur.lastUsed = p.deliveryDate || ''; cur.lastPoId = p.id; }
+    const g = geoPublic(p.geo);
+    if (g && (!cur.geo || (g.confirmed && !cur.geo.confirmed))) { cur.geo = g; cur.geoPoId = p.id; }
+    sites.set(key, cur);
+  });
+  res.json({ jobsites: [...sites.values()].sort((a, b) => b.lastUsed.localeCompare(a.lastUsed)) });
+});
+
 app.post('/api/pos', reqMgr, async (req, res) => {
   try {
   const { po, splits } = req.body;
@@ -2181,8 +2222,25 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     }
   }
 
-  const poNumber = po.poNumber || `PO-${store.nextPoNum++}`;
+  // PO number: unique per order. Blank → next auto number that is not taken.
+  let poNumber = String(po.poNumber || '').trim();
+  if (poNumber) {
+    if (findPoByNumber(poNumber)) return res.status(409).json({ error: duplicatePoMessage(poNumber), poNumber, duplicate: true });
+  } else {
+    do { poNumber = `PO-${store.nextPoNum++}`; } while (findPoByNumber(poNumber));
+  }
+  for (const sp of (splits || [])) {
+    if (sp.truckUnitId && !(store.trucks || []).some(t => t.id === sp.truckUnitId)) return res.status(400).json({ error: `Unknown truck "${sp.truckUnitId}"` });
+    if (sp.truckId && !driverRoster().some(d => d.id === sp.truckId)) return res.status(400).json({ error: `Unknown or inactive driver "${sp.truckId}"` });
+  }
+  // Same jobsite as an earlier PO: inherit its saved coordinates (never guessed).
+  let inheritedGeo;
+  if (po.jobsiteFromPoId) {
+    const src = [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])].find(x => x.id === po.jobsiteFromPoId);
+    if (src && src.geo && validLatLng(src.geo.lat, src.geo.lng)) inheritedGeo = { ...src.geo, inheritedFromPoId: src.id };
+  }
   const newPo = {
+    ...(inheritedGeo ? { geo: inheritedGeo } : {}),
     id: 'PO-' + Date.now(),
     poNumber,
     customer:        resolvedCustomer,
@@ -2317,6 +2375,10 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   if (hasApproved) {
     const frozen = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'].filter(k => k in req.body && req.body[k] !== old[k]);
     if (frozen.length) return res.status(403).json({ error: `This PO has approved loads; ${frozen.join(', ')} cannot change.`, frozenFields: frozen });
+  }
+  if (req.body.poNumber !== undefined && poNumberKey(req.body.poNumber) !== poNumberKey(old.poNumber)) {
+    if (!String(req.body.poNumber).trim()) return res.status(400).json({ error: 'PO number cannot be blank' });
+    if (findPoByNumber(req.body.poNumber, old.id)) return res.status(409).json({ error: duplicatePoMessage(req.body.poNumber), duplicate: true });
   }
   // Coordinates change only through /location, never through a generic update.
   const { geo: _ignoredGeo, ...poBody } = req.body || {};
