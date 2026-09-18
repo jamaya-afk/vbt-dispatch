@@ -974,6 +974,34 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   </div>
 </div>
 
+<!-- LOADED: SCALE / INTERNAL TICKET (captured once, at the yard) -->
+<div class="modal-bg" id="loaded-modal" style="display:none">
+  <div class="modal" style="max-width:460px">
+    <div class="modal-head">
+      <h2>Loaded — ticket</h2>
+      <button class="modal-close" onclick="closeLoaded()">&#215;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:10px" id="loaded-intro">Photograph the ticket from the yard, then confirm its number and net tons. This is the only time you enter it.</p>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button type="button" class="btn ghost" id="loaded-src-supplier" style="flex:1" onclick="loadedSetSource('supplier')">Supplier scale ticket</button>
+        <button type="button" class="btn ghost" id="loaded-src-vbt" style="flex:1" onclick="loadedSetSource('vbt')">VBT internal ticket</button>
+      </div>
+      <input type="file" accept="image/*" capture="environment" id="loaded-input" style="padding:14px;border:2px dashed var(--bdr2);border-radius:var(--r);width:100%;background:var(--bg2)">
+      <img id="loaded-preview" style="display:none;max-width:100%;max-height:220px;border-radius:var(--r);margin-top:8px">
+      <div class="field" style="margin-top:12px"><label>Ticket number</label>
+        <input id="loaded-number" inputmode="numeric" autocomplete="off" placeholder="e.g. 37432733" oninput="loadedCheckNumber()">
+        <div id="loaded-number-msg" style="font-size:12px;margin-top:4px;min-height:16px;color:var(--txt3)"></div></div>
+      <div class="field"><label id="loaded-tons-label">Net tons (from the scale ticket)</label>
+        <input id="loaded-tons" type="number" step="0.01" min="0" inputmode="decimal" placeholder="e.g. 23.20"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeLoaded()">Cancel</button>
+      <button class="btn primary" onclick="confirmLoaded()" id="loaded-save-btn">Confirm — loaded &amp; rolling</button>
+    </div>
+  </div>
+</div>
+
 <!-- YARD PICKER MODAL -->
 <div class="modal-bg" id="yard-modal" style="display:none">
   <div class="modal" style="max-width:440px">
@@ -1227,6 +1255,9 @@ function api(method, url, body) {
 // Returns { url } or throws on failure.
 // Falls back to embedding base64 if Supabase isn't configured.
 async function uploadPhoto(kind, loadId, dataUrl) {
+  // The driver payload says whether the upload service exists; when it does
+  // not, go straight to the inline fallback instead of a doomed request.
+  if (window._photoUploadAvailable === false) return { fallback: true };
   try {
     const r = await fetch('/api/upload-photo', {
       method: 'POST',
@@ -2331,6 +2362,8 @@ function openLoadDetail(id) {
   if (po.address) html += `<dt style="color:var(--txt3)">Address</dt><dd>${po.address}, ${po.city || ''}</dd>`;
   if (l.pickup) html += `<dt style="color:var(--txt3)">Pickup Yard</dt><dd style="${l.pickup.isActual ? 'color:var(--A);font-weight:600' : ''}">${escapeHtml(l.pickup.name)}${l.pickup.isActual ? ' <span style="font-size:10px;color:var(--txt3)">(driver confirmed)</span>' : ''}</dd>`;
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
+  if (l.trailer) html += `<dt style="color:var(--txt3)">Trailer</dt><dd>${escapeHtml(l.trailer.number)}${l.trailer.type ? ' · ' + escapeHtml(l.trailer.type) : ''}</dd>`;
+  if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}</dd>`;
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
   html += `</dl>`;
 
@@ -2401,6 +2434,11 @@ function openLoadDetail(id) {
           <div style="text-align:right">→ ${fmtMins(jobA, doneA)}</div>
           <div style="text-align:right;font-weight:700;color:var(--txt)">total: ${fmtMins(startA, doneA)}</div>
         </div>
+        ${t.ticket && t.ticket.number ? (() => { const src = t.ticket.photoUrl || t.ticket.photo; return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px">
+          <span>Ticket <b>#${escapeHtml(t.ticket.number)}</b> <span style="color:var(--txt3)">${t.ticket.source === 'vbt' ? 'VBT internal' : 'supplier scale'}</span></span>
+          <b style="font-variant-numeric:tabular-nums">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t net' : 'no tons'}</b>
+          ${src ? `<img src="${src}" style="width:26px;height:26px;object-fit:cover;border-radius:4px;border:1px solid var(--bdr);cursor:pointer" onclick="showImage('${src}')" title="Ticket photo">` : ''}
+        </div>`; })() : (ts.completed ? `<div style="margin-top:6px;font-size:11px;color:var(--R);font-weight:600">No ticket recorded on this load</div>` : '')}
       </div>`;
     });
     // Aggregate footer when there are multiple trips
@@ -2859,6 +2897,7 @@ async function renderDriver() {
     const d = await r.json();
     dispatch = d.loads || [];
     window._currentDispatch = dispatch;
+    if (dispatch.length && dispatch[0].photoUploadAvailable !== undefined) window._photoUploadAvailable = !!dispatch[0].photoUploadAvailable;
     console.log('[DRIVER VIEW] Loads received from server:', dispatch.length);
     dispatch.forEach(l => console.log('  -', l.loadId, l.poNumber, l.material, '(' + l.loadsAssigned + ' loads)'));
   } catch (e) {
@@ -3034,11 +3073,11 @@ function tripCard(l) {
     </button>
     <div class="action-hint">Tap when you arrive — pick which yard</div>`;
   } else if (atPickup && !isLoaded) {
-    action = `<button class="trip-action loaded" style="background:var(--T,#0d9488);color:#fff" onclick="tripAction('${l.loadId}', 'loaded')">
+    action = `<button class="trip-action loaded" style="background:var(--T,#0d9488);color:#fff" onclick="openLoadedForm('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
-      Loaded / Leaving Yard
+      Loaded — enter ticket
     </button>
-    <div class="action-hint">Tap when you're loaded and rolling out — captures yard service time</div>`;
+    <div class="action-hint required">Photo, ticket number and net tons — captured once, here</div>`;
   } else if (isLoaded && !atJobsite) {
     action = `<button class="trip-action jobsite" style="background:var(--I,#4f46e5);color:#fff" onclick="tripAction('${l.loadId}', 'arrived-jobsite')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -3103,8 +3142,14 @@ function tripCard(l) {
         ${l.jobCode ? `<dt>Job Code</dt><dd><b>${l.jobCode}</b></dd>` : ''}
         <dt>Material</dt><dd>${l.material}</dd>
         <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads</dd>
+        ${l.truckLabel || l.trailerLabel ? `<dt>Rig</dt><dd>${escapeHtml(l.truckLabel || 'no truck')}${l.trailerLabel ? ' + trailer ' + escapeHtml(l.trailerLabel) : ''}</dd>` : ''}
         ${l.notes ? `<dt>Notes</dt><dd class="notes">${l.notes}</dd>` : ''}
       </dl>
+      ${trips.some(t => t.ticket) ? `<div style="margin:2px 0 8px;font-size:11px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:6px 9px">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:3px">Tickets</div>
+        ${trips.filter(t => t.ticket).map(t => `<div style="display:flex;justify-content:space-between;gap:8px"><span>Load ${t.tripNum} · #${escapeHtml(t.ticket.number)} <span style="color:var(--txt3)">${t.ticket.source === 'vbt' ? 'VBT' : 'supplier'}</span></span><b style="font-variant-numeric:tabular-nums">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t' : '—'}</b></div>`).join('')}
+        ${l.tons && l.tons.actualTons ? `<div style="display:flex;justify-content:space-between;border-top:1px solid var(--bdr);margin-top:4px;padding-top:4px"><span>Confirmed so far</span><b style="font-variant-numeric:tabular-nums">${l.tons.actualTons.toFixed(2)} t</b></div>` : ''}
+      </div>` : ''}
       ${totalTrips > 1 ? `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600;margin-bottom:6px">Current load · <b style="color:var(--I,#4f46e5)">${(l.loadsDelivered || 0) + (allTripsDone ? 0 : 1)}</b> of ${totalTrips} · ${l.loadsDelivered || 0} delivered</div>` : ''}
       <div class="steps">
         <div class="step ${stepCls(!started && !submitted, started)}">Start${ts.start ? `<span class="step-time">${ts.start}</span>` : ''}</div>
@@ -3269,7 +3314,7 @@ async function confirmYard(yardId) {
   } else toast(d.error || 'Failed', 'error');
 }
 
-async function tripAction(loadId, action) {
+async function tripAction(loadId, action, extra) {
   let gps = null;
   try {
     gps = await new Promise(resolve => {
@@ -3282,13 +3327,111 @@ async function tripAction(loadId, action) {
     });
   } catch (e) {}
 
-  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action, gps });
+  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action, gps, ...(extra || {}) });
   if (d.ok) {
     toast(action === 'delivered' ? 'Submitted for approval!' : 'Updated', 'success');
     await loadAll();
     renderDriver();
   } else {
     toast(d.error || 'Failed', 'error');
+  }
+  return d;
+}
+
+// Read a photo from a file input, downscale to ~1200px, hand back a JPEG data URL.
+function compressImageFile(file, cb) {
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const maxDim = 1200;
+      let w = img.width, h = img.height;
+      if (w > h && w > maxDim) { h = h * maxDim / w; w = maxDim; }
+      else if (h > maxDim) { w = w * maxDim / h; h = maxDim; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      cb(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── LOADED: ticket captured once, at the yard ────────────────────────────────
+// One screen: photo, source (supplier scale ticket / VBT internal), ticket
+// number (checked live against every ticket on file), net tons. Confirming
+// stamps "Loaded" with the ticket attached to THIS trip.
+let loadedForm = null;   // { loadId, tripNum, source, photo }
+function openLoadedForm(loadId) {
+  const l = (window._currentDispatch || []).find(x => x.loadId === loadId); if (!l) return;
+  const open = (l.trips || []).find(t => !t.timestamps?.completed);
+  const yardId = open ? open.yardId : l.pickupYardId;
+  loadedForm = { loadId, tripNum: open ? open.tripNum : (l.loadsDelivered || 0) + 1, source: yardId === 'vbt' ? 'vbt' : 'supplier', photo: '' };
+  document.getElementById('loaded-input').value = '';
+  document.getElementById('loaded-preview').style.display = 'none';
+  document.getElementById('loaded-number').value = '';
+  document.getElementById('loaded-number-msg').textContent = '';
+  document.getElementById('loaded-tons').value = '';
+  const btn = document.getElementById('loaded-save-btn'); btn.disabled = false; btn.textContent = 'Confirm — loaded & rolling';
+  loadedSetSource(loadedForm.source);
+  document.getElementById('loaded-input').onchange = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    compressImageFile(file, (data) => {
+      loadedForm.photo = data;
+      const p = document.getElementById('loaded-preview'); p.src = data; p.style.display = 'block';
+    });
+  };
+  document.getElementById('loaded-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('loaded-number').focus(), 80);
+}
+function loadedSetSource(src) {
+  if (!loadedForm) return;
+  loadedForm.source = src;
+  document.getElementById('loaded-src-supplier').className = 'btn ' + (src === 'supplier' ? 'primary' : 'ghost');
+  document.getElementById('loaded-src-vbt').className = 'btn ' + (src === 'vbt' ? 'primary' : 'ghost');
+  document.getElementById('loaded-tons-label').textContent = src === 'supplier' ? 'Net tons (from the scale ticket)' : 'Net tons (optional for a VBT ticket)';
+  document.getElementById('loaded-intro').textContent = src === 'supplier'
+    ? 'Photograph the scale ticket, then confirm its number and net tons. This is the only time you enter it.'
+    : 'Enter the VBT internal ticket number. A photo and tons are optional.';
+}
+let loadedCheckTimer = null;
+function loadedCheckNumber() {
+  clearTimeout(loadedCheckTimer);
+  const n = document.getElementById('loaded-number').value.trim();
+  const msg = document.getElementById('loaded-number-msg');
+  if (!n) { msg.textContent = ''; msg.style.color = 'var(--txt3)'; return; }
+  loadedCheckTimer = setTimeout(async () => {
+    const r = await api('GET', `/api/tickets/check?number=${encodeURIComponent(n)}&loadId=${encodeURIComponent(loadedForm?.loadId || '')}&tripNum=${loadedForm?.tripNum || ''}`);
+    if (!loadedForm || document.getElementById('loaded-number').value.trim() !== n) return;
+    msg.textContent = r.message || '';
+    msg.style.color = r.available ? 'var(--G)' : 'var(--R)';
+  }, 300);
+}
+function closeLoaded() { document.getElementById('loaded-modal').style.display = 'none'; loadedForm = null; }
+async function confirmLoaded() {
+  const f = loadedForm; if (!f) return;
+  const number = document.getElementById('loaded-number').value.trim();
+  const tonsRaw = document.getElementById('loaded-tons').value.trim();
+  if (!number) { toast('Ticket number is required', 'error'); return; }
+  if (f.source === 'supplier' && !tonsRaw) { toast('Enter the net tons from the scale ticket', 'error'); return; }
+  if (f.source === 'supplier' && !f.photo) { toast('Take a photo of the scale ticket', 'error'); return; }
+  const btn = document.getElementById('loaded-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const ticket = { source: f.source, number, netTons: tonsRaw === '' ? null : Number(tonsRaw) };
+    if (f.photo) {
+      const up = await uploadPhoto('ticket', f.loadId, f.photo);
+      if (up.url) ticket.photoUrl = up.url;
+      else if (up.fallback) ticket.photo = f.photo;
+      else throw new Error('Upload returned no URL');
+    }
+    const d = await tripAction(f.loadId, 'loaded', { ticket });
+    if (d.ok) closeLoaded();
+  } catch (e) {
+    toast('Could not save: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Confirm — loaded & rolling';
   }
 }
 
@@ -3303,28 +3446,13 @@ function openTicketUpload(loadId) {
   document.getElementById('ticket-input').onchange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    // Compress to ~1200px max
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const maxDim = 1200;
-        let w = img.width, h = img.height;
-        if (w > h && w > maxDim) { h = h * maxDim / w; w = maxDim; }
-        else if (h > maxDim) { w = w * maxDim / h; h = maxDim; }
-        canvas.width = w; canvas.height = h;
-        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        const data = canvas.toDataURL('image/jpeg', 0.85);
-        const preview = document.getElementById('ticket-preview');
-        preview.src = data;
-        preview.style.display = 'block';
-        preview.dataset.image = data;
-        document.getElementById('ticket-save-btn').disabled = false;
-      };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
+    compressImageFile(file, (data) => {
+      const preview = document.getElementById('ticket-preview');
+      preview.src = data;
+      preview.style.display = 'block';
+      preview.dataset.image = data;
+      document.getElementById('ticket-save-btn').disabled = false;
+    });
   };
 }
 
@@ -3463,7 +3591,8 @@ function renderApprovals() {
         <div class="am-info">
           <div class="am-po">${po.poNumber}</div>
           <div class="am-customer">${po.customer}</div>
-          <div class="am-detail">${l.material} · <b style="color:${l.isPartial ? 'var(--A)' : 'var(--txt)'}">${l.loadsDelivered}/${l.loadsAssigned} loads${l.isPartial ? ' ⚠ partial' : ''}</b> · ${l.driverName}${(l.pickup && l.pickup.name) ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + escapeHtml(l.pickup.name) : ''}</div>
+          <div class="am-detail">${l.material} · <b style="color:${l.isPartial ? 'var(--A)' : 'var(--txt)'}">${l.loadsDelivered}/${l.loadsAssigned} loads${l.isPartial ? ' ⚠ partial' : ''}</b> · ${l.driverName}${l.trailer ? ' · trailer ' + escapeHtml(l.trailer.number) : ''}${(l.pickup && l.pickup.name) ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + escapeHtml(l.pickup.name) : ''}</div>
+          ${ticketSummaryHtml(l)}
         </div>
         <div class="am-thumbs">
           ${(() => {
@@ -3486,6 +3615,27 @@ function renderApprovals() {
       </div>
     </div>`;
   }).join('');
+}
+
+// Per-trip tickets and planned-vs-actual tons for an office load record
+// (approvals, load details). Planned and actual are shown side by side and
+// never added together; missing tickets on delivered trips are called out.
+function ticketSummaryHtml(l) {
+  const trips = (l.trips || []).filter(t => t.ticket && t.ticket.number);
+  const tons = l.tons || {};
+  if (!trips.length && !(tons.missingTickets || []).length) return '';
+  const rows = trips.map(t => {
+    const src = t.ticket.photoUrl || t.ticket.photo;
+    return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;white-space:nowrap">#${escapeHtml(t.ticket.number)}
+      <span style="color:var(--txt3)">${t.ticket.source === 'vbt' ? 'VBT' : 'supplier'}</span>
+      <b style="font-variant-numeric:tabular-nums">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t' : '—'}</b>
+      ${src ? `<img src="${src}" class="am-thumb" style="width:22px;height:22px" onclick="event.stopPropagation();showImage('${src}')" title="Ticket ${escapeHtml(t.ticket.number)}">` : ''}</span>`;
+  }).join('');
+  const missing = (tons.missingTickets || []).length ? `<span style="color:var(--R);font-weight:600">no ticket on load${tons.missingTickets.length === 1 ? '' : 's'} ${tons.missingTickets.join(', ')}</span>` : '';
+  const line = tons.plannedTons != null
+    ? `<span style="color:var(--txt2)">Planned <b>${tons.plannedTons.toFixed(2)} t</b> · Actual <b>${tons.actualTons ? tons.actualTons.toFixed(2) + ' t' : '—'}</b>${tons.tickets ? ` (${tons.ticketsWithTons ?? tons.tickets} ticket${tons.tickets === 1 ? '' : 's'})` : ''}</span>`
+    : '';
+  return `<div class="am-detail" style="margin-top:3px;font-size:11px;line-height:1.7">${rows}${missing}${line ? `<div>${line}</div>` : ''}</div>`;
 }
 
 // Click thumbnails to view full image
@@ -4037,7 +4187,7 @@ function qaCard(l) {
 // Nothing commits until Confirm, so a stray tap can never reassign a load.
 function qaOpen(loadId) {
   const l = todayData.loads.find(x => x.id === loadId); if (!l) return;
-  qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId };
+  qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId, trailerId: l.trailerId || null };
   qaPaintSheet();
 }
 
@@ -4055,7 +4205,7 @@ function qaPaintSheet() {
     `<button class="qa-opt ${sel ? 'sel' : ''} ${busy ? 'busy' : ''}" onclick="${onclick}">
        <div class="t">${escapeHtml(title)}</div><div class="s">${escapeHtml(sub)}</div></button>`;
 
-  const changed = p.driverId !== l.driverId || p.truckUnitId !== l.truckUnitId || p.yardId !== l.yardId;
+  const changed = p.driverId !== l.driverId || p.truckUnitId !== l.truckUnitId || p.yardId !== l.yardId || (p.trailerId || null) !== (l.trailerId || null);
   el.innerHTML = `<div class="qa-sheet">
     <div class="qa-sheet-head">
       <div style="font-size:16px;font-weight:800">${escapeHtml(l.customer)}</div>
@@ -4085,6 +4235,16 @@ function qaPaintSheet() {
         ${d.yards.map(y => opt(p.yardId === y.id, `qaSet('yardId','${y.id}')`, y.name,
             y.isInternal ? 'Internal — no material cost' : 'Outside supplier', false)).join('')}
       </div>
+      ${(d.trailers || []).length ? `<div class="qa-step">4 · Trailer <span style="font-weight:500;color:var(--txt3)">(optional)</span></div>
+      <div class="qa-opts">
+        ${opt(!p.trailerId, `qaSet('trailerId',null)`, 'No trailer', 'Bobtail / choose later', false)}
+        ${d.trailers.map(t => {
+          const busy = t.inUseOnLoadId && t.inUseOnLoadId !== l.id;
+          const usual = t.defaultTruckId && t.defaultTruckId === p.truckUnitId;
+          return opt(p.trailerId === t.id, `qaSet('trailerId','${t.id}')`, t.number,
+            t.status !== 'available' ? t.status : busy ? 'On another load' : usual ? 'Usually with this truck' : (t.type || 'Available'), busy);
+        }).join('')}
+      </div>` : ''}
     </div>
     <div class="qa-sheet-foot">
       <button class="qa-btn ghost" onclick="qaClose()">Cancel</button>
@@ -4102,13 +4262,14 @@ async function qaConfirm() {
   const btn = document.getElementById('qa-confirm');
   btn.disabled = true; btn.textContent = 'Assigning…';
   const r = await api('POST', `/api/loads/${p.loadId}/assign`, {
-    driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId,
+    driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId, trailerId: p.trailerId || null,
   });
   if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; return toast(r.error || 'Assign failed', 'error'); }
   const who = r.load.driverName || 'Unassigned';
   const truck = r.truck ? r.truck.truckNum : 'no truck';
+  const trailer = r.trailer ? ' + ' + r.trailer.number : '';
   qaClose();
-  toast(`${who} → ${truck} → ${r.pickup.name}`, 'success');
+  toast(`${who} → ${truck}${trailer} → ${r.pickup.name}`, 'success');
   await loadAll();
   if (currentTab === 'today') await renderToday(); else if (currentTab === 'board') renderBoard();
 }
@@ -4725,6 +4886,12 @@ function openCustomerMasterForm(existing) {
         <div class="field"><label>Email</label><input id="cm-email" value="${escapeHtml(c.email || '')}"></div>
       </div>
       <div class="field"><label>Notes</label><textarea id="cm-notes" placeholder="Optional internal notes (account contact, billing instructions, etc.)">${escapeHtml(c.notes || '')}</textarea></div>
+      <div class="field"><label>Billing basis (per-ton pricing)</label>
+        <select id="cm-basis">
+          <option value="planned" ${(c.billingBasis || 'planned') === 'planned' ? 'selected' : ''}>Planned — quantity-per-load rule (25 t per load)</option>
+          <option value="actual" ${c.billingBasis === 'actual' ? 'selected' : ''}>Actual — confirmed scale-ticket tons</option>
+        </select>
+        <div style="font-size:11px;color:var(--txt3);margin-top:4px">"Actual" bills the net tons the driver confirmed from each ticket. A load with a delivered trip that has no ticket tons cannot be billed until it is corrected.</div></div>
       ${isEdit ? `<div class="field" style="flex-direction:row;gap:6px;align-items:center"><input type="checkbox" id="cm-active" ${c.active !== false ? 'checked' : ''} style="width:auto;margin:0"><label for="cm-active" style="text-transform:none;letter-spacing:0;font-weight:500;color:var(--txt)">Active (uncheck to hide from PO dropdown without deleting)</label></div>` : ''}
     </div>
     <div class="modal-foot">
@@ -4748,6 +4915,7 @@ async function saveCustomerMaster(existingId) {
     phone:   v('cm-phone'),
     email:   v('cm-email'),
     notes:   v('cm-notes'),
+    billingBasis: v('cm-basis') || 'planned',
   };
   const activeEl = document.getElementById('cm-active');
   if (activeEl) body.active = activeEl.checked;
@@ -5989,9 +6157,42 @@ function paintFleet() {
       </td>
     </tr>`).join('');
 
+  // Trailers are a third asset: any truck can pull any trailer. "Usual truck"
+  // only pre-fills Quick Assign.
+  const trailers = fleetState.trailers || [];
+  const trStatuses = fleetState.trailerStatuses || tStatuses;
+  const trailersRows = trailers.map(t => `
+    <tr>
+      <td><input type="text" data-trailer-id="${escapeAttr(t.id)}" data-field="number" value="${escapeAttr(t.number || '')}" ${inp}></td>
+      <td><input type="text" data-trailer-id="${escapeAttr(t.id)}" data-field="type" value="${escapeAttr(t.type || '')}" ${inp}></td>
+      <td><select data-trailer-id="${escapeAttr(t.id)}" data-field="status" ${inp}>
+        ${trStatuses.map(st => `<option value="${st}" ${st === t.status ? 'selected' : ''}>${st}</option>`).join('')}</select></td>
+      <td><select data-trailer-id="${escapeAttr(t.id)}" data-field="defaultTruckId" ${inp}>${truckOpts(t.defaultTruckId)}</select></td>
+      <td style="text-align:center"><input type="checkbox" data-trailer-id="${escapeAttr(t.id)}" data-field="active" ${t.active !== false ? 'checked' : ''}></td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn ghost" style="padding:5px 10px;font-size:11px" onclick="saveTrailer('${escapeAttr(t.id)}')">Save</button>
+        <button class="btn ghost" style="padding:5px 10px;font-size:11px;color:#b42318" onclick="deleteTrailer('${escapeAttr(t.id)}')">Remove</button>
+      </td>
+    </tr>`).join('');
+
   const th = (label, extra = '') => `<th style="text-align:left;padding:10px 14px;font-weight:600;${extra}">${label}</th>`;
   document.getElementById('fleet-content').innerHTML = `
     <div style="display:grid;gap:18px">
+      <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden" id="fleet-trailers">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="font-size:14px;font-weight:700;letter-spacing:-.005em">Trailers</div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${trailers.length} trailer${trailers.length === 1 ? '' : 's'} · independent of trucks; "usual truck" only pre-fills Quick Assign</div>
+          </div>
+          <button class="btn primary" onclick="addTrailerPrompt()" style="padding:7px 14px;font-size:12px">+ Add Trailer</button>
+        </div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px">
+          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)"><tr>
+            ${th('Trailer number')}${th('Type')}${th('Status', 'width:140px')}${th('Usual truck', 'width:160px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
+          </tr></thead>
+          <tbody>${trailersRows || `<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--txt3)">No trailers yet — click "Add Trailer".</td></tr>`}</tbody>
+        </table></div>
+      </div>
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden">
         <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
           <div>
@@ -6088,6 +6289,38 @@ async function addDriverPrompt() {
     toast(d.loginCreated ? 'Driver added — they can log in and be dispatched now' : 'Driver added to the roster (no login: database not available)', d.loginCreated ? 'success' : 'error');
     await loadAll(); renderFleet();
   } catch (e) { toast('Add driver failed: ' + e.message, 'error'); }
+}
+
+async function addTrailerPrompt() {
+  const number = (prompt('Trailer number (e.g. "3B"):') || '').trim();
+  if (!number) return;
+  const type = (prompt('Type (e.g. "Transfer", "Pup") — optional:') || '').trim();
+  try {
+    await fleetCall('POST', '/api/fleet/trailers', { number, type });
+    toast('Trailer added', 'success');
+    await loadAll(); renderFleet();
+  } catch (e) { toast('Add trailer failed: ' + e.message, 'error'); }
+}
+
+async function saveTrailer(id) {
+  const f = (field) => document.querySelector(`[data-trailer-id="${id}"][data-field="${field}"]`);
+  try {
+    await fleetCall('PUT', '/api/fleet/trailers/' + encodeURIComponent(id), {
+      number: f('number')?.value, type: f('type')?.value, status: f('status')?.value,
+      defaultTruckId: f('defaultTruckId')?.value || null, active: !!f('active')?.checked,
+    });
+    toast('Trailer saved', 'success');
+    await loadAll(); renderFleet();
+  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+}
+
+async function deleteTrailer(id) {
+  if (!confirm('Remove this trailer? If it has delivery history it will be deactivated instead, so past loads keep their trailer.')) return;
+  try {
+    const d = await fleetCall('DELETE', '/api/fleet/trailers/' + encodeURIComponent(id));
+    toast(d.deactivated ? 'Trailer deactivated (has history)' : 'Trailer removed', 'success');
+    await loadAll(); renderFleet();
+  } catch (e) { toast('Remove failed: ' + e.message, 'error'); }
 }
 
 async function saveDriver(username) {
@@ -6352,8 +6585,11 @@ function fmPaintCard() {
       ${l ? row('PO', l.poNumber || '—') : ''}
       ${l ? row('Customer', l.customer) : ''}
       ${l ? row('Material', l.material) : ''}
+      ${row('Trailer', t.trailerNum)}
       ${l ? row('Load', `${l.loadNumber} of ${l.loadsAssigned}`) : ''}
       ${l ? row('Trip', l.tripNumber) : ''}
+      ${l && l.currentTicket ? row('Ticket', `#${l.currentTicket.number}${l.currentTicket.netTons != null ? ` · ${l.currentTicket.netTons.toFixed(2)} t` : ''}${l.currentTicket.source === 'vbt' ? ' (VBT)' : ''}`) : ''}
+      ${l && l.tickets ? row('Actual tons', `${l.actualTons.toFixed(2)} t from ${l.tickets} ticket${l.tickets === 1 ? '' : 's'}${l.plannedTons != null ? ` · planned ${l.plannedTons.toFixed(2)} t` : ''}`) : ''}
       ${l && l.pickup ? row('Pickup', l.pickup.name + (l.pickup.geo ? ' 📍' : ' (no coordinates)')) : ''}
       ${l ? row('Destination', ([l.address, l.city].filter(Boolean).join(', ') || '—') + (l.destination && l.destination.geo ? ' 📍' : ' (no coordinates)')) : ''}
       ${l && l.tripStartedAt ? row('Trip started', new Date(l.tripStartedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}

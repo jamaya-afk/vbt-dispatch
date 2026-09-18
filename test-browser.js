@@ -42,6 +42,7 @@ async function call(cookie, method, path, body) {
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
 
   // ── Fixture: a load for beryle, trip started, real GPS posted by beryle ──
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
   const mgr = await login('joshua', 'joshua123');
   const drv = await login('beryle', 'beryle123');
   await call(mgr, 'POST', '/api/pos', { po: { poNumber: '10482', customer: 'ABC Materials', deliveryDate: today, address: '500 Main St', city: 'Merced', plannedVendorId: 'vulcan' },
@@ -52,7 +53,9 @@ async function call(cookie, method, path, body) {
   await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'start-trip' });
   await call(drv, 'POST', '/api/driver-location', { lat: 36.7401, lng: -119.7701, accuracy: 9 });
   await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'arrived-pickup', yardId: 'vulcan' });
-  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'loaded' });
+  const trailer = (await call(mgr, 'POST', '/api/fleet/trailers', { number: '3B', type: 'Transfer' })).data.trailer;
+  await call(mgr, 'POST', `/api/loads/${load.id}/assign`, { trailerId: trailer.id });
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'loaded', ticket: { source: 'supplier', number: '37432733', netTons: 23.2, photo: PNG } });
   await call(mgr, 'POST', '/api/_test/backdate-location', { driverId: 'beryle', seconds: 25 });
   await call(drv, 'POST', '/api/driver-location', { lat: 36.7420, lng: -119.7650, accuracy: 7 });
 
@@ -83,6 +86,8 @@ async function call(cookie, method, path, body) {
     chk(`tab ${t} visible`, visible, true);
   }
 
+  await page.evaluate(() => goTab('fleet')); await page.waitForTimeout(600);
+  chk('Drivers & Trucks lists trailers as their own table with 3B', await page.evaluate(() => { const el = document.getElementById('fleet-trailers'); return !!el && /Trailers/.test(el.innerText) && (el.querySelector('[data-trailer-id][data-field="number"]') || {}).value === '3B'; }), true);
   chk('no /api/sync call and no Google Sheets request from the app', requests.some(r => /\/api\/sync\b/.test(r)) || problems.some(p => /Google Sheets request/.test(p)), false);
   chk('History tab has no Sheets wording', await page.evaluate(() => { goTab('history'); return new Promise(r => setTimeout(() => r(/Sheets/i.test(document.getElementById('sec-history').innerText)), 600)); }), false);
   chk('Board topbar has no Sync button', await page.evaluate(() => { goTab('board'); return /Sync/.test(document.getElementById('topbar-actions').innerText); }), false);
@@ -128,6 +133,7 @@ async function call(cookie, method, path, body) {
     return document.getElementById('qa-sheet-bg') ? `sheet-open driver=${qaPick && qaPick.driverId}` : 'no-sheet';
   });
   chk('drop opens the confirm sheet with the target preselected', drop, 'sheet-open driver=rigo');
+  chk('   sheet offers an optional trailer step listing 3B', await page.evaluate(() => { const t = document.getElementById('qa-sheet-bg').innerText; return /4 · Trailer/i.test(t) && /3B/.test(t); }), true);
   chk('no assignment written during the drop', requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length - writesBefore, 0);
   await page.evaluate(() => qaClose());
 
@@ -172,6 +178,7 @@ async function call(cookie, method, path, body) {
   chk('9. card shows PO / customer / material / load / trip / pickup / destination',
     /PO 10482.*Customer ABC Materials.*Material 3\/4 Rock.*Load 1 of 3.*Trip 1.*Pickup Vulcan.*Destination 500 Main St, Merced/.test(sel.card), true);
   chk('   card shows GPS accuracy and update time', /GPS accuracy ±7 m/.test(sel.card) && /Updated/.test(sel.card), true);
+  chk('   card shows trailer, the current ticket and running actual tons', /Trailer 3B.*Ticket #37432733 · 23\.20 t.*Actual tons 23\.20 t from 1 ticket/.test(sel.card), true);
   // marker click → same selection state
   await page.evaluate(() => fmSelect('rigo', true));
   await page.evaluate(() => { fm.markers.beryle.fire('click'); });
@@ -242,15 +249,42 @@ async function call(cookie, method, path, body) {
   await ctx.close();
 
   console.log('── Driver: phone view, no fleet access ──');
+  // Finish trip 1 and bring trip 2 to the yard, so the phone shows the Loaded step.
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'arrived-jobsite' });
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'trip-complete' });
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'start-trip' });
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'arrived-pickup', yardId: 'vulcan' });
   const d = await session('beryle', 'beryle123', true);
   await d.page.waitForTimeout(2500);
   const dv = await d.page.evaluate(() => ({
     driverTab: getComputedStyle(document.getElementById('sec-driver')).display !== 'none',
     mapNav: Array.from(document.querySelectorAll('.nav-item')).filter(b => b.textContent.includes('Fleet Map') && getComputedStyle(b).display !== 'none').length,
+    card: document.getElementById('driver-trips') ? document.getElementById('driver-trips').innerText.replace(/\s+/g, ' ') : document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '),
+    loadedBtn: Array.from(document.querySelectorAll('.trip-action')).map(b => b.innerText.trim()).find(t => /Loaded/.test(t)) || '',
   }));
   chk('driver view renders', dv.driverTab, true);
   chk('   driver cannot see the Fleet Map tab', dv.mapNav, 0);
   chk('   driver phone posted its own GPS', d.requests.some(r => r === 'POST /api/driver-location'), true);
+  console.log('── Driver: Loaded captures the ticket once ──');
+  chk('card shows truck + trailer and the trip 1 ticket', /Rig Truck #12 \+ trailer 3B/i.test(dv.card) && /Load 1 · #37432733 supplier 23\.20 t/.test(dv.card), true);
+  chk('the Loaded button asks for the ticket', dv.loadedBtn, 'Loaded — enter ticket');
+  await d.page.evaluate(() => openLoadedForm(window._currentDispatch.find(l => l.trips && l.trips.length).loadId)); await d.page.waitForTimeout(300);
+  let lf = await d.page.evaluate(() => ({ open: document.getElementById('loaded-modal').style.display === 'flex', src: loadedForm.source, srcBtn: document.getElementById('loaded-src-supplier').className }));
+  chk('Loaded form opens; Vulcan pickup defaults to a supplier scale ticket', `${lf.open} ${lf.src} ${/primary/.test(lf.srcBtn)}`, 'true supplier true');
+  await d.page.fill('#loaded-number', '37432733'); await d.page.waitForTimeout(700);
+  chk('typing trip 1\'s number warns inline and names the owner', /already recorded on .* load 1 of 3, Beryle/.test(await d.page.evaluate(() => document.getElementById('loaded-number-msg').innerText)), true);
+  await d.page.fill('#loaded-number', '37432799'); await d.page.waitForTimeout(700);
+  chk('   a fresh number is confirmed free', await d.page.evaluate(() => document.getElementById('loaded-number-msg').innerText), 'Ticket #37432799 is not on file yet.');
+  await d.page.fill('#loaded-tons', '23.19');
+  const writesBeforeLoaded = d.requests.filter(r => r === `POST /api/loads/${load.id}/trip-action`).length;
+  await d.page.evaluate(() => confirmLoaded()); await d.page.waitForTimeout(500);
+  chk('confirm without a photo is refused on the phone (no request sent)', d.requests.filter(r => r === `POST /api/loads/${load.id}/trip-action`).length - writesBeforeLoaded, 0);
+  await d.page.evaluate((png) => { loadedForm.photo = png; }, PNG);
+  await d.page.evaluate(() => confirmLoaded()); await d.page.waitForTimeout(1800);
+  const trip2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id);
+  chk('confirm stamps Loaded with ticket 37432799 / 23.19 t on trip 2', `${trip2.trips[1].timestamps.loadedAt ? 'loaded' : 'not-loaded'} ${trip2.trips[1].ticket && trip2.trips[1].ticket.number} ${trip2.trips[1].ticket && trip2.trips[1].ticket.netTons} ${trip2.trips[1].ticket && trip2.trips[1].ticket.entry}`, 'loaded 37432799 23.19 typed');
+  chk('   load-level photo came from trip 1, no second upload asked', !!(trip2.ticketImage || trip2.ticketImageUrl), true);
+  chk('   modal closed, card lists both tickets and the running total', await d.page.evaluate(() => { const t = document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '); return document.getElementById('loaded-modal').style.display === 'none' && /#37432799 supplier 23\.19 t/.test(t) && /Confirmed so far 46\.39 t/.test(t); }), true);
   await d.ctx.close();
   // Access probes with the driver's own session cookie (outside the page, so
   // the page's console stays clean of expected 403s).

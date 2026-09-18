@@ -36,12 +36,24 @@ carlos / carlos123
 
 ## Data
 
-Postgres (Supabase in production, via `DATABASE_URL`) is the single source of
-truth for every operational record: POs, loads, trips, drivers, trucks,
-vendors and yards, saved coordinates, GPS points, approvals, billing batches,
-QuickBooks sync history, void/audit history and customers. There is no
+Postgres (the Railway Postgres service, via `DATABASE_URL`) is the single
+source of truth for every operational record: POs, loads, trips, drivers,
+trucks, trailers, vendors and yards, saved coordinates, GPS points, approvals,
+billing batches, QuickBooks sync history, void/audit history and customers.
+Supabase Storage holds ticket and signature photos only. There is no
 spreadsheet export or sync; archiving billed loads moves them into the
 database's history where reports still read them.
+
+Field records follow the paperwork: a **load** is one driver's assignment on
+a PO (material, planned count, truck, trailer); each **trip** is one physical
+delivery and carries its own **ticket**, captured once when the driver taps
+Loaded at the yard (supplier scale ticket with net tons and photo, or a VBT
+internal ticket). Ticket numbers are unique across every trip on every load,
+live or archived. A load reports **planned tons** (quantity-per-load rule,
+25 t by default) and **actual tons** (sum of confirmed ticket tons) side by
+side; invoices use planned unless the customer's billing basis is set to
+"actual", and an actual-basis load with a delivered trip that has no ticket
+tons is never priced silently.
 
 ## QuickBooks Online Integration
 

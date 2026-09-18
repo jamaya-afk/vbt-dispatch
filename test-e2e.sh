@@ -36,6 +36,8 @@ chk "static assets serve"           "$(curl -s -o /dev/null -w '%{http_code}' -b
 chk "/api/me identifies the user"   "$(curl -s -b $M $B/api/me | python3 -c "import json,sys;print(json.load(sys.stdin)['username'])")" "joshua"
 
 PNG="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+# Every "loaded" tap now carries the trip's ticket (Phase 1a). Unique number each call.
+TKN=0; tkt() { TKN=$((TKN+1)); echo "{\"source\":\"supplier\",\"number\":\"T$RANDOM$RANDOM\",\"netTons\":24.5,\"photo\":\"$PNG\"}"; }
 echo "── 0b. Fleet live status: derived from the workflow, never invented ──"
 LD=$(mktemp); curl -s -c $LD -X POST -d "username=leonardo&password=leo123" $B/login -o /dev/null
 fl() { curl -s -b $M $B/api/fleet/live | python3 -c "
@@ -59,14 +61,14 @@ ta '{"action":"start-trip","gps":{"lat":36.74,"lng":-119.77}}'
 chk "3. started → Going to Yard, since = start stamp" "$(fl "r['status'], r['since'] is not None and r['since']==r['load']['tripStartedAt']")" "Going to Yard True"
 ta '{"action":"arrived-pickup","yardId":"cemex"}'
 chk "4. arrived pickup → At Yard, pickup follows the trip" "$(fl "r['status'], r['load']['pickup']['name']")" "At Yard CEMEX"
-ta '{"action":"loaded"}'
+ta '{"action":"loaded","ticket":'"$(tkt)"'}'
 chk "5. loaded → Loaded / En Route"      "$(fl "r['status']")" "Loaded / En Route"
 ta '{"action":"arrived-jobsite"}'
 chk "6. arrived jobsite → At Jobsite"    "$(fl "r['status']")" "At Jobsite"
 ta '{"action":"trip-complete"}'
 chk "7. trip done, one load left → Returning, load 2 of 2" "$(fl "r['status'], r['load']['loadsDelivered'], r['load']['loadNumber'], r['load']['tripNumber']")" "Returning 1 2 2"
-ta '{"action":"start-trip"}'; ta '{"action":"arrived-pickup","yardId":"vulcan"}'; ta '{"action":"loaded"}'; ta '{"action":"arrived-jobsite"}'; ta '{"action":"trip-complete"}'
-curl -s -b $LD -H 'Content-Type: application/json' -X PUT $B/api/loads/$FL -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+ta '{"action":"start-trip"}'; ta '{"action":"arrived-pickup","yardId":"vulcan"}'; ta '{"action":"loaded","ticket":'"$(tkt)"'}'; ta '{"action":"arrived-jobsite"}'; ta '{"action":"trip-complete"}'
+curl -s -b $LD -H 'Content-Type: application/json' -X PUT $B/api/loads/$FL -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
 ta '{"action":"delivered"}'
 chk "8. all work done (submitted) → Completed, finished load still named" "$(fl "r['status'], r['load']['approvalStatus'], r['load']['loadsDelivered']")" "Completed submitted 2"
 curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$FL/approve -d '{}' -o /dev/null
@@ -99,7 +101,8 @@ echo "── 3. Run 3 trips: VBT -> Vulcan -> VBT ──"
 run_trip() { # run_trip <yardId>
   curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$LOAD/trip-action -d '{"action":"start-trip","gps":{"lat":36.70,"lng":-119.70}}' -o /dev/null
   curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$LOAD/trip-action -d "{\"action\":\"arrived-pickup\",\"yardId\":\"$1\",\"gps\":{\"lat\":36.71,\"lng\":-119.71}}" -o /dev/null
-  for A in loaded arrived-jobsite trip-complete; do
+  curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$LOAD/trip-action -d "{\"action\":\"loaded\",\"ticket\":$(tkt),\"gps\":{\"lat\":36.72,\"lng\":-119.72}}" -o /dev/null
+  for A in arrived-jobsite trip-complete; do
     curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$LOAD/trip-action -d "{\"action\":\"$A\",\"gps\":{\"lat\":36.72,\"lng\":-119.72}}" -o /dev/null
   done
 }
@@ -280,7 +283,7 @@ import json,sys;print([l['id'] for l in json.load(sys.stdin)['loads'] if l['poId
 L=$(mktemp); curl -s -c $L -X POST -d "username=leonardo&password=leo123" $B/login -o /dev/null
 curl -s -b $L -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"start-trip"}' -o /dev/null
 curl -s -b $L -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"arrived-pickup","yardId":"vbt"}' -o /dev/null
-chk "driver step succeeds with mail unconfigured" "$(curl -s -o /dev/null -w '%{http_code}' -b $L -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"loaded"}')" "200"
+chk "driver step succeeds with mail unconfigured" "$(curl -s -o /dev/null -w '%{http_code}' -b $L -H 'Content-Type: application/json' -X POST $B/api/loads/$NL/trip-action -d '{"action":"loaded","ticket":'"$(tkt)"'}')" "200"
 sleep 1
 # Two milestones passed: arrivedPickup (not selected -> skipped) and
 # loaded (selected, but Gmail unconfigured -> failed). Nothing may report 'sent'.
@@ -336,7 +339,7 @@ import json,sys;d=json.load(sys.stdin)
 print([l['id'] for l in d['loads'] if l['poId']=='$VPO'][0])")
 V=$(mktemp); curl -s -c $V -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
 for A in start-trip arrived-pickup loaded arrived-jobsite trip-complete; do
-  curl -s -b $V -H 'Content-Type: application/json' -X POST $B/api/loads/$VL/trip-action -d "{\"action\":\"$A\",\"yardId\":\"vbt\"}" -o /dev/null; done
+  curl -s -b $V -H 'Content-Type: application/json' -X POST $B/api/loads/$VL/trip-action -d "{\"action\":\"$A\",\"yardId\":\"vbt\",\"ticket\":$(tkt)}" -o /dev/null; done
 curl -s -b $V -H 'Content-Type: application/json' -X PUT $B/api/loads/$VL \
   -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"F\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
 curl -s -b $V -H 'Content-Type: application/json' -X POST $B/api/loads/$VL/trip-action -d '{"action":"delivered"}' -o /dev/null
@@ -422,7 +425,7 @@ chk "an honest field still updates (notes)" "$(curl -s -b $M -H 'Content-Type: a
 curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d '{"action":"start-trip"}' -o /dev/null
 curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d '{"action":"arrived-pickup","yardId":"vbt"}' -o /dev/null
 for A in loaded arrived-jobsite trip-complete; do
-  curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d "{\"action\":\"$A\"}" -o /dev/null
+  curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d "{\"action\":\"$A\",\"ticket\":$(tkt)}" -o /dev/null
 done
 curl -s -b $D -H 'Content-Type: application/json' -X PUT $B/api/loads/$SML -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
 curl -s -b $D -H 'Content-Type: application/json' -X POST $B/api/loads/$SML/trip-action -d '{"action":"delivered"}' -o /dev/null
@@ -506,7 +509,8 @@ ML=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([l['id'] for 
 MD=$(mktemp); curl -s -c $MD -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
 curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d '{"action":"start-trip"}' -o /dev/null
 curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d '{"action":"arrived-pickup","yardId":"keith"}' -o /dev/null
-for A in loaded arrived-jobsite trip-complete; do
+curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d "{\"action\":\"loaded\",\"ticket\":$(tkt)}" -o /dev/null
+for A in arrived-jobsite trip-complete; do
   curl -s -b $MD -H 'Content-Type: application/json' -X POST $B/api/loads/$ML/trip-action -d "{\"action\":\"$A\"}" -o /dev/null
 done
 PR=$(curl -s -b $M $B/api/profitability | python3 -c "
@@ -675,7 +679,7 @@ chk "7. fleet refresh / data loads never call the geocoder" "$(( $(GC) - C0 ))" 
 # 9/11. selected trip uses the actual resolved pickup yard; different trips, different yards
 tg '{"action":"arrived-pickup","yardId":"cemex"}'
 chk "9. trip at CEMEX → pickup is CEMEX with CEMEX's point (not the PO's Vulcan plan)" "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['trucks'] if x['driverId']=='carlos'][0];p=r['load']['pickup'];print(p['id'], p['isActual'], p['geo']['lat'])")" "cemex True 36.6"
-tg '{"action":"loaded"}'; tg '{"action":"arrived-jobsite"}'; tg '{"action":"trip-complete"}'
+tg '{"action":"loaded","ticket":'"$(tkt)"'}'; tg '{"action":"arrived-jobsite"}'; tg '{"action":"trip-complete"}'
 tg '{"action":"start-trip"}'; tg '{"action":"arrived-pickup","yardId":"vulcan"}'
 chk "11. next trip at Vulcan → pickup follows the trip" "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['trucks'] if x['driverId']=='carlos'][0];p=r['load']['pickup'];print(p['id'], p['geo']['lat'], r['load']['tripNumber'])")" "vulcan 36.8 2"
 chk "10. destination is the PO's jobsite point"  "$(curl -s -b $M $B/api/fleet/live | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['trucks'] if x['driverId']=='carlos'][0];d=r['load']['destination'];print(d['address'], d['geo']['lat'], d['geo']['lng'])")" "500 Main St 37.3022 -120.483"
@@ -737,6 +741,116 @@ chk "jobsites: two distinct sites for the customer"  "$(echo "$JS"|sed -n 1p)" "
 chk "  ...Elm St used by 3 POs, carries the saved point" "$(echo "$JS"|sed -n 2p)" "3 36.8252 True"
 chk "new PO for the same site inherits the point when asked" "$(mk "$(echo "$BODY1" | sed 's/"45021"/"45040"/; s/"plannedVendorId":"vulcan"/"plannedVendorId":"vulcan","jobsiteFromPoId":"'"$P1"'"/')")|$(python3 -c "import json;d=json.load(open('/tmp/po.json'));print(d['po']['geo']['lat'], d['po']['geo']['inheritedFromPoId']=='$P1')")" "200|36.8252 True"
 chk "  ...and not when not asked"                    "$(mk "$(echo "$BODY1" | sed 's/"45021"/"45041"/')")|$(python3 -c "import json;d=json.load(open('/tmp/po.json'));print('geo' in d['po'])")" "200|False"
+
+echo "── 36. Phase 1a — the Cornelio 9/14/2026 packet: trailer 3B, four tickets, 94.64 actual tons ──"
+# Assets exactly as on the paper: driver Cornelio, Truck #3, trailer 3B, Vulcan Madera → North Fork,
+# customer Dave Christian Construction, PO 25031, four supplier tickets.
+J='Content-Type: application/json'
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -b $M -H "$J" -X POST $B/api/drivers -d '{"username":"cornelio","password":"cornelio1","displayName":"Cornelio"}' -o /dev/null
+T3=$(curl -s -b $M -H "$J" -X POST $B/api/fleet/trucks -d '{"truckNum":"Truck #3","type":"End Dump"}' | jq "d['truck']['id']")
+TR=$(curl -s -b $M -H "$J" -X POST $B/api/fleet/trailers -d "{\"number\":\"3B\",\"type\":\"Transfer\",\"defaultTruckId\":\"$T3\"}" | jq "d['trailer']['id']")
+chk "1. trailer 3B is its own asset (not a truck field)" "$(curl -s -b $M $B/api/fleet | jq "[t['number'] for t in d['trailers']], any(t['id']=='$TR' for t in d['trailers']), [t for t in d['trucks'] if t['id']=='$T3'][0].get('trailerId')")" "['3B'] True None"
+chk "   duplicate trailer number refused"   "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/fleet/trailers -d '{"number":"3b"}')" "400"
+chk "   trailer visible to Quick Assign"    "$(curl -s -b $M $B/api/today | jq "[t['number'] for t in d['trailers']]")" "['3B']"
+chk "   existing trucks untouched (no trailer key added)" "$(curl -s -b $M $B/api/fleet | jq "sum(1 for t in d['trucks'] if 'trailerId' in t)")" "0"
+VM=$(curl -s -b $M -H "$J" -X POST $B/api/vendors -d '{"name":"Vulcan Madera","location":"Madera, CA"}' | jq "d['vendor']['id']")
+CID=$(curl -s -b $M -H "$J" -X POST $B/api/customers -d '{"name":"Dave Christian Construction","city":"North Fork"}' | jq "d['customer']['id']")
+chk "2. new customer bills on planned tons by default" "$(curl -s -b $M $B/api/customers | jq "[c['billingBasis'] for c in d['customers'] if c['id']=='$CID'][0]")" "planned"
+curl -s -b $M -H "$J" -X POST $B/api/customer-prices -d '{"customer":"Dave Christian Construction","material":"3/4 Class 2 Base","unit":"ton","price":30}' -o /dev/null
+curl -s -b $M -H "$J" -X POST $B/api/pos -d '{
+ "po":{"poNumber":"25031","customer":"Dave Christian Construction","deliveryDate":"'"$(date +%F)"'","address":"North Fork","city":"North Fork","plannedVendorId":"'"$VM"'"},
+ "splits":[{"truckId":"cornelio","truckUnitId":"'"$T3"'","trailerId":"'"$TR"'","material":"3/4 Class 2 Base","loadsAssigned":4,"vendorId":"'"$VM"'"}]}' -o /dev/null
+CL=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='25031'][0]['id']][0]")
+cl() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$CL'][0];print($1)"; }
+chk "3. load: Cornelio, Truck #3, trailer 3B, Vulcan Madera, 4 loads, nothing delivered" "$(cl "l['driverName'], l['truckUnitId']=='$T3', l['trailer']['number'], l['pickup']['name'], l['loadsAssigned'], l['tons']['plannedTons'], l['tons']['actualTons'], l['tons']['tonsSource']")" "Cornelio True 3B Vulcan Madera 4 0 0 planned"
+CD=$(mktemp); curl -s -c $CD -X POST -d "username=cornelio&password=cornelio1" $B/login -o /dev/null
+ca() { curl -s -b $CD -H "$J" -X POST $B/api/loads/$CL/trip-action -d "$1" "${@:2}"; }
+chk "4. driver sees truck and trailer on the card" "$(curl -s -b $CD $B/api/my-dispatch | jq "[ (l['truckLabel'], l['trailerLabel']) for l in d['loads'] if l['loadId']=='$CL'][0]")" "('Truck #3', '3B')"
+# Trip 1 — 37432733, 23.20 t
+ca '{"action":"start-trip","gps":{"lat":36.74,"lng":-119.77}}' -o /dev/null
+ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" -o /dev/null
+chk "5. Loaded without a ticket is refused"          "$(ca '{"action":"loaded"}' | jq "d['error']")" "Ticket source must be \"supplier\" (scale ticket) or \"vbt\" (internal ticket)"
+chk "   supplier ticket without net tons refused"    "$(ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432733","photo":"'"$PNG"'"}}' | jq "d['error']")" "Net tons from the scale ticket are required for a supplier ticket"
+chk "   supplier ticket without a photo refused"     "$(ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432733","netTons":23.2}}' | jq "d['error']")" "A photo of the scale ticket is required"
+chk "   ...nothing was stamped by the refusals"      "$(cl "l['trips'][0]['timestamps'].get('loadedAt'), l['trips'][0].get('ticket')")" "None None"
+chk "   ticket check: 37432733 not on file yet"      "$(curl -s -b $CD "$B/api/tickets/check?number=37432733" | jq "d['available']")" "True"
+R=$(ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432733","netTons":23.20,"photo":"'"$PNG"'"}}')
+chk "6. trip 1 Loaded with ticket 37432733 / 23.20 t" "$(echo "$R" | jq "d.get('success'), d['load']['trips'][0]['ticket']['number'], d['load']['trips'][0]['ticket']['netTons'], d['load']['trips'][0]['ticket']['source'], d['load']['trips'][0]['ticket']['confirmedBy'], d['load']['trips'][0]['ticket']['entry']")" "True 37432733 23.2 supplier cornelio typed"
+chk "   ticket photo satisfies the load-level photo (no second upload later)" "$(cl "bool(l['ticketImage'] or l['ticketImageUrl'])")" "True"
+chk "   Loaded twice is refused"                     "$(ca '{"action":"loaded","ticket":{"source":"supplier","number":"X1","netTons":1,"photo":"'"$PNG"'"}}' | jq "d['error']")" "This load is already marked loaded"
+ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
+# Trip 2 — reuse of 37432733 must be refused and name the owner
+ca '{"action":"start-trip"}' -o /dev/null; ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" -o /dev/null
+D=$(ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432733","netTons":23.19,"photo":"'"$PNG"'"}}')
+chk "7. duplicate ticket refused (409) and names the load that owns it" "$(echo "$D" | jq "d['ownerLoadId']=='$CL', d['ownerTripNum'], d['error']")" "True 1 Ticket #37432733 is already recorded on $CL (PO 25031, Dave Christian Construction, load 1 of 4, Cornelio). Please check the ticket number."
+chk "   ...spacing/case do not evade the check"      "$(ca '{"action":"loaded","ticket":{"source":"supplier","number":" 3743 2733 ","netTons":23.19,"photo":"'"$PNG"'"}}' | jq "d['ownerTripNum']")" "1"
+chk "   live check agrees"                           "$(curl -s -b $CD "$B/api/tickets/check?number=37432733" | jq "d['available'], d['ownerTripNum']")" "False 1"
+chk "   trip 2 still not loaded after the refusal"   "$(cl "l['trips'][1]['timestamps'].get('loadedAt'), l['trips'][1].get('ticket')")" "None None"
+ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432799","netTons":23.19,"photo":"'"$PNG"'"}}' -o /dev/null
+ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
+# Trip 3 — 37432862, 24.45 t ; Trip 4 — 37432920, 23.80 t
+ca '{"action":"start-trip"}' -o /dev/null; ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" -o /dev/null
+ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432862","netTons":24.45,"photo":"'"$PNG"'"}}' -o /dev/null
+ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
+ca '{"action":"start-trip"}' -o /dev/null; ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" -o /dev/null
+ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432920","netTons":23.80,"photo":"'"$PNG"'"}}' -o /dev/null
+curl -s -b $CD -H "$J" -X POST $B/api/driver-location -d '{"lat":37.05,"lng":-119.95,"accuracy":9}' -o /dev/null
+chk "8. Fleet Map row: trailer 3B, current ticket, running actual tons" "$(curl -s -b $M $B/api/fleet/live | jq "[(r['trailerNum'], r['truckNum'], r['load']['currentTicket']['number'], r['load']['currentTicket']['netTons'], r['load']['actualTons'], r['load']['tickets'], r['status']) for r in d['trucks'] if r['driverId']=='cornelio'][0]")" "('3B', 'Truck #3', '37432920', 23.8, 94.64, 4, 'Loaded / En Route')"
+ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
+chk "9. four tickets: 23.20 + 23.19 + 24.45 + 23.80 = 94.64 actual; planned stays 4 × 25 = 100" "$(cl "l['tons']['ticketNumbers'], l['tons']['actualTons'], l['tons']['plannedTons'], l['tons']['tonsSource'], l['tons']['actualComplete'], l['tons']['missingTickets']")" "['37432733', '37432799', '37432862', '37432920'] 94.64 100 supplier True []"
+chk "   Today board carries trailer and tons"        "$(curl -s -b $M $B/api/today | jq "[(l['trailerNum'], l['tons']['actualTons'], l['tons']['plannedTons']) for l in d['loads'] if l['id']=='$CL'][0]")" "('3B', 94.64, 100)"
+chk "   driver payload shows each trip's ticket"     "$(curl -s -b $CD $B/api/my-dispatch | jq "[[(t['tripNum'], t['ticket']['number'], t['ticket']['netTons']) for t in l['trips']] for l in d['loads'] if l['loadId']=='$CL'][0]")" "[(1, '37432733', 23.2), (2, '37432799', 23.19), (3, '37432862', 24.45), (4, '37432920', 23.8)]"
+# Corrections before approval: own trip keeps its number; another trip's number is refused.
+chk "10. driver may correct a ticket before submitting" "$(curl -s -b $CD -H "$J" -X PUT $B/api/loads/$CL/trips/3/ticket -d '{"source":"supplier","number":"37432862","netTons":24.45}' | jq "d.get('success'), d['ticket']['netTons'], d['tons']['actualTons']")" "True 24.45 94.64"
+chk "   correction to a number used by trip 2 is refused" "$(curl -s -b $CD -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/loads/$CL/trips/3/ticket -d '{"source":"supplier","number":"37432799","netTons":24.45}')" "409"
+chk "   another driver cannot touch it"                "$(curl -s -b $LD -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/loads/$CL/trips/3/ticket -d '{"source":"supplier","number":"37432862","netTons":1}')" "403"
+# Signature, submit, approve — the existing gate, unchanged.
+curl -s -b $CD -H "$J" -X PUT $B/api/loads/$CL -d "{\"pod\":{\"signedBy\":\"DCC Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-09-14T22:00:00Z\"}}" -o /dev/null
+ca '{"action":"delivered"}' -o /dev/null
+chk "11. submitted with 4 of 4, not partial"         "$(cl "l['approvalStatus'], l['loadsDelivered'], l['isPartial']")" "submitted 4 False"
+chk "   approval screen data: tickets + planned vs actual on the load" "$(cl "len([t for t in l['trips'] if t['ticket']]), l['tons']['plannedTons'], l['tons']['actualTons']")" "4 100 94.64"
+curl -s -b $M -H "$J" -X POST $B/api/loads/$CL/approve -d '{}' -o /dev/null
+chk "12. approved and locked"                        "$(cl "l['approvalStatus'], l['locked']")" "approved True"
+chk "   approval audit records trailer, planned 100, actual 94.64, the four tickets" "$(curl -s -b $M "$B/api/audit-log?action=approved-load" | jq "[(e['details']['trailer'], e['details']['plannedTons'], e['details']['actualTons'], e['details']['tickets']) for e in d['entries'] if e['target']=='$CL'][0]")" "('3B', 100, 94.64, ['37432733', '37432799', '37432862', '37432920'])"
+chk "   ticket correction after approval refused (manager too)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/loads/$CL/trips/1/ticket -d '{"source":"supplier","number":"37432733","netTons":50}')" "403"
+chk "   trailer cannot change on the locked load"    "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/loads/$CL/assign -d '{"trailerId":null}')" "403"
+# Billing: planned basis is the default and unchanged — 100 t at $30.
+PV=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$CL\"]}")
+chk "13. planned basis: 100.00 t × \$30 = \$3000, description says planned tons" "$(echo "$PV" | jq "d['groups'][0]['lineItems'][0]['basis'], d['groups'][0]['lineItems'][0]['tons'], d['groups'][0]['totalAmount'], d['groups'][0]['lineItems'][0]['description']")" "planned 100 3000 3/4 Class 2 Base — 4 loads (100.00 ton @ \$30/ton)"
+chk "   invalid basis refused"                       "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/customers/$CID -d '{"billingBasis":"whatever"}')" "400"
+curl -s -b $M -H "$J" -X PUT $B/api/customers/$CID -d '{"billingBasis":"actual"}' -o /dev/null
+PV=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$CL\"]}")
+chk "14. actual basis: 94.64 t × \$30 = \$2839.20 from 4 tickets" "$(echo "$PV" | jq "d['groups'][0]['lineItems'][0]['basis'], d['groups'][0]['lineItems'][0]['tons'], d['groups'][0]['totalAmount'], d['groups'][0]['lineItems'][0]['description'], d['groups'][0]['ticketNumbers']")" "actual 94.64 2839.2 3/4 Class 2 Base — 4 loads (94.64 ton actual from 4 tickets @ \$30/ton) ['37432733', '37432799', '37432862', '37432920']"
+chk "   basis change is audited"                     "$(curl -s -b $M "$B/api/audit-log?action=changed-billing-basis" | jq "[(e['details']['from'], e['details']['to']) for e in d['entries'] if e['target']=='$CID'][0]")" "('planned', 'actual')"
+# The invoice QuickBooks would receive carries the actual quantity and the ticket numbers.
+curl -s -b $M -H "$J" -X POST $B/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+CB=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$CL\"]}" | jq "d['batches'][0]['id']")
+chk "15. batch stores 94.64 t and the ticket numbers" "$(curl -s -b $M $B/api/billing-batches | jq "[(b['totalTons'], b['ticketNumbers']) for b in d['items'] if b['id']=='$CB'][0]")" "(94.64, ['37432733', '37432799', '37432862', '37432920'])"
+curl -s -b $M -H "$J" -X POST $B/api/billing-batches/$CB/send -d '{}' -o /dev/null
+chk "   invoice line quantity = 94.64, tickets in the note" "$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoices'][-1]['lines'][0]['quantity'], d['invoices'][-1]['lines'][0]['amount'], '37432920' in d['invoices'][-1]['privateNote']")" "94.64 2839.2 True"
+# Actual basis with a delivered trip that has no tons: not priceable until corrected. VBT ticket, no tons.
+curl -s -b $M -H "$J" -X POST $B/api/pos -d '{
+ "po":{"poNumber":"25032","customer":"Dave Christian Construction","deliveryDate":"'"$(date +%F)"'","address":"North Fork","city":"North Fork","plannedVendorId":"vbt"},
+ "splits":[{"truckId":"cornelio","truckUnitId":"'"$T3"'","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+C2=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='25032'][0]['id']][0]")
+c2() { curl -s -b $CD -H "$J" -X POST $B/api/loads/$C2/trip-action -d "$1" "${@:2}"; }
+c2 '{"action":"start-trip"}' -o /dev/null; c2 '{"action":"arrived-pickup","yardId":"vbt"}' -o /dev/null
+chk "16. VBT internal ticket: number only, no tons, no photo required" "$(c2 '{"action":"loaded","ticket":{"source":"vbt","number":"VBT-3298"}}' | jq "d.get('success'), d['load']['trips'][0]['ticket']['source'], d['load']['trips'][0]['ticket']['netTons']")" "True vbt None"
+c2 '{"action":"arrived-jobsite"}' -o /dev/null; c2 '{"action":"trip-complete"}' -o /dev/null
+chk "   load-level photo still required for a photo-less VBT ticket" "$(c2 '{"action":"delivered"}' | jq "d['error']")" "Ticket photo required"
+curl -s -b $CD -H "$J" -X PUT $B/api/loads/$C2 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-09-14T22:00:00Z\"}}" -o /dev/null
+c2 '{"action":"delivered"}' -o /dev/null; curl -s -b $M -H "$J" -X POST $B/api/loads/$C2/approve -d '{}' -o /dev/null
+PV=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$C2\"]}")
+chk "17. actual-basis load with no ticket tons is NOT priceable (never billed on 25 t silently)" "$(echo "$PV" | jq "d['groups'][0]['unconfigured'], d['groups'][0]['unconfiguredReasons'][0]")" "True Dave Christian Construction is billed on actual ticket tons, but 1 of 1 delivered load on $C2 has no confirmed ticket tons"
+chk "   ...and batch creation refuses it"            "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$C2\"]}")" "400"
+chk "   planned-basis customers are untouched by all this (section 8 math holds)" "$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$C2\"]}" -o /dev/null; curl -s -b $M $B/api/customers | jq "sorted(set(c.get('billingBasis','planned') for c in d['customers'] if c['id']!='$CID'))")" "['planned']"
+# Trailer history rule: a trailer on a load is deactivated, never deleted.
+chk "18. trailer with history is deactivated, not deleted" "$(curl -s -b $M -X DELETE $B/api/fleet/trailers/$TR | jq "d['deactivated']")|$(curl -s -b $M $B/api/fleet | jq "[t['active'] for t in d['trailers'] if t['id']=='$TR'][0]")" "True|False"
+chk "   deactivated trailer cannot be assigned"      "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/loads/$NL/assign -d "{\"trailerId\":\"$TR\"}")" "400"
+chk "   approved load keeps trailer 3B as history"   "$(cl "l['trailer']['number']")" "3B"
+# Daily movement vs billable freight: nothing in Phase 1a stores odometer or segment data.
+chk "19. no shift/segment/odometer fields were introduced on the load" "$(cl "[k for k in l.keys() if k in ('freight','freightSegmentId','odStart','odEnd','shiftId')]")" "[]"
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
@@ -817,7 +931,7 @@ else
   chk "10. driver cannot read a trail"                 "$(curl -s -b $ND -o /dev/null -w '%{http_code}' $B2/api/loads/$NLD/track)" "403"
   chk "10. manager still cannot post a location"       "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":1,"lng":1}')" "403"
   # Between trips (returning) the return leg is attributed to the trip just delivered.
-  for A in arrived-pickup loaded arrived-jobsite trip-complete; do curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/loads/$NLD/trip-action -d "{\"action\":\"$A\",\"yardId\":\"vbt\"}" -o /dev/null; done
+  for A in arrived-pickup loaded arrived-jobsite trip-complete; do curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/loads/$NLD/trip-action -d "{\"action\":\"$A\",\"yardId\":\"vbt\",\"ticket\":$(tkt)}" -o /dev/null; done
   curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/backdate-location -d '{"driverId":"nadia","seconds":25}' -o /dev/null
   curl -s -b $ND -H 'Content-Type: application/json' -X POST $B2/api/driver-location -d '{"lat":36.7500,"lng":-119.7600}' -o /dev/null; sleep 0.5
   chk "   all trips done on the load → no further history" "$($PSQL -c "select count(*) from driver_locations where driver_id='nadia'")" "2"
