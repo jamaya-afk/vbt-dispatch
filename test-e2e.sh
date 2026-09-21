@@ -782,8 +782,8 @@ chk "   Loaded twice is refused"                     "$(ca '{"action":"loaded","
 ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
 # Trip 2 — reuse of 37432733 must be refused and name the owner
 ca '{"action":"start-trip"}' -o /dev/null; ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" -o /dev/null
-D=$(ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432733","netTons":23.19,"photo":"'"$PNG"'"}}')
-chk "7. duplicate ticket refused (409) and names the load that owns it" "$(echo "$D" | jq "d['ownerLoadId']=='$CL', d['ownerTripNum'], d['error']")" "True 1 Ticket #37432733 is already recorded on $CL (PO 25031, Dave Christian Construction, load 1 of 4, Cornelio). Please check the ticket number."
+DUP=$(ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432733","netTons":23.19,"photo":"'"$PNG"'"}}')
+chk "7. duplicate ticket refused (409) and names the load that owns it" "$(echo "$DUP" | jq "d['ownerLoadId']=='$CL', d['ownerTripNum'], d['error']")" "True 1 Ticket #37432733 is already recorded on $CL (PO 25031, Dave Christian Construction, load 1 of 4, Cornelio). Please check the ticket number."
 chk "   ...spacing/case do not evade the check"      "$(ca '{"action":"loaded","ticket":{"source":"supplier","number":" 3743 2733 ","netTons":23.19,"photo":"'"$PNG"'"}}' | jq "d['ownerTripNum']")" "1"
 chk "   live check agrees"                           "$(curl -s -b $CD "$B/api/tickets/check?number=37432733" | jq "d['available'], d['ownerTripNum']")" "False 1"
 chk "   trip 2 still not loaded after the refusal"   "$(cl "l['trips'][1]['timestamps'].get('loadedAt'), l['trips'][1].get('ticket')")" "None None"
@@ -851,6 +851,56 @@ chk "   deactivated trailer cannot be assigned"      "$(curl -s -b $M -o /dev/nu
 chk "   approved load keeps trailer 3B as history"   "$(cl "l['trailer']['number']")" "3B"
 # Daily movement vs billable freight: nothing in Phase 1a stores odometer or segment data.
 chk "19. no shift/segment/odometer fields were introduced on the load" "$(cl "[k for k in l.keys() if k in ('freight','freightSegmentId','odStart','odEnd','shiftId')]")" "[]"
+
+echo "── 37. Shift foundation: the driver's day — odometer legs, breaks, truck change, Daily Log ──"
+# Generic checks run on Leonardo (Truck #12) and Beryle so Truck #3's readings stay untouched for the packet in section 38.
+curl -s -b $M -H "$J" -X PUT $B/api/fleet/trailers/$TR -d '{"active":true}' -o /dev/null
+BD=$(mktemp); curl -s -c $BD -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+sc() { curl -s -b $LD $B/api/shifts/current | jq "$1"; }
+chk "1. no open day: current is null, 11 inspection items, usual truck prefilled" "$(sc "d['shift'], len(d['inspectionItems']), d['defaults']['truckId'], [t['lastOdometer'] for t in d['trucks'] if t['id']=='truck-12'][0]")" "None 11 truck-12 None"
+chk "   Today panel has no days yet"                  "$(curl -s -b $M $B/api/today | jq "len(d['shifts'])")" "0"
+ss() { curl -s -b $LD -H "$J" -X POST $B/api/shifts/start -d "$1" "${@:2}"; }
+chk "2. start without a signature refused"           "$(ss '{"truckId":"truck-12","odometer":41000,"inspection":{"satisfactory":true}}' | jq "d['error']")" "Sign the inspection to start your day"
+chk "   defects unlisted refused"                    "$(ss '{"truckId":"truck-12","odometer":41000,"inspection":{"satisfactory":false},"signature":"'"$PNG"'"}' | jq "d['error']")" "List the defect(s) found, or mark the inspection satisfactory"
+chk "   no odometer refused"                         "$(ss '{"truckId":"truck-12","inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['error']")" "Enter the starting odometer as a whole number"
+chk "   manager cannot start a driver's day"         "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-12","odometer":1,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}')" "403"
+SH=$(ss '{"truckId":"truck-12","trailerId":"'"$TR"'","odometer":41000,"inspection":{"satisfactory":false,"defects":["Mirrors"],"remarks":"left mirror cracked"},"signature":"'"$PNG"'"}' | jq "d['shift']['id']")
+chk "3. day opened: Leonardo, Truck #12, 3B, OD 41,000, defect recorded, signed" "$(sc "d['shift']['status'], d['shift']['driverName'], d['shift']['truckNum'], d['shift']['trailerNum'], d['shift']['startOdometer'], d['shift']['inspection']['satisfactory'], d['shift']['inspection']['defects'], d['shift']['inspection']['hasSignature'], d['shift']['dailyMiles']")" "open Leonardo Truck #12 3B 41000 False ['Mirrors'] True None"
+chk "   truck's last reading updated"                "$(curl -s -b $M $B/api/fleet | jq "[t['mileage'] for t in d['trucks'] if t['id']=='truck-12'][0]")" "41000"
+chk "   second Start day refused (shift_open)"       "$(ss '{"truckId":"truck-14","odometer":1,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['code']")" "shift_open"
+chk "   another driver cannot start on Truck #12"    "$(curl -s -b $BD -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-12","odometer":41000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['code']")" "truck_in_use"
+chk "4. fleet live row carries the open day"         "$(curl -s -b $M $B/api/fleet/live | jq "[(r['shift']['truckNum'], r['shift']['startOdometer'], r['shift']['segment']) for r in d['trucks'] if r['driverId']=='leonardo'][0]")" "('Truck #12', 41000, None)"
+chk "   Today panel lists the open day"              "$(curl -s -b $M $B/api/today | jq "[(s['driverName'], s['status']) for s in d['shifts']]")" "[('Leonardo', 'open')]"
+curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/break -d '{"action":"start"}' -o /dev/null; sleep 1
+chk "5. break running shows on the day"              "$(sc "d['shift']['openBreak'], len(d['shift']['breaks'])")" "True 1"
+chk "   ending a break twice refused"                "$(curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/break -d '{"action":"end"}' -o /dev/null; curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/break -d '{"action":"end"}' | jq "d['error']")" "No break is running"
+chk "   break recorded with an end time"             "$(sc "d['shift']['openBreak'], bool(d['shift']['breaks'][0]['endAt'])")" "False True"
+# Truck change: old truck's final reading, new truck's first reading, never mixed.
+curl -s -b $BD -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-2","odometer":9000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' -o /dev/null
+chk "6. change to a truck on another open day refused" "$(curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/truck-change -d '{"fromOdometer":41050,"toTruckId":"truck-2","toOdometer":9001}' | jq "d['code']")" "truck_in_use"
+chk "   final reading below the leg start refused"   "$(curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/truck-change -d '{"fromOdometer":40990,"toTruckId":"truck-4","toOdometer":62000}' | jq "d['error']")" "Truck #12's final reading cannot be below its starting reading 41,000"
+chk "   truck change recorded: Truck #12 @41,050 → Truck #4 @62,000" "$(curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/truck-change -d '{"fromOdometer":41050,"toTruckId":"truck-4","toOdometer":62000}' | jq "d['shift']['truckNum'], d['shift']['events'][-1]['type'], d['shift']['events'][-1]['fromOdometer'], d['shift']['events'][-1]['toOdometer'], len(d['shift']['legs'])")" "Truck #4 truck-change 41050 62000 2"
+chk "   old truck's last reading is its final one"   "$(curl -s -b $M $B/api/fleet | jq "[(t['id'], t['mileage']) for t in d['trucks'] if t['id'] in ('truck-12','truck-4')]")" "[('truck-4', 62000), ('truck-12', 41050)]"
+chk "7. end day below the current leg start refused" "$(curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/end -d '{"odometer":61000}' | jq "d['error']")" "The ending odometer cannot be below Truck #4's starting reading 62,000"
+chk "   end day at 62,070 → closed; daily miles = (41,050−41,000) + (62,070−62,000) = 120, none billable" "$(curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/end -d '{"odometer":62070}' | jq "d['shift']['status'], d['shift']['dailyMiles'], d['shift']['billableMiles'], d['shift']['nonBillableMiles'], d['shift']['closedBy'], d['shift']['workMinutes'] is not None")" "closed 120 0 120 leonardo True"
+chk "   ending twice refused"                        "$(curl -s -b $LD -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/shifts/$SH/end -d '{"odometer":62080}')" "400"
+chk "   a new day can start after closing"           "$(sc "d['shift'], d['lastShift']['truckId'], [t['lastOdometer'] for t in d['trucks'] if t['id']=='truck-4'][0]")" "None truck-4 62070"
+DL=$(curl -s -b $LD $B/api/shifts/$SH/daily-log)
+chk "8. Daily Log page: driver, trucks, trailer, 120 miles, defect, both legs, final (no DRAFT)" "$(echo "$DL" | python3 -c "
+import sys,re;h=sys.stdin.read()
+print('Daily Log — Leonardo' in h, 'Truck #12' in h and 'Truck #4' in h, '3B' in h, '>120<' in h, 'Defects: Mirrors' in h, h.count('<div class=\"draft\">'), 'Truck change Truck #12 (41,050)' in h)")" "True True True True True 0 True"
+chk "   another driver cannot open it"               "$(curl -s -b $BD -o /dev/null -w '%{http_code}' $B/api/shifts/$SH/daily-log)" "403"
+chk "   the office can"                              "$(curl -s -b $M -o /dev/null -w '%{http_code}' $B/api/shifts/$SH/daily-log)" "200"
+# Lower-than-last reading: refused, then accepted only when confirmed, and recorded.
+chk "9. start below the truck's last reading refused" "$(curl -s -b $M -H "$J" -X PUT $B/api/fleet/trucks/truck-14 -d '{"mileage":500}' -o /dev/null; ss '{"truckId":"truck-14","odometer":100,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['code'], d['lastOdometer']")" "odometer_below_last 500"
+chk "   ...accepted when confirmed, and noted as an event" "$(ss '{"truckId":"truck-14","odometer":100,"acceptLowerOdometer":true,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['shift']['status'], d['shift']['events'][0]['type'], d['shift']['events'][0]['lastOdometer']")" "open odometer-below-last 500"
+SH2=$(sc "d['shift']['id']"); curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH2/end -d '{"odometer":130}' -o /dev/null
+# Manager closes a driver's day with a reason (Beryle forgot to end).
+BS=$(curl -s -b $M $B/api/today | jq "[s['id'] for s in d['shifts'] if s['driverId']=='beryle'][0]")
+chk "10. manager close needs a reason"               "$(curl -s -b $M -H "$J" -X POST $B/api/shifts/$BS/close -d '{"odometer":9040}' | jq "d['error']")" "A reason is required to close a driver's day for them"
+chk "   manager closes Beryle's day with a reason"   "$(curl -s -b $M -H "$J" -X POST $B/api/shifts/$BS/close -d '{"odometer":9040,"reason":"driver forgot End day"}' | jq "d['shift']['status'], d['shift']['dailyMiles'], d['shift']['closedBy'], d['shift']['closeReason']")" "closed 40 joshua driver forgot End day"
+chk "   audit trail: started, changed truck, ended, closed for driver" "$(curl -s -b $M "$B/api/audit-log" | jq "sorted(set(e['action'] for e in d['entries'] if e['action'] in ('started-shift','changed-truck','ended-shift','closed-shift-for-driver')))")" "['changed-truck', 'closed-shift-for-driver', 'ended-shift', 'started-shift']"
+chk "   trips ran all day long without a shift in every earlier section (legacy path intact)" "$(curl -s -b $M $B/api/data | jq "sum(1 for l in d['loads'] if l.get('freightSegmentId'))")" "0"
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.

@@ -942,6 +942,10 @@ function normalizeStore() {
   });
   // Trailers: no seed — the office adds them. Existing loads simply have no trailer.
   if (!Array.isArray(store.trailers)) store.trailers = [];
+  // Shifts (the driver's day) and freight segments (one continuous billable
+  // operation). Additive: loads without a segment behave exactly as before.
+  if (!Array.isArray(store.shifts)) store.shifts = [];
+  if (!Array.isArray(store.freightSegments)) store.freightSegments = [];
   store.trailers.forEach(t => { if (t.active === undefined) t.active = true; if (!t.status) t.status = 'available'; });
   store.trucks.forEach(t => {
     if (!t.status) t.status = 'available';
@@ -2219,6 +2223,7 @@ function fleetLiveRows(now = Date.now()) {
       truckIsAssigned: !!truck,                      // false = showing the driver's usual truck
       trailerId: trailer ? trailer.id : null,
       trailerNum: trailer ? trailer.number : '',
+      shift: (() => { const s = openShiftFor(d.id); if (!s) return null; const sd = shiftDerived(s); return { id: s.id, startAt: s.startAt, truckNum: s.truckNum, trailerNum: s.trailerNum, startOdometer: s.startOdometer, onBreak: sd.openBreak, segment: sd.openSegment ? { id: sd.openSegment.id, customer: sd.openSegment.customer, originName: sd.openSegment.originName, destinationLabel: sd.openSegment.destinationLabel, odStart: sd.openSegment.odStart, timeStart: sd.openSegment.timeStart } : null }; })(),
       status: live ? FLEET_STATUS[wf.key] : FLEET_STATUS.offline,
       statusKey: live ? wf.key : 'offline',
       workflowStatus: FLEET_STATUS[wf.key],          // what the stamps say, regardless of GPS
@@ -3029,6 +3034,340 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   }
   await saveData();
   res.json({ success: true, load: l });
+});
+
+// ── SHIFTS — the driver's whole workday ─────────────────────────────────────
+// One record per driver per day: truck, trailer, start/end time and odometer,
+// breaks, truck changes, the pre-trip inspection with signature. Everything
+// the driver does between Start day and End day belongs to it. Daily miles
+// come from here and only here; nothing bills from a shift.
+const INSPECTION_ITEMS = [
+  'Brakes', 'Tires and wheels', 'Lights and reflectors', 'Steering', 'Horn', 'Mirrors',
+  'Windshield and wipers', 'Coupling / fifth wheel', 'Trailer and tarp', 'Fluid leaks', 'Emergency equipment',
+];
+function openShiftFor(driverId) { return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open') || null; }
+function openShiftOnTruck(truckId) { return (store.shifts || []).find(s => s.truckId === truckId && s.status === 'open') || null; }
+function parseOdometer(v) {
+  if (v === '' || v == null) return null;
+  const n = Number(String(v).replace(/,/g, ''));
+  if (!isFinite(n) || n < 0 || n > 9999999 || Math.round(n) !== n) return NaN;
+  return n;
+}
+function fmtClock(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: OPERATING_TZ });
+}
+// Odometer legs of a shift: one per vehicle. A truck change ends one leg at
+// the old truck's reading and starts the next at the new truck's reading, so
+// readings from two vehicles are never subtracted from each other.
+function shiftLegs(s) {
+  const legs = [];
+  let cur = { truckId: s.startTruckId || s.truckId, truckNum: s.startTruckNum || s.truckNum, from: s.startOdometer, fromAt: s.startAt, to: null, toAt: '' };
+  for (const e of (s.events || [])) {
+    if (e.type !== 'truck-change') continue;
+    cur.to = e.fromOdometer; cur.toAt = e.at; legs.push(cur);
+    cur = { truckId: e.toTruckId, truckNum: e.toTruckNum, from: e.toOdometer, fromAt: e.at, to: null, toAt: '' };
+  }
+  if (s.status === 'closed') { cur.to = s.endOdometer; cur.toAt = s.endAt; }
+  legs.push(cur);
+  return legs;
+}
+function shiftBreakMinutes(s, now = Date.now()) {
+  return Math.round((s.breaks || []).reduce((sum, b) => {
+    const a = Date.parse(b.startAt), z = b.endAt ? Date.parse(b.endAt) : now;
+    return sum + Math.max(0, (z - a) / 60000);
+  }, 0));
+}
+// Everything a Daily Log needs, derived on every read, never stored.
+function shiftDerived(s) {
+  const legs = shiftLegs(s);
+  const dailyMiles = s.status === 'closed'
+    ? legs.reduce((sum, l) => sum + (l.to != null && l.from != null ? Math.max(0, l.to - l.from) : 0), 0)
+    : null;
+  const breakMinutes = shiftBreakMinutes(s);
+  const spanMinutes = s.endAt ? Math.round((Date.parse(s.endAt) - Date.parse(s.startAt)) / 60000) : null;
+  const workMinutes = spanMinutes == null ? null : Math.max(0, spanMinutes - breakMinutes);
+  const segs = segmentsForShift(s).map(segmentPublic);
+  const closedSegs = segs.filter(x => x.status === 'closed');
+  const billableMiles = closedSegs.reduce((sum, x) => sum + (x.billableMiles || 0), 0);
+  const billableMinutes = closedSegs.reduce((sum, x) => sum + (x.billableMinutes || 0), 0);
+  return {
+    legs, dailyMiles, breakMinutes, spanMinutes, workMinutes,
+    billableMiles, billableMinutes,
+    // Non-billable is a remainder, never a stored figure.
+    nonBillableMiles: dailyMiles == null ? null : Math.max(0, dailyMiles - billableMiles),
+    openBreak: (s.breaks || []).some(b => !b.endAt),
+    openSegment: segs.find(x => x.status === 'open') || null,
+    segments: segs,
+  };
+}
+function shiftPublic(s) {
+  if (!s) return null;
+  const { inspection, ...rest } = s;
+  return {
+    ...rest,
+    inspection: inspection ? { ...inspection, signature: inspection.signature ? '[stored]' : '' , hasSignature: !!(inspection.signatureUrl || inspection.signature) } : null,
+    ...shiftDerived(s),
+  };
+}
+// Filled in by the freight-segment layer below; the shift layer only asks.
+function segmentsForShift(s) { return (store.freightSegments || []).filter(x => x.shiftId === s.id); }
+// Freight segments arrive in the next slice; until then a shift has none.
+function segmentPublic(x) { return x; }
+async function closeOpenSegmentForShift() { return null; }
+function shiftOwnedBy(s, u) { return u.role !== 'driver' || s.driverId === u.truckId; }
+function currentOdometerFloor(s) {
+  const legs = shiftLegs(s); return legs[legs.length - 1].from;
+}
+async function storeSignature(dataUrl, ownerId) {
+  if (!dataUrl) return { url: '', inline: '' };
+  if (/^https?:\/\//.test(dataUrl)) return { url: dataUrl, inline: '' };
+  if (!String(dataUrl).startsWith('data:image/')) return { error: 'Signature must be an image' };
+  if (supabaseEnabled) {
+    try { return { url: await uploadPhoto('signature', dataUrl, ownerId), inline: '' }; }
+    catch (e) { console.error('[shift] signature upload failed, keeping inline:', e.message); }
+  }
+  return { url: '', inline: dataUrl };
+}
+
+// What the driver's Start day screen needs: the open shift if any, trucks with
+// their last reading, trailers, and the driver's usual truck/trailer.
+app.get('/api/shifts/current', reqAuth, (req, res) => {
+  const u = req.session.user;
+  const driverId = u.role === 'driver' ? u.truckId : String(req.query.driverId || '');
+  if (!driverId) return res.status(400).json({ error: 'driverId required' });
+  const d = rosterDriver(driverId);
+  const shift = openShiftFor(driverId);
+  const trucks = (store.trucks || []).filter(t => t.active !== false).map(t => ({
+    id: t.id, truckNum: t.truckNum, type: t.type || '', status: t.status || 'available', lastOdometer: t.mileage == null ? null : t.mileage,
+    inUseBy: (openShiftOnTruck(t.id) || {}).driverName || '',
+  }));
+  const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({ id: t.id, number: t.number, type: t.type || '', status: t.status || 'available', defaultTruckId: t.defaultTruckId || null }));
+  const usualTruckId = d ? d.defaultTruckId || null : null;
+  const usualTrailer = usualTruckId ? trailers.find(t => t.defaultTruckId === usualTruckId) : null;
+  res.json({
+    shift: shiftPublic(shift), inspectionItems: INSPECTION_ITEMS, trucks, trailers,
+    defaults: { truckId: usualTruckId, trailerId: usualTrailer ? usualTrailer.id : null },
+    lastShift: (() => { const prev = (store.shifts || []).filter(s => s.driverId === driverId && s.status === 'closed').sort((a, b) => (b.endAt || '').localeCompare(a.endAt || ''))[0]; return prev ? { truckId: prev.truckId, trailerId: prev.trailerId, date: prev.date } : null; })(),
+  });
+});
+
+app.post('/api/shifts/start', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  if (u.role !== 'driver') return res.status(403).json({ error: 'Drivers start their own day' });
+  const b = req.body || {};
+  const existing = openShiftFor(u.truckId);
+  if (existing) return res.status(409).json({ error: `Your day is already open (started ${fmtClock(existing.startAt)} on ${existing.truckNum})`, code: 'shift_open', shift: shiftPublic(existing) });
+  const truck = (store.trucks || []).find(t => t.id === b.truckId);
+  if (!truck) return res.status(400).json({ error: 'Pick the truck you are driving' });
+  if (truck.active === false) return res.status(400).json({ error: `${truck.truckNum} is deactivated` });
+  if (truck.status === 'maintenance' || truck.status === 'out-of-service') return res.status(400).json({ error: `${truck.truckNum} is ${truck.status}` });
+  const onTruck = openShiftOnTruck(truck.id);
+  if (onTruck) return res.status(409).json({ error: `${truck.truckNum} is already on ${onTruck.driverName}'s open day`, code: 'truck_in_use' });
+  let trailer = null;
+  if (b.trailerId) {
+    trailer = (store.trailers || []).find(t => t.id === b.trailerId);
+    if (!trailer) return res.status(400).json({ error: 'Unknown trailer' });
+    if (trailer.active === false) return res.status(400).json({ error: `Trailer ${trailer.number} is deactivated` });
+  }
+  const odo = parseOdometer(b.odometer);
+  if (odo == null || Number.isNaN(odo)) return res.status(400).json({ error: 'Enter the starting odometer as a whole number' });
+  if (truck.mileage != null && odo < truck.mileage && !b.acceptLowerOdometer) {
+    return res.status(400).json({ error: `${truck.truckNum} last read ${truck.mileage.toLocaleString()} — the starting odometer cannot be lower. Check the reading, or confirm it if the last one was wrong.`, code: 'odometer_below_last', lastOdometer: truck.mileage });
+  }
+  const insp = b.inspection || {};
+  if (typeof insp.satisfactory !== 'boolean') return res.status(400).json({ error: 'Complete the pre-trip inspection: all satisfactory, or list the defects' });
+  const defects = Array.isArray(insp.defects) ? insp.defects.map(x => String(x).trim()).filter(Boolean) : [];
+  if (!insp.satisfactory && !defects.length) return res.status(400).json({ error: 'List the defect(s) found, or mark the inspection satisfactory' });
+  const sig = await storeSignature(b.signature || b.signatureUrl, 'shift');
+  if (sig.error) return res.status(400).json({ error: sig.error });
+  if (!sig.url && !sig.inline) return res.status(400).json({ error: 'Sign the inspection to start your day' });
+  const now = new Date().toISOString();
+  const d = rosterDriver(u.truckId);
+  const shift = {
+    id: genId('SH'), date: todayStr(),
+    driverId: u.truckId, driverName: (d && d.name) || u.displayName || u.username,
+    truckId: truck.id, truckNum: truck.truckNum, startTruckId: truck.id, startTruckNum: truck.truckNum,
+    trailerId: trailer ? trailer.id : null, trailerNum: trailer ? trailer.number : '',
+    startAt: now, startOdometer: odo, endAt: '', endOdometer: null,
+    status: 'open', breaks: [], events: [],
+    inspection: { items: INSPECTION_ITEMS, satisfactory: insp.satisfactory, defects, remarks: String(insp.remarks || '').trim(), signatureUrl: sig.url, signature: sig.inline, at: now },
+    notes: '', closedBy: '', closedAt: '', closeReason: '',
+  };
+  if (truck.mileage != null && odo < truck.mileage) shift.events.push({ type: 'odometer-below-last', at: now, truckId: truck.id, lastOdometer: truck.mileage, odometer: odo });
+  truck.mileage = odo;
+  store.shifts.push(shift);
+  logAction(u, 'started-shift', shift.id, { truck: truck.truckNum, trailer: shift.trailerNum, odometer: odo, satisfactory: insp.satisfactory, defects });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(shift) });
+});
+
+app.post('/api/shifts/:id/break', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (!shiftOwnedBy(s, u)) return res.status(403).json({ error: 'Not your day' });
+  if (s.status !== 'open') return res.status(400).json({ error: 'This day is closed' });
+  const open = (s.breaks || []).find(b => !b.endAt);
+  const now = new Date().toISOString();
+  if (req.body?.action === 'start') {
+    if (open) return res.status(400).json({ error: 'A break is already running' });
+    s.breaks.push({ startAt: now, endAt: '' });
+  } else if (req.body?.action === 'end') {
+    if (!open) return res.status(400).json({ error: 'No break is running' });
+    open.endAt = now;
+  } else return res.status(400).json({ error: 'action must be start or end' });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(s) });
+});
+
+// A truck change mid-day: the old truck's final reading and the new truck's
+// first reading are both captured, and the open freight segment (if any) is
+// closed at the old reading — one vehicle per segment, always.
+app.post('/api/shifts/:id/truck-change', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (!shiftOwnedBy(s, u)) return res.status(403).json({ error: 'Not your day' });
+  if (s.status !== 'open') return res.status(400).json({ error: 'This day is closed' });
+  const b = req.body || {};
+  const to = (store.trucks || []).find(t => t.id === b.toTruckId);
+  if (!to) return res.status(400).json({ error: 'Pick the truck you are changing to' });
+  if (to.id === s.truckId) return res.status(400).json({ error: `You are already on ${to.truckNum}` });
+  if (to.active === false || to.status === 'maintenance' || to.status === 'out-of-service') return res.status(400).json({ error: `${to.truckNum} is not available` });
+  const onTruck = openShiftOnTruck(to.id);
+  if (onTruck) return res.status(409).json({ error: `${to.truckNum} is on ${onTruck.driverName}'s open day`, code: 'truck_in_use' });
+  const fromOdo = parseOdometer(b.fromOdometer), toOdo = parseOdometer(b.toOdometer);
+  if (fromOdo == null || Number.isNaN(fromOdo)) return res.status(400).json({ error: `Enter ${s.truckNum}'s final odometer` });
+  if (toOdo == null || Number.isNaN(toOdo)) return res.status(400).json({ error: `Enter ${to.truckNum}'s starting odometer` });
+  const floor = currentOdometerFloor(s);
+  if (fromOdo < floor) return res.status(400).json({ error: `${s.truckNum}'s final reading cannot be below its starting reading ${floor.toLocaleString()}` });
+  if (to.mileage != null && toOdo < to.mileage && !b.acceptLowerOdometer) return res.status(400).json({ error: `${to.truckNum} last read ${to.mileage.toLocaleString()} — the starting odometer cannot be lower`, code: 'odometer_below_last', lastOdometer: to.mileage });
+  let trailer = null;
+  if (b.toTrailerId !== undefined && b.toTrailerId) {
+    trailer = (store.trailers || []).find(t => t.id === b.toTrailerId);
+    if (!trailer || trailer.active === false) return res.status(400).json({ error: 'Unknown or deactivated trailer' });
+  }
+  const now = new Date().toISOString();
+  const closed = await closeOpenSegmentForShift(s, { odometer: fromOdo, by: u, reason: 'truck-change', at: now });
+  if (closed && closed.error) return res.status(400).json({ error: closed.error });
+  const from = (store.trucks || []).find(t => t.id === s.truckId);
+  if (from) from.mileage = fromOdo;
+  to.mileage = toOdo;
+  s.events.push({ type: 'truck-change', at: now, fromTruckId: s.truckId, fromTruckNum: s.truckNum, fromOdometer: fromOdo, toTruckId: to.id, toTruckNum: to.truckNum, toOdometer: toOdo,
+                  fromTrailerId: s.trailerId, toTrailerId: b.toTrailerId === undefined ? s.trailerId : (trailer ? trailer.id : null), closedSegmentId: closed ? closed.id : null });
+  s.truckId = to.id; s.truckNum = to.truckNum;
+  if (b.toTrailerId !== undefined) { s.trailerId = trailer ? trailer.id : null; s.trailerNum = trailer ? trailer.number : ''; }
+  logAction(u, 'changed-truck', s.id, { from: from ? from.truckNum : s.truckId, fromOdometer: fromOdo, to: to.truckNum, toOdometer: toOdo, closedSegmentId: closed ? closed.id : null });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(s) });
+});
+
+// End day. Never force-closes freight: an open segment answers 409 with its
+// details so the driver finishes the freight first. A manager may close with
+// a logged reason through /close.
+async function endShift(s, { odometer, by, reason, signature, forced }) {
+  const odo = parseOdometer(odometer);
+  if (odo == null || Number.isNaN(odo)) return { error: 'Enter the ending odometer as a whole number' };
+  const floor = currentOdometerFloor(s);
+  if (odo < floor) return { error: `The ending odometer cannot be below ${s.truckNum}'s starting reading ${floor.toLocaleString()}` };
+  const openSeg = segmentsForShift(s).find(x => x.status === 'open');
+  if (openSeg && !forced) return { error: `Freight segment still open — finish the ${openSeg.customer} freight (${openSeg.originName} → ${openSeg.destinationLabel}) before ending your day`, code: 'segment_open', segment: segmentPublic(openSeg), status: 409 };
+  const now = new Date().toISOString();
+  if (openSeg && forced) {
+    const closed = await closeOpenSegmentForShift(s, { odometer: odo, by, reason: 'end-of-day-manager', at: now });
+    if (closed && closed.error) return { error: closed.error };
+  }
+  (s.breaks || []).forEach(b => { if (!b.endAt) b.endAt = now; });
+  if (signature) { const sig = await storeSignature(signature, 'shift'); if (!sig.error) { s.endSignatureUrl = sig.url; s.endSignature = sig.inline; } }
+  s.endAt = now; s.endOdometer = odo; s.status = 'closed';
+  s.closedBy = by.username; s.closedAt = now; s.closeReason = reason || (forced ? 'closed by manager' : 'driver');
+  const truck = (store.trucks || []).find(t => t.id === s.truckId);
+  if (truck) truck.mileage = odo;
+  return { ok: true };
+}
+app.post('/api/shifts/:id/end', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (!shiftOwnedBy(s, u)) return res.status(403).json({ error: 'Not your day' });
+  if (s.status !== 'open') return res.status(400).json({ error: 'This day is already closed' });
+  const r = await endShift(s, { odometer: req.body?.odometer, by: u, signature: req.body?.signature, forced: false });
+  if (r.error) return res.status(r.status || 400).json({ error: r.error, code: r.code, segment: r.segment });
+  logAction(u, 'ended-shift', s.id, { odometer: s.endOdometer, dailyMiles: shiftDerived(s).dailyMiles });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(s) });
+});
+app.post('/api/shifts/:id/close', reqMgr, async (req, res) => {
+  const u = req.session.user;
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (s.status !== 'open') return res.status(400).json({ error: 'This day is already closed' });
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to close a driver\'s day for them' });
+  const r = await endShift(s, { odometer: req.body?.odometer, by: u, reason, forced: true });
+  if (r.error) return res.status(r.status || 400).json({ error: r.error, code: r.code });
+  logAction(u, 'closed-shift-for-driver', s.id, { driver: s.driverName, odometer: s.endOdometer, reason });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(s) });
+});
+app.get('/api/shifts', reqMgr, (req, res) => {
+  const date = req.query.date || todayStr();
+  let list = (store.shifts || []).filter(s => (req.query.all ? true : s.date === date) && (!req.query.driverId || s.driverId === req.query.driverId));
+  res.json({ date, shifts: list.map(shiftPublic) });
+});
+app.get('/api/shifts/:id', reqAuth, (req, res) => {
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (!shiftOwnedBy(s, req.session.user)) return res.status(403).json({ error: 'Not your day' });
+  res.json({ shift: shiftPublic(s) });
+});
+
+// ── PRINT PAGES: Daily Log and Freight Bill ──────────────────────────────────
+// Rendered from the records on every request. No stored documents, no PDF.
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function printPage(title, body, { draft } = {}) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+ body{font:13px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111;margin:0;padding:24px;background:#fff}
+ h1{font-size:20px;margin:0 0 2px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#555;margin:18px 0 6px}
+ .sub{color:#555;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px 18px}
+ .k{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#666}.v{font-weight:700;font-variant-numeric:tabular-nums}
+ table{width:100%;border-collapse:collapse;margin-top:6px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #ddd;font-variant-numeric:tabular-nums}th{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#666}
+ td.r,th.r{text-align:right}.tot td{font-weight:700;border-top:2px solid #111}
+ .block{border:1px solid #ccc;border-radius:8px;padding:12px 14px;margin:10px 0}
+ .draft{position:fixed;top:40%;left:0;right:0;text-align:center;font-size:96px;font-weight:900;color:rgba(200,0,0,.12);transform:rotate(-20deg);pointer-events:none}
+ .stamp{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700}.stamp.draft{position:static;transform:none;font-size:11px;background:#fee;color:#b00;opacity:1}.stamp.final{background:#e8f7ee;color:#0a6b3a}
+ .foot{margin-top:24px;font-size:11px;color:#666}.sig img{max-height:70px;border:1px solid #ddd;border-radius:6px;background:#fff}
+ @media print{body{padding:0}.noprint{display:none}}
+</style></head><body>${draft ? '<div class="draft">DRAFT</div>' : ''}
+<div class="noprint" style="margin-bottom:12px"><button onclick="window.print()">Print</button></div>
+${body}<div class="foot">Valley Best Dispatch · generated ${esc(new Date().toLocaleString('en-US', { timeZone: OPERATING_TZ }))}</div></body></html>`;
+}
+const hm = (mins) => mins == null ? '—' : `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
+app.get('/api/shifts/:id/daily-log', reqAuth, (req, res) => {
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).send('Shift not found');
+  if (!shiftOwnedBy(s, req.session.user)) return res.status(403).send('Not your day');
+  const d = shiftDerived(s);
+  const kv = (k, v) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(v == null || v === '' ? '—' : v)}</div></div>`;
+  const legs = d.legs.map(l => `<tr><td>${esc(l.truckNum)}</td><td>${esc(fmtClock(l.fromAt))}${l.toAt ? ' → ' + esc(fmtClock(l.toAt)) : ' → open'}</td><td class="r">${l.from == null ? '—' : l.from.toLocaleString()}</td><td class="r">${l.to == null ? '—' : l.to.toLocaleString()}</td><td class="r">${l.to != null && l.from != null ? (l.to - l.from).toLocaleString() : '—'}</td></tr>`).join('');
+  const segs = d.segments.map(x => `<div class="block"><b>${esc(x.customer)}</b> · ${esc(x.originName)} → ${esc(x.destinationLabel)} <span class="stamp ${x.status === 'closed' ? 'final' : 'draft'}">${x.status}</span>
+    <div class="grid" style="margin-top:6px">${kv('Time', `${fmtClock(x.timeStart)} → ${x.timeEnd ? fmtClock(x.timeEnd) : 'open'}`)}${kv('Billable hours', x.billableMinutes == null ? null : (x.billableMinutes / 60).toFixed(2))}${kv('Odometer', `${x.odStart.toLocaleString()} → ${x.odEnd == null ? 'open' : x.odEnd.toLocaleString()}`)}${kv('Billable miles', x.billableMiles == null ? null : x.billableMiles.toLocaleString())}${kv('Loads / trips', `${x.loadIds.length} / ${x.tripCount}`)}${kv('Actual tons', x.actualTons ? x.actualTons.toFixed(2) : null)}</div></div>`).join('') || '<div class="sub">No freight segments on this day.</div>';
+  const breaks = (s.breaks || []).map(b => `<tr><td>${esc(fmtClock(b.startAt))}</td><td>${b.endAt ? esc(fmtClock(b.endAt)) : 'open'}</td><td class="r">${b.endAt ? Math.round((Date.parse(b.endAt) - Date.parse(b.startAt)) / 60000) : '—'}</td></tr>`).join('');
+  const insp = s.inspection || {};
+  const body = `<h1>Daily Log — ${esc(s.driverName)}</h1><div class="sub">${esc(s.date)} · ${esc(s.startTruckNum || s.truckNum)}${s.trailerNum ? ' + trailer ' + esc(s.trailerNum) : ''} <span class="stamp ${s.status === 'closed' ? 'final' : 'draft'}">${s.status === 'closed' ? 'day closed' : 'day open'}</span></div>
+  <div class="grid">${kv('Shift start', fmtClock(s.startAt))}${kv('Shift end', s.endAt ? fmtClock(s.endAt) : 'open')}${kv('Start odometer', s.startOdometer.toLocaleString())}${kv('End odometer', s.endOdometer == null ? null : s.endOdometer.toLocaleString())}
+    ${kv('Daily miles', d.dailyMiles == null ? null : d.dailyMiles.toLocaleString())}${kv('Billable miles', d.billableMiles.toLocaleString())}${kv('Non-billable miles', d.nonBillableMiles == null ? null : d.nonBillableMiles.toLocaleString())}${kv('Breaks', hm(d.breakMinutes))}${kv('Work time', hm(d.workMinutes))}${kv('Billable hours', (d.billableMinutes / 60).toFixed(2))}</div>
+  <h2>Odometer legs</h2><table><tr><th>Truck</th><th>Period</th><th class="r">Start</th><th class="r">End</th><th class="r">Miles</th></tr>${legs}</table>
+  <h2>Freight segments (billable)</h2>${segs}
+  <h2>Breaks</h2>${breaks ? `<table><tr><th>Start</th><th>End</th><th class="r">Minutes</th></tr>${breaks}</table>` : '<div class="sub">None recorded.</div>'}
+  <h2>Pre-trip inspection</h2><div class="block">${insp.satisfactory ? 'All items satisfactory' : `Defects: ${esc((insp.defects || []).join(', '))}`}${insp.remarks ? ` · Remarks: ${esc(insp.remarks)}` : ''} · ${esc(fmtClock(insp.at))}
+    <div class="sig" style="margin-top:6px">${insp.signatureUrl || insp.signature ? `<img src="${esc(insp.signatureUrl || insp.signature)}" alt="signature">` : 'no signature'}</div>
+    <div class="sub" style="margin-top:6px">Items: ${esc((insp.items || INSPECTION_ITEMS).join(' · '))}</div></div>
+  ${(s.events || []).length ? `<h2>Events</h2><table>${s.events.map(e => `<tr><td>${esc(fmtClock(e.at))}</td><td>${esc(e.type === 'truck-change' ? `Truck change ${e.fromTruckNum} (${e.fromOdometer.toLocaleString()}) → ${e.toTruckNum} (${e.toOdometer.toLocaleString()})` : e.type)}</td></tr>`).join('')}</table>` : ''}`;
+  res.type('html').send(printPage(`Daily Log ${s.date} ${s.driverName}`, body, { draft: s.status !== 'closed' }));
 });
 
 // ── API: TICKETS ────────────────────────────────────────────────────────────
@@ -5488,6 +5827,9 @@ app.get('/api/today', reqMgr, (req, res) => {
     date: day,
     version: dispatchFingerprint(dayLoads),
     loads, drivers, trucks, trailers,
+    // The drivers' day: shifts dated today (open or closed) plus any still-open
+    // shift from an earlier date, which the office must see and close.
+    shifts: (store.shifts || []).filter(s => s.date === day || s.status === 'open').map(shiftPublic),
     yards: store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, isInternal: v.id === 'vbt' })),
     summary: {
       jobs: new Set(dayLoads.map(l => l.poId)).size,

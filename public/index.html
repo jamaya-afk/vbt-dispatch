@@ -1118,6 +1118,71 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   </div>
 </div>
 
+<!-- START DAY (driver): truck, trailer, odometer, pre-trip inspection, signature -->
+<div class="modal-bg" id="startday-modal" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-head"><h2>Start your day</h2><button class="modal-close" onclick="closeStartDay()">&#215;</button></div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>Truck</label><select id="sd-truck" onchange="sdTruckChanged()"></select></div>
+        <div class="field"><label>Trailer</label><select id="sd-trailer"></select></div>
+      </div>
+      <div class="field"><label>Starting odometer</label>
+        <input id="sd-odo" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 85558">
+        <div id="sd-odo-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+      <div class="field"><label>Pre-trip inspection</label>
+        <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--bdr);border-radius:10px;cursor:pointer;text-transform:none;letter-spacing:0;font-weight:600;color:var(--txt)">
+          <input type="checkbox" id="sd-allok" checked onchange="sdToggleAll()" style="width:22px;height:22px;margin:0"> All items satisfactory</label>
+        <div id="sd-items" style="display:none;margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:4px"></div>
+        <input id="sd-remarks" placeholder="Remarks (optional)" style="margin-top:8px"></div>
+      <div class="field"><label>Driver signature</label>
+        <canvas class="sig-canvas" id="sd-sig" width="500" height="160"></canvas>
+        <button class="btn ghost" onclick="sdSig && sdSig.clear()" style="margin-top:6px;font-size:11px;padding:5px 10px">Clear</button></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeStartDay()">Cancel</button>
+      <button class="btn primary" id="sd-save" onclick="submitStartDay()">Start day</button>
+    </div>
+  </div>
+</div>
+
+<!-- END DAY (driver) -->
+<div class="modal-bg" id="endday-modal" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-head"><h2>End your day</h2><button class="modal-close" onclick="closeEndDay()">&#215;</button></div>
+    <div class="modal-body">
+      <div id="ed-open-seg" style="display:none;background:var(--Ab);color:var(--A);border:1px solid var(--Ad);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:10px"></div>
+      <div class="field"><label>Ending odometer</label>
+        <input id="ed-odo" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 85868">
+        <div id="ed-odo-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeEndDay()">Cancel</button>
+      <button class="btn primary" id="ed-save" onclick="submitEndDay()">End day</button>
+    </div>
+  </div>
+</div>
+
+<!-- TRUCK CHANGE (driver) -->
+<div class="modal-bg" id="truckchange-modal" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-head"><h2>Change truck</h2><button class="modal-close" onclick="closeTruckChange()">&#215;</button></div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--txt2);margin-bottom:10px">Any open freight is finished at the old truck's reading. Odometer readings from two trucks are never mixed.</p>
+      <div class="field"><label id="tc-from-label">Final odometer on current truck</label><input id="tc-from" type="number" inputmode="numeric" min="0" step="1"></div>
+      <div class="field-row">
+        <div class="field"><label>New truck</label><select id="tc-truck" onchange="tcTruckChanged()"></select></div>
+        <div class="field"><label>Trailer</label><select id="tc-trailer"></select></div>
+      </div>
+      <div class="field"><label>Starting odometer on new truck</label><input id="tc-to" type="number" inputmode="numeric" min="0" step="1"><div id="tc-to-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeTruckChange()">Cancel</button>
+      <button class="btn primary" onclick="submitTruckChange()">Change truck</button>
+    </div>
+  </div>
+</div>
+
 <!-- INCOMPLETE DELIVERY MODAL (driver) -->
 <div class="modal-bg" id="incomplete-modal" style="display:none">
   <div class="modal" style="max-width:420px">
@@ -2906,6 +2971,10 @@ async function renderDriver() {
     return;
   }
 
+  // The driver's day (shift) is fetched alongside the loads; a failure here
+  // must not hide the trips, so it degrades to "no day info".
+  try { const s = await api('GET', '/api/shifts/current'); window._shiftInfo = s.ok ? s : null; } catch (e) { window._shiftInfo = null; }
+
   // Wrap render in try/catch so any rendering bug shows up instead of a blank page
   try {
     await renderDriverContent(dispatch, welcome, wrap);
@@ -2936,12 +3005,168 @@ async function renderDriverContent(dispatch, welcome, wrap) {
   </div>`;
 
   if (!dispatch.length) {
-    wrap.innerHTML = `<div class="empty-state"><h3>No trips assigned</h3><p>Your dispatcher will assign loads as they come in.</p></div>`;
+    wrap.innerHTML = dayBar() + `<div class="empty-state"><h3>No trips assigned</h3><p>Your dispatcher will assign loads as they come in.</p></div>`;
     return;
   }
 
-  wrap.innerHTML = dispatch.map(l => tripCard(l)).join('');
+  wrap.innerHTML = dayBar() + dispatch.map(l => tripCard(l)).join('');
 }
+
+// ── THE DRIVER'S DAY ─────────────────────────────────────────────────────────
+// One card above the trips: Start day, or the open day with truck, trailer,
+// odometer, break, truck change and End day. Everything the driver does in
+// between belongs to this shift.
+function dayBar() {
+  const info = window._shiftInfo; if (!info) return '';
+  const s = info.shift;
+  const btn = (label, fn, style) => `<button class="btn ${style || 'ghost'}" style="flex:1;min-height:44px" onclick="${fn}">${label}</button>`;
+  if (!s) {
+    return `<div class="trip-card" id="day-card"><div class="trip-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div><div style="font-weight:700">Your day has not started</div><div style="font-size:12px;color:var(--txt2)">Truck, trailer, odometer and pre-trip inspection — under a minute.</div></div>
+      <button class="btn primary" style="min-height:44px" onclick="openStartDay()">Start day</button></div></div>`;
+  }
+  const seg = s.openSegment;
+  return `<div class="trip-card is-today" id="day-card"><div class="trip-body">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+      <div style="font-weight:700">Day open · ${escapeHtml(s.truckNum)}${s.trailerNum ? ' + trailer ' + escapeHtml(s.trailerNum) : ''}</div>
+      <div style="font-size:12px;color:var(--txt2)">since ${new Date(s.startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(s.startOdometer).toLocaleString()}${s.breakMinutes ? ` · breaks ${s.breakMinutes} min` : ''}</div>
+    </div>
+    ${seg ? `<div id="freight-card" style="margin-top:10px;background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;font-size:12px">
+      <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700">Freight in progress</div>
+      <div style="font-weight:700;font-size:13px;margin-top:2px">${escapeHtml(seg.customer)}</div>
+      <div>${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${new Date(seg.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(seg.odStart).toLocaleString()}</div>
+      <div style="color:var(--txt2)">${seg.loadIds.length} load${seg.loadIds.length === 1 ? '' : 's'} · ${seg.tripCount} trip${seg.tripCount === 1 ? '' : 's'}${seg.actualTons ? ` · ${seg.actualTons.toFixed(2)} t confirmed` : ''}</div>
+      <button class="btn primary" style="width:100%;min-height:44px;margin-top:8px" onclick="openFinishFreight('${seg.id}')">Finish freight — ${escapeHtml(seg.customer)}</button>
+    </div>` : ''}
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      ${s.openBreak ? btn('Back from break', `shiftBreak('${s.id}','end')`, 'primary') : btn('Break', `shiftBreak('${s.id}','start')`)}
+      ${btn('Change truck', `openTruckChange()`)}
+      ${btn('End day', `openEndDay()`)}
+    </div>
+  </div></div>`;
+}
+
+// Small reusable signature pad (the customer-signature modal keeps its own).
+function sigPadInit(canvasId) {
+  const c = document.getElementById(canvasId); const ctx = c.getContext('2d'); let drawing = false, ink = false;
+  c.width = c.offsetWidth || 500; c.height = 160;
+  const reset = () => { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); ctx.strokeStyle = '#000'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ink = false; };
+  const pos = (e) => { const r = c.getBoundingClientRect(); const t = e.touches?.[0] || e; return { x: t.clientX - r.left, y: t.clientY - r.top }; };
+  c.onmousedown = c.ontouchstart = (e) => { drawing = true; ctx.beginPath(); const p = pos(e); ctx.moveTo(p.x, p.y); };
+  c.onmousemove = c.ontouchmove = (e) => { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); ink = true; };
+  c.onmouseup = c.onmouseleave = c.ontouchend = () => { drawing = false; };
+  reset();
+  return { clear: reset, hasInk: () => ink, dataUrl: () => c.toDataURL('image/png'), markInk: () => { ink = true; } };
+}
+
+let sdSig = null;
+function openStartDay() {
+  const info = window._shiftInfo; if (!info) return toast('Day info unavailable — retry', 'error');
+  const tSel = document.getElementById('sd-truck'), trSel = document.getElementById('sd-trailer');
+  const last = info.lastShift || {};
+  const truckId = info.defaults.truckId || last.truckId || (info.trucks[0] || {}).id || '';
+  tSel.innerHTML = info.trucks.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === truckId ? 'selected' : ''} ${t.inUseBy || t.status !== 'available' ? 'disabled' : ''}>${escapeHtml(t.truckNum)}${t.inUseBy ? ' — ' + escapeHtml(t.inUseBy) : t.status !== 'available' ? ' — ' + t.status : ''}</option>`).join('');
+  const trailerId = info.defaults.trailerId || last.trailerId || '';
+  trSel.innerHTML = `<option value="">No trailer</option>` + info.trailers.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === trailerId ? 'selected' : ''}>${escapeHtml(t.number)}${t.type ? ' · ' + escapeHtml(t.type) : ''}</option>`).join('');
+  document.getElementById('sd-items').innerHTML = info.inspectionItems.map(it => `<label style="display:flex;align-items:center;gap:6px;font-size:12px;text-transform:none;letter-spacing:0;font-weight:500;color:var(--txt)"><input type="checkbox" class="sd-defect" value="${escapeAttr(it)}" style="width:18px;height:18px;margin:0"> ${escapeHtml(it)}</label>`).join('');
+  document.getElementById('sd-allok').checked = true; sdToggleAll();
+  document.getElementById('sd-remarks').value = '';
+  document.getElementById('sd-odo').value = '';
+  document.getElementById('startday-modal').style.display = 'flex';
+  sdTruckChanged();
+  setTimeout(() => { sdSig = sigPadInit('sd-sig'); }, 60);
+}
+function sdTruckChanged() {
+  const info = window._shiftInfo; const t = info.trucks.find(x => x.id === document.getElementById('sd-truck').value);
+  const hint = document.getElementById('sd-odo-hint');
+  if (t && t.lastOdometer != null) { hint.textContent = `${t.truckNum} last read ${t.lastOdometer.toLocaleString()}`; if (!document.getElementById('sd-odo').value) document.getElementById('sd-odo').value = t.lastOdometer; }
+  else hint.textContent = t ? `No previous reading for ${t.truckNum}` : '';
+  const trSel = document.getElementById('sd-trailer');
+  const usual = t && info.trailers.find(x => x.defaultTruckId === t.id);
+  if (usual && !trSel.value) trSel.value = usual.id;
+}
+function sdToggleAll() {
+  const ok = document.getElementById('sd-allok').checked;
+  document.getElementById('sd-items').style.display = ok ? 'none' : 'grid';
+  document.getElementById('sd-items').previousElementSibling.style.borderColor = ok ? 'var(--bdr)' : 'var(--A)';
+}
+function closeStartDay() { document.getElementById('startday-modal').style.display = 'none'; }
+async function submitStartDay(acceptLower) {
+  const btn = document.getElementById('sd-save');
+  const satisfactory = document.getElementById('sd-allok').checked;
+  const defects = satisfactory ? [] : Array.from(document.querySelectorAll('.sd-defect:checked')).map(x => x.value);
+  if (!satisfactory && !defects.length) return toast('Tick the item(s) with a defect, or mark all satisfactory', 'error');
+  if (!sdSig || !sdSig.hasInk()) return toast('Sign the inspection', 'error');
+  btn.disabled = true;
+  const r = await api('POST', '/api/shifts/start', {
+    truckId: document.getElementById('sd-truck').value, trailerId: document.getElementById('sd-trailer').value || null,
+    odometer: document.getElementById('sd-odo').value, acceptLowerOdometer: !!acceptLower,
+    inspection: { satisfactory, defects, remarks: document.getElementById('sd-remarks').value }, signature: sdSig.dataUrl(),
+  });
+  btn.disabled = false;
+  if (r.ok) { closeStartDay(); toast('Day started', 'success'); return renderDriver(); }
+  if (r.code === 'odometer_below_last' && confirm(r.error + '\n\nUse this reading anyway?')) return submitStartDay(true);
+  toast(r.error || 'Could not start the day', 'error');
+}
+async function shiftBreak(id, action) {
+  const r = await api('POST', `/api/shifts/${id}/break`, { action });
+  if (!r.ok) return toast(r.error || 'Failed', 'error');
+  toast(action === 'start' ? 'On break' : 'Back at work', 'success'); renderDriver();
+}
+function openEndDay(openSegment) {
+  const s = window._shiftInfo && window._shiftInfo.shift; if (!s) return;
+  const seg = openSegment || s.openSegment;
+  const box = document.getElementById('ed-open-seg');
+  if (seg) {
+    box.style.display = '';
+    box.innerHTML = `<b>Freight segment still open</b><br>${escapeHtml(seg.customer)} · ${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${new Date(seg.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(seg.odStart).toLocaleString()}<br>
+      <button class="btn primary" style="margin-top:8px;min-height:40px" onclick="closeEndDay();openFinishFreight('${seg.id}')">Finish freight first</button>`;
+    document.getElementById('ed-save').disabled = true;
+  } else { box.style.display = 'none'; document.getElementById('ed-save').disabled = false; }
+  const legs = s.legs || []; const floor = legs.length ? legs[legs.length - 1].from : s.startOdometer;
+  document.getElementById('ed-odo').value = '';
+  document.getElementById('ed-odo-hint').textContent = `${s.truckNum} started this leg at ${Number(floor).toLocaleString()}`;
+  document.getElementById('endday-modal').style.display = 'flex';
+}
+function closeEndDay() { document.getElementById('endday-modal').style.display = 'none'; }
+async function submitEndDay() {
+  const s = window._shiftInfo && window._shiftInfo.shift; if (!s) return;
+  const btn = document.getElementById('ed-save'); btn.disabled = true;
+  const r = await api('POST', `/api/shifts/${s.id}/end`, { odometer: document.getElementById('ed-odo').value });
+  btn.disabled = false;
+  if (r.ok) { closeEndDay(); toast(`Day closed — ${r.shift.dailyMiles.toLocaleString()} miles today`, 'success'); return renderDriver(); }
+  if (r.code === 'segment_open') return openEndDay(r.segment);
+  toast(r.error || 'Could not end the day', 'error');
+}
+function openTruckChange() {
+  const info = window._shiftInfo; const s = info && info.shift; if (!s) return;
+  document.getElementById('tc-from-label').textContent = `Final odometer on ${s.truckNum}`;
+  document.getElementById('tc-from').value = '';
+  const sel = document.getElementById('tc-truck');
+  sel.innerHTML = info.trucks.filter(t => t.id !== s.truckId).map(t => `<option value="${escapeAttr(t.id)}" ${t.inUseBy || t.status !== 'available' ? 'disabled' : ''}>${escapeHtml(t.truckNum)}${t.inUseBy ? ' — ' + escapeHtml(t.inUseBy) : ''}</option>`).join('');
+  document.getElementById('tc-trailer').innerHTML = `<option value="">No trailer</option>` + info.trailers.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === s.trailerId ? 'selected' : ''}>${escapeHtml(t.number)}</option>`).join('');
+  document.getElementById('truckchange-modal').style.display = 'flex';
+  tcTruckChanged();
+}
+function tcTruckChanged() {
+  const info = window._shiftInfo; const t = info.trucks.find(x => x.id === document.getElementById('tc-truck').value);
+  document.getElementById('tc-to').value = t && t.lastOdometer != null ? t.lastOdometer : '';
+  document.getElementById('tc-to-hint').textContent = t && t.lastOdometer != null ? `${t.truckNum} last read ${t.lastOdometer.toLocaleString()}` : '';
+}
+function closeTruckChange() { document.getElementById('truckchange-modal').style.display = 'none'; }
+async function submitTruckChange(acceptLower) {
+  const s = window._shiftInfo && window._shiftInfo.shift; if (!s) return;
+  const r = await api('POST', `/api/shifts/${s.id}/truck-change`, {
+    fromOdometer: document.getElementById('tc-from').value, toTruckId: document.getElementById('tc-truck').value,
+    toOdometer: document.getElementById('tc-to').value, toTrailerId: document.getElementById('tc-trailer').value || null, acceptLowerOdometer: !!acceptLower,
+  });
+  if (r.ok) { closeTruckChange(); toast(`Now on ${r.shift.truckNum}`, 'success'); return renderDriver(); }
+  if (r.code === 'odometer_below_last' && confirm(r.error + '\n\nUse this reading anyway?')) return submitTruckChange(true);
+  toast(r.error || 'Could not change truck', 'error');
+}
+// Freight segments arrive in the next slice; the button is wired here so the
+// day card never dangles.
+function openFinishFreight(id) { if (typeof finishFreightOpen === 'function') return finishFreightOpen(id); toast('Freight close is not available yet', 'error'); }
 
 function tripCard(l) {
   // Per-trip state. `trips[]` is the source of truth; if a legacy load lacks
@@ -4146,6 +4371,7 @@ function paintToday() {
         ${tile(s.jobs, 'Jobs Today', '', 'all')}
       </div>
       ${qaFilter !== 'all' ? `<button class="btn ghost" onclick="qaSetFilter('all')">← Showing ${qaFilter.replace('-', ' ')} · show all</button>` : ''}
+      ${shiftsPanel(d.shifts || [])}
       <div class="qa-sec-title">${loads.length} load${loads.length === 1 ? '' : 's'} · ${d.date}</div>
       ${loads.length ? loads.map(qaCard).join('') :
         `<div class="empty-state"><h3>Nothing here</h3><p>No loads match this filter for today.</p></div>`}
@@ -4155,6 +4381,50 @@ function paintToday() {
 }
 
 function qaSetFilter(f) { qaFilter = f; paintToday(); }
+
+// The drivers' day, from the shift records: who started, on what, odometer,
+// open freight, daily and billable miles once closed. Daily Log and Freight
+// Bill open as print pages rendered from the same records.
+function shiftsPanel(shifts) {
+  if (!shifts.length) return '';
+  const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
+  const rows = shifts.map(s => {
+    const seg = s.openSegment;
+    return `<div class="qa-card ${s.status === 'open' ? 'in-progress' : 'completed'}" id="shift-${escapeAttr(s.id)}">
+      <div class="qa-top"><div><div class="qa-cust">${escapeHtml(s.driverName)}</div>
+        <div class="qa-sub">${escapeHtml(s.truckNum)}${s.trailerNum ? ' + trailer ' + escapeHtml(s.trailerNum) : ''} · ${s.date}${s.date !== todayData.date ? ' <b style="color:var(--R)">(still open from an earlier day)</b>' : ''}</div></div>
+        <span class="qa-chip ${s.status === 'open' ? 'in-progress' : 'completed'}">${s.status === 'open' ? (s.openBreak ? 'On break' : 'Day open') : 'Day closed'}</span></div>
+      <div class="qa-facts">
+        <div class="qa-fact">Start <b>${t(s.startAt)}</b> · OD <b>${Number(s.startOdometer).toLocaleString()}</b></div>
+        <div class="qa-fact">End <b>${t(s.endAt)}</b> · OD <b>${s.endOdometer == null ? '—' : Number(s.endOdometer).toLocaleString()}</b></div>
+        <div class="qa-fact">Daily <b>${s.dailyMiles == null ? '—' : s.dailyMiles.toLocaleString() + ' mi'}</b> · Billable <b>${(s.billableMiles || 0).toLocaleString()} mi</b> · Non-billable <b>${s.nonBillableMiles == null ? '—' : s.nonBillableMiles.toLocaleString() + ' mi'}</b></div>
+        <div class="qa-fact">Breaks <b>${s.breakMinutes || 0} min</b>${s.workMinutes != null ? ` · Work <b>${Math.floor(s.workMinutes / 60)}h ${String(s.workMinutes % 60).padStart(2, '0')}m</b>` : ''}</div>
+        ${seg ? `<div class="qa-fact" style="grid-column:1/-1">Freight open: <b>${escapeHtml(seg.customer)}</b> · ${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${t(seg.timeStart)} · OD ${Number(seg.odStart).toLocaleString()}</div>` : ''}
+        ${(s.segments || []).filter(x => x.status === 'closed').map(x => `<div class="qa-fact" style="grid-column:1/-1">Freight: <b>${escapeHtml(x.customer)}</b> · ${escapeHtml(x.originName)} → ${escapeHtml(x.destinationLabel)} · ${t(x.timeStart)}–${t(x.timeEnd)} · ${x.billableMiles.toLocaleString()} mi · ${(x.billableMinutes / 60).toFixed(2)} h · ${x.tripCount} trip${x.tripCount === 1 ? '' : 's'}${x.actualTons ? ` · ${x.actualTons.toFixed(2)} t` : ''} <a href="/api/freight-segments/${encodeURIComponent(x.id)}/freight-bill" target="_blank">Freight Bill${x.locked ? '' : ' (draft)'}</a></div>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <a class="btn ghost" style="font-size:12px" href="/api/shifts/${encodeURIComponent(s.id)}/daily-log" target="_blank">Daily Log${s.status === 'open' ? ' (draft)' : ''}</a>
+        ${seg ? `<button class="btn ghost" style="font-size:12px" onclick="mgrCloseSegment('${escapeAttr(seg.id)}')">Close freight for driver…</button>` : ''}
+        ${s.status === 'open' ? `<button class="btn ghost" style="font-size:12px;color:#b42318" onclick="mgrCloseShift('${escapeAttr(s.id)}')">Close day for driver…</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="qa-sec-title">Drivers' day · ${shifts.filter(s => s.status === 'open').length} open</div>${rows}`;
+}
+async function mgrCloseShift(id) {
+  const odometer = prompt('Ending odometer for this driver\'s day:'); if (odometer == null) return;
+  const reason = prompt('Reason for closing the day on the driver\'s behalf:'); if (!reason) return;
+  const r = await api('POST', `/api/shifts/${id}/close`, { odometer, reason });
+  if (!r.ok) return toast(r.error || 'Failed', 'error');
+  toast('Day closed', 'success'); renderToday();
+}
+async function mgrCloseSegment(id) {
+  const odometer = prompt('Ending odometer for this freight segment:'); if (odometer == null) return;
+  const reason = prompt('Reason for closing the freight on the driver\'s behalf:'); if (!reason) return;
+  const r = await api('POST', `/api/freight-segments/${id}/close`, { odometer, reason });
+  if (!r.ok) return toast(r.error || 'Failed', 'error');
+  toast('Freight segment closed', 'success'); renderToday();
+}
 
 function qaCard(l) {
   const label = { 'unassigned': 'Unassigned', 'assigned': 'Assigned', 'in-progress': 'In Progress',
