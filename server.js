@@ -1195,25 +1195,36 @@ function todayStr() { return todayStrAt(new Date()); }
 // The driver's workday: their own loads that are today or earlier and still
 // open. Never future work, never other drivers' work. One definition, used by
 // every endpoint the driver app reads.
-// The driver's active work is TODAY's loads only. An unfinished load from an
-// earlier day is never served as today's work: it is listed separately so
-// the driver and the office know it exists, and the office moves it to today
-// or closes it. Nothing is deleted or hidden from history.
+// The driver's active work: today's loads, plus the loads of the driver's
+// ACTIVE shift when that shift started on an earlier date (an 11 PM start is
+// still the same day at 12:10 AM). An unfinished load from an earlier day
+// that belongs to no active shift is never served as today's work: it is
+// listed separately for the office to move or close. Nothing is deleted.
+function activeShiftLoadIds(u) {
+  const s = openShiftFor(u.truckId);
+  if (!s) return { dates: new Set(), ids: new Set() };
+  return {
+    dates: new Set([s.date]),
+    ids: new Set(segmentsForShift(s).flatMap(x => x.loadIds || [])),
+  };
+}
 function driverWorkdayLoads(u) {
   const today = todayStr();
+  const act = activeShiftLoadIds(u);
   return store.loads.filter(l =>
     l.truckId === u.truckId &&
     !l.voided &&
     l.status !== 'completed' &&
     l.approvalStatus !== 'approved' &&
-    (l.deliveryDate || today) === today
+    ((l.deliveryDate || today) === today || act.dates.has(l.deliveryDate) || act.ids.has(l.id))
   );
 }
 function driverEarlierOpenLoads(u) {
   const today = todayStr();
+  const act = activeShiftLoadIds(u);
   return store.loads.filter(l =>
     l.truckId === u.truckId && !l.voided && l.status !== 'completed' && l.approvalStatus !== 'approved' &&
-    l.deliveryDate && l.deliveryDate < today
+    l.deliveryDate && l.deliveryDate < today && !act.dates.has(l.deliveryDate) && !act.ids.has(l.id)
   );
 }
 // Rates and billing state are office information; the driver payload never
@@ -2927,6 +2938,10 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const l = store.loads[idx];
   if (u.role === 'driver' && l.truckId !== u.truckId) return res.status(403).json({ error: 'Not your load' });
   if (l.locked) return res.status(403).json({ error: 'Load is locked' });
+  // A stale open day blocks every trip action for that driver — the same
+  // rule the screen shows, enforced here so a direct request cannot add
+  // work to (or around) a day the office has to close first.
+  if (u.role === 'driver') { const st = staleOpenShiftFor(u.truckId); if (st) return res.status(409).json({ error: STALE_MSG(st), code: 'stale_shift_open' }); }
 
   const { action, gps } = req.body;
   const now = new Date();
@@ -3106,8 +3121,16 @@ const INSPECTION_ITEMS = [
 // Today's open day only. An open day from an earlier date is "stale": it is
 // never treated as today's day (no trips attach to it, no segment opens on
 // it) and it blocks a new Start day until the office closes it.
-function openShiftFor(driverId) { const today = todayStr(); return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open' && s.date === today) || null; }
-function staleOpenShiftFor(driverId) { const today = todayStr(); return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open' && s.date < today) || null; }
+// OPEN SHIFT → ACTIVE UNTIL 20 HOURS → STALE → OFFICE CLOSE. A driver's
+// workday is their open shift, not the calendar date: a day started at
+// 11 PM is still the same day at 12:10 AM. Once an open shift is 20 hours
+// old it is stale: the driver can no longer act on it, and the office
+// closes it with a reason before a new day can start.
+const SHIFT_STALE_HOURS = Number(process.env.SHIFT_STALE_HOURS || 20);
+function shiftAgeHours(s, now = Date.now()) { return (now - Date.parse(s.startAt)) / 3600000; }
+function shiftIsStale(s, now = Date.now()) { return s.status === 'open' && shiftAgeHours(s, now) >= SHIFT_STALE_HOURS; }
+function openShiftFor(driverId) { return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open' && !shiftIsStale(s)) || null; }
+function staleOpenShiftFor(driverId) { return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open' && shiftIsStale(s)) || null; }
 function isInternalYardId(id) { return id === 'vbt'; }
 function openShiftOnTruck(truckId) { return (store.shifts || []).find(s => s.truckId === truckId && s.status === 'open') || null; }
 function openShiftWithTrailer(trailerId, exceptShiftId) { return (store.shifts || []).find(s => s.trailerId === trailerId && s.status === 'open' && s.id !== exceptShiftId) || null; }
@@ -3171,6 +3194,9 @@ function shiftPublic(s) {
   return {
     ...rest,
     inspection: inspection ? { ...inspection, signature: inspection.signature ? '[stored]' : '' , hasSignature: !!(inspection.signatureUrl || inspection.signature) } : null,
+    stale: shiftIsStale(s),
+    ageHours: Math.round(shiftAgeHours(s) * 10) / 10,
+    staleAfterHours: SHIFT_STALE_HOURS,
     ...shiftDerived(s),
   };
 }
@@ -3335,6 +3361,8 @@ app.post('/api/freight-segments/:id/close', reqAuth, async (req, res) => {
   const seg = segmentById(req.params.id);
   if (!seg) return res.status(404).json({ error: 'Freight segment not found' });
   if (u.role === 'driver' && seg.driverId !== u.truckId) return res.status(403).json({ error: 'Not your freight' });
+  const segShift = (store.shifts || []).find(x => x.id === seg.shiftId);
+  if (segShift && staleForDriver(segShift, u)) return res.status(409).json({ error: STALE_MSG(segShift), code: 'stale_shift_open' });
   const reason = String(req.body?.reason || '').trim();
   if (u.role !== 'driver' && !reason) return res.status(400).json({ error: 'A reason is required to close freight on the driver\'s behalf' });
   const r = closeSegment(seg, { odometer: req.body?.odometer, by: u, reason: u.role === 'driver' ? 'driver' : reason, forced: u.role !== 'driver' });
@@ -3418,8 +3446,8 @@ function shiftOwnedBy(s, u) { return u.role !== 'driver' || s.driverId === u.tru
 // A driver may act only on today's day. An open day from an earlier date is
 // resolved by the office (close with a reason), never by the driver on a
 // later date — so it cannot be quietly merged into today.
-function staleForDriver(s, u) { return u.role === 'driver' && s.status === 'open' && s.date < todayStr(); }
-const STALE_MSG = (s) => `Your day from ${s.date} was never ended. Ask the office to close it.`;
+function staleForDriver(s, u) { return u.role === 'driver' && shiftIsStale(s); }
+const STALE_MSG = (s) => `Your day from ${s.date} was never ended (open ${Math.floor(shiftAgeHours(s))} hours). Ask the office to close it.`;
 function currentOdometerFloor(s) {
   const legs = shiftLegs(s); return legs[legs.length - 1].from;
 }
@@ -3465,7 +3493,7 @@ app.post('/api/shifts/start', reqAuth, async (req, res) => {
   const existing = openShiftFor(u.truckId);
   if (existing) return res.status(409).json({ error: `Your day is already open (started ${fmtClock(existing.startAt)} on ${existing.truckNum})`, code: 'shift_open', shift: shiftPublic(existing) });
   const stale = staleOpenShiftFor(u.truckId);
-  if (stale) return res.status(409).json({ error: `Your day from ${stale.date} was never ended. Ask the office to close it, then start today.`, code: 'stale_shift_open', shift: shiftPublic(stale) });
+  if (stale) return res.status(409).json({ error: `Your day from ${stale.date} was never ended (open ${Math.floor(shiftAgeHours(stale))} hours). Ask the office to close it, then start today.`, code: 'stale_shift_open', shift: shiftPublic(stale) });
   const truck = (store.trucks || []).find(t => t.id === b.truckId);
   if (!truck) return res.status(400).json({ error: 'Pick the truck you are driving' });
   if (truck.active === false) return res.status(400).json({ error: `${truck.truckNum} is deactivated` });

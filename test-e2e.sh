@@ -1061,64 +1061,88 @@ import sys;h=sys.stdin.read();print('>310<' in h, '>217<' in h, '>93<' in h, 'Da
 chk "   a driver cannot open another driver's Freight Bill" "$(curl -s -b $LG -o /dev/null -w '%{http_code}' $B/api/freight-segments/$FS/freight-bill)" "403"
 chk "19. audit: opened, closed, edited freight; nothing on the loads changed meaning" "$(curl -s -b $M "$B/api/audit-log" | jq "sorted(set(e['action'] for e in d['entries'] if 'freight' in e['action']))")" "['closed-freight-segment', 'edited-freight-segment', 'opened-freight-segment']"
 
-echo "── 39. Today only: Sept 15 records never become Sept 21 work; VBT pickup asks nothing and starts no freight ──"
+echo "── 39. Workday = open shift: active until 20 h, then stale → office close. Midnight, abandoned, boundary, API ──"
 pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
-TODAY=$(date +%F)
-python3 - "$TODAY" <<'PY'
-import json,sys
-today=sys.argv[1]
+TODAY=$(TZ=America/Los_Angeles date +%F); YES=$(TZ=America/Los_Angeles date -d yesterday +%F); OLD=2026-09-15
+python3 - "$TODAY" "$YES" "$OLD" <<'PY'
+import json,sys,datetime
+today,yes,old=sys.argv[1:4]
+now=datetime.datetime.now(datetime.timezone.utc)
+iso=lambda h: (now-datetime.timedelta(hours=h)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+sig="data:image/png;base64,iVBORw0KGgo="
+insp=lambda at:{"items":[],"satisfactory":True,"defects":[],"remarks":"","signatureUrl":"","signature":sig,"at":at}
+def shift(id,date,drv,name,truck,num,odo,hours):
+    return {"id":id,"date":date,"driverId":drv,"driverName":name,"truckId":truck,"truckNum":num,"startTruckId":truck,"startTruckNum":num,"trailerId":None,"trailerNum":"",
+            "startAt":iso(hours),"startOdometer":odo,"endAt":"","endOdometer":None,"status":"open","breaks":[],"events":[],"inspection":insp(iso(hours)),"notes":"","closedBy":"","closedAt":"","closeReason":""}
 d={"pos":[
-  {"id":"PO-S15A","poNumber":"S15-DONE","customer":"Old Co","deliveryDate":"2026-09-15","address":"1 Old St","city":"Fresno","status":"completed","plannedVendorId":"vbt"},
-  {"id":"PO-S15B","poNumber":"S15-OPEN","customer":"Old Co","deliveryDate":"2026-09-15","address":"1 Old St","city":"Fresno","status":"active","plannedVendorId":"vbt"},
-  {"id":"PO-T","poNumber":"T-VBT","customer":"Merced Co","deliveryDate":today,"address":"5 Main St","city":"Merced","status":"active","plannedVendorId":"vbt"},
-  {"id":"PO-V","poNumber":"T-VUL","customer":"Ext Co","deliveryDate":today,"address":"9 Ext Rd","city":"Madera","status":"active","plannedVendorId":"vulcan"}],
+  {"id":"PO-N","poNumber":"NIGHT-1","customer":"Night Co","deliveryDate":yes,"address":"7 Night Rd","city":"Madera","status":"active","plannedVendorId":"vulcan"},
+  {"id":"PO-D","poNumber":"DAY-22","customer":"Morning Co","deliveryDate":today,"address":"8 Day Rd","city":"Fresno","status":"active","plannedVendorId":"vbt"},
+  {"id":"PO-S15A","poNumber":"S15-DONE","customer":"Old Co","deliveryDate":old,"address":"1 Old St","city":"Fresno","status":"completed","plannedVendorId":"vbt"},
+  {"id":"PO-S15B","poNumber":"S15-OPEN","customer":"Old Co","deliveryDate":old,"address":"1 Old St","city":"Fresno","status":"active","plannedVendorId":"vbt"},
+  {"id":"PO-A","poNumber":"ABAND-1","customer":"Left Co","deliveryDate":yes,"address":"2 Left St","city":"Clovis","status":"active","plannedVendorId":"vbt"},
+  {"id":"PO-L","poNumber":"LEO-TODAY","customer":"Leo Co","deliveryDate":today,"address":"3 Leo St","city":"Clovis","status":"active","plannedVendorId":"vbt"}],
  "loads":[
-  {"id":"L-S15A","poId":"PO-S15A","truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","vendorId":"vbt","loadsAssigned":1,"loadsDelivered":1,"deliveryDate":"2026-09-15","status":"completed","approvalStatus":"approved","billStatus":"ready",
-   "trips":[{"tripNum":1,"timestamps":{"start":"07:00 AM","arrivedPickup":"07:10 AM","loadedAt":"07:20 AM","arrivedJobsite":"08:00 AM","completed":"08:10 AM"},"isoStamps":{},"gps":{},"actualYardId":"vbt","actualYardName":"VBT Yard"}]},
-  {"id":"L-S15B","poId":"PO-S15B","truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","vendorId":"vbt","loadsAssigned":2,"loadsDelivered":1,"deliveryDate":"2026-09-15","status":"active","approvalStatus":"pending","billStatus":"not-ready",
-   "trips":[{"tripNum":1,"timestamps":{"start":"09:00 AM","arrivedPickup":"09:10 AM","loadedAt":"09:20 AM","arrivedJobsite":"10:00 AM","completed":"10:10 AM"},"isoStamps":{},"gps":{}},{"tripNum":2,"timestamps":{"start":"10:30 AM"},"isoStamps":{},"gps":{}}]},
-  {"id":"L-T","poId":"PO-T","truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","vendorId":"vbt","loadsAssigned":3,"loadsDelivered":0,"deliveryDate":today,"status":"active","approvalStatus":"pending","billStatus":"not-ready","trips":[]},
-  {"id":"L-V","poId":"PO-V","truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","vendorId":"vulcan","loadsAssigned":1,"loadsDelivered":0,"deliveryDate":today,"status":"active","approvalStatus":"pending","billStatus":"not-ready","trips":[]}],
- "shifts":[{"id":"SH-S15","date":"2026-09-15","driverId":"beryle","driverName":"Beryle","truckId":"truck-2","truckNum":"Truck #2","startTruckId":"truck-2","startTruckNum":"Truck #2","trailerId":None,"trailerNum":"",
-   "startAt":"2026-09-15T13:00:00.000Z","startOdometer":9000,"endAt":"","endOdometer":None,"status":"open","breaks":[],"events":[],
-   "inspection":{"items":[],"satisfactory":True,"defects":[],"remarks":"","signatureUrl":"","signature":"data:image/png;base64,iVBORw0KGgo=","at":"2026-09-15T13:00:00.000Z"},"notes":"","closedBy":"","closedAt":"","closeReason":""}],
+  # Beryle: 11 PM start yesterday, freight open at Vulcan, load 1 delivered 12:05 AM, load 2 started 12:08 AM (age 70 min)
+  {"id":"L-N","poId":"PO-N","truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","vendorId":"vulcan","loadsAssigned":3,"loadsDelivered":1,"deliveryDate":yes,"status":"active","approvalStatus":"pending","billStatus":"not-ready","freightSegmentId":"FS-N",
+   "trips":[{"tripNum":1,"timestamps":{"start":"11:05 PM","arrivedPickup":"11:33 PM","loadedAt":"11:40 PM","arrivedJobsite":"11:58 PM","completed":"12:05 AM"},"isoStamps":{"start":iso(1.08),"arrivedPickup":iso(0.62),"completed":iso(0.08)},"gps":{},"actualYardId":"vulcan","actualYardName":"Vulcan","freightSegmentId":"FS-N",
+             "ticket":{"source":"supplier","number":"N-1","netTons":24.1,"photoUrl":"","photo":sig,"ocr":None,"entry":"typed","confirmedBy":"beryle","confirmedAt":iso(0.5)}},
+            {"tripNum":2,"timestamps":{"start":"12:08 AM"},"isoStamps":{"start":iso(0.03)},"gps":{}}]},
+  {"id":"L-D","poId":"PO-D","truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","vendorId":"vbt","loadsAssigned":1,"loadsDelivered":0,"deliveryDate":today,"status":"active","approvalStatus":"pending","billStatus":"not-ready","trips":[]},
+  {"id":"L-S15A","poId":"PO-S15A","truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","vendorId":"vbt","loadsAssigned":1,"loadsDelivered":1,"deliveryDate":old,"status":"completed","approvalStatus":"approved","billStatus":"ready","trips":[{"tripNum":1,"timestamps":{"start":"07:00 AM","completed":"08:10 AM"},"isoStamps":{},"gps":{}}]},
+  {"id":"L-S15B","poId":"PO-S15B","truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","vendorId":"vbt","loadsAssigned":2,"loadsDelivered":1,"deliveryDate":old,"status":"active","approvalStatus":"pending","billStatus":"not-ready","trips":[{"tripNum":1,"timestamps":{"start":"09:00 AM","completed":"10:10 AM"},"isoStamps":{},"gps":{}},{"tripNum":2,"timestamps":{"start":"10:30 AM"},"isoStamps":{},"gps":{}}]},
+  # Carlos: abandoned yesterday 3 PM (age 20h 05m); a load mid-trip on it
+  {"id":"L-A","poId":"PO-A","truckId":"carlos","truckUnitId":"truck-2b","material":"Dirt","vendorId":"vbt","loadsAssigned":2,"loadsDelivered":1,"deliveryDate":yes,"status":"active","approvalStatus":"pending","billStatus":"not-ready","freightSegmentId":"FS-A",
+   "trips":[{"tripNum":1,"timestamps":{"start":"03:10 PM","arrivedPickup":"03:30 PM","loadedAt":"03:40 PM","arrivedJobsite":"04:10 PM","completed":"04:20 PM"},"isoStamps":{},"gps":{},"actualYardId":"cemex","actualYardName":"CEMEX","freightSegmentId":"FS-A"}]},
+  {"id":"L-L","poId":"PO-L","truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","vendorId":"vbt","loadsAssigned":1,"loadsDelivered":0,"deliveryDate":today,"status":"active","approvalStatus":"pending","billStatus":"not-ready","trips":[]}],
+ "shifts":[shift("SH-N",yes,"beryle","Beryle","truck-2","Truck #2",9000,1.17),
+           shift("SH-A",yes,"carlos","Carlos","truck-2b","Truck #2B",5000,20.08),
+           shift("SH-B1",yes,"rigo","Rigo","truck-14","Truck #14",7000,19.92),
+           shift("SH-B2",yes,"leonardo","Leonardo","truck-12","Truck #12",8000,20.02)],
+ "freightSegments":[
+  {"id":"FS-N","shiftId":"SH-N","date":yes,"driverId":"beryle","driverName":"Beryle","truckId":"truck-2","truckNum":"Truck #2","trailerId":None,"trailerNum":"","customer":"Night Co","key":"night co#7 night rd|madera",
+   "destination":{"poId":"PO-N","address":"7 Night Rd","city":"Madera","label":"7 Night Rd, Madera","geo":None},"originYardId":"vulcan","originName":"Vulcan","originYards":[{"id":"vulcan","name":"Vulcan"}],
+   "timeStart":iso(0.62),"odStart":9030,"timeEnd":"","odEnd":None,"loadIds":["L-N"],"status":"open","openedBy":"beryle","closedBy":"","closedAt":"","closeReason":"","edits":[],"truckMismatch":None},
+  {"id":"FS-A","shiftId":"SH-A","date":yes,"driverId":"carlos","driverName":"Carlos","truckId":"truck-2b","truckNum":"Truck #2B","trailerId":None,"trailerNum":"","customer":"Left Co","key":"left co#2 left st|clovis",
+   "destination":{"poId":"PO-A","address":"2 Left St","city":"Clovis","label":"2 Left St, Clovis","geo":None},"originYardId":"cemex","originName":"CEMEX","originYards":[{"id":"cemex","name":"CEMEX"}],
+   "timeStart":iso(19.7),"odStart":5020,"timeEnd":"","odEnd":None,"loadIds":["L-A"],"status":"open","openedBy":"carlos","closedBy":"","closedAt":"","closeReason":"","edits":[],"truckMismatch":None}],
  "unitConfig":{"byUnit":{"ton":25,"load":1},"byMaterial":{}}}
 json.dump(d,open('data.json','w'))
 PY
-(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-today.log 2>&1 &)
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-shiftday.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
 BD=$(mktemp); curl -s -c $BD -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+CA=$(mktemp); curl -s -c $CA -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+LG=$(mktemp); curl -s -c $LG -X POST -d "username=leonardo&password=leo123" $B/login -o /dev/null
 J='Content-Type: application/json'
 jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
-bt() { curl -s -b $BD -H "$J" -X POST $B/api/loads/$1/trip-action -d "$2"; }
-chk "1. driver's work today = today's loads only; Sept 15 done and Sept 15 unfinished are not in it" "$(curl -s -b $BD $B/api/my-dispatch | jq "sorted(l['poNumber'] for l in d['loads']), d['today']==sys.argv[0] or d['today'], [(x['poNumber'], x['date'], x['loadsDelivered'], x['loadsAssigned']) for x in d['earlierOpen']]")" "['T-VBT', 'T-VUL'] $TODAY [('S15-OPEN', '2026-09-15', 1, 2)]"
-chk "   /api/data (driver) agrees"                   "$(curl -s -b $BD $B/api/data | jq "sorted(l['id'] for l in d['loads'])")" "['L-T', 'L-V']"
-chk "   the Sept 15 records still exist for the office and history" "$(curl -s -b $M $B/api/data | jq "sorted((l['id'], l['approvalStatus'], len(l['trips'])) for l in d['loads'] if l['deliveryDate']=='2026-09-15')")" "[('L-S15A', 'approved', 1), ('L-S15B', 'pending', 2)]"
-chk "2. the Sept 15 open day is stale, not today's day" "$(curl -s -b $BD $B/api/shifts/current | jq "d['shift'], d['staleShift']['id'], d['staleShift']['date'], d['staleShift']['status']")" "None SH-S15 2026-09-15 open"
-chk "   Start day is refused until the office closes it" "$(curl -s -b $BD -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-4","odometer":100,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['code'], d['error']")" "stale_shift_open Your day from 2026-09-15 was never ended. Ask the office to close it, then start today."
-chk "   the driver cannot end or touch the stale day"  "$(curl -s -b $BD -H "$J" -X POST $B/api/shifts/SH-S15/end -d '{"odometer":9050}' | jq "d['code']")|$(curl -s -b $BD -H "$J" -X POST $B/api/shifts/SH-S15/break -d '{"action":"start"}' | jq "d['code']")" "stale_shift_open|stale_shift_open"
-chk "   Fleet Map: no day shown for today; today's load is the current one" "$(curl -s -b $M $B/api/fleet/live | jq "[(r['shift'], r['load']['poNumber']) for r in d['trucks'] if r['driverId']=='beryle'][0]")" "(None, 'T-VBT')"
-chk "   office Today panel lists the stale day"        "$(curl -s -b $M $B/api/today | jq "[(s['id'], s['date'], s['status']) for s in d['shifts']]")" "[('SH-S15', '2026-09-15', 'open')]"
-chk "3. office closes the stale day with a reason; its date stays Sept 15" "$(curl -s -b $M -H "$J" -X POST $B/api/shifts/SH-S15/close -d '{"odometer":9050,"reason":"driver forgot End day on the 15th"}' | jq "d['shift']['status'], d['shift']['date'], d['shift']['dailyMiles'], d['shift']['closedBy']")" "closed 2026-09-15 50 joshua"
-chk "   its Daily Log is still there"                  "$(curl -s -b $M -o /dev/null -w '%{http_code}' $B/api/shifts/SH-S15/daily-log)" "200"
-SH=$(curl -s -b $BD -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-2","odometer":9050,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['shift']['id']")
-chk "4. today's day starts on its own: new id, today's date, no stale left" "$(curl -s -b $BD $B/api/shifts/current | jq "d['shift']['id']!='SH-S15', d['shift']['date']==d['today'], d['staleShift']")" "True True None"
-# Internal yard: the load says VBT Yard, so the driver is asked nothing.
-bt L-T '{"action":"start-trip"}' -o /dev/null
-chk "5. VBT pickup: arrival with no yard chosen resolves to VBT Yard, no odometer asked, no freight" "$(bt L-T '{"action":"arrived-pickup"}' | jq "d.get('success'), d.get('code'), d['load']['trips'][0]['actualYardName'], d['load']['trips'][0].get('freightSegmentId'), d['load'].get('freightSegmentId')")|$(curl -s -b $M $B/api/freight-segments | jq "len(d['segments'])")" "True None VBT Yard None None|0"
-chk "   driver payload marks the pickup internal for the card" "$(curl -s -b $BD $B/api/my-dispatch | jq "[(l['pickupIsInternal'], l['pickupLocation']) for l in d['loads'] if l['loadId']=='L-T'][0]")" "(True, 'VBT Yard')"
-bt L-T '{"action":"loaded","ticket":{"source":"vbt","number":"VBT-T1"}}' -o /dev/null; bt L-T '{"action":"arrived-jobsite"}' -o /dev/null; bt L-T '{"action":"trip-complete"}' -o /dev/null
-chk "   trip 1 delivered from VBT; still no freight segment" "$(curl -s -b $M $B/api/data | jq "[(l['loadsDelivered'], l.get('freightSegmentId')) for l in d['loads'] if l['id']=='L-T'][0]")|$(curl -s -b $M $B/api/freight-segments | jq "len(d['segments'])")" "(1, None)|0"
-# External yard: the existing freight-start workflow.
-bt L-V '{"action":"start-trip"}' -o /dev/null
-chk "6. Vulcan pickup still asks for the odometer (freight starts here)" "$(bt L-V '{"action":"arrived-pickup","yardId":"vulcan"}' | jq "d.get('success'), d['code']")" "False odometer_required"
-chk "   ...and opens the segment on TODAY's day, not the Sept 15 one" "$(bt L-V '{"action":"arrived-pickup","yardId":"vulcan","odometer":9080}' | jq "d.get('success')")|$(curl -s -b $M $B/api/freight-segments | jq "[(s['shiftId']==sys.argv[0] or s['shiftId'], s['originName'], s['odStart']) for s in d['segments']]" | sed "s/'$SH'/'today-shift'/")" "True|[('today-shift', 'Vulcan', 9080)]"
-bt L-V '{"action":"loaded","ticket":{"source":"supplier","number":"V-T1","netTons":20,"photo":"'"$PNG"'"}}' -o /dev/null; bt L-V '{"action":"arrived-jobsite"}' -o /dev/null; bt L-V '{"action":"trip-complete"}' -o /dev/null
-VS=$(curl -s -b $M $B/api/freight-segments | jq "d['segments'][0]['id']")
-curl -s -b $BD -H "$J" -X POST $B/api/freight-segments/$VS/close -d '{"odometer":9110}' -o /dev/null
-chk "7. VBT → Vulcan (9,050 → 9,080) stays outside the freight: 30 billable of 70 daily, 40 non-billable" "$(curl -s -b $BD -H "$J" -X POST $B/api/shifts/$SH/end -d '{"odometer":9120}' | jq "d['shift']['dailyMiles'], d['shift']['billableMiles'], d['shift']['nonBillableMiles']")" "70 30 40"
-chk "   Sept 15 shift and Sept 15 loads are unchanged by today's work" "$(curl -s -b $M $B/api/shifts/SH-S15 | jq "d['shift']['date'], d['shift']['endOdometer'], len(d['shift']['segments'])")|$(curl -s -b $M $B/api/data | jq "[(l['loadsDelivered'], len(l['trips'])) for l in d['loads'] if l['id']=='L-S15B'][0]")" "2026-09-15 9050 0|(1, 2)"
+bt() { curl -s -b $BD -H "$J" -X POST $B/api/loads/$1/trip-action -d "$2" "${@:3}"; }
+# ── Midnight: Beryle started at 11 PM yesterday, it is 12:10 AM ──
+chk "1. 11 PM start is still the driver's active day after midnight (not stale, ~1.2 h old, no duplicate)" "$(curl -s -b $BD $B/api/shifts/current | jq "d['shift']['id'], d['shift']['date']==sys.argv[0] or d['shift']['date'], d['shift']['stale'], 1.0 < d['shift']['ageHours'] < 1.5, d['shift']['staleAfterHours'], d['staleShift'], d['shift']['openSegment']['customer']")" "SH-N $YES False True 20 None Night Co"
+chk "   the night load (dated yesterday) is on the phone with today's load; Sept 15 leftovers are not" "$(curl -s -b $BD $B/api/my-dispatch | jq "sorted(l['poNumber'] for l in d['loads']), [x['poNumber'] for x in d['earlierOpen']]")" "['DAY-22', 'NIGHT-1'] ['S15-OPEN']"
+chk "   Start day is refused as 'already open', not as stale"  "$(curl -s -b $BD -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-4","odometer":1,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['code']")" "shift_open"
+chk "2. load 2 arrives at Vulcan after midnight: joins the SAME freight, no odometer asked" "$(bt L-N '{"action":"arrived-pickup","yardId":"vulcan"}' | jq "d.get('success'), d.get('code'), d['load']['trips'][1]['freightSegmentId'], d['load']['trips'][1]['timestamps']['arrivedPickup'] is not None")" "True None FS-N True"
+bt L-N '{"action":"loaded","ticket":{"source":"supplier","number":"N-2","netTons":23.7,"photo":"'"$PNG"'"}}' -o /dev/null; bt L-N '{"action":"arrived-jobsite"}' -o /dev/null; bt L-N '{"action":"trip-complete"}' -o /dev/null
+chk "   freight still open on SH-N with 2 trips, no second shift or segment anywhere" "$(curl -s -b $M "$B/api/freight-segments?all=1" | jq "[(s['id'], s['shiftId'], s['status'], s['tripCount']) for s in d['segments'] if s['driverId']=='beryle']")|$(curl -s -b $M "$B/api/shifts?all=1" | jq "[s['id'] for s in d['shifts'] if s['driverId']=='beryle']")" "[('FS-N', 'SH-N', 'open', 2)]|['SH-N']"
+chk "   today's other-customer load is refused while the night freight is open (existing rule, no mixing)" "$(bt L-D '{"action":"start-trip"}' -o /dev/null; bt L-D '{"action":"arrived-pickup"}' | jq "d['code'], d['segment']['id']")" "segment_open FS-N"
+chk "3. Finish freight works after midnight: 9,060 → 30 billable miles" "$(curl -s -b $BD -H "$J" -X POST $B/api/freight-segments/FS-N/close -d '{"odometer":9060}' | jq "d['segment']['status'], d['segment']['billableMiles'], d['segment']['closedBy']")" "closed 30 beryle"
+chk "   then today's VBT load runs on the same day with no freight (our own yard)" "$(bt L-D '{"action":"arrived-pickup"}' | jq "d.get('success'), d['load']['trips'][0]['actualYardName'], d['load'].get('freightSegmentId')")|$(curl -s -b $M "$B/api/freight-segments?all=1" | jq "len([s for s in d['segments'] if s['driverId']=='beryle'])")" "True VBT Yard None|1"
+chk "4. End day works: 9,070 → 70 daily, 30 freight, 40 non-billable; the day keeps its start date" "$(curl -s -b $BD -H "$J" -X POST $B/api/shifts/SH-N/end -d '{"odometer":9070}' | jq "d['shift']['status'], d['shift']['date']==sys.argv[0] or d['shift']['date'], d['shift']['dailyMiles'], d['shift']['billableMiles'], d['shift']['nonBillableMiles']")" "closed $YES 70 30 40"
+chk "   Daily Log and Freight Bill carry the shift's start date and both trips" "$(curl -s -b $M $B/api/shifts/SH-N/daily-log | python3 -c "import sys,re;h=sys.stdin.read();print(re.search(r'<title>(.*?)</title>',h).group(1))")|$(curl -s -b $M $B/api/freight-segments/FS-N/freight-bill | python3 -c "import sys,re;h=sys.stdin.read();print(re.search(r'<title>(.*?)</title>',h).group(1), h.count('<tr><td>'))")" "Daily Log $YES Beryle|Freight Bill $YES Night Co 2"
+chk "   after ending, a new day can start (no stale left)"    "$(curl -s -b $BD $B/api/shifts/current | jq "d['shift'], d['staleShift'], d['lastShift']['id']")" "None None SH-N"
+# ── Boundary: 19 h 55 m is active, 20 h 01 m is stale ──
+chk "5. boundary: Rigo's day at 19.9 h is still active"        "$(curl -s -b $RG $B/api/shifts/current | jq "d['shift'] and d['shift']['id'], d['staleShift'], d['shift'] and d['shift']['stale']")" "SH-B1 None False"
+chk "   boundary: Leonardo's day at 20.0 h is stale"           "$(curl -s -b $LG $B/api/shifts/current | jq "d['shift'], d['staleShift']['id'], d['staleShift']['stale'], d['staleShift']['ageHours'] >= 20")" "None SH-B2 True True"
+chk "   Leonardo cannot run today's load either while his stale day is open" "$(curl -s -b $LG -H "$J" -X POST $B/api/loads/L-L/trip-action -d '{"action":"start-trip"}' | jq "d['code']")" "stale_shift_open"
+# ── Abandoned: Carlos started 3 PM yesterday, never ended, 20 h 05 m ago, freight still open ──
+chk "6. abandoned day is stale on the phone, with the hours open"  "$(curl -s -b $CA $B/api/shifts/current | jq "d['shift'], d['staleShift']['id'], d['staleShift']['openSegment']['customer']")" "None SH-A Left Co"
+chk "   API: Start day / End day / Break / Truck change / Finish freight / trip action all refused (stale_shift_open)" "$(for c in "POST $B/api/shifts/start {\"truckId\":\"truck-4\",\"odometer\":1,\"inspection\":{\"satisfactory\":true},\"signature\":\"$PNG\"}" "POST $B/api/shifts/SH-A/end {\"odometer\":5090}" "POST $B/api/shifts/SH-A/break {\"action\":\"start\"}" "POST $B/api/shifts/SH-A/truck-change {\"fromOdometer\":5090,\"toTruckId\":\"truck-4\",\"toOdometer\":1}" "POST $B/api/freight-segments/FS-A/close {\"odometer\":5090}" "POST $B/api/loads/L-A/trip-action {\"action\":\"start-trip\"}"; do set -- $c; curl -s -b $CA -H "$J" -X $1 $2 -d "$3" | jq "d.get('code')"; done | sort -u | tr '\n' ' ')" "stale_shift_open "
+chk "   ...and nothing changed: freight still open, load untouched" "$(curl -s -b $M $B/api/freight-segments/FS-A | jq "d['segment']['status'], d['segment']['odEnd'], d['segment']['tripCount']")|$(curl -s -b $M $B/api/data | jq "[(l['loadsDelivered'], len(l['trips'])) for l in d['loads'] if l['id']=='L-A'][0]")" "open None 1|(1, 1)"
+chk "   office sees it as stale with the age"                 "$(curl -s -b $M $B/api/today | jq "[(s['id'], s['stale'], s['ageHours'] >= 20, s['openSegment']['customer']) for s in d['shifts'] if s['id']=='SH-A'][0]")" "('SH-A', True, True, 'Left Co')"
+chk "7. office closes it with a reason: freight closed at the day's end reading, history intact" "$(curl -s -b $M -H "$J" -X POST $B/api/shifts/SH-A/close -d '{"odometer":5090,"reason":"abandoned overnight"}' | jq "d['shift']['status'], d['shift']['dailyMiles'], d['shift']['billableMiles'], d['shift']['segments'][0]['status'], d['shift']['segments'][0]['closeReason']")|$(curl -s -b $M -o /dev/null -w '%{http_code}' $B/api/shifts/SH-A/daily-log)|$(curl -s -b $M -o /dev/null -w '%{http_code}' $B/api/freight-segments/FS-A/freight-bill)" "closed 90 70 closed end-of-day-manager|200|200"
+chk "   Carlos can now start a new day"                       "$(curl -s -b $CA -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-2b","odometer":5090,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d.get('success'), d['shift']['date']==sys.argv[0] or d['shift']['date'], d['shift']['id']!='SH-A'")" "True $TODAY True"
+chk "   Sept 15 history untouched throughout"                 "$(curl -s -b $M $B/api/data | jq "sorted((l['id'], l['approvalStatus'], len(l['trips'])) for l in d['loads'] if l['deliveryDate']=='2026-09-15')")" "[('L-S15A', 'approved', 1), ('L-S15B', 'pending', 2)]"
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
