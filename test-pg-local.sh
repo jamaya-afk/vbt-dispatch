@@ -14,6 +14,9 @@ sleep 2
 run "$PGB/createdb -h /tmp -p $PGPORT -U vbt vbt_test" >/dev/null 2>&1
 export PATH="$PGB:$PATH"
 export TEST_DATABASE_URL="postgres://vbt@localhost:$PGPORT/vbt_test?sslmode=disable"
+# Let the suite stop/start this cluster to simulate an outage mid-run.
+export TEST_PG_STOP="$( [ -n "$RUNAS" ] && echo "su pgtest -c '$PGB/pg_ctl -D $D stop -m fast'" || echo "$PGB/pg_ctl -D $D stop -m fast" )"
+export TEST_PG_START="$( [ -n "$RUNAS" ] && echo "su pgtest -c \"$PGB/pg_ctl -D $D -o '-p $PGPORT -k /tmp' -l $D/log.txt start\"" || echo "$PGB/pg_ctl -D $D -o '-p $PGPORT -k /tmp' -l $D/log.txt start" )"
 bash "$(dirname "$0")/test-e2e.sh"; RC=$?
 run "$PGB/pg_ctl -D $D stop -m fast" >/dev/null 2>&1
 rm -rf "$D"

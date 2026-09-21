@@ -92,23 +92,63 @@ function pgSsl() {
   if (process.env.PGSSL === 'disable' || /sslmode=disable/.test(url)) return false;
   return { rejectUnauthorized: false };
 }
+// Database condition, for /healthz and for naming failures honestly.
+const dbState = { lastOkAt: '', lastFailAt: '', lastFailMessage: '', failures: 0 };
+const DB_ERROR_CODES = new Set(['ETIMEDOUT', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE',
+  '57P01', '57P02', '57P03', '08000', '08003', '08006', '08001', '08004', '53300']);
+function isDbError(err) {
+  if (!err) return false;
+  if (err.dbUnreachable) return true;
+  if (DB_ERROR_CODES.has(err.code)) return true;
+  if (err.name === 'AggregateError' && Array.isArray(err.errors) && err.errors.some(isDbError)) return true;
+  return /timeout exceeded when trying to connect|Connection terminated|connect ETIMEDOUT|connect ECONNREFUSED|the database system is (starting|shutting)/i.test(String(err.message || ''));
+}
+function noteDbFailure(err) {
+  dbState.failures++;
+  dbState.lastFailAt = new Date().toISOString();
+  dbState.lastFailMessage = String(err && err.message || err || '').slice(0, 200);
+}
+
 let sessionPool = null;
 if (process.env.DATABASE_URL) {
   try {
     const { Pool } = require('pg');
+    // ONE pool for the whole app (the dispatch store reuses it in initPg).
+    // Small and long-lived: Supabase's pooler hands out a limited number of
+    // server connections, and every fresh TCP connect is a chance to time out
+    // on a flaky path, so keep a few warm sockets instead of churning.
     sessionPool = new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: pgSsl(),
-      connectionTimeoutMillis: 10000,   // never hang boot forever on a dead host
+      max: Number(process.env.PG_POOL_MAX || 5),
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
+      idleTimeoutMillis: 60000,         // hold idle sockets a minute rather than reconnecting per request
+      connectionTimeoutMillis: 8000,    // fail a dead host fast; never hang boot or a request forever
+      allowExitOnIdle: false,
     });
-    sessionPool.on('error', e => console.error('Session pool error:', e.message));
+    sessionPool.on('error', e => { noteDbFailure(e); console.error('Pool error:', e.message); });
+    sessionPool.on('connect', () => { dbState.lastOkAt = new Date().toISOString(); });
     const pgSession = require('connect-pg-simple')(session);
-    sessionOpts.store = new pgSession({
+    const pgStore = new pgSession({
       pool: sessionPool,
       tableName: 'user_sessions',
       createTableIfMissing: true,
-      pruneSessionInterval: 60 * 15
+      pruneSessionInterval: 60 * 15,
+      errorLog: (...a) => console.error('[session store]', ...a),
     });
+    // Resilience: a session-store READ failure must not turn every request
+    // into a 500. It is treated as "no session" — the caller is anonymous,
+    // sees the login page, and protected routes still refuse them. Nothing
+    // is ever fabricated: a login WRITE that fails still fails loudly.
+    const rawGet = pgStore.get.bind(pgStore), rawTouch = pgStore.touch.bind(pgStore), rawSet = pgStore.set.bind(pgStore);
+    pgStore.get = (sid, cb) => rawGet(sid, (err, sess) => {
+      if (err) { noteDbFailure(err); console.error('[session store] read failed, treating request as anonymous:', err.message); return cb(null, null); }
+      cb(null, sess);
+    });
+    pgStore.touch = (sid, sess, cb) => rawTouch(sid, sess, (err) => { if (err) noteDbFailure(err); cb(); });
+    pgStore.set = (sid, sess, cb) => rawSet(sid, sess, (err) => { if (err) { noteDbFailure(err); err.dbUnreachable = true; } cb(err); });
+    sessionOpts.store = pgStore;
     console.log('✓ Session store: Postgres');
   } catch (e) {
     console.error('⚠ Postgres session store failed:', e.message);
@@ -304,7 +344,7 @@ async function fleetDrivers() {
     } catch (e) { console.error('[fleetDrivers] users lookup failed:', e.message); }
   }
   return (store.drivers || []).map(d => {
-    const login = logins.get(d.id);
+    const login = logins.get(d.id) || (!pg && (store.fileLogins || {})[d.id] ? { username: d.id, active: d.active !== false } : null);
     return {
       id: d.id, username: d.id, displayName: d.name || d.id,
       defaultTruckId: d.defaultTruckId || null, status: d.status || 'available',
@@ -326,6 +366,125 @@ function getTruckForLoad(l) {
   // No fallback to the driver's usual truck: showing a truck number the
   // dispatcher never assigned is worse than showing none.
   return null;
+}
+
+// ── TRAILERS ─────────────────────────────────────────────────────────────────
+// A trailer is a third, independent asset: any truck can pull any trailer, so
+// nothing is derived from the truck. `defaultTruckId` is only a Quick Assign
+// pre-fill (like a truck's "usual driver"). Trailers are never deleted once a
+// load references them — deactivated instead, so history keeps its trailer.
+const TRAILER_STATUSES = ['available', 'in-service', 'maintenance', 'out-of-service'];
+function getTrailerForLoad(l) {
+  if (!l || !l.trailerId) return null;
+  return (store.trailers || []).find(t => t.id === l.trailerId) || null;
+}
+function trailerPublic(t) {
+  return t ? { id: t.id, number: t.number, type: t.type || '', status: t.status || 'available' } : null;
+}
+
+// ── SCALE / INTERNAL TICKETS (one per trip) ──────────────────────────────────
+// A trip's ticket is the supplier scale ticket (net tons from the scale) or a
+// VBT internal ticket for material out of our own yard. The number is unique
+// across every trip on every load, live or archived — the same physical
+// ticket can never be counted twice. Voided loads are excluded: a load that
+// was voided and re-run legitimately reuses its tickets.
+const TICKET_SOURCES = ['supplier', 'vbt'];
+function ticketKey(n) { return String(n == null ? '' : n).trim().toUpperCase().replace(/\s+/g, ''); }
+function allLoadsWithArchive() {
+  return [...store.loads, ...(store.archive || []).flatMap(b => b.loads || [])];
+}
+// Which trip (on which load) already carries this ticket number, if any.
+function findTicketOwner(number, exclude = {}) {
+  const k = ticketKey(number); if (!k) return null;
+  for (const l of allLoadsWithArchive()) {
+    if (l.voided) continue;
+    for (const t of (l.trips || [])) {
+      if (!t.ticket || ticketKey(t.ticket.number) !== k) continue;
+      if (exclude.loadId === l.id && Number(exclude.tripNum) === Number(t.tripNum)) continue;
+      return { load: l, trip: t };
+    }
+  }
+  return null;
+}
+// The refusal names the load that owns the ticket so the driver can tell a
+// typo from a genuinely reused ticket.
+function ticketOwnerMessage(number, owner) {
+  const l = owner.load;
+  const po = store.pos.find(p => p.id === l.poId) || (store.archive || []).flatMap(b => b.pos || []).find(p => p.id === l.poId) || {};
+  const who = l.driverName ? `, ${l.driverName}` : '';
+  return `Ticket #${String(number).trim()} is already recorded on ${l.id} (PO ${po.poNumber || '—'}, ${po.customer || 'unknown customer'}, load ${owner.trip.tripNum} of ${l.loadsAssigned}${who}). Please check the ticket number.`;
+}
+function parseTons(v) {
+  if (v === '' || v == null) return null;
+  const n = Number(v);
+  return isFinite(n) ? Math.round(n * 100) / 100 : NaN;
+}
+// Validate + shape the ticket a driver (or manager) submitted. Returns
+// { ticket } or { error }. Photo: a Supabase URL (preferred) or, only when
+// the upload service is not configured, the inline data URL.
+function buildTicket(input, { by, existing } = {}) {
+  const t = input || {};
+  const source = String(t.source || '').trim().toLowerCase();
+  if (!TICKET_SOURCES.includes(source)) return { error: 'Ticket source must be "supplier" (scale ticket) or "vbt" (internal ticket)' };
+  const number = String(t.number || '').trim();
+  if (!number) return { error: 'Ticket number is required' };
+  if (number.length > 40) return { error: 'Ticket number is too long' };
+  const netTons = parseTons(t.netTons);
+  if (Number.isNaN(netTons)) return { error: 'Net tons must be a number' };
+  if (netTons != null && (netTons < 0 || netTons > 200)) return { error: 'Net tons out of range (0–200)' };
+  if (source === 'supplier' && netTons == null) return { error: 'Net tons from the scale ticket are required for a supplier ticket' };
+  const photoUrl = t.photoUrl ? String(t.photoUrl).trim() : '';
+  const photo = (!photoUrl && typeof t.photo === 'string' && t.photo.startsWith('data:image/')) ? t.photo : '';
+  if (photoUrl && !/^https?:\/\//.test(photoUrl)) return { error: 'Ticket photo must be an uploaded image URL' };
+  if (source === 'supplier' && !photoUrl && !photo && !(existing && (existing.photoUrl || existing.photo))) {
+    return { error: 'A photo of the scale ticket is required' };
+  }
+  const ticket = {
+    source, number, netTons,
+    photoUrl: photoUrl || (existing && !photo ? existing.photoUrl || '' : ''),
+    photo:    photo    || (existing && !photoUrl ? existing.photo || '' : ''),
+    // OCR is assistive only: when a reading was shown to the driver it is kept
+    // here for audit; the confirmed values above are what count.
+    ocr: t.ocr && typeof t.ocr === 'object' ? { number: t.ocr.number == null ? '' : String(t.ocr.number), netTons: parseTons(t.ocr.netTons) || null } : (existing ? existing.ocr || null : null),
+    entry: t.ocr && typeof t.ocr === 'object' ? 'ocr-confirmed' : 'typed',
+    confirmedBy: by || '',
+    confirmedAt: new Date().toISOString(),
+  };
+  if (ticket.photoUrl) ticket.photo = '';
+  return { ticket };
+}
+// Planned vs actual tons on a load — derived, never stored. Planned stays the
+// existing quantity-per-load rule (25 t default) × delivered; actual is the sum
+// of confirmed ticket tons. They are reported side by side and never summed.
+function loadTons(l) {
+  const trips = Array.isArray(l.trips) ? l.trips : [];
+  const delivered = Number(l.loadsDelivered) || 0;
+  const done = trips.filter(t => t.timestamps && t.timestamps.completed);
+  const ticketed = trips.filter(t => t.ticket && t.ticket.number);
+  const withTons = ticketed.filter(t => t.ticket.netTons != null);
+  const actualTons = Math.round(withTons.reduce((s, t) => s + Number(t.ticket.netTons), 0) * 100) / 100;
+  const unit = unitKey(l.customerUnit || 'ton');
+  const qty = unit === 'ton' ? ((l.tonsPerLoad ? Number(l.tonsPerLoad) : null) ?? qtyPerLoad('ton', l.material)) : null;
+  const plannedTons = qty != null ? Math.round(qty * delivered * 100) / 100 : null;
+  const sources = new Set(ticketed.map(t => t.ticket.source));
+  const tonsSource = !withTons.length ? 'planned' : sources.size > 1 ? 'mixed' : [...sources][0];
+  return {
+    plannedTons, actualTons,
+    tickets: ticketed.length, ticketsWithTons: withTons.length,
+    tripsCompleted: done.length,
+    // Every completed trip has confirmed tons → the actual figure is complete.
+    actualComplete: done.length > 0 && done.every(t => t.ticket && t.ticket.netTons != null),
+    missingTickets: done.filter(t => !t.ticket || !t.ticket.number).map(t => t.tripNum),
+    tonsSource,
+    ticketNumbers: ticketed.map(t => t.ticket.number),
+  };
+}
+// Billing basis is a per-customer choice. Default is planned (25 t rule);
+// "actual" bills the confirmed ticket tons instead. Nothing switches on its own.
+function customerBillingBasis(customerName) {
+  const lc = String(customerName || '').toLowerCase().trim();
+  const c = (store.customers || []).find(x => String(x.name || '').toLowerCase().trim() === lc);
+  return c && c.billingBasis === 'actual' ? 'actual' : 'planned';
 }
 
 // Generic fallback materials list (for the "Other" vendor or legacy data)
@@ -449,7 +608,9 @@ async function initPg() {
       pg = new Pool({
         connectionString: process.env.DATABASE_URL,
         ssl: pgSsl(),
-        connectionTimeoutMillis: 10000,
+        max: Number(process.env.PG_POOL_MAX || 5),
+        keepAlive: true, keepAliveInitialDelayMillis: 10000,
+        idleTimeoutMillis: 60000, connectionTimeoutMillis: 8000,
       });
     } else {
       pg = sessionPool;  // reuse same pool
@@ -779,6 +940,13 @@ function normalizeStore() {
   DEFAULT_TRUCKS.forEach(dt => {
     if (!store.trucks.some(t => t.id === dt.id)) store.trucks.push({ ...dt });
   });
+  // Trailers: no seed — the office adds them. Existing loads simply have no trailer.
+  if (!Array.isArray(store.trailers)) store.trailers = [];
+  // Shifts (the driver's day) and freight segments (one continuous billable
+  // operation). Additive: loads without a segment behave exactly as before.
+  if (!Array.isArray(store.shifts)) store.shifts = [];
+  if (!Array.isArray(store.freightSegments)) store.freightSegments = [];
+  store.trailers.forEach(t => { if (t.active === undefined) t.active = true; if (!t.status) t.status = 'available'; });
   store.trucks.forEach(t => {
     if (!t.status) t.status = 'available';
     if (t.active === undefined) t.active = true;
@@ -1264,7 +1432,8 @@ async function applyLocationRequest(rec, body, user, addressText) {
 // actualYardName / po.pickup on its own.
 function withPickup(l) {
   const po = store.pos.find(p => p.id === l.poId) || {};
-  return { ...l, pickup: resolvePickupYard(l, po) };
+  const segs = segmentsForLoad(l).map(s => { const p = segmentPublic(s); return { id: p.id, customer: p.customer, originName: p.originName, destinationLabel: p.destinationLabel, status: p.status, locked: p.locked, timeStart: p.timeStart, timeEnd: p.timeEnd, odStart: p.odStart, odEnd: p.odEnd, billableMiles: p.billableMiles, billableHours: p.billableHours, tripCount: p.tripCount, loadIds: p.loadIds }; });
+  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs };
 }
 
 function resolveVendorRate(vendorId, material) {
@@ -1364,8 +1533,53 @@ function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride, mea
   return { ...base, amount: r * qty * n, unconfigured: false, qtyPerLoad: qty, quantity: qty * n, reason: '' };
 }
 
+// Revenue for a load. Planned quantity (qty-per-load × delivered) unless the
+// customer's billing basis is "actual" AND the load is ton-priced, in which
+// case the confirmed ticket tons are the quantity. A load on an actual-basis
+// customer with completed trips that have no ticket tons is NOT priceable —
+// it is flagged, never silently billed on the planned figure.
 function revenueDetail(load) {
-  return computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
+  const unit = unitKey(load.customerUnit || 'ton');
+  // Hour and mile customers: the measure comes from the load's CLOSED freight
+  // segment(s), counted once per segment and attributed to the first load
+  // in the segment. Other loads in the same segment carry zero, naming where
+  // the measure was billed, so nothing ever multiplies. A load with no
+  // segment keeps the manual miles/hours fields exactly as before.
+  if (MEASURED_UNITS[unit]) {
+    const segs = segmentsForLoad(load);
+    if (segs.length) {
+      const field = MEASURED_UNITS[unit];
+      const open = segs.find(s => s.status === 'open');
+      if (open) return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${open.id} (${open.customer}) is still open — its ${field} are not final yet` };
+      let measure = 0; const billedWith = [];
+      for (const s of segs) {
+        const p = segmentPublic(s);
+        const m = field === 'miles' ? p.billableMiles : p.billableHours;
+        if ((s.loadIds || [])[0] === load.id) measure += m || 0;
+        else billedWith.push(`${s.loadIds[0]} on ${s.id}`);
+      }
+      const d = computeAmount(load.customerRate, unit, load.loadsDelivered, load.material, load.tonsPerLoad, { [field]: measure });
+      d.basis = 'segment'; d.segmentIds = segs.map(s => s.id);
+      if (billedWith.length && measure === 0) d.reason = `${field} billed with ${billedWith.join(', ')}`;
+      return d;
+    }
+  }
+  const d = computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
+  d.basis = 'planned';
+  if (d.unit !== 'ton') return d;
+  const po = store.pos.find(p => p.id === load.poId) || {};
+  if (customerBillingBasis(po.customer) !== 'actual') return d;
+  const tons = loadTons(load);
+  d.basis = 'actual';
+  d.actualTons = tons.actualTons;
+  d.ticketCount = tons.ticketsWithTons;
+  if ((Number(load.loadsDelivered) || 0) === 0) return d;
+  if (!tons.actualComplete || tons.ticketsWithTons < (Number(load.loadsDelivered) || 0)) {
+    const missing = Math.max(0, (Number(load.loadsDelivered) || 0) - tons.ticketsWithTons);
+    return { ...d, amount: null, unconfigured: true, quantity: null,
+             reason: `${po.customer || 'this customer'} is billed on actual ticket tons, but ${missing} of ${load.loadsDelivered} delivered load${load.loadsDelivered === 1 ? '' : 's'} on ${load.id} ${missing === 1 ? 'has' : 'have'} no confirmed ticket tons` };
+  }
+  return { ...d, amount: d.rate * tons.actualTons, quantity: tons.actualTons, unconfigured: false, reason: '' };
 }
 function costDetail(load) {
   return computeAmount(load.vendorRate, load.vendorUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
@@ -1435,8 +1649,36 @@ function reqAdmin(req, res, next) {
   res.status(403).json({ error: 'Admin access required' });
 }
 
-app.get('/healthz', (req, res) => res.json({
-  ok: true,
+// Live database probe with its own short timeout, so /healthz answers in
+// under ~3 s even when the host is silently dropping packets.
+async function probeDatabase() {
+  if (!pg) return { configured: false, reachable: false, latencyMs: null, error: 'not configured (file mode)' };
+  const t0 = Date.now();
+  try {
+    await Promise.race([
+      pg.query('SELECT 1'),
+      new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('health probe timed out after 3000 ms'), { code: 'ETIMEDOUT' })), 3000)),
+    ]);
+    dbState.lastOkAt = new Date().toISOString();
+    return { configured: true, reachable: true, latencyMs: Date.now() - t0, error: '' };
+  } catch (e) {
+    noteDbFailure(e);
+    return { configured: true, reachable: false, latencyMs: Date.now() - t0, error: String(e.message || e).slice(0, 200) };
+  }
+}
+
+app.get('/healthz', async (req, res) => {
+  const db = await probeDatabase();
+  const dbDown = db.configured && !db.reachable;
+  const notLoaded = !persistence.loaded;
+  const reason = dbDown ? 'database_unreachable' : notLoaded ? 'store_not_loaded' : '';
+  res.status(reason ? 503 : 200).json({
+  ok: !reason,
+  status: reason ? 'degraded' : 'ok',
+  reason,
+  app: 'running',
+  db: { ...db, lastOkAt: dbState.lastOkAt, lastFailAt: dbState.lastFailAt, lastFailMessage: dbState.lastFailMessage, failures: dbState.failures },
+  sessionStore: { backend: pg ? 'postgres' : 'memory', condition: dbDown ? 'unreachable — requests are treated as anonymous until it returns' : 'ok' },
   hasDb: !!process.env.DATABASE_URL,
   // `loaded` is the truth about the data: durable=true only says Postgres is
   // reachable. A process that could not read its store reports loaded=false
@@ -1459,8 +1701,13 @@ app.get('/healthz', (req, res) => res.json({
   pgConnected: !!pg,
   supabaseEnabled,
   prod: IS_PROD,
+  node: process.version,
+  uptimeSeconds: Math.round(process.uptime()),
+  storeSummary: persistence.loaded ? { pos: store.pos.length, loads: store.loads.length, archiveBatches: (store.archive || []).length, bytes: Buffer.byteLength(JSON.stringify(store)) } : null,
+  recentErrors,
   time: new Date().toISOString(),
-}));
+  });
+});
 
 // Persistence banner for the dispatcher. If data is not reaching Postgres,
 // the person entering loads is the one who needs to know — not just the log.
@@ -1536,7 +1783,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
       if (fakeQb.mode === 'slow') await wait(fakeQb.delayMs || 1500);
       if (fakeQb.mode === 'fail') { const e = new Error('Fake QuickBooks: invoice rejected'); e.statusCode = 400; throw e; }
       fakeQb.invoicesCreated++;
-      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: String(1000 + fakeQb.invoicesCreated), memo: args.memo };
+      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: String(1000 + fakeQb.invoicesCreated), memo: args.memo, lines: args.lines, privateNote: args.privateNote };
       fakeQb.invoices.push(inv);
       return inv;
     };
@@ -1624,8 +1871,11 @@ function loginSucceeded(user) { loginFailures.delete('u:' + user); }
 setInterval(() => { for (const k of loginFailures.keys()) loginKeyFailures(k); }, LOGIN_WINDOW_MS).unref();
 
 app.get('/login', (req, res) => {
+  const ref = String(req.query.ref || '').replace(/[^A-Z0-9]/g, '').slice(0, 12);
   const err = req.query.error === 'locked'
     ? '<p class="err">Too many sign-in attempts. Wait 15 minutes and try again.</p>'
+    : req.query.error === 'db'
+    ? `<p class="err">Database unreachable — reference ${ref || 'n/a'}. Your password was not checked; nothing is wrong with it. Try again in a minute.</p>`
     : req.query.error ? '<p class="err">Invalid username or password</p>' : '';
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Valley Best Concrete — Dispatch</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -1712,13 +1962,30 @@ app.post('/login', async (req, res) => {
       loginFailed(ip, cleanName);
       return res.redirect('/login?error=1');
     } catch (e) {
+      // The database could not be asked. Say so — never "wrong password", and
+      // never a fallback login: with Postgres configured there is no other
+      // source of truth for who may sign in.
       console.error('[LOGIN] DB lookup error:', e.message);
-      if (IS_PROD) return res.redirect('/login?error=1');
-      // dev only: fall through to the hardcoded map if the table is unreachable
+      noteDbFailure(e);
+      const ref = 'E' + Date.now().toString(36).slice(-6).toUpperCase();
+      recentErrors.unshift({ ref, at: new Date().toISOString(), method: 'POST', path: '/login', role: 'anonymous', kind: 'database', message: String(e.message || e).slice(0, 300), where: 'login: users lookup' });
+      if (recentErrors.length > 10) recentErrors.length = 10;
+      return res.redirect('/login?error=db&ref=' + ref);
     }
   }
 
-  // 2) Legacy fallback: hardcoded VBT users (dev / no-database mode only).
+  // 2) No database (dev / file mode only): drivers created on the Drivers &
+  //    Trucks screen keep a scrypt-hashed login inside the store, so a driver
+  //    added there can sign in exactly as they would with Postgres.
+  const fl = (store.fileLogins || {})[cleanName];
+  if (fl && rosterDriver(cleanName)?.active !== false && verifyPassword(password, fl.password).ok) {
+    loginSucceeded(cleanName);
+    req.session.user = { username: cleanName, role: 'driver', truckId: cleanName, displayName: rosterDriver(cleanName)?.name || cleanName };
+    console.log(`[LOGIN] SUCCESS (file mode): username="${cleanName}", role="driver"`);
+    return res.redirect('/app/');
+  }
+
+  // 3) Legacy fallback: hardcoded VBT users (dev / no-database mode only).
   const u = USERS[cleanName];
   if (!u || !verifyPassword(password, u.password).ok) {
     console.log(`[LOGIN] FAILED: username="${cleanName}"`);
@@ -1968,7 +2235,10 @@ function fleetLiveRows(now = Date.now()) {
     const truck = load ? getTruckForLoad(load) : null;
     const usual = !truck && d.defaultTruckId ? (store.trucks || []).find(t => t.id === d.defaultTruckId) : null;
     const vehicle = truck || usual || null;
+    const trailer = load ? getTrailerForLoad(load) : null;
     const tripNumber = load ? Math.min(activeTripIdx(load) + 1, Math.max(load.loadsAssigned || 1, 1)) : null;
+    const tons = load ? loadTons(load) : null;
+    const curTicket = trip && trip.ticket ? { number: trip.ticket.number, netTons: trip.ticket.netTons, source: trip.ticket.source, tripNum: trip.tripNum } : null;
 
     return {
       driverId: d.id,
@@ -1977,6 +2247,9 @@ function fleetLiveRows(now = Date.now()) {
       truckUnitId: vehicle ? vehicle.id : null,
       truckNum: vehicle ? vehicle.truckNum : '',
       truckIsAssigned: !!truck,                      // false = showing the driver's usual truck
+      trailerId: trailer ? trailer.id : null,
+      trailerNum: trailer ? trailer.number : '',
+      shift: (() => { const s = openShiftFor(d.id); if (!s) return null; const sd = shiftDerived(s); return { id: s.id, startAt: s.startAt, truckNum: s.truckNum, trailerNum: s.trailerNum, startOdometer: s.startOdometer, onBreak: sd.openBreak, segment: sd.openSegment ? { id: sd.openSegment.id, customer: sd.openSegment.customer, originName: sd.openSegment.originName, destinationLabel: sd.openSegment.destinationLabel, odStart: sd.openSegment.odStart, timeStart: sd.openSegment.timeStart } : null }; })(),
       status: live ? FLEET_STATUS[wf.key] : FLEET_STATUS.offline,
       statusKey: live ? wf.key : 'offline',
       workflowStatus: FLEET_STATUS[wf.key],          // what the stamps say, regardless of GPS
@@ -1996,6 +2269,10 @@ function fleetLiveRows(now = Date.now()) {
         // Jobsite from the PO: address always, coordinates only when saved.
         destination: { address: po.address || '', city: po.city || '', geo: geoPublic(po.geo) },
         approvalStatus: load.approvalStatus,
+        // Proof so far: the current trip's ticket and the running actual tons.
+        currentTicket: curTicket,
+        plannedTons: tons.plannedTons, actualTons: tons.actualTons, tickets: tons.tickets, tonsSource: tons.tonsSource,
+        freightSegmentId: load.freightSegmentId || null,
       } : null,
       gps: loc ? {
         lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy == null ? null : loc.accuracy,
@@ -2043,6 +2320,7 @@ app.get('/api/data', reqAuth, async (req, res) => {
   res.json({
     trucks: driverRoster(),          // legacy contract: the DRIVER dropdown
     fleet:  store.trucks || [],      // the actual vehicles
+    trailers: store.trailers || [],  // trailers, independent of trucks
     drivers: store.drivers || [],    // the roster (same list Quick Assign uses)
     materials: MATERIALS,
     yards,
@@ -2101,18 +2379,27 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
     const curTrip = (Array.isArray(l.trips) && l.trips.length) ? l.trips[activeTripIdx(l)] : null;
     const pickup  = resolvePickupYard(l, po, curTrip);
     const truck   = getTruckForLoad(l);
+    const trailer = getTrailerForLoad(l);
+    const tons    = loadTons(l);
     return {
       loadId: l.id,
       truckId:    l.truckUnitId || null,
       truckLabel: truck ? (truck.truckNum || truck.label || '') : '',
       truckType:  truck ? (truck.type || '') : '',
-      // Per-trip pickup history so the driver can see where each haul went
+      trailerId:    trailer ? trailer.id : null,
+      trailerLabel: trailer ? trailer.number : '',
+      // Per-trip pickup history so the driver can see where each haul went,
+      // with the ticket confirmed at Loaded (photo as a URL, or inline only
+      // when the upload service was unavailable).
       trips: (l.trips || []).map(t => ({
         tripNum: t.tripNum,
         timestamps: t.timestamps || {},
         yardId: t.actualYardId || pickup.id,
         yardName: t.actualYardName || (store.vendors.find(v => v.id === (t.actualYardId || pickup.id)) || {}).name || pickup.name,
+        ticket: t.ticket ? { source: t.ticket.source, number: t.ticket.number, netTons: t.ticket.netTons, photoUrl: t.ticket.photoUrl || '', photo: t.ticket.photo || '', entry: t.ticket.entry } : null,
       })),
+      tons: { plannedTons: tons.plannedTons, actualTons: tons.actualTons, tickets: tons.tickets, tonsSource: tons.tonsSource },
+      photoUploadAvailable: supabaseEnabled,
       poNumber: po.poNumber || '—',
       customer: po.customer || '',
       jobName: po.job || po.customer || '',
@@ -2277,6 +2564,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     }
     const truck = driverRoster().find(t => t.id === s.truckId);   // DRIVER, not vehicle
     const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
+    const trailer = s.trailerId ? (store.trailers || []).find(t => t.id === s.trailerId && t.active !== false) : null;
     console.log(`[create-PO] Creating load: truckId="${s.truckId}", material="${s.material}", loads=${s.loadsAssigned}, driver="${truck?.label || '(unassigned)'}", vendor="${vendor?.name || '(none)'}"`);
 
     // Pricing snapshots — locked at PO creation
@@ -2306,9 +2594,11 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       // any day, and silently assuming one would put the wrong truck number in
       // front of the driver. Unset until the dispatcher picks.
       truckUnitId: s.truckUnitId || null,
+      trailerId: trailer ? trailer.id : null,
       deliveryDate: newPo.deliveryDate,
       status: s.truckId ? 'active' : 'unassigned',
       timestamps: {},
+      trips: [],
       gps: {},
       pod: { signedBy: '', signature: '', signedAt: '' },
       ticketImage: '',
@@ -2494,6 +2784,13 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     const updated = { ...l, ...req.body, id: l.id, poId: l.poId };
     let auditAction = 'updated-load';
     let auditDetails = { changes: Object.keys(req.body) };
+    if (req.body.trailerId !== undefined) {
+      const tr = req.body.trailerId ? (store.trailers || []).find(x => x.id === req.body.trailerId) : null;
+      if (req.body.trailerId && !tr) return res.status(400).json({ error: 'Unknown trailer' });
+      if (tr && tr.active === false) return res.status(400).json({ error: `Trailer ${tr.number} is deactivated` });
+      updated.trailerId = tr ? tr.id : null;
+      auditDetails.trailer = { from: (getTrailerForLoad(l) || {}).number || 'none', to: tr ? tr.number : 'none' };
+    }
     if (req.body.vendorId !== undefined && req.body.vendorId !== l.vendorId) {
       // Same rule as /assign: a new yard wins over the current-trip mirror
       // and re-prices the load. Trip history is untouched.
@@ -2668,22 +2965,50 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     stampBoth('start');
   } else if (action === 'arrived-pickup') {
     if (!trip.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
+    if (trip.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Already marked arrived at pickup' });
+    const yard = req.body.yardId ? store.vendors.find(y => y.id === req.body.yardId) : null;
+    // Freight segment decision first — nothing is stamped if the driver has
+    // to enter an odometer or finish another customer's freight.
+    const poForSeg = store.pos.find(p => p.id === l.poId) || {};
+    const dec = segmentDecision(u, l, poForSeg, yard, req.body || {});
+    if (dec.status) return res.status(dec.status).json({ success: false, error: dec.error, code: dec.code, segment: dec.segment, preview: dec.preview, floor: dec.floor });
     stampBoth('arrivedPickup');
-    if (req.body.yardId) {
-      const yard = store.vendors.find(y => y.id === req.body.yardId);
-      if (yard) {
-        l.actualYardId   = yard.id;
-        l.actualYardName = yard.name;
-        // Stamp the yard onto this trip too so per-trip analytics know which
-        // yard each trip used (a driver could rotate yards across trips).
-        trip.actualYardId   = yard.id;
-        trip.actualYardName = yard.name;
-      }
+    if (yard) {
+      l.actualYardId   = yard.id;
+      l.actualYardName = yard.name;
+      // Stamp the yard onto this trip too so per-trip analytics know which
+      // yard each trip used (a driver could rotate yards across trips).
+      trip.actualYardId   = yard.id;
+      trip.actualYardName = yard.name;
+    }
+    if (dec.join) {
+      joinSegment(dec.join, l, yard);
+      l.freightSegmentId = dec.join.id; trip.freightSegmentId = dec.join.id;
+    } else if (dec.open) {
+      const seg = openSegment(dec.shift, l, poForSeg, yard, { odometer: dec.odometer, by: u, at: iso });
+      l.freightSegmentId = seg.id; trip.freightSegmentId = seg.id;
+      logAction(u, 'opened-freight-segment', seg.id, { customer: seg.customer, origin: seg.originName, destination: seg.destination.label, odStart: seg.odStart, loadId: l.id });
     }
     // Fired after the yard is stamped so the customer is told the correct one
     notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'arrivedPickup', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'loaded') {
     if (!trip.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Must mark arrived at pickup first' });
+    if (trip.timestamps?.loadedAt) return res.status(400).json({ error: 'This load is already marked loaded' });
+    // The ticket is captured here, at the scale, once. Number + source always;
+    // net tons and a photo for a supplier scale ticket. Never twice: the
+    // number is checked against every trip on every load, live or archived.
+    const built = buildTicket(req.body.ticket, { by: u.username });
+    if (built.error) return res.status(400).json({ error: built.error });
+    const owner = findTicketOwner(built.ticket.number, { loadId: l.id, tripNum: trip.tripNum });
+    if (owner) return res.status(409).json({ error: ticketOwnerMessage(built.ticket.number, owner), ownerLoadId: owner.load.id, ownerTripNum: owner.trip.tripNum });
+    trip.ticket = built.ticket;
+    // The load-level ticket photo (approval gate, billing attachment, board
+    // "missing ticket" flag) is satisfied by the first trip photo — the
+    // driver is not asked for the same photo again at the end of the day.
+    if (!l.ticketImage && !l.ticketImageUrl) {
+      if (built.ticket.photoUrl) { l.ticketImageUrl = built.ticket.photoUrl; l.ticketImageAt = iso; }
+      else if (built.ticket.photo) { l.ticketImage = built.ticket.photo; l.ticketImageAt = iso; }
+    }
     stampBoth('loadedAt');
     notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'loaded', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'arrived-jobsite') {
@@ -2750,6 +3075,617 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   res.json({ success: true, load: l });
 });
 
+// ── SHIFTS — the driver's whole workday ─────────────────────────────────────
+// One record per driver per day: truck, trailer, start/end time and odometer,
+// breaks, truck changes, the pre-trip inspection with signature. Everything
+// the driver does between Start day and End day belongs to it. Daily miles
+// come from here and only here; nothing bills from a shift.
+const INSPECTION_ITEMS = [
+  'Brakes', 'Tires and wheels', 'Lights and reflectors', 'Steering', 'Horn', 'Mirrors',
+  'Windshield and wipers', 'Coupling / fifth wheel', 'Trailer and tarp', 'Fluid leaks', 'Emergency equipment',
+];
+function openShiftFor(driverId) { return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open') || null; }
+function openShiftOnTruck(truckId) { return (store.shifts || []).find(s => s.truckId === truckId && s.status === 'open') || null; }
+function openShiftWithTrailer(trailerId, exceptShiftId) { return (store.shifts || []).find(s => s.trailerId === trailerId && s.status === 'open' && s.id !== exceptShiftId) || null; }
+function parseOdometer(v) {
+  if (v === '' || v == null) return null;
+  const n = Number(String(v).replace(/,/g, ''));
+  if (!isFinite(n) || n < 0 || n > 9999999 || Math.round(n) !== n) return NaN;
+  return n;
+}
+function fmtClock(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: OPERATING_TZ });
+}
+// Odometer legs of a shift: one per vehicle. A truck change ends one leg at
+// the old truck's reading and starts the next at the new truck's reading, so
+// readings from two vehicles are never subtracted from each other.
+function shiftLegs(s) {
+  const legs = [];
+  let cur = { truckId: s.startTruckId || s.truckId, truckNum: s.startTruckNum || s.truckNum, from: s.startOdometer, fromAt: s.startAt, to: null, toAt: '' };
+  for (const e of (s.events || [])) {
+    if (e.type !== 'truck-change') continue;
+    cur.to = e.fromOdometer; cur.toAt = e.at; legs.push(cur);
+    cur = { truckId: e.toTruckId, truckNum: e.toTruckNum, from: e.toOdometer, fromAt: e.at, to: null, toAt: '' };
+  }
+  if (s.status === 'closed') { cur.to = s.endOdometer; cur.toAt = s.endAt; }
+  legs.push(cur);
+  return legs;
+}
+function shiftBreakMinutes(s, now = Date.now()) {
+  return Math.round((s.breaks || []).reduce((sum, b) => {
+    const a = Date.parse(b.startAt), z = b.endAt ? Date.parse(b.endAt) : now;
+    return sum + Math.max(0, (z - a) / 60000);
+  }, 0));
+}
+// Everything a Daily Log needs, derived on every read, never stored.
+function shiftDerived(s) {
+  const legs = shiftLegs(s);
+  const dailyMiles = s.status === 'closed'
+    ? legs.reduce((sum, l) => sum + (l.to != null && l.from != null ? Math.max(0, l.to - l.from) : 0), 0)
+    : null;
+  const breakMinutes = shiftBreakMinutes(s);
+  const spanMinutes = s.endAt ? Math.round((Date.parse(s.endAt) - Date.parse(s.startAt)) / 60000) : null;
+  const workMinutes = spanMinutes == null ? null : Math.max(0, spanMinutes - breakMinutes);
+  const segs = segmentsForShift(s).map(segmentPublic);
+  const closedSegs = segs.filter(x => x.status === 'closed');
+  const billableMiles = closedSegs.reduce((sum, x) => sum + (x.billableMiles || 0), 0);
+  const billableMinutes = closedSegs.reduce((sum, x) => sum + (x.billableMinutes || 0), 0);
+  return {
+    legs, dailyMiles, breakMinutes, spanMinutes, workMinutes,
+    billableMiles, billableMinutes,
+    // Non-billable is a remainder, never a stored figure.
+    nonBillableMiles: dailyMiles == null ? null : Math.max(0, dailyMiles - billableMiles),
+    openBreak: (s.breaks || []).some(b => !b.endAt),
+    openSegment: segs.find(x => x.status === 'open') || null,
+    segments: segs,
+  };
+}
+function shiftPublic(s) {
+  if (!s) return null;
+  const { inspection, ...rest } = s;
+  return {
+    ...rest,
+    inspection: inspection ? { ...inspection, signature: inspection.signature ? '[stored]' : '' , hasSignature: !!(inspection.signatureUrl || inspection.signature) } : null,
+    ...shiftDerived(s),
+  };
+}
+// Filled in by the freight-segment layer below; the shift layer only asks.
+function segmentsForShift(s) { return (store.freightSegments || []).filter(x => x.shiftId === s.id); }
+// ── FREIGHT SEGMENTS — one continuous billable freight operation ─────────────
+// A segment is the customer-billable window inside a shift: origin yard →
+// destination jobsite, time start/end, odometer start/end, holding one or
+// more loads and their trips. Billable miles and hours live here ONCE. Loads
+// keep tons. VBT → yard repositioning is outside every segment and can never
+// reach an invoice. A segment closes only by an explicit action; "Delivered"
+// on a load does not close it. Loads without a segment behave as before.
+function destinationKey(po) { return [(po.address || ''), (po.city || '')].map(x => String(x).toLowerCase().trim()).join('|'); }
+function destinationLabelOf(po) { return [po.address, po.city].filter(Boolean).join(', ') || po.job || po.customer || '—'; }
+function segmentKeyFor(po) { return `${customerKey(po.customer)}#${destinationKey(po)}`; }
+function segmentById(id) { return (store.freightSegments || []).find(x => x.id === id) || null; }
+function openSegmentForShift(s) { return segmentsForShift(s).find(x => x.status === 'open') || null; }
+function segmentsForLoad(l) { return (store.freightSegments || []).filter(x => (x.loadIds || []).includes(l.id)); }
+function segmentTrips(seg) {
+  const out = [];
+  for (const lid of seg.loadIds || []) {
+    const l = store.loads.find(x => x.id === lid); if (!l) continue;
+    for (const t of (l.trips || [])) if (t.freightSegmentId === seg.id) out.push({ load: l, trip: t });
+  }
+  return out;
+}
+// Locked = closed and every load in it approved (voided loads do not hold it
+// open, but at least one approved load is needed). Derived, never stored,
+// exactly like a load's own lock.
+function segmentLocked(seg) {
+  if (seg.status !== 'closed') return false;
+  const loads = (seg.loadIds || []).map(id => store.loads.find(l => l.id === id)).filter(Boolean);
+  // A voided load means a correction is under way: the segment opens for
+  // correction with it, and locks again when the load is restored or re-run.
+  return loads.length > 0 && loads.every(l => l.approvalStatus === 'approved' && !l.voided);
+}
+function segmentPublic(seg) {
+  if (!seg) return null;
+  const trips = segmentTrips(seg);
+  const loads = (seg.loadIds || []).map(id => store.loads.find(l => l.id === id)).filter(Boolean);
+  const tons = loads.reduce((acc, l) => { const t = loadTons(l); acc.actual += t.actualTons; acc.planned += t.plannedTons || 0; return acc; }, { actual: 0, planned: 0 });
+  const tripTons = trips.reduce((s, x) => s + (x.trip.ticket && x.trip.ticket.netTons != null ? Number(x.trip.ticket.netTons) : 0), 0);
+  const billableMinutes = seg.timeEnd ? Math.max(0, Math.round((Date.parse(seg.timeEnd) - Date.parse(seg.timeStart)) / 60000)) : null;
+  return {
+    ...seg,
+    destinationLabel: seg.destination ? seg.destination.label : '',
+    billableMiles: seg.odEnd == null ? null : Math.max(0, seg.odEnd - seg.odStart),
+    billableMinutes,
+    billableHours: billableMinutes == null ? null : Math.round(billableMinutes / 60 * 100) / 100,
+    tripCount: trips.length,
+    tripsDelivered: trips.filter(x => x.trip.timestamps && x.trip.timestamps.completed).length,
+    actualTons: Math.round(tripTons * 100) / 100,
+    loadActualTons: Math.round(tons.actual * 100) / 100,
+    plannedTons: Math.round(tons.planned * 100) / 100,
+    ticketNumbers: trips.map(x => x.trip.ticket && x.trip.ticket.number).filter(Boolean),
+    poNumbers: [...new Set(loads.map(l => (store.pos.find(p => p.id === l.poId) || {}).poNumber).filter(Boolean))],
+    locked: segmentLocked(seg),
+    approvedLoads: loads.filter(l => l.approvalStatus === 'approved' && !l.voided).length,
+  };
+}
+// Odometer window validation against the shift and its other segments. A
+// segment belongs to one vehicle: its readings must fall inside the current
+// odometer leg of the shift's truck.
+function validateSegmentWindow(shift, seg, { odStart, odEnd }, excludeId) {
+  const legs = shiftLegs(shift);
+  const leg = legs.find(lg => lg.truckId === seg.truckId && (lg.to == null || (odStart >= lg.from && odStart <= lg.to))) || legs[legs.length - 1];
+  if (odStart < leg.from) return `Odometer ${odStart.toLocaleString()} is below ${seg.truckNum}'s reading at the start of this leg (${leg.from.toLocaleString()})`;
+  if (leg.to != null && odEnd != null && odEnd > leg.to) return `Odometer ${odEnd.toLocaleString()} is beyond ${seg.truckNum}'s final reading on this leg (${leg.to.toLocaleString()})`;
+  if (odEnd != null && odEnd < odStart) return `The ending odometer (${odEnd.toLocaleString()}) cannot be below the starting odometer (${odStart.toLocaleString()})`;
+  for (const other of segmentsForShift(shift)) {
+    if (other.id === (excludeId || seg.id) || other.odEnd == null) continue;
+    const a = odStart, z = odEnd == null ? odStart : odEnd;
+    if (a < other.odEnd && z > other.odStart) return `Overlaps the ${other.customer} freight (${other.odStart.toLocaleString()} → ${other.odEnd.toLocaleString()})`;
+    if (odEnd == null && a < other.odEnd) return `Odometer ${a.toLocaleString()} is inside the closed ${other.customer} freight (${other.odStart.toLocaleString()} → ${other.odEnd.toLocaleString()})`;
+  }
+  return null;
+}
+function openSegment(shift, l, po, yard, { odometer, by, at }) {
+  const seg = {
+    id: genId('FS'), shiftId: shift.id, date: shift.date,
+    driverId: shift.driverId, driverName: shift.driverName,
+    truckId: shift.truckId, truckNum: shift.truckNum, trailerId: shift.trailerId, trailerNum: shift.trailerNum,
+    customer: po.customer || '', key: segmentKeyFor(po),
+    destination: { poId: po.id, address: po.address || '', city: po.city || '', label: destinationLabelOf(po), geo: geoPublic(po.geo) },
+    originYardId: yard ? yard.id : null, originName: yard ? yard.name : '',
+    originYards: yard ? [{ id: yard.id, name: yard.name }] : [],
+    timeStart: at, odStart: odometer, timeEnd: '', odEnd: null,
+    loadIds: [l.id], status: 'open',
+    openedBy: by.username, closedBy: '', closedAt: '', closeReason: '', edits: [],
+    truckMismatch: l.truckUnitId && l.truckUnitId !== shift.truckId ? { loadTruckId: l.truckUnitId, shiftTruckId: shift.truckId } : null,
+  };
+  store.freightSegments.push(seg);
+  return seg;
+}
+function joinSegment(seg, l, yard) {
+  if (!seg.loadIds.includes(l.id)) seg.loadIds.push(l.id);
+  if (yard && !seg.originYards.some(y => y.id === yard.id)) seg.originYards.push({ id: yard.id, name: yard.name });
+}
+// Explicit close. Driver: own segment, no trip still en route. Manager: with
+// a reason, may close with a trip en route (the trip keeps its stamps).
+function closeSegment(seg, { odometer, by, reason, at, forced }) {
+  if (seg.status !== 'open') return { error: 'This freight segment is already closed' };
+  const shift = (store.shifts || []).find(s => s.id === seg.shiftId);
+  const odo = parseOdometer(odometer);
+  if (odo == null || Number.isNaN(odo)) return { error: 'Enter the ending odometer as a whole number' };
+  const bad = shift ? validateSegmentWindow(shift, seg, { odStart: seg.odStart, odEnd: odo }) : (odo < seg.odStart ? 'Ending odometer below the starting odometer' : null);
+  if (bad) return { error: bad };
+  const enRoute = segmentTrips(seg).filter(x => !x.trip.timestamps?.completed);
+  if (enRoute.length && !forced) return { error: `Load ${enRoute[0].trip.tripNum} of ${enRoute[0].load.loadsAssigned} on PO ${(store.pos.find(p => p.id === enRoute[0].load.poId) || {}).poNumber || enRoute[0].load.id} is still en route — confirm the drop before finishing the freight`, code: 'trip_en_route' };
+  seg.timeEnd = at || new Date().toISOString(); seg.odEnd = odo; seg.status = 'closed';
+  seg.closedBy = by.username; seg.closedAt = seg.timeEnd; seg.closeReason = reason || 'driver';
+  return { ok: true };
+}
+async function closeOpenSegmentForShift(shift, { odometer, by, reason, at }) {
+  const seg = openSegmentForShift(shift);
+  if (!seg) return null;
+  const r = closeSegment(seg, { odometer, by, reason, at, forced: true });
+  if (r.error) return { error: r.error };
+  logAction(by, 'closed-freight-segment', seg.id, { customer: seg.customer, odometer, reason, forced: true });
+  return seg;
+}
+// Called from the driver's "Arrived at pickup". Decides, BEFORE anything is
+// stamped, whether this trip joins the open segment, opens a new one (needs
+// an odometer), or must wait for another customer's freight to be finished.
+function segmentDecision(u, l, po, yard, body) {
+  const shift = openShiftFor(l.truckId);
+  if (!shift) return { none: true };                       // no day open: legacy path, no segment
+  const open = openSegmentForShift(shift);
+  const key = segmentKeyFor(po);
+  if (open && open.key === key) return { join: open, shift };
+  if (open) return { status: 409, code: 'segment_open', error: `Finish the ${open.customer} freight (${open.originName} → ${open.destination.label}) before starting ${po.customer || 'another customer'}'s`, segment: segmentPublic(open) };
+  const odo = parseOdometer(body.odometer);
+  const floor = Math.max(currentOdometerFloor(shift), ...segmentsForShift(shift).filter(x => x.odEnd != null).map(x => x.odEnd));
+  // A request for one more input, not a refusal: answered 200 with success:false
+  // so the phone's console stays clean and the app opens the odometer prompt.
+  if (odo == null) return { status: 200, code: 'odometer_required', error: `Starting freight for ${po.customer}: ${yard ? yard.name : 'pickup'} → ${destinationLabelOf(po)}. Enter the odometer reading now.`, preview: { customer: po.customer, originName: yard ? yard.name : '', destinationLabel: destinationLabelOf(po), floor, truckNum: shift.truckNum } };
+  if (Number.isNaN(odo)) return { status: 400, error: 'Odometer must be a whole number' };
+  const probe = { id: '__new__', truckId: shift.truckId, truckNum: shift.truckNum, odStart: odo };
+  const bad = validateSegmentWindow(shift, probe, { odStart: odo, odEnd: null }, '__new__');
+  if (bad) return { status: 400, error: bad, code: 'odometer_invalid', floor };
+  return { open: true, shift, odometer: odo };
+}
+
+app.get('/api/freight-segments', reqMgr, (req, res) => {
+  const date = req.query.date || todayStr();
+  const list = (store.freightSegments || []).filter(x => (req.query.all ? true : x.date === date || x.status === 'open') && (!req.query.driverId || x.driverId === req.query.driverId));
+  res.json({ date, segments: list.map(segmentPublic) });
+});
+app.get('/api/freight-segments/:id', reqAuth, (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).json({ error: 'Freight segment not found' });
+  if (req.session.user.role === 'driver' && seg.driverId !== req.session.user.truckId) return res.status(403).json({ error: 'Not your freight' });
+  res.json({ segment: segmentPublic(seg), trips: segmentTrips(seg).map(({ load, trip }) => ({ loadId: load.id, material: load.material, tripNum: trip.tripNum, yardName: trip.actualYardName || '', ticket: trip.ticket ? { number: trip.ticket.number, netTons: trip.ticket.netTons, source: trip.ticket.source } : null, timestamps: trip.timestamps || {} })) });
+});
+// "Finish freight": the explicit close. Driver on their own segment; manager
+// with a reason (may close with a trip still en route).
+app.post('/api/freight-segments/:id/close', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).json({ error: 'Freight segment not found' });
+  if (u.role === 'driver' && seg.driverId !== u.truckId) return res.status(403).json({ error: 'Not your freight' });
+  const reason = String(req.body?.reason || '').trim();
+  if (u.role !== 'driver' && !reason) return res.status(400).json({ error: 'A reason is required to close freight on the driver\'s behalf' });
+  const r = closeSegment(seg, { odometer: req.body?.odometer, by: u, reason: u.role === 'driver' ? 'driver' : reason, forced: u.role !== 'driver' });
+  if (r.error) return res.status(400).json({ error: r.error, code: r.code });
+  logAction(u, 'closed-freight-segment', seg.id, { customer: seg.customer, odStart: seg.odStart, odEnd: seg.odEnd, billableMiles: seg.odEnd - seg.odStart, reason: seg.closeReason, forced: u.role !== 'driver' });
+  await saveData();
+  res.json({ success: true, segment: segmentPublic(seg) });
+});
+// Reopen (manager): only while nothing in it is approved and the day is still
+// open, so a driver can carry on with the same freight after a mistaken close.
+app.post('/api/freight-segments/:id/reopen', reqMgr, async (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).json({ error: 'Freight segment not found' });
+  if (seg.status !== 'closed') return res.status(400).json({ error: 'This freight segment is open' });
+  if (segmentLocked(seg)) return res.status(403).json({ error: 'This freight segment is locked — its loads are approved. Void a load to correct it.' });
+  const shift = (store.shifts || []).find(s => s.id === seg.shiftId);
+  if (!shift || shift.status !== 'open') return res.status(400).json({ error: 'The driver\'s day is closed; reopen is only possible during the day' });
+  if (openSegmentForShift(shift)) return res.status(400).json({ error: 'Another freight segment is open on this day' });
+  if (shift.truckId !== seg.truckId) return res.status(400).json({ error: 'The driver has changed truck since; this segment cannot be reopened' });
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required' });
+  seg.edits.push({ at: new Date().toISOString(), by: req.session.user.username, type: 'reopen', reason, before: { timeEnd: seg.timeEnd, odEnd: seg.odEnd } });
+  seg.timeEnd = ''; seg.odEnd = null; seg.status = 'open'; seg.closedBy = ''; seg.closedAt = ''; seg.closeReason = '';
+  logAction(req.session.user, 'reopened-freight-segment', seg.id, { customer: seg.customer, reason });
+  await saveData();
+  res.json({ success: true, segment: segmentPublic(seg) });
+});
+// Manager correction of the window (times, odometers) with a reason, until locked.
+app.put('/api/freight-segments/:id', reqMgr, async (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).json({ error: 'Freight segment not found' });
+  if (segmentLocked(seg)) return res.status(403).json({ error: 'This freight segment is locked — its loads are approved. Void a load to correct it.' });
+  const b = req.body || {};
+  const reason = String(b.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to change a freight segment' });
+  const next = { odStart: seg.odStart, odEnd: seg.odEnd, timeStart: seg.timeStart, timeEnd: seg.timeEnd };
+  if (b.odStart !== undefined) { next.odStart = parseOdometer(b.odStart); if (next.odStart == null || Number.isNaN(next.odStart)) return res.status(400).json({ error: 'odStart must be a whole number' }); }
+  if (b.odEnd !== undefined)   { next.odEnd = parseOdometer(b.odEnd); if (Number.isNaN(next.odEnd)) return res.status(400).json({ error: 'odEnd must be a whole number' }); }
+  for (const k of ['timeStart', 'timeEnd']) {
+    if (b[k] === undefined) continue;
+    const t = Date.parse(b[k]); if (!isFinite(t)) return res.status(400).json({ error: `${k} must be a date/time` });
+    next[k] = new Date(t).toISOString();
+  }
+  if (seg.status === 'closed' && (next.odEnd == null || !next.timeEnd)) return res.status(400).json({ error: 'A closed freight segment needs both an ending odometer and an ending time' });
+  if (next.timeEnd && Date.parse(next.timeEnd) <= Date.parse(next.timeStart)) return res.status(400).json({ error: 'The ending time must be after the starting time' });
+  const shift = (store.shifts || []).find(s => s.id === seg.shiftId);
+  const bad = shift ? validateSegmentWindow(shift, seg, { odStart: next.odStart, odEnd: next.odEnd }) : null;
+  if (bad) return res.status(400).json({ error: bad });
+  seg.edits.push({ at: new Date().toISOString(), by: req.session.user.username, type: 'edit', reason, before: { odStart: seg.odStart, odEnd: seg.odEnd, timeStart: seg.timeStart, timeEnd: seg.timeEnd }, after: next });
+  Object.assign(seg, next);
+  logAction(req.session.user, 'edited-freight-segment', seg.id, { customer: seg.customer, reason, after: next });
+  await saveData();
+  res.json({ success: true, segment: segmentPublic(seg) });
+});
+// The Freight Bill: rendered from the segment and its trips. DRAFT until locked.
+app.get('/api/freight-segments/:id/freight-bill', reqAuth, (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).send('Freight segment not found');
+  if (req.session.user.role === 'driver' && seg.driverId !== req.session.user.truckId) return res.status(403).send('Not your freight');
+  const p = segmentPublic(seg);
+  const trips = segmentTrips(seg);
+  const kv = (k, v) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(v == null || v === '' ? '—' : v)}</div></div>`;
+  const rows = trips.map(({ load, trip }, i) => {
+    const po = store.pos.find(x => x.id === load.poId) || {};
+    const ts = trip.timestamps || {};
+    return `<tr><td>${i + 1}</td><td>${esc(po.poNumber || '')}</td><td>${esc(load.material)}</td><td>${esc(trip.actualYardName || seg.originName)}</td><td>${esc(trip.ticket ? trip.ticket.number : '—')}${trip.ticket && trip.ticket.source === 'vbt' ? ' <small>(VBT)</small>' : ''}</td><td class="r">${trip.ticket && trip.ticket.netTons != null ? Number(trip.ticket.netTons).toFixed(2) : '—'}</td><td>${esc(ts.arrivedPickup || '')}</td><td>${esc(ts.loadedAt || '')}</td><td>${esc(ts.arrivedJobsite || '')}</td><td>${esc(ts.completed || '')}</td></tr>`;
+  }).join('');
+  const body = `<h1>Freight Bill / Log</h1><div class="sub">${esc(seg.date)} · <span class="stamp ${p.locked ? 'final' : 'draft'}">${p.locked ? 'FINAL — all loads approved' : (seg.status === 'open' ? 'DRAFT — freight still open' : 'DRAFT — awaiting approval')}</span></div>
+  <div class="grid">${kv('Customer', seg.customer)}${kv('PO', p.poNumbers.join(', '))}${kv('Origin', seg.originName + (seg.originYards.length > 1 ? ` (+ ${seg.originYards.slice(1).map(y => y.name).join(', ')})` : ''))}${kv('Destination', seg.destination.label)}
+    ${kv('Driver', seg.driverName)}${kv('Truck', seg.truckNum)}${kv('Trailer', seg.trailerNum)}
+    ${kv('Time start', fmtClock(seg.timeStart))}${kv('Time end', seg.timeEnd ? fmtClock(seg.timeEnd) : 'open')}${kv('Total hours', p.billableHours == null ? null : p.billableHours.toFixed(2))}
+    ${kv('OD start', seg.odStart.toLocaleString())}${kv('OD end', seg.odEnd == null ? 'open' : seg.odEnd.toLocaleString())}${kv('Billable miles', p.billableMiles == null ? null : p.billableMiles.toLocaleString())}</div>
+  <h2>Loads</h2><table><tr><th>#</th><th>PO</th><th>Material</th><th>Pickup yard</th><th>Ticket</th><th class="r">Net tons</th><th>At yard</th><th>Loaded</th><th>At job</th><th>Delivered</th></tr>${rows}
+    <tr class="tot"><td colspan="5">${trips.length} load${trips.length === 1 ? '' : 's'} · ${p.ticketNumbers.length} ticket${p.ticketNumbers.length === 1 ? '' : 's'}</td><td class="r">${p.actualTons.toFixed(2)}</td><td colspan="4">actual tons (planned ${p.plannedTons.toFixed(2)})</td></tr></table>
+  ${seg.truckMismatch ? `<div class="block" style="border-color:#c60">Note: the load was dispatched on a different truck than the driver's day (${esc(((store.trucks || []).find(t => t.id === seg.truckMismatch.loadTruckId) || {}).truckNum || seg.truckMismatch.loadTruckId)}); odometer readings are from ${esc(seg.truckNum)}.</div>` : ''}
+  ${(seg.edits || []).length ? `<h2>Corrections</h2><table>${seg.edits.map(e => `<tr><td>${esc(fmtClock(e.at))}</td><td>${esc(e.by)}</td><td>${esc(e.type)}</td><td>${esc(e.reason)}</td></tr>`).join('')}</table>` : ''}
+  <div class="foot">Closed ${seg.closedAt ? esc(fmtClock(seg.closedAt)) + ' by ' + esc(seg.closedBy) + (seg.closeReason && seg.closeReason !== 'driver' ? ' — ' + esc(seg.closeReason) : '') : 'not yet'} · Billable time and miles are this segment's own and are never split across its loads.</div>`;
+  res.type('html').send(printPage(`Freight Bill ${seg.date} ${seg.customer}`, body, { draft: !p.locked }));
+});
+function shiftOwnedBy(s, u) { return u.role !== 'driver' || s.driverId === u.truckId; }
+function currentOdometerFloor(s) {
+  const legs = shiftLegs(s); return legs[legs.length - 1].from;
+}
+async function storeSignature(dataUrl, ownerId) {
+  if (!dataUrl) return { url: '', inline: '' };
+  if (/^https?:\/\//.test(dataUrl)) return { url: dataUrl, inline: '' };
+  if (!String(dataUrl).startsWith('data:image/')) return { error: 'Signature must be an image' };
+  if (supabaseEnabled) {
+    try { return { url: await uploadPhoto('signature', dataUrl, ownerId), inline: '' }; }
+    catch (e) { console.error('[shift] signature upload failed, keeping inline:', e.message); }
+  }
+  return { url: '', inline: dataUrl };
+}
+
+// What the driver's Start day screen needs: the open shift if any, trucks with
+// their last reading, trailers, and the driver's usual truck/trailer.
+app.get('/api/shifts/current', reqAuth, (req, res) => {
+  const u = req.session.user;
+  const driverId = u.role === 'driver' ? u.truckId : String(req.query.driverId || '');
+  if (!driverId) return res.status(400).json({ error: 'driverId required' });
+  const d = rosterDriver(driverId);
+  const shift = openShiftFor(driverId);
+  const trucks = (store.trucks || []).filter(t => t.active !== false).map(t => ({
+    id: t.id, truckNum: t.truckNum, type: t.type || '', status: t.status || 'available', lastOdometer: t.mileage == null ? null : t.mileage,
+    inUseBy: (openShiftOnTruck(t.id) || {}).driverName || '',
+  }));
+  const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({ id: t.id, number: t.number, type: t.type || '', status: t.status || 'available', defaultTruckId: t.defaultTruckId || null }));
+  const usualTruckId = d ? d.defaultTruckId || null : null;
+  const usualTrailer = usualTruckId ? trailers.find(t => t.defaultTruckId === usualTruckId) : null;
+  res.json({
+    shift: shiftPublic(shift), inspectionItems: INSPECTION_ITEMS, trucks, trailers,
+    defaults: { truckId: usualTruckId, trailerId: usualTrailer ? usualTrailer.id : null },
+    lastShift: (() => { const prev = (store.shifts || []).filter(s => s.driverId === driverId && s.status === 'closed').sort((a, b) => (b.endAt || '').localeCompare(a.endAt || ''))[0]; if (!prev) return null; const pd = shiftDerived(prev); return { id: prev.id, truckId: prev.truckId, trailerId: prev.trailerId, truckNum: prev.truckNum, trailerNum: prev.trailerNum, date: prev.date, endAt: prev.endAt, endOdometer: prev.endOdometer, dailyMiles: pd.dailyMiles, billableMiles: pd.billableMiles, closedBy: prev.closedBy }; })(),
+    today: todayStr(),
+  });
+});
+
+app.post('/api/shifts/start', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  if (u.role !== 'driver') return res.status(403).json({ error: 'Drivers start their own day' });
+  const b = req.body || {};
+  const existing = openShiftFor(u.truckId);
+  if (existing) return res.status(409).json({ error: `Your day is already open (started ${fmtClock(existing.startAt)} on ${existing.truckNum})`, code: 'shift_open', shift: shiftPublic(existing) });
+  const truck = (store.trucks || []).find(t => t.id === b.truckId);
+  if (!truck) return res.status(400).json({ error: 'Pick the truck you are driving' });
+  if (truck.active === false) return res.status(400).json({ error: `${truck.truckNum} is deactivated` });
+  if (truck.status === 'maintenance' || truck.status === 'out-of-service') return res.status(400).json({ error: `${truck.truckNum} is ${truck.status}` });
+  const onTruck = openShiftOnTruck(truck.id);
+  if (onTruck) return res.status(409).json({ error: `${truck.truckNum} is already on ${onTruck.driverName}'s open day`, code: 'truck_in_use' });
+  let trailer = null;
+  if (b.trailerId) {
+    trailer = (store.trailers || []).find(t => t.id === b.trailerId);
+    if (!trailer) return res.status(400).json({ error: 'Unknown trailer' });
+    if (trailer.active === false) return res.status(400).json({ error: `Trailer ${trailer.number} is deactivated` });
+    const onTrailer = openShiftWithTrailer(trailer.id);
+    if (onTrailer) return res.status(409).json({ error: `Trailer ${trailer.number} is already on ${onTrailer.driverName}'s open day (${onTrailer.truckNum})`, code: 'trailer_in_use' });
+  }
+  const odo = parseOdometer(b.odometer);
+  if (odo == null || Number.isNaN(odo)) return res.status(400).json({ error: 'Enter the starting odometer as a whole number' });
+  if (truck.mileage != null && odo < truck.mileage && !b.acceptLowerOdometer) {
+    return res.status(400).json({ error: `${truck.truckNum} last read ${truck.mileage.toLocaleString()} — the starting odometer cannot be lower. Check the reading, or confirm it if the last one was wrong.`, code: 'odometer_below_last', lastOdometer: truck.mileage });
+  }
+  const insp = b.inspection || {};
+  if (typeof insp.satisfactory !== 'boolean') return res.status(400).json({ error: 'Complete the pre-trip inspection: all satisfactory, or list the defects' });
+  const defects = Array.isArray(insp.defects) ? insp.defects.map(x => String(x).trim()).filter(Boolean) : [];
+  if (!insp.satisfactory && !defects.length) return res.status(400).json({ error: 'List the defect(s) found, or mark the inspection satisfactory' });
+  const sig = await storeSignature(b.signature || b.signatureUrl, 'shift');
+  if (sig.error) return res.status(400).json({ error: sig.error });
+  if (!sig.url && !sig.inline) return res.status(400).json({ error: 'Sign the inspection to start your day' });
+  const now = new Date().toISOString();
+  const d = rosterDriver(u.truckId);
+  const shift = {
+    id: genId('SH'), date: todayStr(),
+    driverId: u.truckId, driverName: (d && d.name) || u.displayName || u.username,
+    truckId: truck.id, truckNum: truck.truckNum, startTruckId: truck.id, startTruckNum: truck.truckNum,
+    trailerId: trailer ? trailer.id : null, trailerNum: trailer ? trailer.number : '',
+    startAt: now, startOdometer: odo, endAt: '', endOdometer: null,
+    status: 'open', breaks: [], events: [],
+    inspection: { items: INSPECTION_ITEMS, satisfactory: insp.satisfactory, defects, remarks: String(insp.remarks || '').trim(), signatureUrl: sig.url, signature: sig.inline, at: now },
+    notes: '', closedBy: '', closedAt: '', closeReason: '',
+  };
+  if (truck.mileage != null && odo < truck.mileage) shift.events.push({ type: 'odometer-below-last', at: now, truckId: truck.id, lastOdometer: truck.mileage, odometer: odo });
+  truck.mileage = odo;
+  store.shifts.push(shift);
+  logAction(u, 'started-shift', shift.id, { truck: truck.truckNum, trailer: shift.trailerNum, odometer: odo, satisfactory: insp.satisfactory, defects });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(shift) });
+});
+
+app.post('/api/shifts/:id/break', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (!shiftOwnedBy(s, u)) return res.status(403).json({ error: 'Not your day' });
+  if (s.status !== 'open') return res.status(400).json({ error: 'This day is closed' });
+  const open = (s.breaks || []).find(b => !b.endAt);
+  const now = new Date().toISOString();
+  if (req.body?.action === 'start') {
+    if (open) return res.status(400).json({ error: 'A break is already running' });
+    s.breaks.push({ startAt: now, endAt: '' });
+  } else if (req.body?.action === 'end') {
+    if (!open) return res.status(400).json({ error: 'No break is running' });
+    open.endAt = now;
+  } else return res.status(400).json({ error: 'action must be start or end' });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(s) });
+});
+
+// A truck change mid-day: the old truck's final reading and the new truck's
+// first reading are both captured, and the open freight segment (if any) is
+// closed at the old reading — one vehicle per segment, always.
+app.post('/api/shifts/:id/truck-change', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (!shiftOwnedBy(s, u)) return res.status(403).json({ error: 'Not your day' });
+  if (s.status !== 'open') return res.status(400).json({ error: 'This day is closed' });
+  const b = req.body || {};
+  const to = (store.trucks || []).find(t => t.id === b.toTruckId);
+  if (!to) return res.status(400).json({ error: 'Pick the truck you are changing to' });
+  if (to.id === s.truckId) return res.status(400).json({ error: `You are already on ${to.truckNum}` });
+  if (to.active === false || to.status === 'maintenance' || to.status === 'out-of-service') return res.status(400).json({ error: `${to.truckNum} is not available` });
+  const onTruck = openShiftOnTruck(to.id);
+  if (onTruck) return res.status(409).json({ error: `${to.truckNum} is on ${onTruck.driverName}'s open day`, code: 'truck_in_use' });
+  const fromOdo = parseOdometer(b.fromOdometer), toOdo = parseOdometer(b.toOdometer);
+  if (fromOdo == null || Number.isNaN(fromOdo)) return res.status(400).json({ error: `Enter ${s.truckNum}'s final odometer` });
+  if (toOdo == null || Number.isNaN(toOdo)) return res.status(400).json({ error: `Enter ${to.truckNum}'s starting odometer` });
+  const floor = currentOdometerFloor(s);
+  if (fromOdo < floor) return res.status(400).json({ error: `${s.truckNum}'s final reading cannot be below its starting reading ${floor.toLocaleString()}` });
+  if (to.mileage != null && toOdo < to.mileage && !b.acceptLowerOdometer) return res.status(400).json({ error: `${to.truckNum} last read ${to.mileage.toLocaleString()} — the starting odometer cannot be lower`, code: 'odometer_below_last', lastOdometer: to.mileage });
+  let trailer = null;
+  if (b.toTrailerId !== undefined && b.toTrailerId) {
+    trailer = (store.trailers || []).find(t => t.id === b.toTrailerId);
+    if (!trailer || trailer.active === false) return res.status(400).json({ error: 'Unknown or deactivated trailer' });
+    const onTrailer = openShiftWithTrailer(trailer.id, s.id);
+    if (onTrailer) return res.status(409).json({ error: `Trailer ${trailer.number} is already on ${onTrailer.driverName}'s open day (${onTrailer.truckNum})`, code: 'trailer_in_use' });
+  }
+  const now = new Date().toISOString();
+  const closed = await closeOpenSegmentForShift(s, { odometer: fromOdo, by: u, reason: 'truck-change', at: now });
+  if (closed && closed.error) return res.status(400).json({ error: closed.error });
+  const from = (store.trucks || []).find(t => t.id === s.truckId);
+  if (from) from.mileage = fromOdo;
+  to.mileage = toOdo;
+  s.events.push({ type: 'truck-change', at: now, fromTruckId: s.truckId, fromTruckNum: s.truckNum, fromOdometer: fromOdo, toTruckId: to.id, toTruckNum: to.truckNum, toOdometer: toOdo,
+                  fromTrailerId: s.trailerId, toTrailerId: b.toTrailerId === undefined ? s.trailerId : (trailer ? trailer.id : null), closedSegmentId: closed ? closed.id : null });
+  s.truckId = to.id; s.truckNum = to.truckNum;
+  if (b.toTrailerId !== undefined) { s.trailerId = trailer ? trailer.id : null; s.trailerNum = trailer ? trailer.number : ''; }
+  logAction(u, 'changed-truck', s.id, { from: from ? from.truckNum : s.truckId, fromOdometer: fromOdo, to: to.truckNum, toOdometer: toOdo, closedSegmentId: closed ? closed.id : null });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(s) });
+});
+
+// End day. Never force-closes freight: an open segment answers 409 with its
+// details so the driver finishes the freight first. A manager may close with
+// a logged reason through /close.
+async function endShift(s, { odometer, by, reason, signature, forced }) {
+  const odo = parseOdometer(odometer);
+  if (odo == null || Number.isNaN(odo)) return { error: 'Enter the ending odometer as a whole number' };
+  const floor = currentOdometerFloor(s);
+  if (odo < floor) return { error: `The ending odometer cannot be below ${s.truckNum}'s starting reading ${floor.toLocaleString()}` };
+  // The day cannot end before its freight did: a closed segment on the
+  // current truck fixes a floor, otherwise daily miles would fall below
+  // billable miles.
+  const lastFreight = segmentsForShift(s).filter(x => x.status === 'closed' && x.truckId === s.truckId && x.odEnd != null).sort((a, b) => b.odEnd - a.odEnd)[0];
+  if (lastFreight && odo < lastFreight.odEnd) return { error: `The ${lastFreight.customer} freight ended at ${lastFreight.odEnd.toLocaleString()} — the day's ending odometer cannot be lower` };
+  const openSeg = segmentsForShift(s).find(x => x.status === 'open');
+  if (openSeg && !forced) return { error: `Freight segment still open — finish the ${openSeg.customer} freight (${openSeg.originName} → ${openSeg.destinationLabel}) before ending your day`, code: 'segment_open', segment: segmentPublic(openSeg), status: 409 };
+  const now = new Date().toISOString();
+  if (openSeg && forced) {
+    const closed = await closeOpenSegmentForShift(s, { odometer: odo, by, reason: 'end-of-day-manager', at: now });
+    if (closed && closed.error) return { error: closed.error };
+  }
+  (s.breaks || []).forEach(b => { if (!b.endAt) b.endAt = now; });
+  if (signature) { const sig = await storeSignature(signature, 'shift'); if (!sig.error) { s.endSignatureUrl = sig.url; s.endSignature = sig.inline; } }
+  s.endAt = now; s.endOdometer = odo; s.status = 'closed';
+  s.closedBy = by.username; s.closedAt = now; s.closeReason = reason || (forced ? 'closed by manager' : 'driver');
+  const truck = (store.trucks || []).find(t => t.id === s.truckId);
+  if (truck) truck.mileage = odo;
+  return { ok: true };
+}
+app.post('/api/shifts/:id/end', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (!shiftOwnedBy(s, u)) return res.status(403).json({ error: 'Not your day' });
+  if (s.status !== 'open') return res.status(400).json({ error: 'This day is already closed' });
+  const r = await endShift(s, { odometer: req.body?.odometer, by: u, signature: req.body?.signature, forced: false });
+  if (r.error) return res.status(r.status || 400).json({ error: r.error, code: r.code, segment: r.segment });
+  logAction(u, 'ended-shift', s.id, { odometer: s.endOdometer, dailyMiles: shiftDerived(s).dailyMiles });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(s) });
+});
+app.post('/api/shifts/:id/close', reqMgr, async (req, res) => {
+  const u = req.session.user;
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (s.status !== 'open') return res.status(400).json({ error: 'This day is already closed' });
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to close a driver\'s day for them' });
+  const r = await endShift(s, { odometer: req.body?.odometer, by: u, reason, forced: true });
+  if (r.error) return res.status(r.status || 400).json({ error: r.error, code: r.code });
+  logAction(u, 'closed-shift-for-driver', s.id, { driver: s.driverName, odometer: s.endOdometer, reason });
+  await saveData();
+  res.json({ success: true, shift: shiftPublic(s) });
+});
+app.get('/api/shifts', reqMgr, (req, res) => {
+  const date = req.query.date || todayStr();
+  let list = (store.shifts || []).filter(s => (req.query.all ? true : s.date === date) && (!req.query.driverId || s.driverId === req.query.driverId));
+  res.json({ date, shifts: list.map(shiftPublic) });
+});
+app.get('/api/shifts/:id', reqAuth, (req, res) => {
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Shift not found' });
+  if (!shiftOwnedBy(s, req.session.user)) return res.status(403).json({ error: 'Not your day' });
+  res.json({ shift: shiftPublic(s) });
+});
+
+// ── PRINT PAGES: Daily Log and Freight Bill ──────────────────────────────────
+// Rendered from the records on every request. No stored documents, no PDF.
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function printPage(title, body, { draft } = {}) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+ body{font:13px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111;margin:0;padding:24px;background:#fff}
+ h1{font-size:20px;margin:0 0 2px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#555;margin:18px 0 6px}
+ .sub{color:#555;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px 18px}
+ .k{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#666}.v{font-weight:700;font-variant-numeric:tabular-nums}
+ table{width:100%;border-collapse:collapse;margin-top:6px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #ddd;font-variant-numeric:tabular-nums}th{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#666}
+ td.r,th.r{text-align:right}.tot td{font-weight:700;border-top:2px solid #111}
+ .block{border:1px solid #ccc;border-radius:8px;padding:12px 14px;margin:10px 0}
+ .draft{position:fixed;top:40%;left:0;right:0;text-align:center;font-size:96px;font-weight:900;color:rgba(200,0,0,.12);transform:rotate(-20deg);pointer-events:none}
+ .stamp{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700}.stamp.draft{position:static;transform:none;font-size:11px;background:#fee;color:#b00;opacity:1}.stamp.final{background:#e8f7ee;color:#0a6b3a}
+ .foot{margin-top:24px;font-size:11px;color:#666}.sig img{max-height:70px;border:1px solid #ddd;border-radius:6px;background:#fff}
+ @media print{body{padding:0}.noprint{display:none}}
+</style></head><body>${draft ? '<div class="draft">DRAFT</div>' : ''}
+<div class="noprint" style="margin-bottom:12px"><button onclick="window.print()">Print</button></div>
+${body}<div class="foot">Valley Best Dispatch · generated ${esc(new Date().toLocaleString('en-US', { timeZone: OPERATING_TZ }))}</div></body></html>`;
+}
+const hm = (mins) => mins == null ? '—' : `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
+app.get('/api/shifts/:id/daily-log', reqAuth, (req, res) => {
+  const s = (store.shifts || []).find(x => x.id === req.params.id);
+  if (!s) return res.status(404).send('Shift not found');
+  if (!shiftOwnedBy(s, req.session.user)) return res.status(403).send('Not your day');
+  const d = shiftDerived(s);
+  const kv = (k, v) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(v == null || v === '' ? '—' : v)}</div></div>`;
+  const legs = d.legs.map(l => `<tr><td>${esc(l.truckNum)}</td><td>${esc(fmtClock(l.fromAt))}${l.toAt ? ' → ' + esc(fmtClock(l.toAt)) : ' → open'}</td><td class="r">${l.from == null ? '—' : l.from.toLocaleString()}</td><td class="r">${l.to == null ? '—' : l.to.toLocaleString()}</td><td class="r">${l.to != null && l.from != null ? (l.to - l.from).toLocaleString() : '—'}</td></tr>`).join('');
+  const segs = d.segments.map(x => `<div class="block"><b>${esc(x.customer)}</b> · ${esc(x.originName)} → ${esc(x.destinationLabel)} <span class="stamp ${x.status === 'closed' ? 'final' : 'draft'}">${x.status}</span>
+    <div class="grid" style="margin-top:6px">${kv('Time', `${fmtClock(x.timeStart)} → ${x.timeEnd ? fmtClock(x.timeEnd) : 'open'}`)}${kv('Billable hours', x.billableMinutes == null ? null : (x.billableMinutes / 60).toFixed(2))}${kv('Odometer', `${x.odStart.toLocaleString()} → ${x.odEnd == null ? 'open' : x.odEnd.toLocaleString()}`)}${kv('Billable miles', x.billableMiles == null ? null : x.billableMiles.toLocaleString())}${kv('Loads / trips', `${x.loadIds.length} / ${x.tripCount}`)}${kv('Actual tons', x.actualTons ? x.actualTons.toFixed(2) : null)}</div></div>`).join('') || '<div class="sub">No freight segments on this day.</div>';
+  const breaks = (s.breaks || []).map(b => `<tr><td>${esc(fmtClock(b.startAt))}</td><td>${b.endAt ? esc(fmtClock(b.endAt)) : 'open'}</td><td class="r">${b.endAt ? Math.round((Date.parse(b.endAt) - Date.parse(b.startAt)) / 60000) : '—'}</td></tr>`).join('');
+  const insp = s.inspection || {};
+  const body = `<h1>Daily Log — ${esc(s.driverName)}</h1><div class="sub">${esc(s.date)} · ${esc(s.startTruckNum || s.truckNum)}${s.trailerNum ? ' + trailer ' + esc(s.trailerNum) : ''} <span class="stamp ${s.status === 'closed' ? 'final' : 'draft'}">${s.status === 'closed' ? 'day closed' : 'day open'}</span></div>
+  <div class="grid">${kv('Shift start', fmtClock(s.startAt))}${kv('Shift end', s.endAt ? fmtClock(s.endAt) : 'open')}${kv('Start odometer', s.startOdometer.toLocaleString())}${kv('End odometer', s.endOdometer == null ? null : s.endOdometer.toLocaleString())}
+    ${kv('Daily miles', d.dailyMiles == null ? null : d.dailyMiles.toLocaleString())}${kv('Billable miles', d.billableMiles.toLocaleString())}${kv('Non-billable miles', d.nonBillableMiles == null ? null : d.nonBillableMiles.toLocaleString())}${kv('Breaks', hm(d.breakMinutes))}${kv('Work time', hm(d.workMinutes))}${kv('Billable hours', (d.billableMinutes / 60).toFixed(2))}</div>
+  <h2>Odometer legs</h2><table><tr><th>Truck</th><th>Period</th><th class="r">Start</th><th class="r">End</th><th class="r">Miles</th></tr>${legs}</table>
+  <h2>Freight segments (billable)</h2>${segs}
+  <h2>Breaks</h2>${breaks ? `<table><tr><th>Start</th><th>End</th><th class="r">Minutes</th></tr>${breaks}</table>` : '<div class="sub">None recorded.</div>'}
+  <h2>Pre-trip inspection</h2><div class="block">${insp.satisfactory ? 'All items satisfactory' : `Defects: ${esc((insp.defects || []).join(', '))}`}${insp.remarks ? ` · Remarks: ${esc(insp.remarks)}` : ''} · ${esc(fmtClock(insp.at))}
+    <div class="sig" style="margin-top:6px">${insp.signatureUrl || insp.signature ? `<img src="${esc(insp.signatureUrl || insp.signature)}" alt="signature">` : 'no signature'}</div>
+    <div class="sub" style="margin-top:6px">Items: ${esc((insp.items || INSPECTION_ITEMS).join(' · '))}</div></div>
+  ${(s.events || []).length ? `<h2>Events</h2><table>${s.events.map(e => `<tr><td>${esc(fmtClock(e.at))}</td><td>${esc(e.type === 'truck-change' ? `Truck change ${e.fromTruckNum} (${e.fromOdometer.toLocaleString()}) → ${e.toTruckNum} (${e.toOdometer.toLocaleString()})` : e.type)}</td></tr>`).join('')}</table>` : ''}`;
+  res.type('html').send(printPage(`Daily Log ${s.date} ${s.driverName}`, body, { draft: s.status !== 'closed' }));
+});
+
+// ── API: TICKETS ────────────────────────────────────────────────────────────
+// Live duplicate check for the driver's ticket form (same shape as the PO
+// number check): tells them before they confirm.
+app.get('/api/tickets/check', reqAuth, (req, res) => {
+  const number = String(req.query.number || '').trim();
+  if (!number) return res.status(400).json({ error: 'number required' });
+  const owner = findTicketOwner(number, { loadId: req.query.loadId, tripNum: req.query.tripNum });
+  if (owner) return res.json({ available: false, message: ticketOwnerMessage(number, owner), ownerLoadId: owner.load.id, ownerTripNum: owner.trip.tripNum });
+  res.json({ available: true, message: `Ticket #${number} is not on file yet.` });
+});
+
+// Correct a trip's ticket. Driver: own load, until it is submitted. Manager:
+// until the load is approved and locked. After approval the ticket is proof
+// and does not change — void and re-run the load instead.
+app.put('/api/loads/:id/trips/:tripNum/ticket', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const l = store.loads.find(x => x.id === req.params.id);
+  if (!l) return res.status(404).json({ error: 'Not found' });
+  if (u.role === 'driver' && l.truckId !== u.truckId) return res.status(403).json({ error: 'Not your load' });
+  if (l.locked) return res.status(403).json({ error: 'Load is locked — its tickets are final' });
+  const trip = (l.trips || []).find(t => Number(t.tripNum) === Number(req.params.tripNum));
+  if (!trip) return res.status(404).json({ error: 'No such trip on this load' });
+  if (!trip.timestamps?.loadedAt) return res.status(400).json({ error: 'This trip has not been loaded yet — the ticket is captured at Loaded' });
+  const before = trip.ticket ? { ...trip.ticket, photo: trip.ticket.photo ? '[stored]' : '' } : null;
+  const built = buildTicket(req.body.ticket || req.body, { by: u.username, existing: trip.ticket });
+  if (built.error) return res.status(400).json({ error: built.error });
+  const owner = findTicketOwner(built.ticket.number, { loadId: l.id, tripNum: trip.tripNum });
+  if (owner) return res.status(409).json({ error: ticketOwnerMessage(built.ticket.number, owner), ownerLoadId: owner.load.id, ownerTripNum: owner.trip.tripNum });
+  trip.ticket = built.ticket;
+  logAction(u, 'corrected-ticket', l.id, { tripNum: trip.tripNum, before, after: { source: built.ticket.source, number: built.ticket.number, netTons: built.ticket.netTons } });
+  await saveData();
+  res.json({ success: true, ticket: trip.ticket, tons: loadTons(l) });
+});
+
 // ── API: MANAGER APPROVALS ──────────────────────────────────────────────────
 app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
@@ -2769,14 +3705,21 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
     const remaining = store.loads.filter(x => x.poId === po.id && x.status !== 'completed' && !x.voided);
     if (!remaining.length) { po.status = 'completed'; po.completedAt = new Date().toISOString(); }
   }
+  // Ticket facts are frozen with the approval: what was approved is on record.
+  const tons = loadTons(l);
   logAction(req.session.user, 'approved-load', l.id, {
     poNumber: po?.poNumber || '',
     customer: po?.customer || '',
     material: l.material,
     driver:   l.driverName,
+    trailer:  (getTrailerForLoad(l) || {}).number || '',
     delivered: l.loadsDelivered,
     assigned:  l.loadsAssigned,
     isPartial: !!l.isPartial,
+    plannedTons: tons.plannedTons,
+    actualTons:  tons.actualTons,
+    tickets:     tons.ticketNumbers,
+    missingTickets: tons.missingTickets,
   });
   await saveData();
   res.json({ success: true });
@@ -3001,17 +3944,21 @@ function buildBillingGroups(loadIds) {
       loadIdsInGroup.push(load.id);
       const revD = revenueDetail(load);
       const rev = revD.amount == null ? 0 : revD.amount;
-      // Tons come from the engine's quantity-per-load (per-load snapshot or
-      // configured), not a hardcoded constant.
-      const tons = (revD.unit === 'ton' && revD.qtyPerLoad != null) ? revD.qtyPerLoad * (Number(load.loadsDelivered) || 0) : 0;
+      // Tons are whatever the engine priced: the quantity-per-load rule
+      // (planned) or, for a customer billed on actual, the confirmed ticket
+      // tons. Planned and actual never land on the same line.
+      const basis = revD.basis || 'planned';
+      const tons = revD.unit !== 'ton' ? 0
+        : basis === 'actual' ? (revD.quantity || 0)
+        : (revD.qtyPerLoad != null ? revD.qtyPerLoad * (Number(load.loadsDelivered) || 0) : 0);
       const unit = revD.unit;
       const rate = Number(load.customerRate) || 0;
-      const lk = `${load.material}|${unit}|${rate}`;
+      const lk = `${load.material}|${unit}|${rate}|${basis}`;
       if (!lineMap.has(lk)) {
         lineMap.set(lk, {
           material: load.material,
-          unit, rate,
-          loads: 0, tons: 0, amount: 0,
+          unit, rate, basis,
+          loads: 0, tons: 0, amount: 0, tickets: 0, measure: 0, segmentIds: [],
           unconfigured: false, reasons: [],
           loadIds: [],
         });
@@ -3019,6 +3966,13 @@ function buildBillingGroups(loadIds) {
       const ln = lineMap.get(lk);
       ln.loads += Number(load.loadsDelivered) || 0;
       ln.tons  += tons;
+      ln.tickets += loadTons(load).ticketsWithTons;
+      // Hour/mile quantity: the segment's measure, added once per segment. A
+      // load whose measure went to another load in the same segment carries
+      // the explanation onto the line.
+      if (MEASURED_UNITS[unit] && !revD.unconfigured) ln.measure += revD.quantity || 0;
+      if (MEASURED_UNITS[unit] && !revD.unconfigured && revD.reason && !(revD.quantity > 0)) { ln.notes = ln.notes || []; if (!ln.notes.includes(revD.reason)) ln.notes.push(revD.reason); }
+      (revD.segmentIds || []).forEach(id => { if (!ln.segmentIds.includes(id)) ln.segmentIds.push(id); });
       ln.amount += rev;
       ln.loadIds.push(load.id);
       if (revD.unconfigured) { ln.unconfigured = true; if (!ln.reasons.includes(revD.reason)) ln.reasons.push(revD.reason); unconfiguredLoadIds.push(load.id); }
@@ -3032,7 +3986,17 @@ function buildBillingGroups(loadIds) {
     const lineItems = [...lineMap.values()].map(ln => ({
       ...ln,
       description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}`
-        + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/${ln.unit})`)
+        + (ln.unit === 'ton'
+            ? (ln.basis === 'actual'
+                ? ` (${ln.tons.toFixed(2)} ton actual from ${ln.tickets} ticket${ln.tickets === 1 ? '' : 's'} @ $${ln.rate}/ton)`
+                : ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)`)
+            : MEASURED_UNITS[ln.unit] && ln.segmentIds.length
+              ? (ln.measure > 0
+                  ? ` (${ln.measure.toFixed(2)} ${MEASURED_UNITS[ln.unit]} from freight ${ln.segmentIds.join(', ')} @ $${ln.rate}/${ln.unit})`
+                  : ` (${(ln.notes || []).join('; ') || `${MEASURED_UNITS[ln.unit]} billed on freight ${ln.segmentIds.join(', ')}`})`)
+              : MEASURED_UNITS[ln.unit]
+                ? ` (${ln.measure.toFixed(2)} ${MEASURED_UNITS[ln.unit]} @ $${ln.rate}/${ln.unit})`
+                : ` (@ $${ln.rate}/${ln.unit})`)
         + (ln.unconfigured ? ' [NOT PRICEABLE]' : ''),
     }));
     const totalAmount = lineItems.reduce((s, ln) => s + ln.amount, 0);
@@ -3059,6 +4023,8 @@ function buildBillingGroups(loadIds) {
       totalLoads, totalTons, totalAmount,
       lineItems,
       ticketImages, signatureImages, approvalStamps,
+      // Every ticket number behind this invoice, for the record.
+      ticketNumbers: g.loads.flatMap(({ load }) => loadTons(load).ticketNumbers),
     });
   }
   return groups;
@@ -3209,6 +4175,7 @@ app.post('/api/billing-batches', reqMgr, async (req, res) => {
       totalAmount: g.totalAmount,
       lineItems: g.lineItems,
       ticketImageRefs: g.ticketImages,
+      ticketNumbers: g.ticketNumbers || [],
       signatureImageRefs: g.signatureImages,
       approvalStamps: g.approvalStamps,
       qbCustomerId: '',
@@ -3338,11 +4305,13 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
       qbCustomerId,
       lines: b.lineItems.map(ln => ({
         description: ln.description,
-        quantity: ln.unit === 'ton' ? ln.tons : ln.loads,
+        // Hour/mile lines carry the freight measure; a line whose measure was
+        // billed with another load in the same freight is a $0, 0-quantity line.
+        quantity: ln.unit === 'ton' ? ln.tons : (MEASURED_UNITS[ln.unit] && (ln.segmentIds || []).length ? ln.measure : ln.loads),
         amount: ln.amount,
       })),
       memo,
-      privateNote: `VBT Dispatch billing batch ${b.id}. PO ${b.poNumber}. Loads: ${b.loadIds.join(', ')}`,
+      privateNote: `VBT Dispatch billing batch ${b.id}. PO ${b.poNumber}. Loads: ${b.loadIds.join(', ')}` + ((b.ticketNumbers || []).length ? `. Tickets: ${b.ticketNumbers.join(', ')}` : ''),
       docNumber: b.poNumber ? String(b.poNumber).slice(0, 21) : undefined,
       txnDate: b.deliveryEnd || b.deliveryStart || undefined,
     });
@@ -3980,7 +4949,72 @@ app.get('/api/audit-log', reqMgr, (req, res) => {
 // board never goes blank.
 // GET /api/fleet — office only. Vehicles + the driver roster with login state.
 app.get('/api/fleet', reqMgr, async (req, res) => {
-  res.json({ trucks: store.trucks || [], drivers: await fleetDrivers(), truckStatuses: TRUCK_STATUSES, driverStatuses: DRIVER_STATUSES });
+  res.json({ trucks: store.trucks || [], trailers: store.trailers || [], drivers: await fleetDrivers(), truckStatuses: TRUCK_STATUSES, trailerStatuses: TRAILER_STATUSES, driverStatuses: DRIVER_STATUSES });
+});
+
+// ── Trailers CRUD — independent of trucks ──
+app.post('/api/fleet/trailers', reqMgr, async (req, res) => {
+  const { number, type, status, defaultTruckId, notes } = req.body || {};
+  const num = String(number || '').trim();
+  if (!num) return res.status(400).json({ error: 'Trailer number is required' });
+  if ((store.trailers || []).some(t => String(t.number).toLowerCase() === num.toLowerCase())) {
+    return res.status(400).json({ error: 'A trailer with that number already exists' });
+  }
+  if (defaultTruckId && !(store.trucks || []).some(t => t.id === defaultTruckId)) return res.status(400).json({ error: 'Unknown truck' });
+  const trailer = {
+    id: 'trailer-' + num.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Math.floor(Math.random() * 1000),
+    number: num,
+    type: String(type || '').trim(),
+    status: TRAILER_STATUSES.includes(status) ? status : 'available',
+    defaultTruckId: defaultTruckId || null,   // pre-fill only; never a rule
+    notes: String(notes || '').trim(),
+    active: true,
+  };
+  store.trailers.push(trailer);
+  logAction(req.session.user, 'added-trailer', trailer.id, { number: trailer.number });
+  await saveData();
+  res.json({ success: true, trailer });
+});
+
+app.put('/api/fleet/trailers/:id', reqMgr, async (req, res) => {
+  const t = (store.trailers || []).find(x => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Trailer not found' });
+  const before = { ...t };
+  const b = req.body || {};
+  if (b.number !== undefined && String(b.number).trim()) {
+    const num = String(b.number).trim();
+    if ((store.trailers || []).some(x => x.id !== t.id && String(x.number).toLowerCase() === num.toLowerCase())) return res.status(400).json({ error: 'A trailer with that number already exists' });
+    t.number = num;
+  }
+  if (b.type !== undefined) t.type = String(b.type || '').trim();
+  if (b.status !== undefined) {
+    if (!TRAILER_STATUSES.includes(b.status)) return res.status(400).json({ error: `Status must be one of: ${TRAILER_STATUSES.join(', ')}` });
+    t.status = b.status;
+  }
+  if (b.defaultTruckId !== undefined) {
+    if (b.defaultTruckId && !(store.trucks || []).some(x => x.id === b.defaultTruckId)) return res.status(400).json({ error: 'Unknown truck' });
+    t.defaultTruckId = b.defaultTruckId || null;
+  }
+  if (b.notes !== undefined) t.notes = String(b.notes || '').trim();
+  if (b.active !== undefined) t.active = !!b.active;
+  logAction(req.session.user, 'updated-trailer', t.id, { number: t.number, before, after: { ...t } });
+  await saveData();
+  res.json({ success: true, trailer: t });
+});
+
+app.delete('/api/fleet/trailers/:id', reqMgr, async (req, res) => {
+  const t = (store.trailers || []).find(x => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Trailer not found' });
+  if (allLoadsWithArchive().some(l => l.trailerId === t.id)) {
+    t.active = false;
+    logAction(req.session.user, 'deactivated-trailer', t.id, { number: t.number, reason: 'has load history' });
+    await saveData();
+    return res.json({ success: true, deactivated: true, message: 'Trailer has delivery history — deactivated instead of deleted.' });
+  }
+  store.trailers = store.trailers.filter(x => x.id !== t.id);
+  logAction(req.session.user, 'deleted-trailer', t.id, { number: t.number });
+  await saveData();
+  res.json({ success: true, deactivated: false });
 });
 
 // ── Drivers CRUD — roster first, login second ──
@@ -4014,6 +5048,11 @@ app.post('/api/drivers', reqMgr, async (req, res) => {
       console.error('[POST /api/drivers]', e.message);
       return res.status(500).json({ error: 'Could not create the login: ' + e.message });
     }
+  } else if (password && String(password).length >= 4) {
+    // File mode (no Postgres, never production): the login lives in the store.
+    if (!store.fileLogins) store.fileLogins = {};
+    store.fileLogins[uname] = { password: hashPassword(String(password)), createdAt: new Date().toISOString() };
+    loginCreated = true;
   }
   upsertRosterDriver({ id: uname, name: dName, defaultTruckId: defaultTruckId || null, active: true });
   logAction(req.session.user, 'created-driver', uname, { displayName: dName, defaultTruckId: defaultTruckId || null, loginCreated });
@@ -4048,6 +5087,9 @@ app.put('/api/drivers/:username', reqMgr, async (req, res) => {
       console.error('[PUT /api/drivers]', e.message);
       return res.status(500).json({ error: 'Roster updated but the login could not be updated: ' + e.message });
     }
+  } else if (b.password !== undefined && String(b.password).length >= 4) {
+    if (!store.fileLogins) store.fileLogins = {};
+    store.fileLogins[uname] = { ...(store.fileLogins[uname] || {}), password: hashPassword(String(b.password)) };
   }
   logAction(req.session.user, 'updated-driver', uname, { fields: Object.keys(b) });
   await saveData();
@@ -4100,10 +5142,12 @@ app.get('/api/customers', reqMgr, (req, res) => {
   res.json({ customers: annotated });
 });
 
+const BILLING_BASES = ['planned', 'actual'];
 app.post('/api/customers', reqMgr, async (req, res) => {
-  const { name, code, address, city, phone, email, notes } = req.body;
+  const { name, code, address, city, phone, email, notes, billingBasis } = req.body;
   const trimmed = String(name || '').trim();
   if (!trimmed) return res.status(400).json({ error: 'Customer name required' });
+  if (billingBasis !== undefined && !BILLING_BASES.includes(billingBasis)) return res.status(400).json({ error: 'billingBasis must be "planned" or "actual"' });
   // Reject duplicates (case-insensitive). This is the whole point of the master.
   const lc = trimmed.toLowerCase();
   if ((store.customers || []).some(c => String(c.name || '').toLowerCase().trim() === lc)) {
@@ -4118,6 +5162,8 @@ app.post('/api/customers', reqMgr, async (req, res) => {
     phone:   String(phone   || '').trim(),
     email:   String(email   || '').trim(),
     notes:   String(notes   || '').trim(),
+    // planned = quantity-per-load rule (25 t); actual = confirmed ticket tons
+    billingBasis: billingBasis || 'planned',
     active:  true,
     createdAt: new Date().toISOString(),
   };
@@ -4148,6 +5194,13 @@ app.put('/api/customers/:id', reqMgr, async (req, res) => {
   if (req.body.email   !== undefined) c.email   = String(req.body.email   || '').trim();
   if (req.body.notes   !== undefined) c.notes   = String(req.body.notes   || '').trim();
   if (req.body.active  !== undefined) c.active  = !!req.body.active;
+  if (req.body.billingBasis !== undefined) {
+    if (!BILLING_BASES.includes(req.body.billingBasis)) return res.status(400).json({ error: 'billingBasis must be "planned" or "actual"' });
+    if (req.body.billingBasis !== (c.billingBasis || 'planned')) {
+      logAction(req.session.user, 'changed-billing-basis', c.id, { customer: c.name, from: c.billingBasis || 'planned', to: req.body.billingBasis });
+    }
+    c.billingBasis = req.body.billingBasis;
+  }
   // If the name changed, propagate to existing POs and re-key any pricing.
   // POs store the customer NAME (so all the existing pricing/billing/reports
   // code works unchanged), and pricing tables key by lowercased name. So a
@@ -5022,10 +6075,12 @@ app.get('/api/today', reqMgr, (req, res) => {
       loadsAssigned: l.loadsAssigned, loadsDelivered: l.loadsDelivered || 0,
       driverId: l.truckId || null, driverName: l.driverName || '',
       truckUnitId: l.truckUnitId || null, truckNum: truck ? truck.truckNum : '',
+      trailerId: l.trailerId || null, trailerNum: (getTrailerForLoad(l) || {}).number || '',
       yardId: pickup.id, yardName: pickup.name,
       locked: !!l.locked,
       approvalStatus: l.approvalStatus,
       missingTicket: !l.ticketImage && !l.ticketImageUrl,
+      tons: (() => { const t = loadTons(l); return { plannedTons: t.plannedTons, actualTons: t.actualTons, tickets: t.tickets, missingTickets: t.missingTickets }; })(),
     };
   });
 
@@ -5052,12 +6107,25 @@ app.get('/api/today', reqMgr, (req, res) => {
     inUseOnLoadId: truckBusy.get(t.id) || null,
     available: !truckBusy.has(t.id) && t.status === 'available',
   }));
+  const trailerBusy = new Map();
+  dayLoads.forEach(l => {
+    if (l.trailerId && l.approvalStatus !== 'approved') trailerBusy.set(l.trailerId, l.id);
+  });
+  const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({
+    id: t.id, number: t.number, type: t.type || '', status: t.status || 'available',
+    defaultTruckId: t.defaultTruckId || null,
+    inUseOnLoadId: trailerBusy.get(t.id) || null,
+    available: !trailerBusy.has(t.id) && (t.status || 'available') === 'available',
+  }));
 
   const count = (b) => loads.filter(l => l.bucket === b).length;
   res.json({
     date: day,
     version: dispatchFingerprint(dayLoads),
-    loads, drivers, trucks,
+    loads, drivers, trucks, trailers,
+    // The drivers' day: shifts dated today (open or closed) plus any still-open
+    // shift from an earlier date, which the office must see and close.
+    shifts: (store.shifts || []).filter(s => s.date === day || s.status === 'open').map(shiftPublic),
     yards: store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, isInternal: v.id === 'vbt' })),
     summary: {
       jobs: new Set(dayLoads.map(l => l.poId)).size,
@@ -5142,8 +6210,17 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   const l = store.loads.find(x => x.id === req.params.id);
   if (!l) return res.status(404).json({ error: 'Load not found' });
   if (l.locked) return res.status(403).json({ error: 'Load is approved and locked' });
-  const { driverId, truckUnitId, yardId } = req.body || {};
+  const { driverId, truckUnitId, yardId, trailerId } = req.body || {};
   const changes = {};
+
+  if (trailerId !== undefined) {
+    const tr = trailerId ? (store.trailers || []).find(x => x.id === trailerId) : null;
+    if (trailerId && !tr) return res.status(400).json({ error: 'Unknown trailer' });
+    if (tr && tr.active === false) return res.status(400).json({ error: `Trailer ${tr.number} is deactivated` });
+    if (tr && (tr.status === 'maintenance' || tr.status === 'out-of-service')) return res.status(400).json({ error: `Trailer ${tr.number} is ${tr.status}` });
+    changes.trailer = { from: (getTrailerForLoad(l) || {}).number || 'none', to: tr ? tr.number : 'none' };
+    l.trailerId = tr ? tr.id : null;
+  }
 
   if (driverId !== undefined) {
     const drv = driverId ? driverRoster().find(t => t.id === driverId) : null;   // active roster only
@@ -5195,7 +6272,7 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   }
   await saveData();
   const po = store.pos.find(p => p.id === l.poId) || {};
-  res.json({ success: true, load: l, pickup: resolvePickupYard(l, po), truck: getTruckForLoad(l) });
+  res.json({ success: true, load: l, pickup: resolvePickupYard(l, po), truck: getTruckForLoad(l), trailer: trailerPublic(getTrailerForLoad(l)) });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5402,8 +6479,24 @@ app.use((err, req, res, next) => {
     return res.status(413).json({ error: 'Upload too large (limit 25MB)' });
   }
   console.error(`[express error] ${req.method} ${req.originalUrl}:`, err && err.stack || err);
-  res.status(500).json({ error: 'Server error — please retry. If it persists, check the server log.' });
+  // Keep the last few failures in memory and surface them on /healthz, so a
+  // generic 500 can be traced without access to the host's log stream.
+  const ref = 'E' + Date.now().toString(36).slice(-6).toUpperCase();
+  const dbErr = isDbError(err);
+  if (dbErr) noteDbFailure(err);
+  const frame = String(err && err.stack || '').split('\n').slice(1).find(l => l.includes('server.js') || l.includes('qb.js') || l.includes('mailer.js') || l.includes('geocode.js'));
+  recentErrors.unshift({
+    ref, at: new Date().toISOString(), method: req.method, path: req.originalUrl.split('?')[0],
+    role: req.session?.user?.role || 'anonymous', kind: dbErr ? 'database' : 'application', message: String(err && err.message || err).slice(0, 300),
+    where: frame ? frame.trim().replace(/^at\s+/, '').replace(__dirname + '/', '') : '',
+  });
+  if (recentErrors.length > 10) recentErrors.length = 10;
+  if (dbErr) {
+    return res.status(503).json({ error: `Database unreachable — reference ${ref}. The dispatch data is safe; retry in a moment or check /healthz.`, ref, reason: 'database_unreachable' });
+  }
+  res.status(500).json({ error: `Server error — please retry. If it persists, check the server log. (ref ${ref})`, ref });
 });
+const recentErrors = [];
 
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection] staying alive:', reason && reason.stack || reason);

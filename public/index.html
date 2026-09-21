@@ -974,6 +974,34 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   </div>
 </div>
 
+<!-- LOADED: SCALE / INTERNAL TICKET (captured once, at the yard) -->
+<div class="modal-bg" id="loaded-modal" style="display:none">
+  <div class="modal" style="max-width:460px">
+    <div class="modal-head">
+      <h2>Loaded — ticket</h2>
+      <button class="modal-close" onclick="closeLoaded()">&#215;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:10px" id="loaded-intro">Photograph the ticket from the yard, then confirm its number and net tons. This is the only time you enter it.</p>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button type="button" class="btn ghost" id="loaded-src-supplier" style="flex:1" onclick="loadedSetSource('supplier')">Supplier scale ticket</button>
+        <button type="button" class="btn ghost" id="loaded-src-vbt" style="flex:1" onclick="loadedSetSource('vbt')">VBT internal ticket</button>
+      </div>
+      <input type="file" accept="image/*" capture="environment" id="loaded-input" style="padding:14px;border:2px dashed var(--bdr2);border-radius:var(--r);width:100%;background:var(--bg2)">
+      <img id="loaded-preview" style="display:none;max-width:100%;max-height:220px;border-radius:var(--r);margin-top:8px">
+      <div class="field" style="margin-top:12px"><label>Ticket number</label>
+        <input id="loaded-number" inputmode="numeric" autocomplete="off" placeholder="e.g. 37432733" oninput="loadedCheckNumber()">
+        <div id="loaded-number-msg" style="font-size:12px;margin-top:4px;min-height:16px;color:var(--txt3)"></div></div>
+      <div class="field"><label id="loaded-tons-label">Net tons (from the scale ticket)</label>
+        <input id="loaded-tons" type="number" step="0.01" min="0" inputmode="decimal" placeholder="e.g. 23.20"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeLoaded()">Cancel</button>
+      <button class="btn primary" onclick="confirmLoaded()" id="loaded-save-btn">Confirm — loaded &amp; rolling</button>
+    </div>
+  </div>
+</div>
+
 <!-- YARD PICKER MODAL -->
 <div class="modal-bg" id="yard-modal" style="display:none">
   <div class="modal" style="max-width:440px">
@@ -1086,6 +1114,102 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
     <div class="modal-foot">
       <button class="btn ghost" onclick="closeSig()">Cancel</button>
       <button class="btn primary" onclick="saveSig()">Save Signature</button>
+    </div>
+  </div>
+</div>
+
+<!-- START DAY (driver): truck, trailer, odometer, pre-trip inspection, signature -->
+<div class="modal-bg" id="startday-modal" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-head"><h2>Start your day</h2><button class="modal-close" onclick="closeStartDay()">&#215;</button></div>
+    <div class="modal-body">
+      <div class="field-row">
+        <div class="field"><label>Truck</label><select id="sd-truck" onchange="sdTruckChanged()"></select></div>
+        <div class="field"><label>Trailer</label><select id="sd-trailer"></select></div>
+      </div>
+      <div class="field"><label>Starting odometer</label>
+        <input id="sd-odo" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 85558">
+        <div id="sd-odo-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+      <div class="field"><label>Pre-trip inspection</label>
+        <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--bdr);border-radius:10px;cursor:pointer;text-transform:none;letter-spacing:0;font-weight:600;color:var(--txt)">
+          <input type="checkbox" id="sd-allok" checked onchange="sdToggleAll()" style="width:22px;height:22px;margin:0"> All items satisfactory</label>
+        <div id="sd-items" style="display:none;margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:4px"></div>
+        <input id="sd-remarks" placeholder="Remarks (optional)" style="margin-top:8px"></div>
+      <div class="field"><label>Driver signature</label>
+        <canvas class="sig-canvas" id="sd-sig" width="500" height="160"></canvas>
+        <button class="btn ghost" onclick="sdSig && sdSig.clear()" style="margin-top:6px;font-size:11px;padding:5px 10px">Clear</button></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeStartDay()">Cancel</button>
+      <button class="btn primary" id="sd-save" onclick="submitStartDay()">Start day</button>
+    </div>
+  </div>
+</div>
+
+<!-- END DAY (driver) -->
+<div class="modal-bg" id="endday-modal" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-head"><h2>End your day</h2><button class="modal-close" onclick="closeEndDay()">&#215;</button></div>
+    <div class="modal-body">
+      <div id="ed-open-seg" style="display:none;background:var(--Ab);color:var(--A);border:1px solid var(--Ad);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:10px"></div>
+      <div class="field"><label>Ending odometer</label>
+        <input id="ed-odo" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 85868">
+        <div id="ed-odo-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeEndDay()">Cancel</button>
+      <button class="btn primary" id="ed-save" onclick="submitEndDay()">End day</button>
+    </div>
+  </div>
+</div>
+
+<!-- TRUCK CHANGE (driver) -->
+<div class="modal-bg" id="truckchange-modal" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-head"><h2>Change truck</h2><button class="modal-close" onclick="closeTruckChange()">&#215;</button></div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--txt2);margin-bottom:10px">Any open freight is finished at the old truck's reading. Odometer readings from two trucks are never mixed.</p>
+      <div class="field"><label id="tc-from-label">Final odometer on current truck</label><input id="tc-from" type="number" inputmode="numeric" min="0" step="1"></div>
+      <div class="field-row">
+        <div class="field"><label>New truck</label><select id="tc-truck" onchange="tcTruckChanged()"></select></div>
+        <div class="field"><label>Trailer</label><select id="tc-trailer"></select></div>
+      </div>
+      <div class="field"><label>Starting odometer on new truck</label><input id="tc-to" type="number" inputmode="numeric" min="0" step="1"><div id="tc-to-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeTruckChange()">Cancel</button>
+      <button class="btn primary" onclick="submitTruckChange()">Change truck</button>
+    </div>
+  </div>
+</div>
+
+<!-- FREIGHT START (driver): one odometer reading when billable freight begins -->
+<div class="modal-bg" id="freightstart-modal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-head"><h2>Freight starts here</h2><button class="modal-close" onclick="closeFreightStart()">&#215;</button></div>
+    <div class="modal-body">
+      <div id="fs-intro" style="font-size:13px;line-height:1.5;margin-bottom:10px"></div>
+      <div id="fs-msg" style="font-size:12px;color:var(--R);font-weight:600;margin-bottom:6px"></div>
+      <div class="field"><label>Odometer now</label><input id="fs-odo" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 85591"><div id="fs-odo-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeFreightStart()">Cancel</button>
+      <button class="btn primary" onclick="submitFreightStart()">Arrived — start freight</button>
+    </div>
+  </div>
+</div>
+
+<!-- FINISH FREIGHT (driver): the explicit close -->
+<div class="modal-bg" id="finishfreight-modal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-head"><h2>Finish freight</h2><button class="modal-close" onclick="closeFinishFreight()">&#215;</button></div>
+    <div class="modal-body">
+      <div id="ff-intro" style="font-size:13px;line-height:1.5;margin-bottom:10px"></div>
+      <div class="field"><label>Odometer now</label><input id="ff-odo" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 85808"><div id="ff-odo-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeFinishFreight()">Not yet</button>
+      <button class="btn primary" id="ff-save" onclick="submitFinishFreight()">Finish freight</button>
     </div>
   </div>
 </div>
@@ -1227,6 +1351,9 @@ function api(method, url, body) {
 // Returns { url } or throws on failure.
 // Falls back to embedding base64 if Supabase isn't configured.
 async function uploadPhoto(kind, loadId, dataUrl) {
+  // The driver payload says whether the upload service exists; when it does
+  // not, go straight to the inline fallback instead of a doomed request.
+  if (window._photoUploadAvailable === false) return { fallback: true };
   try {
     const r = await fetch('/api/upload-photo', {
       method: 'POST',
@@ -2331,8 +2458,20 @@ function openLoadDetail(id) {
   if (po.address) html += `<dt style="color:var(--txt3)">Address</dt><dd>${po.address}, ${po.city || ''}</dd>`;
   if (l.pickup) html += `<dt style="color:var(--txt3)">Pickup Yard</dt><dd style="${l.pickup.isActual ? 'color:var(--A);font-weight:600' : ''}">${escapeHtml(l.pickup.name)}${l.pickup.isActual ? ' <span style="font-size:10px;color:var(--txt3)">(driver confirmed)</span>' : ''}</dd>`;
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
+  if (l.trailer) html += `<dt style="color:var(--txt3)">Trailer</dt><dd>${escapeHtml(l.trailer.number)}${l.trailer.type ? ' · ' + escapeHtml(l.trailer.type) : ''}</dd>`;
+  if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}</dd>`;
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
   html += `</dl>`;
+  if (l.segments && l.segments.length) {
+    const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'open';
+    html += `<div style="margin-top:12px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:6px">Freight segment${l.segments.length > 1 ? 's' : ''} (billable window — miles and hours counted once)</div>
+      ${l.segments.map(s => `<div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;font-size:12px;margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;gap:8px"><b>${escapeHtml(s.customer)}</b><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:${s.locked ? 'var(--G)' : s.status === 'open' ? 'var(--A)' : 'var(--txt2)'}">${s.locked ? 'locked' : s.status}</span></div>
+        <div>${escapeHtml(s.originName)} → ${escapeHtml(s.destinationLabel)} · ${t(s.timeStart)} – ${t(s.timeEnd)}${s.billableHours != null ? ` (${s.billableHours.toFixed(2)} h)` : ''}</div>
+        <div>OD ${Number(s.odStart).toLocaleString()} → ${s.odEnd == null ? 'open' : Number(s.odEnd).toLocaleString()}${s.billableMiles != null ? ` · <b>${s.billableMiles.toLocaleString()} billable mi</b>` : ''} · ${s.tripCount} trip${s.tripCount === 1 ? '' : 's'} · ${s.loadIds.length} load${s.loadIds.length === 1 ? '' : 's'}</div>
+        <a href="/api/freight-segments/${encodeURIComponent(s.id)}/freight-bill" target="_blank" style="font-size:12px">Freight Bill${s.locked ? '' : ' (draft)'}</a>
+      </div>`).join('')}</div>`;
+  }
 
   // ── Per-trip timeline ──
   // Shows every yard→jobsite cycle the driver completed, with all 5 timestamps
@@ -2401,6 +2540,11 @@ function openLoadDetail(id) {
           <div style="text-align:right">→ ${fmtMins(jobA, doneA)}</div>
           <div style="text-align:right;font-weight:700;color:var(--txt)">total: ${fmtMins(startA, doneA)}</div>
         </div>
+        ${t.ticket && t.ticket.number ? (() => { const src = t.ticket.photoUrl || t.ticket.photo; return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px">
+          <span>Ticket <b>#${escapeHtml(t.ticket.number)}</b> <span style="color:var(--txt3)">${t.ticket.source === 'vbt' ? 'VBT internal' : 'supplier scale'}</span></span>
+          <b style="font-variant-numeric:tabular-nums">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t net' : 'no tons'}</b>
+          ${src ? `<img src="${src}" style="width:26px;height:26px;object-fit:cover;border-radius:4px;border:1px solid var(--bdr);cursor:pointer" onclick="showImage('${src}')" title="Ticket photo">` : ''}
+        </div>`; })() : (ts.completed ? `<div style="margin-top:6px;font-size:11px;color:var(--R);font-weight:600">No ticket recorded on this load</div>` : '')}
       </div>`;
     });
     // Aggregate footer when there are multiple trips
@@ -2859,6 +3003,7 @@ async function renderDriver() {
     const d = await r.json();
     dispatch = d.loads || [];
     window._currentDispatch = dispatch;
+    if (dispatch.length && dispatch[0].photoUploadAvailable !== undefined) window._photoUploadAvailable = !!dispatch[0].photoUploadAvailable;
     console.log('[DRIVER VIEW] Loads received from server:', dispatch.length);
     dispatch.forEach(l => console.log('  -', l.loadId, l.poNumber, l.material, '(' + l.loadsAssigned + ' loads)'));
   } catch (e) {
@@ -2866,6 +3011,10 @@ async function renderDriver() {
     wrap.innerHTML = `<div class="empty-state"><h3>Could not load trips</h3><p style="color:var(--R)">${e.message}</p><button class="btn primary" onclick="renderDriver()" style="margin-top:12px">Retry</button></div>`;
     return;
   }
+
+  // The driver's day (shift) is fetched alongside the loads; a failure here
+  // must not hide the trips, so it degrades to "no day info".
+  try { const s = await api('GET', '/api/shifts/current'); window._shiftInfo = s.ok ? s : null; } catch (e) { window._shiftInfo = null; }
 
   // Wrap render in try/catch so any rendering bug shows up instead of a blank page
   try {
@@ -2897,12 +3046,177 @@ async function renderDriverContent(dispatch, welcome, wrap) {
   </div>`;
 
   if (!dispatch.length) {
-    wrap.innerHTML = `<div class="empty-state"><h3>No trips assigned</h3><p>Your dispatcher will assign loads as they come in.</p></div>`;
+    wrap.innerHTML = dayBar() + `<div class="empty-state"><h3>No trips assigned</h3><p>Your dispatcher will assign loads as they come in.</p></div>`;
     return;
   }
 
-  wrap.innerHTML = dispatch.map(l => tripCard(l)).join('');
+  wrap.innerHTML = dayBar() + dispatch.map(l => tripCard(l)).join('');
 }
+
+// ── THE DRIVER'S DAY ─────────────────────────────────────────────────────────
+// One card above the trips: Start day, or the open day with truck, trailer,
+// odometer, break, truck change and End day. Everything the driver does in
+// between belongs to this shift.
+function dayBar() {
+  const info = window._shiftInfo; if (!info) return '';
+  const s = info.shift;
+  const btn = (label, fn, style) => `<button class="btn ${style || 'ghost'}" style="flex:1;min-height:44px" onclick="${fn}">${label}</button>`;
+  if (!s) {
+    const last = info.lastShift;
+    // The day just closed: say so, with the numbers, instead of inviting a
+    // second Start day as if nothing had happened.
+    if (last && last.date === info.today) {
+      return `<div class="trip-card" id="day-card"><div class="trip-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div><div style="font-weight:700">Day closed · ${escapeHtml(last.truckNum)}${last.trailerNum ? ' + trailer ' + escapeHtml(last.trailerNum) : ''}</div>
+          <div style="font-size:12px;color:var(--txt2)">Ended ${new Date(last.endAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} at OD ${Number(last.endOdometer).toLocaleString()} · ${Number(last.dailyMiles || 0).toLocaleString()} miles today${last.billableMiles ? ` (${Number(last.billableMiles).toLocaleString()} on freight)` : ''}</div></div>
+        <button class="btn ghost" style="min-height:44px" onclick="openStartDay()">Start another day</button></div></div>`;
+    }
+    return `<div class="trip-card" id="day-card"><div class="trip-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div><div style="font-weight:700">Your day has not started</div><div style="font-size:12px;color:var(--txt2)">Truck, trailer, odometer and pre-trip inspection — under a minute.</div></div>
+      <button class="btn primary" style="min-height:44px" onclick="openStartDay()">Start day</button></div></div>`;
+  }
+  const seg = s.openSegment;
+  const stale = info.today && s.date !== info.today;
+  return `<div class="trip-card is-today" id="day-card"><div class="trip-body">
+    ${stale ? `<div class="banner" style="background:var(--Ab);color:var(--A);border:1px solid var(--Ad);margin-bottom:8px">Your day from ${escapeHtml(s.date)} is still open — finish any freight and tap End day before starting today.</div>` : ''}
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+      <div style="font-weight:700">Day open · ${escapeHtml(s.truckNum)}${s.trailerNum ? ' + trailer ' + escapeHtml(s.trailerNum) : ''}</div>
+      <div style="font-size:12px;color:var(--txt2)">since ${new Date(s.startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(s.startOdometer).toLocaleString()}${s.breakMinutes ? ` · breaks ${s.breakMinutes} min` : ''}</div>
+    </div>
+    ${seg ? `<div id="freight-card" style="margin-top:10px;background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;font-size:12px">
+      <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700">Freight in progress</div>
+      <div style="font-weight:700;font-size:13px;margin-top:2px">${escapeHtml(seg.customer)}</div>
+      <div>${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${new Date(seg.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(seg.odStart).toLocaleString()}</div>
+      <div style="color:var(--txt2)">${seg.tripCount} load${seg.tripCount === 1 ? '' : 's'} hauled so far${seg.actualTons ? ` · ${seg.actualTons.toFixed(2)} t confirmed` : ''}</div>
+      <button class="btn primary" style="width:100%;min-height:44px;margin-top:8px" onclick="openFinishFreight('${seg.id}')">Finish freight — ${escapeHtml(seg.customer)}</button>
+    </div>` : ''}
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      ${s.openBreak ? btn('Back from break', `shiftBreak('${s.id}','end')`, 'primary') : btn('Break', `shiftBreak('${s.id}','start')`)}
+      ${btn('Change truck', `openTruckChange()`)}
+      ${btn('End day', `openEndDay()`)}
+    </div>
+  </div></div>`;
+}
+
+// Small reusable signature pad (the customer-signature modal keeps its own).
+function sigPadInit(canvasId) {
+  const c = document.getElementById(canvasId); const ctx = c.getContext('2d'); let drawing = false, ink = false;
+  c.width = c.offsetWidth || 500; c.height = 160;
+  const reset = () => { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); ctx.strokeStyle = '#000'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ink = false; };
+  const pos = (e) => { const r = c.getBoundingClientRect(); const t = e.touches?.[0] || e; return { x: t.clientX - r.left, y: t.clientY - r.top }; };
+  c.onmousedown = c.ontouchstart = (e) => { drawing = true; ctx.beginPath(); const p = pos(e); ctx.moveTo(p.x, p.y); };
+  c.onmousemove = c.ontouchmove = (e) => { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); ink = true; };
+  c.onmouseup = c.onmouseleave = c.ontouchend = () => { drawing = false; };
+  reset();
+  return { clear: reset, hasInk: () => ink, dataUrl: () => c.toDataURL('image/png'), markInk: () => { ink = true; } };
+}
+
+let sdSig = null;
+function openStartDay() {
+  const info = window._shiftInfo; if (!info) return toast('Day info unavailable — retry', 'error');
+  const tSel = document.getElementById('sd-truck'), trSel = document.getElementById('sd-trailer');
+  const last = info.lastShift || {};
+  const truckId = info.defaults.truckId || last.truckId || (info.trucks[0] || {}).id || '';
+  tSel.innerHTML = info.trucks.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === truckId ? 'selected' : ''} ${t.inUseBy || t.status !== 'available' ? 'disabled' : ''}>${escapeHtml(t.truckNum)}${t.inUseBy ? ' — ' + escapeHtml(t.inUseBy) : t.status !== 'available' ? ' — ' + t.status : ''}</option>`).join('');
+  const trailerId = info.defaults.trailerId || last.trailerId || '';
+  trSel.innerHTML = `<option value="">No trailer</option>` + info.trailers.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === trailerId ? 'selected' : ''}>${escapeHtml(t.number)}${t.type ? ' · ' + escapeHtml(t.type) : ''}</option>`).join('');
+  document.getElementById('sd-items').innerHTML = info.inspectionItems.map(it => `<label style="display:flex;align-items:center;gap:6px;font-size:12px;text-transform:none;letter-spacing:0;font-weight:500;color:var(--txt)"><input type="checkbox" class="sd-defect" value="${escapeAttr(it)}" style="width:18px;height:18px;margin:0"> ${escapeHtml(it)}</label>`).join('');
+  document.getElementById('sd-allok').checked = true; sdToggleAll();
+  document.getElementById('sd-remarks').value = '';
+  document.getElementById('sd-odo').value = '';
+  document.getElementById('startday-modal').style.display = 'flex';
+  sdTruckChanged();
+  setTimeout(() => { sdSig = sigPadInit('sd-sig'); }, 60);
+}
+function sdTruckChanged() {
+  const info = window._shiftInfo; const t = info.trucks.find(x => x.id === document.getElementById('sd-truck').value);
+  const hint = document.getElementById('sd-odo-hint');
+  if (t && t.lastOdometer != null) { hint.textContent = `${t.truckNum} last read ${t.lastOdometer.toLocaleString()}`; if (!document.getElementById('sd-odo').value) document.getElementById('sd-odo').value = t.lastOdometer; }
+  else hint.textContent = t ? `No previous reading for ${t.truckNum}` : '';
+  const trSel = document.getElementById('sd-trailer');
+  const usual = t && info.trailers.find(x => x.defaultTruckId === t.id);
+  if (usual && !trSel.value) trSel.value = usual.id;
+}
+function sdToggleAll() {
+  const ok = document.getElementById('sd-allok').checked;
+  document.getElementById('sd-items').style.display = ok ? 'none' : 'grid';
+  document.getElementById('sd-items').previousElementSibling.style.borderColor = ok ? 'var(--bdr)' : 'var(--A)';
+}
+function closeStartDay() { document.getElementById('startday-modal').style.display = 'none'; }
+async function submitStartDay(acceptLower) {
+  const btn = document.getElementById('sd-save');
+  const satisfactory = document.getElementById('sd-allok').checked;
+  const defects = satisfactory ? [] : Array.from(document.querySelectorAll('.sd-defect:checked')).map(x => x.value);
+  if (!satisfactory && !defects.length) return toast('Tick the item(s) with a defect, or mark all satisfactory', 'error');
+  if (!sdSig || !sdSig.hasInk()) return toast('Sign the inspection', 'error');
+  btn.disabled = true;
+  const r = await api('POST', '/api/shifts/start', {
+    truckId: document.getElementById('sd-truck').value, trailerId: document.getElementById('sd-trailer').value || null,
+    odometer: document.getElementById('sd-odo').value, acceptLowerOdometer: !!acceptLower,
+    inspection: { satisfactory, defects, remarks: document.getElementById('sd-remarks').value }, signature: sdSig.dataUrl(),
+  });
+  btn.disabled = false;
+  if (r.ok) { closeStartDay(); toast('Day started', 'success'); return renderDriver(); }
+  if (r.code === 'odometer_below_last' && confirm(r.error + '\n\nUse this reading anyway?')) return submitStartDay(true);
+  toast(r.error || 'Could not start the day', 'error');
+}
+async function shiftBreak(id, action) {
+  const r = await api('POST', `/api/shifts/${id}/break`, { action });
+  if (!r.ok) return toast(r.error || 'Failed', 'error');
+  toast(action === 'start' ? 'On break' : 'Back at work', 'success'); renderDriver();
+}
+function openEndDay(openSegment) {
+  const s = window._shiftInfo && window._shiftInfo.shift; if (!s) return;
+  const seg = openSegment || s.openSegment;
+  const box = document.getElementById('ed-open-seg');
+  if (seg) {
+    box.style.display = '';
+    box.innerHTML = `<b>Freight segment still open</b><br>${escapeHtml(seg.customer)} · ${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${new Date(seg.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(seg.odStart).toLocaleString()}<br>
+      <button class="btn primary" style="margin-top:8px;min-height:40px" onclick="closeEndDay();openFinishFreight('${seg.id}')">Finish freight first</button>`;
+    document.getElementById('ed-save').disabled = true;
+  } else { box.style.display = 'none'; document.getElementById('ed-save').disabled = false; }
+  const legs = s.legs || []; const floor = legs.length ? legs[legs.length - 1].from : s.startOdometer;
+  document.getElementById('ed-odo').value = '';
+  document.getElementById('ed-odo-hint').textContent = `${s.truckNum} started this leg at ${Number(floor).toLocaleString()}`;
+  document.getElementById('endday-modal').style.display = 'flex';
+}
+function closeEndDay() { document.getElementById('endday-modal').style.display = 'none'; }
+async function submitEndDay() {
+  const s = window._shiftInfo && window._shiftInfo.shift; if (!s) return;
+  const btn = document.getElementById('ed-save'); btn.disabled = true;
+  const r = await api('POST', `/api/shifts/${s.id}/end`, { odometer: document.getElementById('ed-odo').value });
+  btn.disabled = false;
+  if (r.ok) { closeEndDay(); toast(`Day closed — ${r.shift.dailyMiles.toLocaleString()} miles today`, 'success'); return renderDriver(); }
+  if (r.code === 'segment_open') return openEndDay(r.segment);
+  toast(r.error || 'Could not end the day', 'error');
+}
+function openTruckChange() {
+  const info = window._shiftInfo; const s = info && info.shift; if (!s) return;
+  document.getElementById('tc-from-label').textContent = `Final odometer on ${s.truckNum}`;
+  document.getElementById('tc-from').value = '';
+  const sel = document.getElementById('tc-truck');
+  sel.innerHTML = info.trucks.filter(t => t.id !== s.truckId).map(t => `<option value="${escapeAttr(t.id)}" ${t.inUseBy || t.status !== 'available' ? 'disabled' : ''}>${escapeHtml(t.truckNum)}${t.inUseBy ? ' — ' + escapeHtml(t.inUseBy) : ''}</option>`).join('');
+  document.getElementById('tc-trailer').innerHTML = `<option value="">No trailer</option>` + info.trailers.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === s.trailerId ? 'selected' : ''}>${escapeHtml(t.number)}</option>`).join('');
+  document.getElementById('truckchange-modal').style.display = 'flex';
+  tcTruckChanged();
+}
+function tcTruckChanged() {
+  const info = window._shiftInfo; const t = info.trucks.find(x => x.id === document.getElementById('tc-truck').value);
+  document.getElementById('tc-to').value = t && t.lastOdometer != null ? t.lastOdometer : '';
+  document.getElementById('tc-to-hint').textContent = t && t.lastOdometer != null ? `${t.truckNum} last read ${t.lastOdometer.toLocaleString()}` : '';
+}
+function closeTruckChange() { document.getElementById('truckchange-modal').style.display = 'none'; }
+async function submitTruckChange(acceptLower) {
+  const s = window._shiftInfo && window._shiftInfo.shift; if (!s) return;
+  const r = await api('POST', `/api/shifts/${s.id}/truck-change`, {
+    fromOdometer: document.getElementById('tc-from').value, toTruckId: document.getElementById('tc-truck').value,
+    toOdometer: document.getElementById('tc-to').value, toTrailerId: document.getElementById('tc-trailer').value || null, acceptLowerOdometer: !!acceptLower,
+  });
+  if (r.ok) { closeTruckChange(); toast(`Now on ${r.shift.truckNum}`, 'success'); return renderDriver(); }
+  if (r.code === 'odometer_below_last' && confirm(r.error + '\n\nUse this reading anyway?')) return submitTruckChange(true);
+  toast(r.error || 'Could not change truck', 'error');
+}
+function openFinishFreight(id) { return finishFreightOpen(id); }
 
 function tripCard(l) {
   // Per-trip state. `trips[]` is the source of truth; if a legacy load lacks
@@ -3034,11 +3348,11 @@ function tripCard(l) {
     </button>
     <div class="action-hint">Tap when you arrive — pick which yard</div>`;
   } else if (atPickup && !isLoaded) {
-    action = `<button class="trip-action loaded" style="background:var(--T,#0d9488);color:#fff" onclick="tripAction('${l.loadId}', 'loaded')">
+    action = `<button class="trip-action loaded" style="background:var(--T,#0d9488);color:#fff" onclick="openLoadedForm('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
-      Loaded / Leaving Yard
+      Loaded — enter ticket
     </button>
-    <div class="action-hint">Tap when you're loaded and rolling out — captures yard service time</div>`;
+    <div class="action-hint required">Photo, ticket number and net tons — captured once, here</div>`;
   } else if (isLoaded && !atJobsite) {
     action = `<button class="trip-action jobsite" style="background:var(--I,#4f46e5);color:#fff" onclick="tripAction('${l.loadId}', 'arrived-jobsite')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -3103,8 +3417,14 @@ function tripCard(l) {
         ${l.jobCode ? `<dt>Job Code</dt><dd><b>${l.jobCode}</b></dd>` : ''}
         <dt>Material</dt><dd>${l.material}</dd>
         <dt>Loads</dt><dd><b>${l.loadsAssigned}</b> loads</dd>
+        ${l.truckLabel || l.trailerLabel ? `<dt>Rig</dt><dd>${escapeHtml(l.truckLabel || 'no truck')}${l.trailerLabel ? ' + trailer ' + escapeHtml(l.trailerLabel) : ''}</dd>` : ''}
         ${l.notes ? `<dt>Notes</dt><dd class="notes">${l.notes}</dd>` : ''}
       </dl>
+      ${trips.some(t => t.ticket) ? `<div style="margin:2px 0 8px;font-size:11px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:6px 9px">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:3px">Tickets</div>
+        ${trips.filter(t => t.ticket).map(t => `<div style="display:flex;justify-content:space-between;gap:8px"><span>Load ${t.tripNum} · #${escapeHtml(t.ticket.number)} <span style="color:var(--txt3)">${t.ticket.source === 'vbt' ? 'VBT' : 'supplier'}</span></span><b style="font-variant-numeric:tabular-nums">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t' : '—'}</b></div>`).join('')}
+        ${l.tons && l.tons.actualTons ? `<div style="display:flex;justify-content:space-between;border-top:1px solid var(--bdr);margin-top:4px;padding-top:4px"><span>Confirmed so far</span><b style="font-variant-numeric:tabular-nums">${l.tons.actualTons.toFixed(2)} t</b></div>` : ''}
+      </div>` : ''}
       ${totalTrips > 1 ? `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600;margin-bottom:6px">Current load · <b style="color:var(--I,#4f46e5)">${(l.loadsDelivered || 0) + (allTripsDone ? 0 : 1)}</b> of ${totalTrips} · ${l.loadsDelivered || 0} delivered</div>` : ''}
       <div class="steps">
         <div class="step ${stepCls(!started && !submitted, started)}">Start${ts.start ? `<span class="step-time">${ts.start}</span>` : ''}</div>
@@ -3260,16 +3580,74 @@ async function confirmYard(yardId) {
     });
   } catch (e) {}
 
-  const d = await api('POST', `/api/loads/${yardLoadId}/trip-action`, { action: 'arrived-pickup', gps, yardId });
-  if (d.ok) {
+  await arrivedAtYard(yardLoadId, yardId, gps, null);
+}
+// Arrived at pickup. When the driver's day is open, the server may need one
+// odometer reading (a new freight segment starts here) or may refuse until
+// another customer's freight is finished. Nothing is stamped until then.
+async function arrivedAtYard(loadId, yardId, gps, odometer) {
+  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action: 'arrived-pickup', gps, yardId, ...(odometer != null ? { odometer } : {}) });
+  if (d.ok && d.success !== false) {
     toast('Arrived at yard', 'success');
     closeYard();
     await loadAll();
-    renderDriver();
-  } else toast(d.error || 'Failed', 'error');
+    return renderDriver();
+  }
+  if (d.code === 'odometer_required') return openFreightStart(loadId, yardId, gps, d.preview, d.error);
+  if (d.code === 'odometer_invalid') return openFreightStart(loadId, yardId, gps, freightStart ? freightStart.preview : { floor: d.floor }, d.error);
+  if (d.code === 'segment_open') {
+    closeYard();
+    const s = d.segment;
+    return showInfoModal('Finish the open freight first', `<p style="font-size:13px">${escapeHtml(d.error)}</p>
+      <div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;font-size:12px;margin-top:8px"><b>${escapeHtml(s.customer)}</b> · ${escapeHtml(s.originName)} → ${escapeHtml(s.destinationLabel)} · since ${new Date(s.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(s.odStart).toLocaleString()} · ${s.tripCount} trip${s.tripCount === 1 ? '' : 's'}</div>`,
+      `<button class="btn primary" onclick="this.closest('.modal-bg').remove();finishFreightOpen('${escapeAttr(s.id)}')">Finish freight — ${escapeHtml(s.customer)}</button>`);
+  }
+  toast(d.error || 'Failed', 'error');
+}
+let freightStart = null;   // { loadId, yardId, gps, preview }
+function openFreightStart(loadId, yardId, gps, preview, message) {
+  freightStart = { loadId, yardId, gps, preview: preview || {} };
+  const p = freightStart.preview;
+  document.getElementById('fs-intro').innerHTML = `<b>${escapeHtml(p.customer || '')}</b><br>${escapeHtml(p.originName || '')} → ${escapeHtml(p.destinationLabel || '')}<br><span style="color:var(--txt2)">Billable freight starts here. Enter ${escapeHtml(p.truckNum || 'the truck')}'s odometer reading now.</span>`;
+  document.getElementById('fs-odo').value = '';
+  document.getElementById('fs-odo-hint').textContent = p.floor != null ? `Must be at least ${Number(p.floor).toLocaleString()}` : '';
+  document.getElementById('fs-msg').textContent = message && /odometer/i.test(message) && !/Enter the odometer reading now/.test(message) ? message : '';
+  document.getElementById('freightstart-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('fs-odo').focus(), 80);
+}
+function closeFreightStart() { document.getElementById('freightstart-modal').style.display = 'none'; freightStart = null; }
+async function submitFreightStart() {
+  const f = freightStart; if (!f) return;
+  const odo = document.getElementById('fs-odo').value.trim();
+  if (!odo) return toast('Enter the odometer reading', 'error');
+  const keep = f; closeFreightStart(); freightStart = keep;
+  await arrivedAtYard(keep.loadId, keep.yardId, keep.gps, odo);
+  if (document.getElementById('freightstart-modal').style.display !== 'flex') freightStart = null;
+}
+// "Finish freight": the explicit close, asking one number.
+let finishFreight = null;
+function finishFreightOpen(id) {
+  const s = (window._shiftInfo && window._shiftInfo.shift && window._shiftInfo.shift.openSegment && window._shiftInfo.shift.openSegment.id === id) ? window._shiftInfo.shift.openSegment : null;
+  finishFreight = { id };
+  document.getElementById('ff-intro').innerHTML = s ? `<b>${escapeHtml(s.customer)}</b><br>${escapeHtml(s.originName)} → ${escapeHtml(s.destinationLabel)}<br><span style="color:var(--txt2)">Started ${new Date(s.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} at OD ${Number(s.odStart).toLocaleString()} · ${s.tripCount} load${s.tripCount === 1 ? '' : 's'} hauled${s.actualTons ? ` · ${s.actualTons.toFixed(2)} t` : ''}</span>` : 'Finish this freight.';
+  document.getElementById('ff-odo').value = '';
+  document.getElementById('ff-odo-hint').textContent = s ? `Must be at least ${Number(s.odStart).toLocaleString()}` : '';
+  document.getElementById('finishfreight-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('ff-odo').focus(), 80);
+}
+function closeFinishFreight() { document.getElementById('finishfreight-modal').style.display = 'none'; finishFreight = null; }
+async function submitFinishFreight() {
+  const f = finishFreight; if (!f) return;
+  const btn = document.getElementById('ff-save'); btn.disabled = true;
+  const r = await api('POST', `/api/freight-segments/${f.id}/close`, { odometer: document.getElementById('ff-odo').value });
+  btn.disabled = false;
+  if (!r.ok) return toast(r.error || 'Could not finish the freight', 'error');
+  closeFinishFreight();
+  toast(`Freight finished — ${r.segment.billableMiles.toLocaleString()} billable miles`, 'success');
+  renderDriver();
 }
 
-async function tripAction(loadId, action) {
+async function tripAction(loadId, action, extra) {
   let gps = null;
   try {
     gps = await new Promise(resolve => {
@@ -3282,13 +3660,111 @@ async function tripAction(loadId, action) {
     });
   } catch (e) {}
 
-  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action, gps });
+  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action, gps, ...(extra || {}) });
   if (d.ok) {
     toast(action === 'delivered' ? 'Submitted for approval!' : 'Updated', 'success');
     await loadAll();
     renderDriver();
   } else {
     toast(d.error || 'Failed', 'error');
+  }
+  return d;
+}
+
+// Read a photo from a file input, downscale to ~1200px, hand back a JPEG data URL.
+function compressImageFile(file, cb) {
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const maxDim = 1200;
+      let w = img.width, h = img.height;
+      if (w > h && w > maxDim) { h = h * maxDim / w; w = maxDim; }
+      else if (h > maxDim) { w = w * maxDim / h; h = maxDim; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      cb(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── LOADED: ticket captured once, at the yard ────────────────────────────────
+// One screen: photo, source (supplier scale ticket / VBT internal), ticket
+// number (checked live against every ticket on file), net tons. Confirming
+// stamps "Loaded" with the ticket attached to THIS trip.
+let loadedForm = null;   // { loadId, tripNum, source, photo }
+function openLoadedForm(loadId) {
+  const l = (window._currentDispatch || []).find(x => x.loadId === loadId); if (!l) return;
+  const open = (l.trips || []).find(t => !t.timestamps?.completed);
+  const yardId = open ? open.yardId : l.pickupYardId;
+  loadedForm = { loadId, tripNum: open ? open.tripNum : (l.loadsDelivered || 0) + 1, source: yardId === 'vbt' ? 'vbt' : 'supplier', photo: '' };
+  document.getElementById('loaded-input').value = '';
+  document.getElementById('loaded-preview').style.display = 'none';
+  document.getElementById('loaded-number').value = '';
+  document.getElementById('loaded-number-msg').textContent = '';
+  document.getElementById('loaded-tons').value = '';
+  const btn = document.getElementById('loaded-save-btn'); btn.disabled = false; btn.textContent = 'Confirm — loaded & rolling';
+  loadedSetSource(loadedForm.source);
+  document.getElementById('loaded-input').onchange = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    compressImageFile(file, (data) => {
+      loadedForm.photo = data;
+      const p = document.getElementById('loaded-preview'); p.src = data; p.style.display = 'block';
+    });
+  };
+  document.getElementById('loaded-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('loaded-number').focus(), 80);
+}
+function loadedSetSource(src) {
+  if (!loadedForm) return;
+  loadedForm.source = src;
+  document.getElementById('loaded-src-supplier').className = 'btn ' + (src === 'supplier' ? 'primary' : 'ghost');
+  document.getElementById('loaded-src-vbt').className = 'btn ' + (src === 'vbt' ? 'primary' : 'ghost');
+  document.getElementById('loaded-tons-label').textContent = src === 'supplier' ? 'Net tons (from the scale ticket)' : 'Net tons (optional for a VBT ticket)';
+  document.getElementById('loaded-intro').textContent = src === 'supplier'
+    ? 'Photograph the scale ticket, then confirm its number and net tons. This is the only time you enter it.'
+    : 'Enter the VBT internal ticket number. A photo and tons are optional.';
+}
+let loadedCheckTimer = null;
+function loadedCheckNumber() {
+  clearTimeout(loadedCheckTimer);
+  const n = document.getElementById('loaded-number').value.trim();
+  const msg = document.getElementById('loaded-number-msg');
+  if (!n) { msg.textContent = ''; msg.style.color = 'var(--txt3)'; return; }
+  loadedCheckTimer = setTimeout(async () => {
+    const r = await api('GET', `/api/tickets/check?number=${encodeURIComponent(n)}&loadId=${encodeURIComponent(loadedForm?.loadId || '')}&tripNum=${loadedForm?.tripNum || ''}`);
+    if (!loadedForm || document.getElementById('loaded-number').value.trim() !== n) return;
+    msg.textContent = r.message || '';
+    msg.style.color = r.available ? 'var(--G)' : 'var(--R)';
+  }, 300);
+}
+function closeLoaded() { document.getElementById('loaded-modal').style.display = 'none'; loadedForm = null; }
+async function confirmLoaded() {
+  const f = loadedForm; if (!f) return;
+  const number = document.getElementById('loaded-number').value.trim();
+  const tonsRaw = document.getElementById('loaded-tons').value.trim();
+  if (!number) { toast('Ticket number is required', 'error'); return; }
+  if (f.source === 'supplier' && !tonsRaw) { toast('Enter the net tons from the scale ticket', 'error'); return; }
+  if (f.source === 'supplier' && !f.photo) { toast('Take a photo of the scale ticket', 'error'); return; }
+  const btn = document.getElementById('loaded-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const ticket = { source: f.source, number, netTons: tonsRaw === '' ? null : Number(tonsRaw) };
+    if (f.photo) {
+      const up = await uploadPhoto('ticket', f.loadId, f.photo);
+      if (up.url) ticket.photoUrl = up.url;
+      else if (up.fallback) ticket.photo = f.photo;
+      else throw new Error('Upload returned no URL');
+    }
+    const d = await tripAction(f.loadId, 'loaded', { ticket });
+    if (d.ok) closeLoaded();
+  } catch (e) {
+    toast('Could not save: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Confirm — loaded & rolling';
   }
 }
 
@@ -3303,28 +3779,13 @@ function openTicketUpload(loadId) {
   document.getElementById('ticket-input').onchange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    // Compress to ~1200px max
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const maxDim = 1200;
-        let w = img.width, h = img.height;
-        if (w > h && w > maxDim) { h = h * maxDim / w; w = maxDim; }
-        else if (h > maxDim) { w = w * maxDim / h; h = maxDim; }
-        canvas.width = w; canvas.height = h;
-        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        const data = canvas.toDataURL('image/jpeg', 0.85);
-        const preview = document.getElementById('ticket-preview');
-        preview.src = data;
-        preview.style.display = 'block';
-        preview.dataset.image = data;
-        document.getElementById('ticket-save-btn').disabled = false;
-      };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
+    compressImageFile(file, (data) => {
+      const preview = document.getElementById('ticket-preview');
+      preview.src = data;
+      preview.style.display = 'block';
+      preview.dataset.image = data;
+      document.getElementById('ticket-save-btn').disabled = false;
+    });
   };
 }
 
@@ -3463,7 +3924,8 @@ function renderApprovals() {
         <div class="am-info">
           <div class="am-po">${po.poNumber}</div>
           <div class="am-customer">${po.customer}</div>
-          <div class="am-detail">${l.material} · <b style="color:${l.isPartial ? 'var(--A)' : 'var(--txt)'}">${l.loadsDelivered}/${l.loadsAssigned} loads${l.isPartial ? ' ⚠ partial' : ''}</b> · ${l.driverName}${(l.pickup && l.pickup.name) ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + escapeHtml(l.pickup.name) : ''}</div>
+          <div class="am-detail">${l.material} · <b style="color:${l.isPartial ? 'var(--A)' : 'var(--txt)'}">${l.loadsDelivered}/${l.loadsAssigned} loads${l.isPartial ? ' ⚠ partial' : ''}</b> · ${l.driverName}${l.trailer ? ' · trailer ' + escapeHtml(l.trailer.number) : ''}${(l.pickup && l.pickup.name) ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + escapeHtml(l.pickup.name) : ''}</div>
+          ${ticketSummaryHtml(l)}
         </div>
         <div class="am-thumbs">
           ${(() => {
@@ -3486,6 +3948,27 @@ function renderApprovals() {
       </div>
     </div>`;
   }).join('');
+}
+
+// Per-trip tickets and planned-vs-actual tons for an office load record
+// (approvals, load details). Planned and actual are shown side by side and
+// never added together; missing tickets on delivered trips are called out.
+function ticketSummaryHtml(l) {
+  const trips = (l.trips || []).filter(t => t.ticket && t.ticket.number);
+  const tons = l.tons || {};
+  if (!trips.length && !(tons.missingTickets || []).length) return '';
+  const rows = trips.map(t => {
+    const src = t.ticket.photoUrl || t.ticket.photo;
+    return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;white-space:nowrap">#${escapeHtml(t.ticket.number)}
+      <span style="color:var(--txt3)">${t.ticket.source === 'vbt' ? 'VBT' : 'supplier'}</span>
+      <b style="font-variant-numeric:tabular-nums">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t' : '—'}</b>
+      ${src ? `<img src="${src}" class="am-thumb" style="width:22px;height:22px" onclick="event.stopPropagation();showImage('${src}')" title="Ticket ${escapeHtml(t.ticket.number)}">` : ''}</span>`;
+  }).join('');
+  const missing = (tons.missingTickets || []).length ? `<span style="color:var(--R);font-weight:600">no ticket on load${tons.missingTickets.length === 1 ? '' : 's'} ${tons.missingTickets.join(', ')}</span>` : '';
+  const line = tons.plannedTons != null
+    ? `<span style="color:var(--txt2)">Planned <b>${tons.plannedTons.toFixed(2)} t</b> · Actual <b>${tons.actualTons ? tons.actualTons.toFixed(2) + ' t' : '—'}</b>${tons.tickets ? ` (${tons.ticketsWithTons ?? tons.tickets} ticket${tons.tickets === 1 ? '' : 's'})` : ''}</span>`
+    : '';
+  return `<div class="am-detail" style="margin-top:3px;font-size:11px;line-height:1.7">${rows}${missing}${line ? `<div>${line}</div>` : ''}</div>`;
 }
 
 // Click thumbnails to view full image
@@ -3996,6 +4479,7 @@ function paintToday() {
         ${tile(s.jobs, 'Jobs Today', '', 'all')}
       </div>
       ${qaFilter !== 'all' ? `<button class="btn ghost" onclick="qaSetFilter('all')">← Showing ${qaFilter.replace('-', ' ')} · show all</button>` : ''}
+      ${shiftsPanel(d.shifts || [])}
       <div class="qa-sec-title">${loads.length} load${loads.length === 1 ? '' : 's'} · ${d.date}</div>
       ${loads.length ? loads.map(qaCard).join('') :
         `<div class="empty-state"><h3>Nothing here</h3><p>No loads match this filter for today.</p></div>`}
@@ -4005,6 +4489,53 @@ function paintToday() {
 }
 
 function qaSetFilter(f) { qaFilter = f; paintToday(); }
+
+// The drivers' day, from the shift records: who started, on what, odometer,
+// open freight, daily and billable miles once closed. Daily Log and Freight
+// Bill open as print pages rendered from the same records.
+function shiftsPanel(shifts) {
+  if (!shifts.length) return '';
+  const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
+  const rows = shifts.map(s => {
+    const seg = s.openSegment;
+    return `<div class="qa-card ${s.status === 'open' ? 'in-progress' : 'completed'}" id="shift-${escapeAttr(s.id)}">
+      <div class="qa-top"><div><div class="qa-cust">${escapeHtml(s.driverName)}</div>
+        <div class="qa-sub">${escapeHtml(s.truckNum)}${s.trailerNum ? ' + trailer ' + escapeHtml(s.trailerNum) : ''} · ${s.date}${s.date !== todayData.date ? ' <b style="color:var(--R)">(still open from an earlier day)</b>' : ''}</div></div>
+        <span class="qa-chip ${s.status === 'open' ? 'in-progress' : 'completed'}">${s.status === 'open' ? (s.openBreak ? 'On break' : 'Day open') : 'Day closed'}</span></div>
+      <div class="qa-facts">
+        <div class="qa-fact">Start <b>${t(s.startAt)}</b> · OD <b>${Number(s.startOdometer).toLocaleString()}</b></div>
+        <div class="qa-fact">End <b>${t(s.endAt)}</b> · OD <b>${s.endOdometer == null ? '—' : Number(s.endOdometer).toLocaleString()}</b></div>
+        <div class="qa-fact">Daily <b>${s.dailyMiles == null ? '—' : s.dailyMiles.toLocaleString() + ' mi'}</b> · Billable <b>${(s.billableMiles || 0).toLocaleString()} mi</b> · Non-billable <b>${s.nonBillableMiles == null ? '—' : s.nonBillableMiles.toLocaleString() + ' mi'}</b></div>
+        <div class="qa-fact">Breaks <b>${s.breakMinutes || 0} min</b>${s.workMinutes != null ? ` · Work <b>${Math.floor(s.workMinutes / 60)}h ${String(s.workMinutes % 60).padStart(2, '0')}m</b>` : ''}</div>
+        ${seg ? `<div class="qa-fact" style="grid-column:1/-1;border-color:var(--A)">Freight open: <b>${escapeHtml(seg.customer)}</b> · ${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${t(seg.timeStart)} · OD ${Number(seg.odStart).toLocaleString()} · PO ${(seg.poNumbers || []).join(', ') || '—'} · ${seg.loadIds.length} load record${seg.loadIds.length === 1 ? '' : 's'} · ${seg.tripCount} trip${seg.tripCount === 1 ? '' : 's'}${seg.actualTons ? ` · ${seg.actualTons.toFixed(2)} t` : ''}</div>` : ''}
+        ${(s.segments || []).filter(x => x.status === 'closed').map(x => `<div class="qa-fact" style="grid-column:1/-1">Freight: <b>${escapeHtml(x.customer)}</b> · ${escapeHtml(x.originName)} → ${escapeHtml(x.destinationLabel)} · ${t(x.timeStart)}–${t(x.timeEnd)} · <b>${x.billableMiles.toLocaleString()} mi</b> · <b>${(x.billableMinutes / 60).toFixed(2)} h</b> · PO ${(x.poNumbers || []).join(', ') || '—'} · ${x.loadIds.length} load record${x.loadIds.length === 1 ? '' : 's'} · ${x.tripCount} trip${x.tripCount === 1 ? '' : 's'}${x.actualTons ? ` · ${x.actualTons.toFixed(2)} t` : ''}
+          · <span style="font-weight:700;color:${x.locked ? 'var(--G)' : 'var(--A)'}">${x.locked ? 'locked — all loads approved' : `${x.approvedLoads} of ${x.loadIds.length} approved`}</span>
+          ${x.closeReason && x.closeReason !== 'driver' ? ` · <span style="color:var(--R);font-weight:600">closed by office${x.closeReason === 'end-of-day-manager' ? ' at day end — check the ending odometer' : x.closeReason === 'truck-change' ? ' at truck change' : ': ' + escapeHtml(x.closeReason)}</span>` : ''}
+          <a href="/api/freight-segments/${encodeURIComponent(x.id)}/freight-bill" target="_blank">Freight Bill${x.locked ? '' : ' (draft)'}</a></div>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <a class="btn ghost" style="font-size:12px" href="/api/shifts/${encodeURIComponent(s.id)}/daily-log" target="_blank">Daily Log${s.status === 'open' ? ' (draft)' : ''}</a>
+        ${seg ? `<button class="btn ghost" style="font-size:12px" onclick="mgrCloseSegment('${escapeAttr(seg.id)}')">Close freight for driver…</button>` : ''}
+        ${s.status === 'open' ? `<button class="btn ghost" style="font-size:12px;color:#b42318" onclick="mgrCloseShift('${escapeAttr(s.id)}')">Close day for driver…</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="qa-sec-title">Drivers' day · ${shifts.filter(s => s.status === 'open').length} open</div>${rows}`;
+}
+async function mgrCloseShift(id) {
+  const odometer = prompt('Ending odometer for this driver\'s day:'); if (odometer == null) return;
+  const reason = prompt('Reason for closing the day on the driver\'s behalf:'); if (!reason) return;
+  const r = await api('POST', `/api/shifts/${id}/close`, { odometer, reason });
+  if (!r.ok) return toast(r.error || 'Failed', 'error');
+  toast('Day closed', 'success'); renderToday();
+}
+async function mgrCloseSegment(id) {
+  const odometer = prompt('Ending odometer for this freight segment:'); if (odometer == null) return;
+  const reason = prompt('Reason for closing the freight on the driver\'s behalf:'); if (!reason) return;
+  const r = await api('POST', `/api/freight-segments/${id}/close`, { odometer, reason });
+  if (!r.ok) return toast(r.error || 'Failed', 'error');
+  toast('Freight segment closed', 'success'); renderToday();
+}
 
 function qaCard(l) {
   const label = { 'unassigned': 'Unassigned', 'assigned': 'Assigned', 'in-progress': 'In Progress',
@@ -4037,7 +4568,7 @@ function qaCard(l) {
 // Nothing commits until Confirm, so a stray tap can never reassign a load.
 function qaOpen(loadId) {
   const l = todayData.loads.find(x => x.id === loadId); if (!l) return;
-  qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId };
+  qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId, trailerId: l.trailerId || null };
   qaPaintSheet();
 }
 
@@ -4055,7 +4586,7 @@ function qaPaintSheet() {
     `<button class="qa-opt ${sel ? 'sel' : ''} ${busy ? 'busy' : ''}" onclick="${onclick}">
        <div class="t">${escapeHtml(title)}</div><div class="s">${escapeHtml(sub)}</div></button>`;
 
-  const changed = p.driverId !== l.driverId || p.truckUnitId !== l.truckUnitId || p.yardId !== l.yardId;
+  const changed = p.driverId !== l.driverId || p.truckUnitId !== l.truckUnitId || p.yardId !== l.yardId || (p.trailerId || null) !== (l.trailerId || null);
   el.innerHTML = `<div class="qa-sheet">
     <div class="qa-sheet-head">
       <div style="font-size:16px;font-weight:800">${escapeHtml(l.customer)}</div>
@@ -4085,6 +4616,16 @@ function qaPaintSheet() {
         ${d.yards.map(y => opt(p.yardId === y.id, `qaSet('yardId','${y.id}')`, y.name,
             y.isInternal ? 'Internal — no material cost' : 'Outside supplier', false)).join('')}
       </div>
+      ${(d.trailers || []).length ? `<div class="qa-step">4 · Trailer <span style="font-weight:500;color:var(--txt3)">(optional)</span></div>
+      <div class="qa-opts">
+        ${opt(!p.trailerId, `qaSet('trailerId',null)`, 'No trailer', 'Bobtail / choose later', false)}
+        ${d.trailers.map(t => {
+          const busy = t.inUseOnLoadId && t.inUseOnLoadId !== l.id;
+          const usual = t.defaultTruckId && t.defaultTruckId === p.truckUnitId;
+          return opt(p.trailerId === t.id, `qaSet('trailerId','${t.id}')`, t.number,
+            t.status !== 'available' ? t.status : busy ? 'On another load' : usual ? 'Usually with this truck' : (t.type || 'Available'), busy);
+        }).join('')}
+      </div>` : ''}
     </div>
     <div class="qa-sheet-foot">
       <button class="qa-btn ghost" onclick="qaClose()">Cancel</button>
@@ -4102,13 +4643,14 @@ async function qaConfirm() {
   const btn = document.getElementById('qa-confirm');
   btn.disabled = true; btn.textContent = 'Assigning…';
   const r = await api('POST', `/api/loads/${p.loadId}/assign`, {
-    driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId,
+    driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId, trailerId: p.trailerId || null,
   });
   if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; return toast(r.error || 'Assign failed', 'error'); }
   const who = r.load.driverName || 'Unassigned';
   const truck = r.truck ? r.truck.truckNum : 'no truck';
+  const trailer = r.trailer ? ' + ' + r.trailer.number : '';
   qaClose();
-  toast(`${who} → ${truck} → ${r.pickup.name}`, 'success');
+  toast(`${who} → ${truck}${trailer} → ${r.pickup.name}`, 'success');
   await loadAll();
   if (currentTab === 'today') await renderToday(); else if (currentTab === 'board') renderBoard();
 }
@@ -4725,6 +5267,12 @@ function openCustomerMasterForm(existing) {
         <div class="field"><label>Email</label><input id="cm-email" value="${escapeHtml(c.email || '')}"></div>
       </div>
       <div class="field"><label>Notes</label><textarea id="cm-notes" placeholder="Optional internal notes (account contact, billing instructions, etc.)">${escapeHtml(c.notes || '')}</textarea></div>
+      <div class="field"><label>Billing basis (per-ton pricing)</label>
+        <select id="cm-basis">
+          <option value="planned" ${(c.billingBasis || 'planned') === 'planned' ? 'selected' : ''}>Planned — quantity-per-load rule (25 t per load)</option>
+          <option value="actual" ${c.billingBasis === 'actual' ? 'selected' : ''}>Actual — confirmed scale-ticket tons</option>
+        </select>
+        <div style="font-size:11px;color:var(--txt3);margin-top:4px">"Actual" bills the net tons the driver confirmed from each ticket. A load with a delivered trip that has no ticket tons cannot be billed until it is corrected.</div></div>
       ${isEdit ? `<div class="field" style="flex-direction:row;gap:6px;align-items:center"><input type="checkbox" id="cm-active" ${c.active !== false ? 'checked' : ''} style="width:auto;margin:0"><label for="cm-active" style="text-transform:none;letter-spacing:0;font-weight:500;color:var(--txt)">Active (uncheck to hide from PO dropdown without deleting)</label></div>` : ''}
     </div>
     <div class="modal-foot">
@@ -4748,6 +5296,7 @@ async function saveCustomerMaster(existingId) {
     phone:   v('cm-phone'),
     email:   v('cm-email'),
     notes:   v('cm-notes'),
+    billingBasis: v('cm-basis') || 'planned',
   };
   const activeEl = document.getElementById('cm-active');
   if (activeEl) body.active = activeEl.checked;
@@ -5989,9 +6538,42 @@ function paintFleet() {
       </td>
     </tr>`).join('');
 
+  // Trailers are a third asset: any truck can pull any trailer. "Usual truck"
+  // only pre-fills Quick Assign.
+  const trailers = fleetState.trailers || [];
+  const trStatuses = fleetState.trailerStatuses || tStatuses;
+  const trailersRows = trailers.map(t => `
+    <tr>
+      <td><input type="text" data-trailer-id="${escapeAttr(t.id)}" data-field="number" value="${escapeAttr(t.number || '')}" ${inp}></td>
+      <td><input type="text" data-trailer-id="${escapeAttr(t.id)}" data-field="type" value="${escapeAttr(t.type || '')}" ${inp}></td>
+      <td><select data-trailer-id="${escapeAttr(t.id)}" data-field="status" ${inp}>
+        ${trStatuses.map(st => `<option value="${st}" ${st === t.status ? 'selected' : ''}>${st}</option>`).join('')}</select></td>
+      <td><select data-trailer-id="${escapeAttr(t.id)}" data-field="defaultTruckId" ${inp}>${truckOpts(t.defaultTruckId)}</select></td>
+      <td style="text-align:center"><input type="checkbox" data-trailer-id="${escapeAttr(t.id)}" data-field="active" ${t.active !== false ? 'checked' : ''}></td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn ghost" style="padding:5px 10px;font-size:11px" onclick="saveTrailer('${escapeAttr(t.id)}')">Save</button>
+        <button class="btn ghost" style="padding:5px 10px;font-size:11px;color:#b42318" onclick="deleteTrailer('${escapeAttr(t.id)}')">Remove</button>
+      </td>
+    </tr>`).join('');
+
   const th = (label, extra = '') => `<th style="text-align:left;padding:10px 14px;font-weight:600;${extra}">${label}</th>`;
   document.getElementById('fleet-content').innerHTML = `
     <div style="display:grid;gap:18px">
+      <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden" id="fleet-trailers">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="font-size:14px;font-weight:700;letter-spacing:-.005em">Trailers</div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${trailers.length} trailer${trailers.length === 1 ? '' : 's'} · independent of trucks; "usual truck" only pre-fills Quick Assign</div>
+          </div>
+          <button class="btn primary" onclick="addTrailerPrompt()" style="padding:7px 14px;font-size:12px">+ Add Trailer</button>
+        </div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px">
+          <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)"><tr>
+            ${th('Trailer number')}${th('Type')}${th('Status', 'width:140px')}${th('Usual truck', 'width:160px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
+          </tr></thead>
+          <tbody>${trailersRows || `<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--txt3)">No trailers yet — click "Add Trailer".</td></tr>`}</tbody>
+        </table></div>
+      </div>
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden">
         <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
           <div>
@@ -6088,6 +6670,38 @@ async function addDriverPrompt() {
     toast(d.loginCreated ? 'Driver added — they can log in and be dispatched now' : 'Driver added to the roster (no login: database not available)', d.loginCreated ? 'success' : 'error');
     await loadAll(); renderFleet();
   } catch (e) { toast('Add driver failed: ' + e.message, 'error'); }
+}
+
+async function addTrailerPrompt() {
+  const number = (prompt('Trailer number (e.g. "3B"):') || '').trim();
+  if (!number) return;
+  const type = (prompt('Type (e.g. "Transfer", "Pup") — optional:') || '').trim();
+  try {
+    await fleetCall('POST', '/api/fleet/trailers', { number, type });
+    toast('Trailer added', 'success');
+    await loadAll(); renderFleet();
+  } catch (e) { toast('Add trailer failed: ' + e.message, 'error'); }
+}
+
+async function saveTrailer(id) {
+  const f = (field) => document.querySelector(`[data-trailer-id="${id}"][data-field="${field}"]`);
+  try {
+    await fleetCall('PUT', '/api/fleet/trailers/' + encodeURIComponent(id), {
+      number: f('number')?.value, type: f('type')?.value, status: f('status')?.value,
+      defaultTruckId: f('defaultTruckId')?.value || null, active: !!f('active')?.checked,
+    });
+    toast('Trailer saved', 'success');
+    await loadAll(); renderFleet();
+  } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+}
+
+async function deleteTrailer(id) {
+  if (!confirm('Remove this trailer? If it has delivery history it will be deactivated instead, so past loads keep their trailer.')) return;
+  try {
+    const d = await fleetCall('DELETE', '/api/fleet/trailers/' + encodeURIComponent(id));
+    toast(d.deactivated ? 'Trailer deactivated (has history)' : 'Trailer removed', 'success');
+    await loadAll(); renderFleet();
+  } catch (e) { toast('Remove failed: ' + e.message, 'error'); }
 }
 
 async function saveDriver(username) {
@@ -6352,8 +6966,13 @@ function fmPaintCard() {
       ${l ? row('PO', l.poNumber || '—') : ''}
       ${l ? row('Customer', l.customer) : ''}
       ${l ? row('Material', l.material) : ''}
+      ${row('Trailer', t.trailerNum)}
+      ${t.shift ? row('Day', `since ${new Date(t.shift.startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(t.shift.startOdometer).toLocaleString()}${t.shift.onBreak ? ' · on break' : ''}`) : ''}
+      ${t.shift && t.shift.segment ? row('Freight', `${t.shift.segment.customer} · ${t.shift.segment.originName} → ${t.shift.segment.destinationLabel} · since ${new Date(t.shift.segment.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(t.shift.segment.odStart).toLocaleString()}`) : ''}
       ${l ? row('Load', `${l.loadNumber} of ${l.loadsAssigned}`) : ''}
       ${l ? row('Trip', l.tripNumber) : ''}
+      ${l && l.currentTicket ? row('Ticket', `#${l.currentTicket.number}${l.currentTicket.netTons != null ? ` · ${l.currentTicket.netTons.toFixed(2)} t` : ''}${l.currentTicket.source === 'vbt' ? ' (VBT)' : ''}`) : ''}
+      ${l && l.tickets ? row('Actual tons', `${l.actualTons.toFixed(2)} t from ${l.tickets} ticket${l.tickets === 1 ? '' : 's'}${l.plannedTons != null ? ` · planned ${l.plannedTons.toFixed(2)} t` : ''}`) : ''}
       ${l && l.pickup ? row('Pickup', l.pickup.name + (l.pickup.geo ? ' 📍' : ' (no coordinates)')) : ''}
       ${l ? row('Destination', ([l.address, l.city].filter(Boolean).join(', ') || '—') + (l.destination && l.destination.geo ? ' 📍' : ' (no coordinates)')) : ''}
       ${l && l.tripStartedAt ? row('Trip started', new Date(l.tripStartedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
