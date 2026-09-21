@@ -351,9 +351,26 @@ async function call(cookie, method, path, body) {
     await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'trip-complete' });
     await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   };
+  // Day open again (Beryle ended the first one), so an odometer prompt WOULD
+  // appear if VBT were treated as a freight start. It must not.
+  await call(drv, 'POST', '/api/shifts/start', { truckId: 'truck-2', odometer: 41080, inspection: { satisfactory: true }, signature: PNG });
   await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   chk('1. before anything: Start Load 1 of 3, indicator 1 of 3, 0 delivered', await cardState(), 'Start Load 1 of 3 | 1/3/0');
-  await runTrip(1);
+  console.log('── Driver: VBT pickup — one tap, no yard picker, no odometer, no freight ──');
+  await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'start-trip' });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  const vbtBtn = await d.page.evaluate(() => { const card = Array.from(document.querySelectorAll('.trip-card')).find(c => /BTN-3/.test(c.innerText)); const b = Array.from(card.querySelectorAll('.trip-action')).find(x => /Arrived/.test(x.innerText)); return b ? b.innerText.replace(/\s+/g, ' ').trim() : 'none'; });
+  chk('the load says VBT Yard, so the button is "Arrived at VBT Yard"', vbtBtn, 'Arrived at VBT Yard');
+  await d.page.evaluate(async () => { const card = Array.from(document.querySelectorAll('.trip-card')).find(c => /BTN-3/.test(c.innerText)); const b = Array.from(card.querySelectorAll('.trip-action')).find(x => /Arrived/.test(x.innerText)); await arrivedAtOwnYard(b.getAttribute('onclick').match(/'([^']+)'/)[1]); });
+  await d.page.waitForTimeout(1500);
+  const vbtState = await d.page.evaluate(() => ({ yardModal: document.getElementById('yard-modal').style.display, freightModal: document.getElementById('freightstart-modal').style.display, next: (Array.from(document.querySelectorAll('.trip-card')).find(c => /BTN-3/.test(c.innerText)).querySelector('.trip-action') || {}).innerText }));
+  const vbtLoad = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === bl.id);
+  chk('   no yard picker, no odometer prompt; trip stamped at VBT Yard; next step is Loaded', `${vbtState.yardModal !== 'flex'} ${vbtState.freightModal !== 'flex'} ${vbtLoad.trips[0].actualYardName} ${/Loaded/.test(vbtState.next || '')}`, 'true true VBT Yard true');
+  chk('   no freight segment was opened at our own yard', (await call(mgr, 'GET', '/api/freight-segments')).data.segments.filter(s => s.status === 'open').length, 0);
+  await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'loaded', ticket: { source: 'vbt', number: 'BTN-1', netTons: 10 } });
+  await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'arrived-jobsite' });
+  await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'trip-complete' });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   chk('2. load 1 delivered: Start Load 2 of 3, indicator 2 of 3, 1 delivered', await cardState(), 'Start Load 2 of 3 | 2/3/1');
   await runTrip(2);
   chk('3. load 2 delivered: Start Load 3 of 3, indicator 3 of 3, 2 delivered', await cardState(), 'Start Load 3 of 3 | 3/3/2');
