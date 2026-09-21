@@ -3257,7 +3257,11 @@ function tripCard(l) {
   const rejected = l.approvalStatus === 'rejected';
   // Multi-trip: are we between trips waiting for "Start Load N+1"?
   const allTripsDone = (l.loadsDelivered || 0) >= totalTrips;
-  const betweenTrips = !submitted && !allTripsDone && tripCompleted;
+  // Between trips = something delivered, nothing in progress, more to do.
+  // When every recorded trip is complete the active trip is an empty
+  // placeholder (no stamps), so this must key off the delivered count, not
+  // off that placeholder — otherwise the card falls back to "Load 1".
+  const betweenTrips = !submitted && !allTripsDone && !started && ((l.loadsDelivered || 0) > 0 || tripCompleted);
 
   let banner = '';
   if (rejected) banner = `<div class="banner rejected"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Rejected by manager${l.rejectReason ? ': ' + l.rejectReason : ''} — re-do this trip</div>`;

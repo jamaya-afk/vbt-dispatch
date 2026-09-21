@@ -329,6 +329,47 @@ async function call(cookie, method, path, body) {
   chk('End day: 80 daily, 40 billable, 40 non-billable — derived', `${ended.status} ${ended.dailyMiles} ${ended.billableMiles} ${ended.nonBillableMiles}`, 'closed 80 40 40');
   chk('   day card says the day is closed with the miles, not "not started"', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day closed · Truck #2/.test(t) && /80 miles today \(40 on freight\)/.test(t) && !/has not started/.test(t); }), true);
   chk('   Loaded modal closed, card lists all three tickets and the running total', await d.page.evaluate(() => { const t = document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '); return document.getElementById('loaded-modal').style.display === 'none' && /#37432799 supplier 23\.19 t/.test(t) && /#37432862 supplier 24\.45 t/.test(t) && /Confirmed so far 70\.84 t/.test(t); }), true);
+  console.log('── Driver: the Start Load button names the actual current load ──');
+  // A 3-load PO with no day open (legacy path, no odometer prompts): the
+  // button must say 1 of 3, then 2 of 3, then 3 of 3, then disappear, and
+  // must always agree with the current-load indicator.
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'BTN-3', customer: 'Button Co', deliveryDate: today, address: '1 Btn St', city: 'Fresno', plannedVendorId: 'vbt' }, splits: [{ truckId: 'beryle', truckUnitId: 'truck-12', material: 'Dirt', loadsAssigned: 3, vendorId: 'vbt' }] });
+  const btnData = (await call(mgr, 'GET', '/api/data')).data;
+  const bl = btnData.loads.find(l => l.poId === btnData.pos.find(p => p.poNumber === 'BTN-3').id);
+  const cardState = async () => d.page.evaluate((id) => {
+    const cards = Array.from(document.querySelectorAll('.trip-card'));
+    const card = cards.find(c => /BTN-3/.test(c.innerText)); if (!card) return 'no-card';
+    const btn = Array.from(card.querySelectorAll('.trip-action')).map(b => b.innerText.replace(/\s+/g, ' ').trim()).find(t => /Start Load|Start Trip/.test(t)) || 'no-start-button';
+    const ind = (card.innerText.replace(/\s+/g, ' ').match(/CURRENT LOAD · (\d+) OF (\d+) · (\d+) DELIVERED/i) || []).slice(1).join('/') || 'no-indicator';
+    return `${btn} | ${ind}`;
+  }, bl.id);
+  const runTrip = async (n) => {
+    await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'start-trip' });
+    await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'arrived-pickup', yardId: 'vbt' });
+    await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'loaded', ticket: { source: 'vbt', number: `BTN-${n}`, netTons: 10 } });
+    await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'arrived-jobsite' });
+    await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'trip-complete' });
+    await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  };
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  chk('1. before anything: Start Load 1 of 3, indicator 1 of 3, 0 delivered', await cardState(), 'Start Load 1 of 3 | 1/3/0');
+  await runTrip(1);
+  chk('2. load 1 delivered: Start Load 2 of 3, indicator 2 of 3, 1 delivered', await cardState(), 'Start Load 2 of 3 | 2/3/1');
+  await runTrip(2);
+  chk('3. load 2 delivered: Start Load 3 of 3, indicator 3 of 3, 2 delivered', await cardState(), 'Start Load 3 of 3 | 3/3/2');
+  // Tapping the button starts trip 3 and leaves trips 1 and 2 untouched.
+  const tripsBefore = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === bl.id).trips.map(t => JSON.stringify(t));
+  await d.page.evaluate((id) => { const card = Array.from(document.querySelectorAll('.trip-card')).find(c => /BTN-3/.test(c.innerText)); Array.from(card.querySelectorAll('.trip-action')).find(b => /Start Load/.test(b.innerText)).click(); }, bl.id);
+  let tripsAfter = [];
+  for (let i = 0; i < 40; i++) { await d.page.waitForTimeout(500); tripsAfter = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === bl.id).trips; if (tripsAfter.length === 3) break; }
+  await d.page.waitForTimeout(800);
+  chk('   tapping it starts trip 3; trips 1 and 2 are unchanged', `${tripsAfter.length} ${tripsAfter[2] && tripsAfter[2].tripNum} ${!!(tripsAfter[2] && tripsAfter[2].timestamps.start)} ${JSON.stringify(tripsAfter[0]) === tripsBefore[0] && JSON.stringify(tripsAfter[1]) === tripsBefore[1]}`, '3 3 true true');
+  await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'arrived-pickup', yardId: 'vbt' });
+  await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'loaded', ticket: { source: 'vbt', number: 'BTN-3', netTons: 10 } });
+  await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'arrived-jobsite' });
+  await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'trip-complete' });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  chk('4. load 3 delivered: no Start Load button; indicator 3 of 3, 3 delivered', await cardState(), 'no-start-button | 3/3/3');
   await d.ctx.close();
   // Access probes with the driver's own session cookie (outside the page, so
   // the page's console stays clean of expected 403s).
