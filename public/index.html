@@ -1183,6 +1183,37 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   </div>
 </div>
 
+<!-- FREIGHT START (driver): one odometer reading when billable freight begins -->
+<div class="modal-bg" id="freightstart-modal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-head"><h2>Freight starts here</h2><button class="modal-close" onclick="closeFreightStart()">&#215;</button></div>
+    <div class="modal-body">
+      <div id="fs-intro" style="font-size:13px;line-height:1.5;margin-bottom:10px"></div>
+      <div id="fs-msg" style="font-size:12px;color:var(--R);font-weight:600;margin-bottom:6px"></div>
+      <div class="field"><label>Odometer now</label><input id="fs-odo" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 85591"><div id="fs-odo-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeFreightStart()">Cancel</button>
+      <button class="btn primary" onclick="submitFreightStart()">Arrived — start freight</button>
+    </div>
+  </div>
+</div>
+
+<!-- FINISH FREIGHT (driver): the explicit close -->
+<div class="modal-bg" id="finishfreight-modal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-head"><h2>Finish freight</h2><button class="modal-close" onclick="closeFinishFreight()">&#215;</button></div>
+    <div class="modal-body">
+      <div id="ff-intro" style="font-size:13px;line-height:1.5;margin-bottom:10px"></div>
+      <div class="field"><label>Odometer now</label><input id="ff-odo" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 85808"><div id="ff-odo-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closeFinishFreight()">Not yet</button>
+      <button class="btn primary" id="ff-save" onclick="submitFinishFreight()">Finish freight</button>
+    </div>
+  </div>
+</div>
+
 <!-- INCOMPLETE DELIVERY MODAL (driver) -->
 <div class="modal-bg" id="incomplete-modal" style="display:none">
   <div class="modal" style="max-width:420px">
@@ -2431,6 +2462,16 @@ function openLoadDetail(id) {
   if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}</dd>`;
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
   html += `</dl>`;
+  if (l.segments && l.segments.length) {
+    const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'open';
+    html += `<div style="margin-top:12px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:6px">Freight segment${l.segments.length > 1 ? 's' : ''} (billable window — miles and hours counted once)</div>
+      ${l.segments.map(s => `<div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;font-size:12px;margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;gap:8px"><b>${escapeHtml(s.customer)}</b><span style="font-size:10px;font-weight:700;text-transform:uppercase;color:${s.locked ? 'var(--G)' : s.status === 'open' ? 'var(--A)' : 'var(--txt2)'}">${s.locked ? 'locked' : s.status}</span></div>
+        <div>${escapeHtml(s.originName)} → ${escapeHtml(s.destinationLabel)} · ${t(s.timeStart)} – ${t(s.timeEnd)}${s.billableHours != null ? ` (${s.billableHours.toFixed(2)} h)` : ''}</div>
+        <div>OD ${Number(s.odStart).toLocaleString()} → ${s.odEnd == null ? 'open' : Number(s.odEnd).toLocaleString()}${s.billableMiles != null ? ` · <b>${s.billableMiles.toLocaleString()} billable mi</b>` : ''} · ${s.tripCount} trip${s.tripCount === 1 ? '' : 's'} · ${s.loadIds.length} load${s.loadIds.length === 1 ? '' : 's'}</div>
+        <a href="/api/freight-segments/${encodeURIComponent(s.id)}/freight-bill" target="_blank" style="font-size:12px">Freight Bill${s.locked ? '' : ' (draft)'}</a>
+      </div>`).join('')}</div>`;
+  }
 
   // ── Per-trip timeline ──
   // Shows every yard→jobsite cycle the driver completed, with all 5 timestamps
@@ -3164,9 +3205,7 @@ async function submitTruckChange(acceptLower) {
   if (r.code === 'odometer_below_last' && confirm(r.error + '\n\nUse this reading anyway?')) return submitTruckChange(true);
   toast(r.error || 'Could not change truck', 'error');
 }
-// Freight segments arrive in the next slice; the button is wired here so the
-// day card never dangles.
-function openFinishFreight(id) { if (typeof finishFreightOpen === 'function') return finishFreightOpen(id); toast('Freight close is not available yet', 'error'); }
+function openFinishFreight(id) { return finishFreightOpen(id); }
 
 function tripCard(l) {
   // Per-trip state. `trips[]` is the source of truth; if a legacy load lacks
@@ -3530,13 +3569,71 @@ async function confirmYard(yardId) {
     });
   } catch (e) {}
 
-  const d = await api('POST', `/api/loads/${yardLoadId}/trip-action`, { action: 'arrived-pickup', gps, yardId });
-  if (d.ok) {
+  await arrivedAtYard(yardLoadId, yardId, gps, null);
+}
+// Arrived at pickup. When the driver's day is open, the server may need one
+// odometer reading (a new freight segment starts here) or may refuse until
+// another customer's freight is finished. Nothing is stamped until then.
+async function arrivedAtYard(loadId, yardId, gps, odometer) {
+  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action: 'arrived-pickup', gps, yardId, ...(odometer != null ? { odometer } : {}) });
+  if (d.ok && d.success !== false) {
     toast('Arrived at yard', 'success');
     closeYard();
     await loadAll();
-    renderDriver();
-  } else toast(d.error || 'Failed', 'error');
+    return renderDriver();
+  }
+  if (d.code === 'odometer_required') return openFreightStart(loadId, yardId, gps, d.preview, d.error);
+  if (d.code === 'odometer_invalid') return openFreightStart(loadId, yardId, gps, freightStart ? freightStart.preview : { floor: d.floor }, d.error);
+  if (d.code === 'segment_open') {
+    closeYard();
+    const s = d.segment;
+    return showInfoModal('Finish the open freight first', `<p style="font-size:13px">${escapeHtml(d.error)}</p>
+      <div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;font-size:12px;margin-top:8px"><b>${escapeHtml(s.customer)}</b> · ${escapeHtml(s.originName)} → ${escapeHtml(s.destinationLabel)} · since ${new Date(s.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(s.odStart).toLocaleString()} · ${s.tripCount} trip${s.tripCount === 1 ? '' : 's'}</div>`,
+      `<button class="btn primary" onclick="this.closest('.modal-bg').remove();finishFreightOpen('${escapeAttr(s.id)}')">Finish freight — ${escapeHtml(s.customer)}</button>`);
+  }
+  toast(d.error || 'Failed', 'error');
+}
+let freightStart = null;   // { loadId, yardId, gps, preview }
+function openFreightStart(loadId, yardId, gps, preview, message) {
+  freightStart = { loadId, yardId, gps, preview: preview || {} };
+  const p = freightStart.preview;
+  document.getElementById('fs-intro').innerHTML = `<b>${escapeHtml(p.customer || '')}</b><br>${escapeHtml(p.originName || '')} → ${escapeHtml(p.destinationLabel || '')}<br><span style="color:var(--txt2)">Billable freight starts here. Enter ${escapeHtml(p.truckNum || 'the truck')}'s odometer reading now.</span>`;
+  document.getElementById('fs-odo').value = '';
+  document.getElementById('fs-odo-hint').textContent = p.floor != null ? `Must be at least ${Number(p.floor).toLocaleString()}` : '';
+  document.getElementById('fs-msg').textContent = message && /odometer/i.test(message) && !/Enter the odometer reading now/.test(message) ? message : '';
+  document.getElementById('freightstart-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('fs-odo').focus(), 80);
+}
+function closeFreightStart() { document.getElementById('freightstart-modal').style.display = 'none'; freightStart = null; }
+async function submitFreightStart() {
+  const f = freightStart; if (!f) return;
+  const odo = document.getElementById('fs-odo').value.trim();
+  if (!odo) return toast('Enter the odometer reading', 'error');
+  const keep = f; closeFreightStart(); freightStart = keep;
+  await arrivedAtYard(keep.loadId, keep.yardId, keep.gps, odo);
+  if (document.getElementById('freightstart-modal').style.display !== 'flex') freightStart = null;
+}
+// "Finish freight": the explicit close, asking one number.
+let finishFreight = null;
+function finishFreightOpen(id) {
+  const s = (window._shiftInfo && window._shiftInfo.shift && window._shiftInfo.shift.openSegment && window._shiftInfo.shift.openSegment.id === id) ? window._shiftInfo.shift.openSegment : null;
+  finishFreight = { id };
+  document.getElementById('ff-intro').innerHTML = s ? `<b>${escapeHtml(s.customer)}</b><br>${escapeHtml(s.originName)} → ${escapeHtml(s.destinationLabel)}<br><span style="color:var(--txt2)">Started ${new Date(s.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} at OD ${Number(s.odStart).toLocaleString()} · ${s.tripCount} trip${s.tripCount === 1 ? '' : 's'}${s.actualTons ? ` · ${s.actualTons.toFixed(2)} t` : ''}</span>` : 'Finish this freight segment.';
+  document.getElementById('ff-odo').value = '';
+  document.getElementById('ff-odo-hint').textContent = s ? `Must be at least ${Number(s.odStart).toLocaleString()}` : '';
+  document.getElementById('finishfreight-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('ff-odo').focus(), 80);
+}
+function closeFinishFreight() { document.getElementById('finishfreight-modal').style.display = 'none'; finishFreight = null; }
+async function submitFinishFreight() {
+  const f = finishFreight; if (!f) return;
+  const btn = document.getElementById('ff-save'); btn.disabled = true;
+  const r = await api('POST', `/api/freight-segments/${f.id}/close`, { odometer: document.getElementById('ff-odo').value });
+  btn.disabled = false;
+  if (!r.ok) return toast(r.error || 'Could not finish the freight', 'error');
+  closeFinishFreight();
+  toast(`Freight finished — ${r.segment.billableMiles.toLocaleString()} billable miles`, 'success');
+  renderDriver();
 }
 
 async function tripAction(loadId, action, extra) {
@@ -6856,6 +6953,8 @@ function fmPaintCard() {
       ${l ? row('Customer', l.customer) : ''}
       ${l ? row('Material', l.material) : ''}
       ${row('Trailer', t.trailerNum)}
+      ${t.shift ? row('Day', `since ${new Date(t.shift.startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(t.shift.startOdometer).toLocaleString()}${t.shift.onBreak ? ' · on break' : ''}`) : ''}
+      ${t.shift && t.shift.segment ? row('Freight', `${t.shift.segment.customer} · ${t.shift.segment.originName} → ${t.shift.segment.destinationLabel} · since ${new Date(t.shift.segment.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(t.shift.segment.odStart).toLocaleString()}`) : ''}
       ${l ? row('Load', `${l.loadNumber} of ${l.loadsAssigned}`) : ''}
       ${l ? row('Trip', l.tripNumber) : ''}
       ${l && l.currentTicket ? row('Ticket', `#${l.currentTicket.number}${l.currentTicket.netTons != null ? ` · ${l.currentTicket.netTons.toFixed(2)} t` : ''}${l.currentTicket.source === 'vbt' ? ' (VBT)' : ''}`) : ''}

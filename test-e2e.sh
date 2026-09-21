@@ -902,6 +902,156 @@ chk "   manager closes Beryle's day with a reason"   "$(curl -s -b $M -H "$J" -X
 chk "   audit trail: started, changed truck, ended, closed for driver" "$(curl -s -b $M "$B/api/audit-log" | jq "sorted(set(e['action'] for e in d['entries'] if e['action'] in ('started-shift','changed-truck','ended-shift','closed-shift-for-driver')))")" "['changed-truck', 'closed-shift-for-driver', 'ended-shift', 'started-shift']"
 chk "   trips ran all day long without a shift in every earlier section (legacy path intact)" "$(curl -s -b $M $B/api/data | jq "sum(1 for l in d['loads'] if l.get('freightSegmentId'))")" "0"
 
+echo "── 38. Freight Segment — the Cornelio 9/14/2026 packet, reproduced from the records ──"
+# Fresh server: the packet's ticket numbers are unique company-wide, so this day is built from nothing.
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-seg.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+J='Content-Type: application/json'; TODAY=$(date +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -b $M -H "$J" -X POST $B/api/drivers -d '{"username":"cornelio","password":"cornelio1","displayName":"Cornelio"}' -o /dev/null
+T3=$(curl -s -b $M -H "$J" -X POST $B/api/fleet/trucks -d '{"truckNum":"Truck #3","type":"End Dump"}' | jq "d['truck']['id']")
+TR=$(curl -s -b $M -H "$J" -X POST $B/api/fleet/trailers -d "{\"number\":\"3B\",\"type\":\"Transfer\",\"defaultTruckId\":\"$T3\"}" | jq "d['trailer']['id']")
+VM=$(curl -s -b $M -H "$J" -X POST $B/api/vendors -d '{"name":"Vulcan Madera","location":"Madera, CA"}' | jq "d['vendor']['id']")
+CID=$(curl -s -b $M -H "$J" -X POST $B/api/customers -d '{"name":"Dave Christian Construction","city":"North Fork"}' | jq "d['customer']['id']")
+curl -s -b $M -H "$J" -X POST $B/api/customer-prices -d '{"customer":"Dave Christian Construction","material":"3/4 Class 2 Base","unit":"ton","price":30}' -o /dev/null
+curl -s -b $M -H "$J" -X POST $B/api/pos -d '{"po":{"poNumber":"25031","customer":"Dave Christian Construction","deliveryDate":"'"$TODAY"'","address":"North Fork","city":"North Fork","plannedVendorId":"'"$VM"'"},
+ "splits":[{"truckId":"cornelio","truckUnitId":"'"$T3"'","trailerId":"'"$TR"'","material":"3/4 Class 2 Base","loadsAssigned":4,"vendorId":"'"$VM"'"}]}' -o /dev/null
+CL=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='25031'][0]['id']][0]")
+CD=$(mktemp); curl -s -c $CD -X POST -d "username=cornelio&password=cornelio1" $B/login -o /dev/null
+ca() { curl -s -b $CD -H "$J" -X POST $B/api/loads/$CL/trip-action -d "$1" "${@:2}"; }
+cl() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$CL'][0];print($1)"; }
+sc() { curl -s -b $CD $B/api/shifts/current | jq "$1"; }
+# Legacy path: with no day open, a trip creates no segment (as every earlier section did).
+LG=$(mktemp); curl -s -c $LG -X POST -d "username=leonardo&password=leo123" $B/login -o /dev/null
+curl -s -b $M -H "$J" -X POST $B/api/pos -d '{"po":{"poNumber":"LEG-1","customer":"Legacy Co","deliveryDate":"'"$TODAY"'","address":"1 Old Rd","city":"Fresno"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+LL=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='LEG-1'][0]['id']][0]")
+curl -s -b $LG -H "$J" -X POST $B/api/loads/$LL/trip-action -d '{"action":"start-trip"}' -o /dev/null
+chk "0. no day open → arrived-pickup works as before and opens no segment" "$(curl -s -b $LG -H "$J" -X POST $B/api/loads/$LL/trip-action -d '{"action":"arrived-pickup","yardId":"vbt"}' | jq "d.get('success'), d['load'].get('freightSegmentId')")|$(curl -s -b $M $B/api/freight-segments | jq "len(d['segments'])")" "True None|0"
+# ── The day: Truck #3, trailer 3B, OD 85,558 at VBT ──
+SH=$(curl -s -b $CD -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"'"$T3"'","trailerId":"'"$TR"'","odometer":85558,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['shift']['id']")
+chk "1. day open on Truck #3 + 3B at 85,558"        "$(sc "d['shift']['truckNum'], d['shift']['trailerNum'], d['shift']['startOdometer'], d['shift']['openSegment']")" "Truck #3 3B 85558 None"
+ca '{"action":"start-trip","gps":{"lat":36.74,"lng":-119.77}}' -o /dev/null
+R=$(ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}")
+chk "2. first arrival at Vulcan Madera: odometer required, nothing stamped, preview names the freight" "$(echo "$R" | jq "d['success'], d['code'], d['preview']['customer'], d['preview']['originName'], d['preview']['destinationLabel'], d['preview']['floor']")|$(cl "l['trips'][0]['timestamps'].get('arrivedPickup')")" "False odometer_required Dave Christian Construction Vulcan Madera North Fork, North Fork 85558|None"
+chk "   a reading below the day's start is refused" "$(ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\",\"odometer\":85000}" | jq "d['code'], d['error']")" "odometer_invalid Odometer 85,000 is below Truck #3's reading at the start of this leg (85,558)"
+R=$(ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\",\"odometer\":85591}")
+FS=$(echo "$R" | jq "d['load']['freightSegmentId']")
+chk "3. freight segment opened at 85,591: Vulcan Madera → North Fork, 1 load, open, no end" "$(curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['customer'], d['segment']['originName'], d['segment']['destinationLabel'], d['segment']['odStart'], d['segment']['odEnd'], d['segment']['status'], d['segment']['loadIds']==['$CL'], d['segment']['truckNum'], d['segment']['trailerNum'], d['segment']['tripCount']")" "Dave Christian Construction Vulcan Madera North Fork, North Fork 85591 None open True Truck #3 3B 1"
+chk "   VBT → Vulcan (85,558 → 85,591) is outside the segment" "$(curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['odStart'] - 85558")" "33"
+chk "   trip and load point at the segment"         "$(cl "l['freightSegmentId']=='$FS', l['trips'][0]['freightSegmentId']=='$FS', l['trips'][0]['timestamps']['arrivedPickup'] is not None")" "True True True"
+ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432733","netTons":23.20,"photo":"'"$PNG"'"}}' -o /dev/null; ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
+chk "4. a delivered trip does NOT close the segment" "$(curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['status'], d['segment']['tripsDelivered']")" "open 1"
+# Returning for more loads: no new segment, no odometer asked.
+ca '{"action":"start-trip"}' -o /dev/null
+chk "5. returning to Vulcan joins the same segment without an odometer" "$(ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" | jq "d.get('success'), d['load']['trips'][1]['freightSegmentId']=='$FS'")|$(curl -s -b $M $B/api/freight-segments | jq "len(d['segments'])")" "True True|1"
+ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432799","netTons":23.19,"photo":"'"$PNG"'"}}' -o /dev/null; ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
+ca '{"action":"start-trip"}' -o /dev/null; ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" -o /dev/null
+ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432862","netTons":24.45,"photo":"'"$PNG"'"}}' -o /dev/null; ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
+ca '{"action":"start-trip"}' -o /dev/null; ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" -o /dev/null
+ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432920","netTons":23.80,"photo":"'"$PNG"'"}}' -o /dev/null
+chk "6. driver cannot finish freight with load 4 still en route" "$(curl -s -b $CD -H "$J" -X POST $B/api/freight-segments/$FS/close -d '{"odometer":85808}' | jq "d['code']")" "trip_en_route"
+ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
+chk "7. four trips, 94.64 t actual on the segment, still open after the last delivery" "$(curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['tripCount'], d['segment']['tripsDelivered'], d['segment']['actualTons'], d['segment']['plannedTons'], d['segment']['ticketNumbers'], d['segment']['status']")" "4 4 94.64 100 ['37432733', '37432799', '37432862', '37432920'] open"
+curl -s -b $CD -H "$J" -X PUT $B/api/loads/$CL -d "{\"pod\":{\"signedBy\":\"DCC Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-09-14T22:00:00Z\"}}" -o /dev/null
+ca '{"action":"delivered"}' -o /dev/null
+chk "   submitting the load does not close it either" "$(cl "l['approvalStatus']")|$(curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['status']")" "submitted|open"
+chk "   Fleet Map row shows the open freight"       "$(curl -s -b $M $B/api/fleet/live | jq "[(r['shift']['segment']['customer'], r['shift']['segment']['odStart']) for r in d['trucks'] if r['driverId']=='cornelio'][0]")" "('Dave Christian Construction', 85591)"
+# Dispatch adds a fifth load for the same customer and jobsite: joins the open segment, from a different yard.
+curl -s -b $M -H "$J" -X POST $B/api/pos -d '{"po":{"poNumber":"25034","customer":"Dave Christian Construction","deliveryDate":"'"$TODAY"'","address":"North Fork","city":"North Fork","plannedVendorId":"vbt"},"splits":[{"truckId":"cornelio","truckUnitId":"'"$T3"'","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+C5=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='25034'][0]['id']][0]")
+c5() { curl -s -b $CD -H "$J" -X POST $B/api/loads/$C5/trip-action -d "$1" "${@:2}"; }
+c5 '{"action":"start-trip"}' -o /dev/null
+chk "8. a fifth load (same customer + jobsite, VBT yard) joins the open segment; its yard is kept" "$(c5 '{"action":"arrived-pickup","yardId":"vbt"}' | jq "d.get('success'), d['load']['freightSegmentId']=='$FS', d['load']['trips'][0]['actualYardName']")|$(curl -s -b $M $B/api/freight-segments/$FS | jq "len(d['segment']['loadIds']), [y['name'] for y in d['segment']['originYards']], d['segment']['originName']")" "True True VBT Yard|2 ['Vulcan Madera', 'VBT Yard'] Vulcan Madera"
+c5 '{"action":"loaded","ticket":{"source":"vbt","number":"VBT-3298","netTons":12.5}}' -o /dev/null; c5 '{"action":"arrived-jobsite"}' -o /dev/null; c5 '{"action":"trip-complete"}' -o /dev/null
+# A different customer while the freight is open: refused, nothing stamped.
+curl -s -b $M -H "$J" -X POST $B/api/pos -d '{"po":{"poNumber":"25035","customer":"ABC Materials","deliveryDate":"'"$TODAY"'","address":"500 Main St","city":"Merced","plannedVendorId":"cemex"},"splits":[{"truckId":"cornelio","truckUnitId":"'"$T3"'","material":"3/4 Rock","loadsAssigned":1,"vendorId":"cemex"}]}' -o /dev/null
+CA=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='25035'][0]['id']][0]")
+curl -s -b $CD -H "$J" -X POST $B/api/loads/$CA/trip-action -d '{"action":"start-trip"}' -o /dev/null
+chk "9. another customer's pickup is refused while the freight is open (segment_open), nothing stamped" "$(curl -s -b $CD -H "$J" -X POST $B/api/loads/$CA/trip-action -d '{"action":"arrived-pickup","yardId":"cemex","odometer":85810}' | jq "d['code'], d['segment']['customer'], d['error']")" "segment_open Dave Christian Construction Finish the Dave Christian Construction freight (Vulcan Madera → North Fork, North Fork) before starting ABC Materials's"
+chk "10. End day with the freight open is refused (segment_open), day stays open" "$(curl -s -b $CD -H "$J" -X POST $B/api/shifts/$SH/end -d '{"odometer":85868}' | jq "d['code'], d['segment']['id']=='$FS'")|$(sc "d['shift']['status']")" "segment_open True|open"
+chk "11. finish freight below its start is refused" "$(curl -s -b $CD -H "$J" -X POST $B/api/freight-segments/$FS/close -d '{"odometer":85500}' | jq "d['error']")" "The ending odometer (85,500) cannot be below the starting odometer (85,591)"
+chk "   Finish freight at 85,808 → closed by the driver, 217 billable miles" "$(curl -s -b $CD -H "$J" -X POST $B/api/freight-segments/$FS/close -d '{"odometer":85808}' | jq "d['segment']['status'], d['segment']['billableMiles'], d['segment']['closedBy'], d['segment']['closeReason'], d['segment']['odEnd'] - d['segment']['odStart']")" "closed 217 cornelio driver 217"
+chk "   closing twice refused"                      "$(curl -s -b $CD -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/freight-segments/$FS/close -d '{"odometer":85808}')" "400"
+# The paper's freight window is 6:30 → 3:00. The test ran in seconds, so the office sets the real times with a reason.
+chk "12. office correction without a reason refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"timeStart":"'"$TODAY"'T06:30:00-07:00"}')" "400"
+chk "   office sets 6:30 → 3:00 with a reason: 8.50 billable hours, 217 miles unchanged" "$(curl -s -b $M -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"timeStart":"'"$TODAY"'T06:30:00-07:00","timeEnd":"'"$TODAY"'T15:00:00-07:00","reason":"times from the paper log"}' | jq "d['segment']['billableHours'], d['segment']['billableMinutes'], d['segment']['billableMiles'], len(d['segment']['edits'])")" "8.5 510 217 1"
+chk "   an end odometer beyond the day is refused later, at End day it is checked"  "$(curl -s -b $M -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"odEnd":85500,"reason":"typo"}' | jq "d['error']")" "The ending odometer (85,500) cannot be below the starting odometer (85,591)"
+# The ABC load: leave it unstarted for the packet numbers (void it), so the day has exactly one segment.
+curl -s -b $M -X DELETE $B/api/loads/$CA -o /dev/null
+chk "13. End day at 85,868: daily 310, billable 217, non-billable 93 — all derived" "$(curl -s -b $CD -H "$J" -X POST $B/api/shifts/$SH/end -d '{"odometer":85868}' | jq "d['shift']['status'], d['shift']['dailyMiles'], d['shift']['billableMiles'], d['shift']['nonBillableMiles'], d['shift']['billableMinutes']")" "closed 310 217 93 510"
+chk "   nothing stores the 93"                      "$(curl -s -b $M $B/api/shifts/$SH | python3 -c "import json,sys;s=json.load(sys.stdin)['shift'];print('nonBillableMiles' in s, [k for k in s if 'nonbill' in k.lower()])")|$(python3 -c "import json;s=json.load(open('data.json'));sh=[x for x in s['shifts'] if x['id']=='$SH'][0];print([k for k in sh if 'nonbill' in k.lower() or 'daily' in k.lower()])")" "True ['nonBillableMiles']|[]"
+# Approval → lock; corrections after lock go through void, not a second system.
+curl -s -b $M -H "$J" -X POST $B/api/loads/$CL/approve -d '{}' -o /dev/null
+chk "14. one of two loads approved → segment not yet locked" "$(curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['locked'], d['segment']['approvedLoads']")" "False 1"
+curl -s -b $CD -H "$J" -X PUT $B/api/loads/$C5 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-09-14T22:00:00Z\"}}" -o /dev/null
+c5 '{"action":"delivered"}' -o /dev/null; curl -s -b $M -H "$J" -X POST $B/api/loads/$C5/approve -d '{}' -o /dev/null
+chk "   both approved → locked; edits, reopen and close all refused (403)" "$(curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['locked']")|$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"odEnd":85900,"reason":"x"}')|$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/freight-segments/$FS/reopen -d '{"reason":"x"}')" "True|403|403"
+chk "   voiding a load unlocks the segment (existing correction path)" "$(curl -s -b $M -H "$J" -X POST $B/api/loads/$C5/void -d '{"reason":"wrong material"}' -o /dev/null; curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['locked']")|$(curl -s -b $M -H "$J" -X POST $B/api/loads/$C5/unvoid -d '{}' -o /dev/null; curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['locked']")" "False|True"
+# Billing: ton lines never see the segment. 4 loads share 217 mi / 8.5 h ONCE for hour/mile customers.
+PV=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$CL\"]}")
+chk "15. ton line (planned): 100 t × \$30, no miles or hours in it" "$(echo "$PV" | jq "d['groups'][0]['lineItems'][0]['tons'], d['groups'][0]['totalAmount'], 'mile' in d['groups'][0]['lineItems'][0]['description'] or 'hour' in d['groups'][0]['lineItems'][0]['description']")" "100 3000 False"
+curl -s -b $M -H "$J" -X PUT $B/api/customers/$CID -d '{"billingBasis":"actual"}' -o /dev/null
+chk "   ton line (actual): 94.64 t from 4 tickets — segment miles untouched" "$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$CL\"]}" | jq "d['groups'][0]['lineItems'][0]['tons'], d['groups'][0]['totalAmount']")" "94.64 2839.2"
+# Hourly customer on Leonardo's day: two loads, one segment, hours counted once.
+curl -s -b $M -H "$J" -X POST $B/api/customers -d '{"name":"Hourly Co","city":"Clovis"}' -o /dev/null
+curl -s -b $M -H "$J" -X POST $B/api/customer-prices -d '{"customer":"Hourly Co","material":"Rock","unit":"hour","price":95}' -o /dev/null
+curl -s -b $M -H "$J" -X POST $B/api/customer-prices -d '{"customer":"Hourly Co","material":"Gravel","unit":"hour","price":95}' -o /dev/null
+curl -s -b $M -H "$J" -X POST $B/api/pos -d '{"po":{"poNumber":"H-1","customer":"Hourly Co","deliveryDate":"'"$TODAY"'","address":"9 Hour Ln","city":"Clovis","plannedVendorId":"cemex"},
+ "splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Rock","loadsAssigned":1,"vendorId":"cemex"},{"truckId":"leonardo","truckUnitId":"truck-12","material":"Gravel","loadsAssigned":1,"vendorId":"cemex"}]}' -o /dev/null
+H1=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='H-1'][0]['id'] and l['material']=='Rock'][0]")
+H2=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='H-1'][0]['id'] and l['material']=='Gravel'][0]")
+LS=$(curl -s -b $LG -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-12","odometer":41000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['shift']['id']")
+run() { # run <loadId> <yard> [odometer]
+  curl -s -b $LG -H "$J" -X POST $B/api/loads/$1/trip-action -d '{"action":"start-trip"}' -o /dev/null
+  curl -s -b $LG -H "$J" -X POST $B/api/loads/$1/trip-action -d "{\"action\":\"arrived-pickup\",\"yardId\":\"$2\"${3:+,\"odometer\":$3}}" -o /dev/null
+  curl -s -b $LG -H "$J" -X POST $B/api/loads/$1/trip-action -d "{\"action\":\"loaded\",\"ticket\":$(tkt)}" -o /dev/null
+  curl -s -b $LG -H "$J" -X POST $B/api/loads/$1/trip-action -d '{"action":"arrived-jobsite"}' -o /dev/null
+  curl -s -b $LG -H "$J" -X POST $B/api/loads/$1/trip-action -d '{"action":"trip-complete"}' -o /dev/null
+  curl -s -b $LG -H "$J" -X PUT $B/api/loads/$1 -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+  curl -s -b $LG -H "$J" -X POST $B/api/loads/$1/trip-action -d '{"action":"delivered"}' -o /dev/null
+  curl -s -b $M -H "$J" -X POST $B/api/loads/$1/approve -d '{}' -o /dev/null
+}
+run $H1 cemex 41020; run $H2 cemex
+HS=$(curl -s -b $M $B/api/freight-segments | jq "[s['id'] for s in d['segments'] if s['customer']=='Hourly Co'][0]")
+chk "16. two hourly loads share one open segment → not priceable until it is finished" "$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$H1\",\"$H2\"]}" | jq "d['groups'][0]['unconfigured'], 'still open' in d['groups'][0]['unconfiguredReasons'][0]")" "True True"
+curl -s -b $LG -H "$J" -X POST $B/api/freight-segments/$HS/close -d '{"odometer":41080}' -o /dev/null
+chk "   both loads were already approved → the close locks it at once; time edit refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/freight-segments/$HS -d '{"timeStart":"'"$TODAY"'T07:00:00-07:00","timeEnd":"'"$TODAY"'T09:00:00-07:00","reason":"paper log"}')" "403"
+# Correction goes through the existing void path: void one load, fix the window, restore the load.
+curl -s -b $M -H "$J" -X POST $B/api/loads/$H2/void -d '{"reason":"fix freight times"}' -o /dev/null
+chk "   voided → unlocked → office sets 7:00 → 9:00 with a reason" "$(curl -s -b $M -H "$J" -X PUT $B/api/freight-segments/$HS -d '{"timeStart":"'"$TODAY"'T07:00:00-07:00","timeEnd":"'"$TODAY"'T09:00:00-07:00","reason":"paper log"}' | jq "d.get('success'), d['segment']['billableHours'], d['segment']['locked']")" "True 2 False"
+curl -s -b $M -H "$J" -X POST $B/api/loads/$H2/unvoid -d '{}' -o /dev/null
+chk "   restored → locked again with the corrected window" "$(curl -s -b $M $B/api/freight-segments/$HS | jq "d['segment']['locked'], d['segment']['billableHours']")" "True 2"
+PV=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$H1\",\"$H2\"]}")
+chk "   closed: 2.00 hours × \$95 = \$190 for BOTH loads together, not 4 hours" "$(echo "$PV" | jq "d['groups'][0]['totalAmount'], [ (ln['measure'], ln['loads'], ln['amount']) for ln in d['groups'][0]['lineItems'] ]")" "190 [(2, 1, 190), (0, 1, 0)]"
+chk "   the second load says where its hours were billed" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;print('ok')" >/dev/null; curl -s -b $M $B/api/data | jq "[l['segments'][0]['billableHours'] for l in d['loads'] if l['id']=='$H2'][0]")|$(echo "$PV" | jq "'from freight $HS' in d['groups'][0]['lineItems'][0]['description']")" "2|True"
+curl -s -b $M -H "$J" -X POST $B/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+HB=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$H1\",\"$H2\"]}" | jq "d['batches'][0]['id']")
+curl -s -b $M -H "$J" -X POST $B/api/billing-batches/$HB/send -d '{}' -o /dev/null
+chk "   QuickBooks line: quantity 2 hours, \$190"    "$(curl -s -b $M $B/api/_test/qb-fake | jq "[(ln['quantity'], ln['amount']) for ln in d['invoices'][-1]['lines']]")" "[(2, 190), (1, 0)]"
+# Second segment on the same day (mileage customer), windows must not overlap.
+curl -s -b $M -H "$J" -X POST $B/api/customers -d '{"name":"Mileage Co","city":"Sanger"}' -o /dev/null
+curl -s -b $M -H "$J" -X POST $B/api/customer-prices -d '{"customer":"Mileage Co","material":"Dirt","unit":"mile","price":4}' -o /dev/null
+curl -s -b $M -H "$J" -X POST $B/api/pos -d '{"po":{"poNumber":"M-1","customer":"Mileage Co","deliveryDate":"'"$TODAY"'","address":"2 Mile Rd","city":"Sanger","plannedVendorId":"vbt"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+M1=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='M-1'][0]['id']][0]")
+curl -s -b $LG -H "$J" -X POST $B/api/loads/$M1/trip-action -d '{"action":"start-trip"}' -o /dev/null
+chk "17. a second segment cannot start inside the first one's odometer window" "$(curl -s -b $LG -H "$J" -X POST $B/api/loads/$M1/trip-action -d '{"action":"arrived-pickup","yardId":"vbt","odometer":41050}' | jq "d['error']")" "Overlaps the Hourly Co freight (41,020 → 41,080)"
+run $M1 vbt 41090
+MS=$(curl -s -b $M $B/api/freight-segments | jq "[s['id'] for s in d['segments'] if s['customer']=='Mileage Co'][0]")
+curl -s -b $LG -H "$J" -X POST $B/api/freight-segments/$MS/close -d '{"odometer":41120}' -o /dev/null
+chk "   mileage line: 30 mi × \$4 = \$120, once"    "$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$M1\"]}" | jq "d['groups'][0]['lineItems'][0]['measure'], d['groups'][0]['totalAmount']")" "30 120"
+chk "   Leonardo's day: two segments, 60 + 30 = 90 billable of 130 daily, 40 non-billable" "$(curl -s -b $LG -H "$J" -X POST $B/api/shifts/$LS/end -d '{"odometer":41130}' | jq "d['shift']['dailyMiles'], d['shift']['billableMiles'], d['shift']['nonBillableMiles'], len(d['shift']['segments'])")" "130 90 40 2"
+# The outputs, rendered from the records.
+FB=$(curl -s -b $M $B/api/freight-segments/$FS/freight-bill)
+chk "18. Freight Bill: customer, route, driver, truck, trailer, 6:30 AM → 3:00 PM, 85,591 → 85,808, 217, 8.50, five trips with their own yards and tickets, 94.64 + 12.50" "$(echo "$FB" | python3 -c "
+import sys,re;h=sys.stdin.read()
+print('Dave Christian Construction' in h, 'Vulcan Madera' in h, 'North Fork' in h, 'Cornelio' in h, 'Truck #3' in h, '>3B<' in h, '6:30 AM' in h, '3:00 PM' in h, '85,591' in h, '85,808' in h, '>217<' in h, '>8.50<' in h, h.count('<td>Vulcan Madera</td>'), h.count('<td>VBT Yard</td>'), all(t in h for t in ['37432733','37432799','37432862','37432920','VBT-3298']), '>107.14<' in h, h.count('<div class=\"draft\">'), 'FINAL' in h)")" "True True True True True True True True True True True True 4 1 True True 0 True"
+chk "   Daily Log: 310 daily, 217 billable, 93 non-billable, the segment block" "$(curl -s -b $M $B/api/shifts/$SH/daily-log | python3 -c "
+import sys;h=sys.stdin.read();print('>310<' in h, '>217<' in h, '>93<' in h, 'Dave Christian Construction' in h, 'Vulcan Madera → North Fork' in h, h.count('<div class=\"draft\">'))")" "True True True True True 0"
+chk "   a driver cannot open another driver's Freight Bill" "$(curl -s -b $LG -o /dev/null -w '%{http_code}' $B/api/freight-segments/$FS/freight-bill)" "403"
+chk "19. audit: opened, closed, edited freight; nothing on the loads changed meaning" "$(curl -s -b $M "$B/api/audit-log" | jq "sorted(set(e['action'] for e in d['entries'] if 'freight' in e['action']))")" "['closed-freight-segment', 'edited-freight-segment', 'opened-freight-segment']"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes

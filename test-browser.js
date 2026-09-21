@@ -297,7 +297,37 @@ async function call(cookie, method, path, body) {
   const trip2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id);
   chk('confirm stamps Loaded with ticket 37432799 / 23.19 t on trip 2', `${trip2.trips[1].timestamps.loadedAt ? 'loaded' : 'not-loaded'} ${trip2.trips[1].ticket && trip2.trips[1].ticket.number} ${trip2.trips[1].ticket && trip2.trips[1].ticket.netTons} ${trip2.trips[1].ticket && trip2.trips[1].ticket.entry}`, 'loaded 37432799 23.19 typed');
   chk('   load-level photo came from trip 1, no second upload asked', !!(trip2.ticketImage || trip2.ticketImageUrl), true);
-  chk('   modal closed, card lists both tickets and the running total', await d.page.evaluate(() => { const t = document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '); return document.getElementById('loaded-modal').style.display === 'none' && /#37432799 supplier 23\.19 t/.test(t) && /Confirmed so far 46\.39 t/.test(t); }), true);
+  console.log('── Driver: freight starts at the yard, finishes explicitly, then End day ──');
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'arrived-jobsite' });
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'trip-complete' });
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'start-trip' });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  await d.page.evaluate(async () => { yardLoadId = window._currentDispatch[0].loadId; await confirmYard('vulcan'); }); await d.page.waitForTimeout(500);
+  let fsm = await d.page.evaluate(() => ({ open: document.getElementById('freightstart-modal').style.display === 'flex', intro: document.getElementById('fs-intro').innerText.replace(/\s+/g, ' '), hint: document.getElementById('fs-odo-hint').innerText }));
+  chk('first arrival with the day open asks for one odometer reading, naming the freight', `${fsm.open} ${/ABC Materials.*Vulcan → 500 Main St, Merced/.test(fsm.intro)} ${fsm.hint}`, 'true true Must be at least 41,000');
+  chk('   nothing stamped yet', (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id).trips[2].timestamps.arrivedPickup || 'none', 'none');
+  await d.page.fill('#fs-odo', '41010'); await d.page.evaluate(() => submitFreightStart()); await d.page.waitForTimeout(1800);
+  const segs = (await call(mgr, 'GET', '/api/freight-segments')).data.segments;
+  chk('   segment opened at 41,010 for ABC Materials, Vulcan → Merced, trip stamped', segs.length === 1 ? `${segs[0].customer} ${segs[0].originName} ${segs[0].odStart} ${segs[0].status} ${segs[0].tripCount}` : `${segs.length} segments`, 'ABC Materials Vulcan 41010 open 1');
+  chk('   day card shows the freight in progress with Finish freight', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Freight in progress/i.test(t) && /ABC Materials/.test(t) && /Finish freight — ABC Materials/.test(t); }), true);
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'loaded', ticket: { source: 'supplier', number: '37432862', netTons: 24.45, photo: PNG } });
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'arrived-jobsite' });
+  await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'trip-complete' });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  chk('   the last delivery did not close the freight', (await call(mgr, 'GET', '/api/freight-segments')).data.segments[0].status, 'open');
+  await d.page.evaluate(() => openEndDay()); await d.page.waitForTimeout(300);
+  chk('End day with freight open shows the segment and blocks the button', await d.page.evaluate(() => document.getElementById('ed-open-seg').style.display !== 'none' && /Freight segment still open/.test(document.getElementById('ed-open-seg').innerText) && document.getElementById('ed-save').disabled), true);
+  await d.page.evaluate(() => closeEndDay());
+  await d.page.evaluate(() => openFinishFreight(window._shiftInfo.shift.openSegment.id)); await d.page.waitForTimeout(300);
+  chk('Finish freight asks the ending odometer with the start as the floor', await d.page.evaluate(() => document.getElementById('finishfreight-modal').style.display === 'flex' && /Must be at least 41,010/.test(document.getElementById('ff-odo-hint').innerText)), true);
+  await d.page.fill('#ff-odo', '41050'); await d.page.evaluate(() => submitFinishFreight()); await d.page.waitForTimeout(1500);
+  const closedSeg = (await call(mgr, 'GET', '/api/freight-segments')).data.segments[0];
+  chk('   segment closed by the driver: 40 billable miles', `${closedSeg.status} ${closedSeg.billableMiles} ${closedSeg.closedBy}`, 'closed 40 beryle');
+  await d.page.evaluate(() => openEndDay()); await d.page.waitForTimeout(300);
+  await d.page.fill('#ed-odo', '41080'); await d.page.evaluate(() => submitEndDay()); await d.page.waitForTimeout(1500);
+  const ended = (await call(mgr, 'GET', '/api/today')).data.shifts.find(x => x.driverId === 'beryle');
+  chk('End day: 80 daily, 40 billable, 40 non-billable — derived', `${ended.status} ${ended.dailyMiles} ${ended.billableMiles} ${ended.nonBillableMiles}`, 'closed 80 40 40');
+  chk('   Loaded modal closed, card lists all three tickets and the running total', await d.page.evaluate(() => { const t = document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '); return document.getElementById('loaded-modal').style.display === 'none' && /#37432799 supplier 23\.19 t/.test(t) && /#37432862 supplier 24\.45 t/.test(t) && /Confirmed so far 70\.84 t/.test(t); }), true);
   await d.ctx.close();
   // Access probes with the driver's own session cookie (outside the page, so
   // the page's console stays clean of expected 403s).

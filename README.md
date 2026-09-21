@@ -55,6 +55,22 @@ side; invoices use planned unless the customer's billing basis is set to
 "actual", and an actual-basis load with a delivered trip that has no ticket
 tons is never priced silently.
 
+Above the load sit the driver's day and the billable window:
+**Shift → Freight Segment → Load → Trip.** A **shift** is one driver's whole
+day (truck, trailer, start/end odometer, breaks, truck changes, pre-trip
+inspection); daily miles come from its odometer legs, one per vehicle. A
+**freight segment** is one continuous customer-billable operation, opened at
+the first pickup for a customer and jobsite with a single odometer reading and
+closed only by an explicit "Finish freight" (never by a delivery); it holds
+one or more loads and their trips, and its miles and hours are counted once,
+never split across loads. VBT yard → pickup yard repositioning is outside
+every segment. Billable miles are the segment's, daily miles the shift's, and
+non-billable miles the remainder, always derived. Ton customers bill from
+trip tickets; hour and mile customers bill from closed segments. A segment
+locks when all its loads are approved; corrections go through the existing
+void path. The Daily Log and Freight Bill are print pages rendered from these
+records on request, marked DRAFT until final.
+
 ## QuickBooks Online Integration
 
 Approved loads can be batched and sent to QuickBooks as customer invoices

@@ -1432,7 +1432,8 @@ async function applyLocationRequest(rec, body, user, addressText) {
 // actualYardName / po.pickup on its own.
 function withPickup(l) {
   const po = store.pos.find(p => p.id === l.poId) || {};
-  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l) };
+  const segs = segmentsForLoad(l).map(s => { const p = segmentPublic(s); return { id: p.id, customer: p.customer, originName: p.originName, destinationLabel: p.destinationLabel, status: p.status, locked: p.locked, timeStart: p.timeStart, timeEnd: p.timeEnd, odStart: p.odStart, odEnd: p.odEnd, billableMiles: p.billableMiles, billableHours: p.billableHours, tripCount: p.tripCount, loadIds: p.loadIds }; });
+  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs };
 }
 
 function resolveVendorRate(vendorId, material) {
@@ -1538,6 +1539,31 @@ function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride, mea
 // customer with completed trips that have no ticket tons is NOT priceable —
 // it is flagged, never silently billed on the planned figure.
 function revenueDetail(load) {
+  const unit = unitKey(load.customerUnit || 'ton');
+  // Hour and mile customers: the measure comes from the load's CLOSED freight
+  // segment(s), counted once per segment and attributed to the first load
+  // in the segment. Other loads in the same segment carry zero, naming where
+  // the measure was billed, so nothing ever multiplies. A load with no
+  // segment keeps the manual miles/hours fields exactly as before.
+  if (MEASURED_UNITS[unit]) {
+    const segs = segmentsForLoad(load);
+    if (segs.length) {
+      const field = MEASURED_UNITS[unit];
+      const open = segs.find(s => s.status === 'open');
+      if (open) return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${open.id} (${open.customer}) is still open — its ${field} are not final yet` };
+      let measure = 0; const billedWith = [];
+      for (const s of segs) {
+        const p = segmentPublic(s);
+        const m = field === 'miles' ? p.billableMiles : p.billableHours;
+        if ((s.loadIds || [])[0] === load.id) measure += m || 0;
+        else billedWith.push(`${s.loadIds[0]} on ${s.id}`);
+      }
+      const d = computeAmount(load.customerRate, unit, load.loadsDelivered, load.material, load.tonsPerLoad, { [field]: measure });
+      d.basis = 'segment'; d.segmentIds = segs.map(s => s.id);
+      if (billedWith.length && measure === 0) d.reason = `${field} billed with ${billedWith.join(', ')}`;
+      return d;
+    }
+  }
   const d = computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
   d.basis = 'planned';
   if (d.unit !== 'ton') return d;
@@ -2246,6 +2272,7 @@ function fleetLiveRows(now = Date.now()) {
         // Proof so far: the current trip's ticket and the running actual tons.
         currentTicket: curTicket,
         plannedTons: tons.plannedTons, actualTons: tons.actualTons, tickets: tons.tickets, tonsSource: tons.tonsSource,
+        freightSegmentId: load.freightSegmentId || null,
       } : null,
       gps: loc ? {
         lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy == null ? null : loc.accuracy,
@@ -2938,17 +2965,29 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     stampBoth('start');
   } else if (action === 'arrived-pickup') {
     if (!trip.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
+    if (trip.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Already marked arrived at pickup' });
+    const yard = req.body.yardId ? store.vendors.find(y => y.id === req.body.yardId) : null;
+    // Freight segment decision first — nothing is stamped if the driver has
+    // to enter an odometer or finish another customer's freight.
+    const poForSeg = store.pos.find(p => p.id === l.poId) || {};
+    const dec = segmentDecision(u, l, poForSeg, yard, req.body || {});
+    if (dec.status) return res.status(dec.status).json({ success: false, error: dec.error, code: dec.code, segment: dec.segment, preview: dec.preview, floor: dec.floor });
     stampBoth('arrivedPickup');
-    if (req.body.yardId) {
-      const yard = store.vendors.find(y => y.id === req.body.yardId);
-      if (yard) {
-        l.actualYardId   = yard.id;
-        l.actualYardName = yard.name;
-        // Stamp the yard onto this trip too so per-trip analytics know which
-        // yard each trip used (a driver could rotate yards across trips).
-        trip.actualYardId   = yard.id;
-        trip.actualYardName = yard.name;
-      }
+    if (yard) {
+      l.actualYardId   = yard.id;
+      l.actualYardName = yard.name;
+      // Stamp the yard onto this trip too so per-trip analytics know which
+      // yard each trip used (a driver could rotate yards across trips).
+      trip.actualYardId   = yard.id;
+      trip.actualYardName = yard.name;
+    }
+    if (dec.join) {
+      joinSegment(dec.join, l, yard);
+      l.freightSegmentId = dec.join.id; trip.freightSegmentId = dec.join.id;
+    } else if (dec.open) {
+      const seg = openSegment(dec.shift, l, poForSeg, yard, { odometer: dec.odometer, by: u, at: iso });
+      l.freightSegmentId = seg.id; trip.freightSegmentId = seg.id;
+      logAction(u, 'opened-freight-segment', seg.id, { customer: seg.customer, origin: seg.originName, destination: seg.destination.label, odStart: seg.odStart, loadId: l.id });
     }
     // Fired after the yard is stamped so the customer is told the correct one
     notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'arrivedPickup', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
@@ -3112,9 +3151,241 @@ function shiftPublic(s) {
 }
 // Filled in by the freight-segment layer below; the shift layer only asks.
 function segmentsForShift(s) { return (store.freightSegments || []).filter(x => x.shiftId === s.id); }
-// Freight segments arrive in the next slice; until then a shift has none.
-function segmentPublic(x) { return x; }
-async function closeOpenSegmentForShift() { return null; }
+// ── FREIGHT SEGMENTS — one continuous billable freight operation ─────────────
+// A segment is the customer-billable window inside a shift: origin yard →
+// destination jobsite, time start/end, odometer start/end, holding one or
+// more loads and their trips. Billable miles and hours live here ONCE. Loads
+// keep tons. VBT → yard repositioning is outside every segment and can never
+// reach an invoice. A segment closes only by an explicit action; "Delivered"
+// on a load does not close it. Loads without a segment behave as before.
+function destinationKey(po) { return [(po.address || ''), (po.city || '')].map(x => String(x).toLowerCase().trim()).join('|'); }
+function destinationLabelOf(po) { return [po.address, po.city].filter(Boolean).join(', ') || po.job || po.customer || '—'; }
+function segmentKeyFor(po) { return `${customerKey(po.customer)}#${destinationKey(po)}`; }
+function segmentById(id) { return (store.freightSegments || []).find(x => x.id === id) || null; }
+function openSegmentForShift(s) { return segmentsForShift(s).find(x => x.status === 'open') || null; }
+function segmentsForLoad(l) { return (store.freightSegments || []).filter(x => (x.loadIds || []).includes(l.id)); }
+function segmentTrips(seg) {
+  const out = [];
+  for (const lid of seg.loadIds || []) {
+    const l = store.loads.find(x => x.id === lid); if (!l) continue;
+    for (const t of (l.trips || [])) if (t.freightSegmentId === seg.id) out.push({ load: l, trip: t });
+  }
+  return out;
+}
+// Locked = closed and every load in it approved (voided loads do not hold it
+// open, but at least one approved load is needed). Derived, never stored,
+// exactly like a load's own lock.
+function segmentLocked(seg) {
+  if (seg.status !== 'closed') return false;
+  const loads = (seg.loadIds || []).map(id => store.loads.find(l => l.id === id)).filter(Boolean);
+  // A voided load means a correction is under way: the segment opens for
+  // correction with it, and locks again when the load is restored or re-run.
+  return loads.length > 0 && loads.every(l => l.approvalStatus === 'approved' && !l.voided);
+}
+function segmentPublic(seg) {
+  if (!seg) return null;
+  const trips = segmentTrips(seg);
+  const loads = (seg.loadIds || []).map(id => store.loads.find(l => l.id === id)).filter(Boolean);
+  const tons = loads.reduce((acc, l) => { const t = loadTons(l); acc.actual += t.actualTons; acc.planned += t.plannedTons || 0; return acc; }, { actual: 0, planned: 0 });
+  const tripTons = trips.reduce((s, x) => s + (x.trip.ticket && x.trip.ticket.netTons != null ? Number(x.trip.ticket.netTons) : 0), 0);
+  const billableMinutes = seg.timeEnd ? Math.max(0, Math.round((Date.parse(seg.timeEnd) - Date.parse(seg.timeStart)) / 60000)) : null;
+  return {
+    ...seg,
+    destinationLabel: seg.destination ? seg.destination.label : '',
+    billableMiles: seg.odEnd == null ? null : Math.max(0, seg.odEnd - seg.odStart),
+    billableMinutes,
+    billableHours: billableMinutes == null ? null : Math.round(billableMinutes / 60 * 100) / 100,
+    tripCount: trips.length,
+    tripsDelivered: trips.filter(x => x.trip.timestamps && x.trip.timestamps.completed).length,
+    actualTons: Math.round(tripTons * 100) / 100,
+    loadActualTons: Math.round(tons.actual * 100) / 100,
+    plannedTons: Math.round(tons.planned * 100) / 100,
+    ticketNumbers: trips.map(x => x.trip.ticket && x.trip.ticket.number).filter(Boolean),
+    poNumbers: [...new Set(loads.map(l => (store.pos.find(p => p.id === l.poId) || {}).poNumber).filter(Boolean))],
+    locked: segmentLocked(seg),
+    approvedLoads: loads.filter(l => l.approvalStatus === 'approved' && !l.voided).length,
+  };
+}
+// Odometer window validation against the shift and its other segments. A
+// segment belongs to one vehicle: its readings must fall inside the current
+// odometer leg of the shift's truck.
+function validateSegmentWindow(shift, seg, { odStart, odEnd }, excludeId) {
+  const legs = shiftLegs(shift);
+  const leg = legs.find(lg => lg.truckId === seg.truckId && (lg.to == null || (odStart >= lg.from && odStart <= lg.to))) || legs[legs.length - 1];
+  if (odStart < leg.from) return `Odometer ${odStart.toLocaleString()} is below ${seg.truckNum}'s reading at the start of this leg (${leg.from.toLocaleString()})`;
+  if (leg.to != null && odEnd != null && odEnd > leg.to) return `Odometer ${odEnd.toLocaleString()} is beyond ${seg.truckNum}'s final reading on this leg (${leg.to.toLocaleString()})`;
+  if (odEnd != null && odEnd < odStart) return `The ending odometer (${odEnd.toLocaleString()}) cannot be below the starting odometer (${odStart.toLocaleString()})`;
+  for (const other of segmentsForShift(shift)) {
+    if (other.id === (excludeId || seg.id) || other.odEnd == null) continue;
+    const a = odStart, z = odEnd == null ? odStart : odEnd;
+    if (a < other.odEnd && z > other.odStart) return `Overlaps the ${other.customer} freight (${other.odStart.toLocaleString()} → ${other.odEnd.toLocaleString()})`;
+    if (odEnd == null && a < other.odEnd) return `Odometer ${a.toLocaleString()} is inside the closed ${other.customer} freight (${other.odStart.toLocaleString()} → ${other.odEnd.toLocaleString()})`;
+  }
+  return null;
+}
+function openSegment(shift, l, po, yard, { odometer, by, at }) {
+  const seg = {
+    id: genId('FS'), shiftId: shift.id, date: shift.date,
+    driverId: shift.driverId, driverName: shift.driverName,
+    truckId: shift.truckId, truckNum: shift.truckNum, trailerId: shift.trailerId, trailerNum: shift.trailerNum,
+    customer: po.customer || '', key: segmentKeyFor(po),
+    destination: { poId: po.id, address: po.address || '', city: po.city || '', label: destinationLabelOf(po), geo: geoPublic(po.geo) },
+    originYardId: yard ? yard.id : null, originName: yard ? yard.name : '',
+    originYards: yard ? [{ id: yard.id, name: yard.name }] : [],
+    timeStart: at, odStart: odometer, timeEnd: '', odEnd: null,
+    loadIds: [l.id], status: 'open',
+    openedBy: by.username, closedBy: '', closedAt: '', closeReason: '', edits: [],
+    truckMismatch: l.truckUnitId && l.truckUnitId !== shift.truckId ? { loadTruckId: l.truckUnitId, shiftTruckId: shift.truckId } : null,
+  };
+  store.freightSegments.push(seg);
+  return seg;
+}
+function joinSegment(seg, l, yard) {
+  if (!seg.loadIds.includes(l.id)) seg.loadIds.push(l.id);
+  if (yard && !seg.originYards.some(y => y.id === yard.id)) seg.originYards.push({ id: yard.id, name: yard.name });
+}
+// Explicit close. Driver: own segment, no trip still en route. Manager: with
+// a reason, may close with a trip en route (the trip keeps its stamps).
+function closeSegment(seg, { odometer, by, reason, at, forced }) {
+  if (seg.status !== 'open') return { error: 'This freight segment is already closed' };
+  const shift = (store.shifts || []).find(s => s.id === seg.shiftId);
+  const odo = parseOdometer(odometer);
+  if (odo == null || Number.isNaN(odo)) return { error: 'Enter the ending odometer as a whole number' };
+  const bad = shift ? validateSegmentWindow(shift, seg, { odStart: seg.odStart, odEnd: odo }) : (odo < seg.odStart ? 'Ending odometer below the starting odometer' : null);
+  if (bad) return { error: bad };
+  const enRoute = segmentTrips(seg).filter(x => !x.trip.timestamps?.completed);
+  if (enRoute.length && !forced) return { error: `Load ${enRoute[0].trip.tripNum} of ${enRoute[0].load.loadsAssigned} on PO ${(store.pos.find(p => p.id === enRoute[0].load.poId) || {}).poNumber || enRoute[0].load.id} is still en route — confirm the drop before finishing the freight`, code: 'trip_en_route' };
+  seg.timeEnd = at || new Date().toISOString(); seg.odEnd = odo; seg.status = 'closed';
+  seg.closedBy = by.username; seg.closedAt = seg.timeEnd; seg.closeReason = reason || 'driver';
+  return { ok: true };
+}
+async function closeOpenSegmentForShift(shift, { odometer, by, reason, at }) {
+  const seg = openSegmentForShift(shift);
+  if (!seg) return null;
+  const r = closeSegment(seg, { odometer, by, reason, at, forced: true });
+  if (r.error) return { error: r.error };
+  logAction(by, 'closed-freight-segment', seg.id, { customer: seg.customer, odometer, reason, forced: true });
+  return seg;
+}
+// Called from the driver's "Arrived at pickup". Decides, BEFORE anything is
+// stamped, whether this trip joins the open segment, opens a new one (needs
+// an odometer), or must wait for another customer's freight to be finished.
+function segmentDecision(u, l, po, yard, body) {
+  const shift = openShiftFor(l.truckId);
+  if (!shift) return { none: true };                       // no day open: legacy path, no segment
+  const open = openSegmentForShift(shift);
+  const key = segmentKeyFor(po);
+  if (open && open.key === key) return { join: open, shift };
+  if (open) return { status: 409, code: 'segment_open', error: `Finish the ${open.customer} freight (${open.originName} → ${open.destination.label}) before starting ${po.customer || 'another customer'}'s`, segment: segmentPublic(open) };
+  const odo = parseOdometer(body.odometer);
+  const floor = Math.max(currentOdometerFloor(shift), ...segmentsForShift(shift).filter(x => x.odEnd != null).map(x => x.odEnd));
+  // A request for one more input, not a refusal: answered 200 with success:false
+  // so the phone's console stays clean and the app opens the odometer prompt.
+  if (odo == null) return { status: 200, code: 'odometer_required', error: `Starting freight for ${po.customer}: ${yard ? yard.name : 'pickup'} → ${destinationLabelOf(po)}. Enter the odometer reading now.`, preview: { customer: po.customer, originName: yard ? yard.name : '', destinationLabel: destinationLabelOf(po), floor, truckNum: shift.truckNum } };
+  if (Number.isNaN(odo)) return { status: 400, error: 'Odometer must be a whole number' };
+  const probe = { id: '__new__', truckId: shift.truckId, truckNum: shift.truckNum, odStart: odo };
+  const bad = validateSegmentWindow(shift, probe, { odStart: odo, odEnd: null }, '__new__');
+  if (bad) return { status: 400, error: bad, code: 'odometer_invalid', floor };
+  return { open: true, shift, odometer: odo };
+}
+
+app.get('/api/freight-segments', reqMgr, (req, res) => {
+  const date = req.query.date || todayStr();
+  const list = (store.freightSegments || []).filter(x => (req.query.all ? true : x.date === date || x.status === 'open') && (!req.query.driverId || x.driverId === req.query.driverId));
+  res.json({ date, segments: list.map(segmentPublic) });
+});
+app.get('/api/freight-segments/:id', reqAuth, (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).json({ error: 'Freight segment not found' });
+  if (req.session.user.role === 'driver' && seg.driverId !== req.session.user.truckId) return res.status(403).json({ error: 'Not your freight' });
+  res.json({ segment: segmentPublic(seg), trips: segmentTrips(seg).map(({ load, trip }) => ({ loadId: load.id, material: load.material, tripNum: trip.tripNum, yardName: trip.actualYardName || '', ticket: trip.ticket ? { number: trip.ticket.number, netTons: trip.ticket.netTons, source: trip.ticket.source } : null, timestamps: trip.timestamps || {} })) });
+});
+// "Finish freight": the explicit close. Driver on their own segment; manager
+// with a reason (may close with a trip still en route).
+app.post('/api/freight-segments/:id/close', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).json({ error: 'Freight segment not found' });
+  if (u.role === 'driver' && seg.driverId !== u.truckId) return res.status(403).json({ error: 'Not your freight' });
+  const reason = String(req.body?.reason || '').trim();
+  if (u.role !== 'driver' && !reason) return res.status(400).json({ error: 'A reason is required to close freight on the driver\'s behalf' });
+  const r = closeSegment(seg, { odometer: req.body?.odometer, by: u, reason: u.role === 'driver' ? 'driver' : reason, forced: u.role !== 'driver' });
+  if (r.error) return res.status(400).json({ error: r.error, code: r.code });
+  logAction(u, 'closed-freight-segment', seg.id, { customer: seg.customer, odStart: seg.odStart, odEnd: seg.odEnd, billableMiles: seg.odEnd - seg.odStart, reason: seg.closeReason, forced: u.role !== 'driver' });
+  await saveData();
+  res.json({ success: true, segment: segmentPublic(seg) });
+});
+// Reopen (manager): only while nothing in it is approved and the day is still
+// open, so a driver can carry on with the same freight after a mistaken close.
+app.post('/api/freight-segments/:id/reopen', reqMgr, async (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).json({ error: 'Freight segment not found' });
+  if (seg.status !== 'closed') return res.status(400).json({ error: 'This freight segment is open' });
+  if (segmentLocked(seg)) return res.status(403).json({ error: 'This freight segment is locked — its loads are approved. Void a load to correct it.' });
+  const shift = (store.shifts || []).find(s => s.id === seg.shiftId);
+  if (!shift || shift.status !== 'open') return res.status(400).json({ error: 'The driver\'s day is closed; reopen is only possible during the day' });
+  if (openSegmentForShift(shift)) return res.status(400).json({ error: 'Another freight segment is open on this day' });
+  if (shift.truckId !== seg.truckId) return res.status(400).json({ error: 'The driver has changed truck since; this segment cannot be reopened' });
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required' });
+  seg.edits.push({ at: new Date().toISOString(), by: req.session.user.username, type: 'reopen', reason, before: { timeEnd: seg.timeEnd, odEnd: seg.odEnd } });
+  seg.timeEnd = ''; seg.odEnd = null; seg.status = 'open'; seg.closedBy = ''; seg.closedAt = ''; seg.closeReason = '';
+  logAction(req.session.user, 'reopened-freight-segment', seg.id, { customer: seg.customer, reason });
+  await saveData();
+  res.json({ success: true, segment: segmentPublic(seg) });
+});
+// Manager correction of the window (times, odometers) with a reason, until locked.
+app.put('/api/freight-segments/:id', reqMgr, async (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).json({ error: 'Freight segment not found' });
+  if (segmentLocked(seg)) return res.status(403).json({ error: 'This freight segment is locked — its loads are approved. Void a load to correct it.' });
+  const b = req.body || {};
+  const reason = String(b.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to change a freight segment' });
+  const next = { odStart: seg.odStart, odEnd: seg.odEnd, timeStart: seg.timeStart, timeEnd: seg.timeEnd };
+  if (b.odStart !== undefined) { next.odStart = parseOdometer(b.odStart); if (next.odStart == null || Number.isNaN(next.odStart)) return res.status(400).json({ error: 'odStart must be a whole number' }); }
+  if (b.odEnd !== undefined)   { next.odEnd = parseOdometer(b.odEnd); if (Number.isNaN(next.odEnd)) return res.status(400).json({ error: 'odEnd must be a whole number' }); }
+  for (const k of ['timeStart', 'timeEnd']) {
+    if (b[k] === undefined) continue;
+    const t = Date.parse(b[k]); if (!isFinite(t)) return res.status(400).json({ error: `${k} must be a date/time` });
+    next[k] = new Date(t).toISOString();
+  }
+  if (seg.status === 'closed' && (next.odEnd == null || !next.timeEnd)) return res.status(400).json({ error: 'A closed freight segment needs both an ending odometer and an ending time' });
+  if (next.timeEnd && Date.parse(next.timeEnd) <= Date.parse(next.timeStart)) return res.status(400).json({ error: 'The ending time must be after the starting time' });
+  const shift = (store.shifts || []).find(s => s.id === seg.shiftId);
+  const bad = shift ? validateSegmentWindow(shift, seg, { odStart: next.odStart, odEnd: next.odEnd }) : null;
+  if (bad) return res.status(400).json({ error: bad });
+  seg.edits.push({ at: new Date().toISOString(), by: req.session.user.username, type: 'edit', reason, before: { odStart: seg.odStart, odEnd: seg.odEnd, timeStart: seg.timeStart, timeEnd: seg.timeEnd }, after: next });
+  Object.assign(seg, next);
+  logAction(req.session.user, 'edited-freight-segment', seg.id, { customer: seg.customer, reason, after: next });
+  await saveData();
+  res.json({ success: true, segment: segmentPublic(seg) });
+});
+// The Freight Bill: rendered from the segment and its trips. DRAFT until locked.
+app.get('/api/freight-segments/:id/freight-bill', reqAuth, (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).send('Freight segment not found');
+  if (req.session.user.role === 'driver' && seg.driverId !== req.session.user.truckId) return res.status(403).send('Not your freight');
+  const p = segmentPublic(seg);
+  const trips = segmentTrips(seg);
+  const kv = (k, v) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(v == null || v === '' ? '—' : v)}</div></div>`;
+  const rows = trips.map(({ load, trip }, i) => {
+    const po = store.pos.find(x => x.id === load.poId) || {};
+    const ts = trip.timestamps || {};
+    return `<tr><td>${i + 1}</td><td>${esc(po.poNumber || '')}</td><td>${esc(load.material)}</td><td>${esc(trip.actualYardName || seg.originName)}</td><td>${esc(trip.ticket ? trip.ticket.number : '—')}${trip.ticket && trip.ticket.source === 'vbt' ? ' <small>(VBT)</small>' : ''}</td><td class="r">${trip.ticket && trip.ticket.netTons != null ? Number(trip.ticket.netTons).toFixed(2) : '—'}</td><td>${esc(ts.arrivedPickup || '')}</td><td>${esc(ts.loadedAt || '')}</td><td>${esc(ts.arrivedJobsite || '')}</td><td>${esc(ts.completed || '')}</td></tr>`;
+  }).join('');
+  const body = `<h1>Freight Bill / Log</h1><div class="sub">${esc(seg.date)} · <span class="stamp ${p.locked ? 'final' : 'draft'}">${p.locked ? 'FINAL — all loads approved' : (seg.status === 'open' ? 'DRAFT — freight still open' : 'DRAFT — awaiting approval')}</span></div>
+  <div class="grid">${kv('Customer', seg.customer)}${kv('PO', p.poNumbers.join(', '))}${kv('Origin', seg.originName + (seg.originYards.length > 1 ? ` (+ ${seg.originYards.slice(1).map(y => y.name).join(', ')})` : ''))}${kv('Destination', seg.destination.label)}
+    ${kv('Driver', seg.driverName)}${kv('Truck', seg.truckNum)}${kv('Trailer', seg.trailerNum)}
+    ${kv('Time start', fmtClock(seg.timeStart))}${kv('Time end', seg.timeEnd ? fmtClock(seg.timeEnd) : 'open')}${kv('Total hours', p.billableHours == null ? null : p.billableHours.toFixed(2))}
+    ${kv('OD start', seg.odStart.toLocaleString())}${kv('OD end', seg.odEnd == null ? 'open' : seg.odEnd.toLocaleString())}${kv('Billable miles', p.billableMiles == null ? null : p.billableMiles.toLocaleString())}</div>
+  <h2>Loads</h2><table><tr><th>#</th><th>PO</th><th>Material</th><th>Pickup yard</th><th>Ticket</th><th class="r">Net tons</th><th>At yard</th><th>Loaded</th><th>At job</th><th>Delivered</th></tr>${rows}
+    <tr class="tot"><td colspan="5">${trips.length} load${trips.length === 1 ? '' : 's'} · ${p.ticketNumbers.length} ticket${p.ticketNumbers.length === 1 ? '' : 's'}</td><td class="r">${p.actualTons.toFixed(2)}</td><td colspan="4">actual tons (planned ${p.plannedTons.toFixed(2)})</td></tr></table>
+  ${seg.truckMismatch ? `<div class="block" style="border-color:#c60">Note: the load was dispatched on a different truck than the driver's day (${esc(((store.trucks || []).find(t => t.id === seg.truckMismatch.loadTruckId) || {}).truckNum || seg.truckMismatch.loadTruckId)}); odometer readings are from ${esc(seg.truckNum)}.</div>` : ''}
+  ${(seg.edits || []).length ? `<h2>Corrections</h2><table>${seg.edits.map(e => `<tr><td>${esc(fmtClock(e.at))}</td><td>${esc(e.by)}</td><td>${esc(e.type)}</td><td>${esc(e.reason)}</td></tr>`).join('')}</table>` : ''}
+  <div class="foot">Closed ${seg.closedAt ? esc(fmtClock(seg.closedAt)) + ' by ' + esc(seg.closedBy) + (seg.closeReason && seg.closeReason !== 'driver' ? ' — ' + esc(seg.closeReason) : '') : 'not yet'} · Billable time and miles are this segment's own and are never split across its loads.</div>`;
+  res.type('html').send(printPage(`Freight Bill ${seg.date} ${seg.customer}`, body, { draft: !p.locked }));
+});
 function shiftOwnedBy(s, u) { return u.role !== 'driver' || s.driverId === u.truckId; }
 function currentOdometerFloor(s) {
   const legs = shiftLegs(s); return legs[legs.length - 1].from;
@@ -3676,7 +3947,7 @@ function buildBillingGroups(loadIds) {
         lineMap.set(lk, {
           material: load.material,
           unit, rate, basis,
-          loads: 0, tons: 0, amount: 0, tickets: 0,
+          loads: 0, tons: 0, amount: 0, tickets: 0, measure: 0, segmentIds: [],
           unconfigured: false, reasons: [],
           loadIds: [],
         });
@@ -3685,6 +3956,9 @@ function buildBillingGroups(loadIds) {
       ln.loads += Number(load.loadsDelivered) || 0;
       ln.tons  += tons;
       ln.tickets += loadTons(load).ticketsWithTons;
+      // Hour/mile quantity: the segment's measure, added once per segment.
+      if (MEASURED_UNITS[unit] && !revD.unconfigured) ln.measure += revD.quantity || 0;
+      (revD.segmentIds || []).forEach(id => { if (!ln.segmentIds.includes(id)) ln.segmentIds.push(id); });
       ln.amount += rev;
       ln.loadIds.push(load.id);
       if (revD.unconfigured) { ln.unconfigured = true; if (!ln.reasons.includes(revD.reason)) ln.reasons.push(revD.reason); unconfiguredLoadIds.push(load.id); }
@@ -3702,7 +3976,11 @@ function buildBillingGroups(loadIds) {
             ? (ln.basis === 'actual'
                 ? ` (${ln.tons.toFixed(2)} ton actual from ${ln.tickets} ticket${ln.tickets === 1 ? '' : 's'} @ $${ln.rate}/ton)`
                 : ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)`)
-            : ` (@ $${ln.rate}/${ln.unit})`)
+            : MEASURED_UNITS[ln.unit] && ln.segmentIds.length
+              ? ` (${ln.measure.toFixed(2)} ${MEASURED_UNITS[ln.unit]} from freight ${ln.segmentIds.join(', ')} @ $${ln.rate}/${ln.unit})`
+              : MEASURED_UNITS[ln.unit]
+                ? ` (${ln.measure.toFixed(2)} ${MEASURED_UNITS[ln.unit]} @ $${ln.rate}/${ln.unit})`
+                : ` (@ $${ln.rate}/${ln.unit})`)
         + (ln.unconfigured ? ' [NOT PRICEABLE]' : ''),
     }));
     const totalAmount = lineItems.reduce((s, ln) => s + ln.amount, 0);
@@ -4011,7 +4289,7 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
       qbCustomerId,
       lines: b.lineItems.map(ln => ({
         description: ln.description,
-        quantity: ln.unit === 'ton' ? ln.tons : ln.loads,
+        quantity: ln.unit === 'ton' ? ln.tons : (MEASURED_UNITS[ln.unit] && ln.measure ? ln.measure : ln.loads),
         amount: ln.amount,
       })),
       memo,
