@@ -1195,6 +1195,10 @@ function todayStr() { return todayStrAt(new Date()); }
 // The driver's workday: their own loads that are today or earlier and still
 // open. Never future work, never other drivers' work. One definition, used by
 // every endpoint the driver app reads.
+// The driver's active work is TODAY's loads only. An unfinished load from an
+// earlier day is never served as today's work: it is listed separately so
+// the driver and the office know it exists, and the office moves it to today
+// or closes it. Nothing is deleted or hidden from history.
 function driverWorkdayLoads(u) {
   const today = todayStr();
   return store.loads.filter(l =>
@@ -1202,7 +1206,14 @@ function driverWorkdayLoads(u) {
     !l.voided &&
     l.status !== 'completed' &&
     l.approvalStatus !== 'approved' &&
-    (l.deliveryDate || today) <= today
+    (l.deliveryDate || today) === today
+  );
+}
+function driverEarlierOpenLoads(u) {
+  const today = todayStr();
+  return store.loads.filter(l =>
+    l.truckId === u.truckId && !l.voided && l.status !== 'completed' && l.approvalStatus !== 'approved' &&
+    l.deliveryDate && l.deliveryDate < today
   );
 }
 // Rates and billing state are office information; the driver payload never
@@ -2429,7 +2440,9 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
       originalScheduledDate: l.originalScheduledDate || l.deliveryDate,
     };
   });
-  res.json({ loads: enriched });
+  // Unfinished loads from earlier days: named, never served as today's work.
+  const earlierOpen = driverEarlierOpenLoads(u).map(l => { const po = store.pos.find(p => p.id === l.poId) || {}; return { loadId: l.id, date: l.deliveryDate, poNumber: po.poNumber || '', customer: po.customer || '', loadsDelivered: l.loadsDelivered || 0, loadsAssigned: l.loadsAssigned }; });
+  res.json({ loads: enriched, today: todayStr(), earlierOpen });
 });
 
 // ── API: CREATE PO ──────────────────────────────────────────────────────────
@@ -2966,7 +2979,13 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   } else if (action === 'arrived-pickup') {
     if (!trip.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
     if (trip.timestamps?.arrivedPickup) return res.status(400).json({ error: 'Already marked arrived at pickup' });
-    const yard = req.body.yardId ? store.vendors.find(y => y.id === req.body.yardId) : null;
+    // The planned pickup is already on the load. When it is our own yard the
+    // driver is not asked to pick it: an arrival with no yard given resolves
+    // to the planned internal yard automatically.
+    const plannedPickup = resolvePickupYard(l, store.pos.find(p => p.id === l.poId) || {}, trip);
+    const yard = req.body.yardId
+      ? store.vendors.find(y => y.id === req.body.yardId)
+      : (plannedPickup && isInternalYardId(plannedPickup.id) ? store.vendors.find(y => y.id === plannedPickup.id) : null);
     // Freight segment decision first — nothing is stamped if the driver has
     // to enter an odometer or finish another customer's freight.
     const poForSeg = store.pos.find(p => p.id === l.poId) || {};
@@ -3084,7 +3103,12 @@ const INSPECTION_ITEMS = [
   'Brakes', 'Tires and wheels', 'Lights and reflectors', 'Steering', 'Horn', 'Mirrors',
   'Windshield and wipers', 'Coupling / fifth wheel', 'Trailer and tarp', 'Fluid leaks', 'Emergency equipment',
 ];
-function openShiftFor(driverId) { return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open') || null; }
+// Today's open day only. An open day from an earlier date is "stale": it is
+// never treated as today's day (no trips attach to it, no segment opens on
+// it) and it blocks a new Start day until the office closes it.
+function openShiftFor(driverId) { const today = todayStr(); return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open' && s.date === today) || null; }
+function staleOpenShiftFor(driverId) { const today = todayStr(); return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open' && s.date < today) || null; }
+function isInternalYardId(id) { return id === 'vbt'; }
 function openShiftOnTruck(truckId) { return (store.shifts || []).find(s => s.truckId === truckId && s.status === 'open') || null; }
 function openShiftWithTrailer(trailerId, exceptShiftId) { return (store.shifts || []).find(s => s.trailerId === trailerId && s.status === 'open' && s.id !== exceptShiftId) || null; }
 function parseOdometer(v) {
@@ -3278,6 +3302,9 @@ function segmentDecision(u, l, po, yard, body) {
   const key = segmentKeyFor(po);
   if (open && open.key === key) return { join: open, shift };
   if (open) return { status: 409, code: 'segment_open', error: `Finish the ${open.customer} freight (${open.originName} → ${open.destination.label}) before starting ${po.customer || 'another customer'}'s`, segment: segmentPublic(open) };
+  // Our own yard is never where billable freight begins: VBT → anywhere is
+  // repositioning, inside the day's miles only. No segment, no odometer.
+  if (yard && isInternalYardId(yard.id)) return { none: true, internal: true };
   const odo = parseOdometer(body.odometer);
   const floor = Math.max(currentOdometerFloor(shift), ...segmentsForShift(shift).filter(x => x.odEnd != null).map(x => x.odEnd));
   // A request for one more input, not a refusal: answered 200 with success:false
@@ -3388,6 +3415,11 @@ app.get('/api/freight-segments/:id/freight-bill', reqAuth, (req, res) => {
   res.type('html').send(printPage(`Freight Bill ${seg.date} ${seg.customer}`, body, { draft: !p.locked }));
 });
 function shiftOwnedBy(s, u) { return u.role !== 'driver' || s.driverId === u.truckId; }
+// A driver may act only on today's day. An open day from an earlier date is
+// resolved by the office (close with a reason), never by the driver on a
+// later date — so it cannot be quietly merged into today.
+function staleForDriver(s, u) { return u.role === 'driver' && s.status === 'open' && s.date < todayStr(); }
+const STALE_MSG = (s) => `Your day from ${s.date} was never ended. Ask the office to close it.`;
 function currentOdometerFloor(s) {
   const legs = shiftLegs(s); return legs[legs.length - 1].from;
 }
@@ -3410,6 +3442,7 @@ app.get('/api/shifts/current', reqAuth, (req, res) => {
   if (!driverId) return res.status(400).json({ error: 'driverId required' });
   const d = rosterDriver(driverId);
   const shift = openShiftFor(driverId);
+  const stale = staleOpenShiftFor(driverId);
   const trucks = (store.trucks || []).filter(t => t.active !== false).map(t => ({
     id: t.id, truckNum: t.truckNum, type: t.type || '', status: t.status || 'available', lastOdometer: t.mileage == null ? null : t.mileage,
     inUseBy: (openShiftOnTruck(t.id) || {}).driverName || '',
@@ -3418,7 +3451,7 @@ app.get('/api/shifts/current', reqAuth, (req, res) => {
   const usualTruckId = d ? d.defaultTruckId || null : null;
   const usualTrailer = usualTruckId ? trailers.find(t => t.defaultTruckId === usualTruckId) : null;
   res.json({
-    shift: shiftPublic(shift), inspectionItems: INSPECTION_ITEMS, trucks, trailers,
+    shift: shiftPublic(shift), staleShift: shiftPublic(stale), inspectionItems: INSPECTION_ITEMS, trucks, trailers,
     defaults: { truckId: usualTruckId, trailerId: usualTrailer ? usualTrailer.id : null },
     lastShift: (() => { const prev = (store.shifts || []).filter(s => s.driverId === driverId && s.status === 'closed').sort((a, b) => (b.endAt || '').localeCompare(a.endAt || ''))[0]; if (!prev) return null; const pd = shiftDerived(prev); return { id: prev.id, truckId: prev.truckId, trailerId: prev.trailerId, truckNum: prev.truckNum, trailerNum: prev.trailerNum, date: prev.date, endAt: prev.endAt, endOdometer: prev.endOdometer, dailyMiles: pd.dailyMiles, billableMiles: pd.billableMiles, closedBy: prev.closedBy }; })(),
     today: todayStr(),
@@ -3431,6 +3464,8 @@ app.post('/api/shifts/start', reqAuth, async (req, res) => {
   const b = req.body || {};
   const existing = openShiftFor(u.truckId);
   if (existing) return res.status(409).json({ error: `Your day is already open (started ${fmtClock(existing.startAt)} on ${existing.truckNum})`, code: 'shift_open', shift: shiftPublic(existing) });
+  const stale = staleOpenShiftFor(u.truckId);
+  if (stale) return res.status(409).json({ error: `Your day from ${stale.date} was never ended. Ask the office to close it, then start today.`, code: 'stale_shift_open', shift: shiftPublic(stale) });
   const truck = (store.trucks || []).find(t => t.id === b.truckId);
   if (!truck) return res.status(400).json({ error: 'Pick the truck you are driving' });
   if (truck.active === false) return res.status(400).json({ error: `${truck.truckNum} is deactivated` });
@@ -3482,6 +3517,7 @@ app.post('/api/shifts/:id/break', reqAuth, async (req, res) => {
   const s = (store.shifts || []).find(x => x.id === req.params.id);
   if (!s) return res.status(404).json({ error: 'Shift not found' });
   if (!shiftOwnedBy(s, u)) return res.status(403).json({ error: 'Not your day' });
+  if (staleForDriver(s, u)) return res.status(409).json({ error: STALE_MSG(s), code: 'stale_shift_open' });
   if (s.status !== 'open') return res.status(400).json({ error: 'This day is closed' });
   const open = (s.breaks || []).find(b => !b.endAt);
   const now = new Date().toISOString();
@@ -3504,6 +3540,7 @@ app.post('/api/shifts/:id/truck-change', reqAuth, async (req, res) => {
   const s = (store.shifts || []).find(x => x.id === req.params.id);
   if (!s) return res.status(404).json({ error: 'Shift not found' });
   if (!shiftOwnedBy(s, u)) return res.status(403).json({ error: 'Not your day' });
+  if (staleForDriver(s, u)) return res.status(409).json({ error: STALE_MSG(s), code: 'stale_shift_open' });
   if (s.status !== 'open') return res.status(400).json({ error: 'This day is closed' });
   const b = req.body || {};
   const to = (store.trucks || []).find(t => t.id === b.toTruckId);
@@ -3573,6 +3610,7 @@ app.post('/api/shifts/:id/end', reqAuth, async (req, res) => {
   const s = (store.shifts || []).find(x => x.id === req.params.id);
   if (!s) return res.status(404).json({ error: 'Shift not found' });
   if (!shiftOwnedBy(s, u)) return res.status(403).json({ error: 'Not your day' });
+  if (staleForDriver(s, u)) return res.status(409).json({ error: STALE_MSG(s), code: 'stale_shift_open' });
   if (s.status !== 'open') return res.status(400).json({ error: 'This day is already closed' });
   const r = await endShift(s, { odometer: req.body?.odometer, by: u, signature: req.body?.signature, forced: false });
   if (r.error) return res.status(r.status || 400).json({ error: r.error, code: r.code, segment: r.segment });

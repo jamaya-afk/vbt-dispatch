@@ -3003,6 +3003,7 @@ async function renderDriver() {
     const d = await r.json();
     dispatch = d.loads || [];
     window._currentDispatch = dispatch;
+    window._earlierOpen = d.earlierOpen || [];
     if (dispatch.length && dispatch[0].photoUploadAvailable !== undefined) window._photoUploadAvailable = !!dispatch[0].photoUploadAvailable;
     console.log('[DRIVER VIEW] Loads received from server:', dispatch.length);
     dispatch.forEach(l => console.log('  -', l.loadId, l.poNumber, l.material, '(' + l.loadsAssigned + ' loads)'));
@@ -3061,6 +3062,16 @@ function dayBar() {
   const info = window._shiftInfo; if (!info) return '';
   const s = info.shift;
   const btn = (label, fn, style) => `<button class="btn ${style || 'ghost'}" style="flex:1;min-height:44px" onclick="${fn}">${label}</button>`;
+  const earlier = window._earlierOpen || [];
+  const earlierNote = earlier.length ? `<div class="banner" style="background:var(--Ab);color:var(--A);border:1px solid var(--Ad);margin-top:8px">${earlier.length} unfinished load${earlier.length === 1 ? '' : 's'} from earlier days (${earlier.map(x => `${x.poNumber} · ${x.date}`).join(', ')}) — not part of today. The office can move ${earlier.length === 1 ? 'it' : 'them'} to today or close ${earlier.length === 1 ? 'it' : 'them'}.</div>` : '';
+  if (!s && info.staleShift) {
+    const st = info.staleShift;
+    return `<div class="trip-card" id="day-card"><div class="trip-body">
+      <div style="font-weight:700;color:var(--R)">Your day from ${escapeHtml(st.date)} was never ended</div>
+      <div style="font-size:12px;color:var(--txt2);margin-top:2px">${escapeHtml(st.truckNum)}${st.trailerNum ? ' + trailer ' + escapeHtml(st.trailerNum) : ''} · started ${new Date(st.startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} at OD ${Number(st.startOdometer).toLocaleString()}${st.openSegment ? ` · freight for ${escapeHtml(st.openSegment.customer)} still open` : ''}</div>
+      <div style="font-size:13px;margin-top:8px">The office needs to close that day before you can start today. Call dispatch.</div>
+      ${earlierNote}</div></div>`;
+  }
   if (!s) {
     const last = info.lastShift;
     // The day just closed: say so, with the numbers, instead of inviting a
@@ -3069,11 +3080,11 @@ function dayBar() {
       return `<div class="trip-card" id="day-card"><div class="trip-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div><div style="font-weight:700">Day closed · ${escapeHtml(last.truckNum)}${last.trailerNum ? ' + trailer ' + escapeHtml(last.trailerNum) : ''}</div>
           <div style="font-size:12px;color:var(--txt2)">Ended ${new Date(last.endAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} at OD ${Number(last.endOdometer).toLocaleString()} · ${Number(last.dailyMiles || 0).toLocaleString()} miles today${last.billableMiles ? ` (${Number(last.billableMiles).toLocaleString()} on freight)` : ''}</div></div>
-        <button class="btn ghost" style="min-height:44px" onclick="openStartDay()">Start another day</button></div></div>`;
+        <button class="btn ghost" style="min-height:44px" onclick="openStartDay()">Start another day</button></div>${earlierNote}</div>`;
     }
     return `<div class="trip-card" id="day-card"><div class="trip-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <div><div style="font-weight:700">Your day has not started</div><div style="font-size:12px;color:var(--txt2)">Truck, trailer, odometer and pre-trip inspection — under a minute.</div></div>
-      <button class="btn primary" style="min-height:44px" onclick="openStartDay()">Start day</button></div></div>`;
+      <button class="btn primary" style="min-height:44px" onclick="openStartDay()">Start day</button></div>${earlierNote}</div>`;
   }
   const seg = s.openSegment;
   const stale = info.today && s.date !== info.today;
@@ -3257,7 +3268,11 @@ function tripCard(l) {
   const rejected = l.approvalStatus === 'rejected';
   // Multi-trip: are we between trips waiting for "Start Load N+1"?
   const allTripsDone = (l.loadsDelivered || 0) >= totalTrips;
-  const betweenTrips = !submitted && !allTripsDone && tripCompleted;
+  // Between trips = something delivered, nothing in progress, more to do.
+  // When every recorded trip is complete the active trip is an empty
+  // placeholder (no stamps), so this must key off the delivered count, not
+  // off that placeholder — otherwise the card falls back to "Load 1".
+  const betweenTrips = !submitted && !allTripsDone && !started && ((l.loadsDelivered || 0) > 0 || tripCompleted);
 
   let banner = '';
   if (rejected) banner = `<div class="banner rejected"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Rejected by manager${l.rejectReason ? ': ' + l.rejectReason : ''} — re-do this trip</div>`;
@@ -3341,6 +3356,14 @@ function tripCard(l) {
       ${totalTrips > 1 ? `Start Load 1 of ${totalTrips}` : 'Start Trip'}
     </button>
     <div class="action-hint">GPS and time captured automatically</div>`;
+  } else if (started && !atPickup && l.pickupIsInternal) {
+    // Our own yard: the load already says so. One tap, no picker, no
+    // odometer — VBT is never where billable freight begins.
+    action = `<button class="trip-action pickup" onclick="arrivedAtOwnYard('${l.loadId}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
+      Arrived at ${escapeHtml(l.pickupLocation || 'VBT Yard')}
+    </button>
+    <div class="action-hint">Tap when you arrive · <a href="#" onclick="event.preventDefault();openYardPicker('${l.loadId}')">picked up somewhere else?</a></div>`;
   } else if (started && !atPickup) {
     action = `<button class="trip-action pickup" onclick="openYardPicker('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
@@ -3581,6 +3604,18 @@ async function confirmYard(yardId) {
   } catch (e) {}
 
   await arrivedAtYard(yardLoadId, yardId, gps, null);
+}
+// Arrived at our own yard: the planned pickup is sent as-is, no picker.
+async function arrivedAtOwnYard(loadId) {
+  const l = (window._currentDispatch || []).find(x => x.loadId === loadId); if (!l) return;
+  let gps = null;
+  try {
+    gps = await new Promise(resolve => {
+      if (!navigator.geolocation) return resolve(null);
+      navigator.geolocation.getCurrentPosition(p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }), () => resolve(null), { enableHighAccuracy: true, timeout: 5000 });
+    });
+  } catch (e) {}
+  await arrivedAtYard(loadId, l.pickupYardId, gps, null);
 }
 // Arrived at pickup. When the driver's day is open, the server may need one
 // odometer reading (a new freight segment starts here) or may refuse until
