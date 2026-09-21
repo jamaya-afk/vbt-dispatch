@@ -327,6 +327,7 @@ async function call(cookie, method, path, body) {
   await d.page.fill('#ed-odo', '41080'); await d.page.evaluate(() => submitEndDay()); await d.page.waitForTimeout(1500);
   const ended = (await call(mgr, 'GET', '/api/today')).data.shifts.find(x => x.driverId === 'beryle');
   chk('End day: 80 daily, 40 billable, 40 non-billable — derived', `${ended.status} ${ended.dailyMiles} ${ended.billableMiles} ${ended.nonBillableMiles}`, 'closed 80 40 40');
+  chk('   day card says the day is closed with the miles, not "not started"', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day closed · Truck #2/.test(t) && /80 miles today \(40 on freight\)/.test(t) && !/has not started/.test(t); }), true);
   chk('   Loaded modal closed, card lists all three tickets and the running total', await d.page.evaluate(() => { const t = document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '); return document.getElementById('loaded-modal').style.display === 'none' && /#37432799 supplier 23\.19 t/.test(t) && /#37432862 supplier 24\.45 t/.test(t) && /Confirmed so far 70\.84 t/.test(t); }), true);
   await d.ctx.close();
   // Access probes with the driver's own session cookie (outside the page, so

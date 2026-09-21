@@ -3062,12 +3062,23 @@ function dayBar() {
   const s = info.shift;
   const btn = (label, fn, style) => `<button class="btn ${style || 'ghost'}" style="flex:1;min-height:44px" onclick="${fn}">${label}</button>`;
   if (!s) {
+    const last = info.lastShift;
+    // The day just closed: say so, with the numbers, instead of inviting a
+    // second Start day as if nothing had happened.
+    if (last && last.date === info.today) {
+      return `<div class="trip-card" id="day-card"><div class="trip-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div><div style="font-weight:700">Day closed · ${escapeHtml(last.truckNum)}${last.trailerNum ? ' + trailer ' + escapeHtml(last.trailerNum) : ''}</div>
+          <div style="font-size:12px;color:var(--txt2)">Ended ${new Date(last.endAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} at OD ${Number(last.endOdometer).toLocaleString()} · ${Number(last.dailyMiles || 0).toLocaleString()} miles today${last.billableMiles ? ` (${Number(last.billableMiles).toLocaleString()} on freight)` : ''}</div></div>
+        <button class="btn ghost" style="min-height:44px" onclick="openStartDay()">Start another day</button></div></div>`;
+    }
     return `<div class="trip-card" id="day-card"><div class="trip-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <div><div style="font-weight:700">Your day has not started</div><div style="font-size:12px;color:var(--txt2)">Truck, trailer, odometer and pre-trip inspection — under a minute.</div></div>
       <button class="btn primary" style="min-height:44px" onclick="openStartDay()">Start day</button></div></div>`;
   }
   const seg = s.openSegment;
+  const stale = info.today && s.date !== info.today;
   return `<div class="trip-card is-today" id="day-card"><div class="trip-body">
+    ${stale ? `<div class="banner" style="background:var(--Ab);color:var(--A);border:1px solid var(--Ad);margin-bottom:8px">Your day from ${escapeHtml(s.date)} is still open — finish any freight and tap End day before starting today.</div>` : ''}
     <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
       <div style="font-weight:700">Day open · ${escapeHtml(s.truckNum)}${s.trailerNum ? ' + trailer ' + escapeHtml(s.trailerNum) : ''}</div>
       <div style="font-size:12px;color:var(--txt2)">since ${new Date(s.startAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(s.startOdometer).toLocaleString()}${s.breakMinutes ? ` · breaks ${s.breakMinutes} min` : ''}</div>
@@ -3076,7 +3087,7 @@ function dayBar() {
       <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700">Freight in progress</div>
       <div style="font-weight:700;font-size:13px;margin-top:2px">${escapeHtml(seg.customer)}</div>
       <div>${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${new Date(seg.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · OD ${Number(seg.odStart).toLocaleString()}</div>
-      <div style="color:var(--txt2)">${seg.loadIds.length} load${seg.loadIds.length === 1 ? '' : 's'} · ${seg.tripCount} trip${seg.tripCount === 1 ? '' : 's'}${seg.actualTons ? ` · ${seg.actualTons.toFixed(2)} t confirmed` : ''}</div>
+      <div style="color:var(--txt2)">${seg.tripCount} load${seg.tripCount === 1 ? '' : 's'} hauled so far${seg.actualTons ? ` · ${seg.actualTons.toFixed(2)} t confirmed` : ''}</div>
       <button class="btn primary" style="width:100%;min-height:44px;margin-top:8px" onclick="openFinishFreight('${seg.id}')">Finish freight — ${escapeHtml(seg.customer)}</button>
     </div>` : ''}
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
@@ -3618,7 +3629,7 @@ let finishFreight = null;
 function finishFreightOpen(id) {
   const s = (window._shiftInfo && window._shiftInfo.shift && window._shiftInfo.shift.openSegment && window._shiftInfo.shift.openSegment.id === id) ? window._shiftInfo.shift.openSegment : null;
   finishFreight = { id };
-  document.getElementById('ff-intro').innerHTML = s ? `<b>${escapeHtml(s.customer)}</b><br>${escapeHtml(s.originName)} → ${escapeHtml(s.destinationLabel)}<br><span style="color:var(--txt2)">Started ${new Date(s.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} at OD ${Number(s.odStart).toLocaleString()} · ${s.tripCount} trip${s.tripCount === 1 ? '' : 's'}${s.actualTons ? ` · ${s.actualTons.toFixed(2)} t` : ''}</span>` : 'Finish this freight segment.';
+  document.getElementById('ff-intro').innerHTML = s ? `<b>${escapeHtml(s.customer)}</b><br>${escapeHtml(s.originName)} → ${escapeHtml(s.destinationLabel)}<br><span style="color:var(--txt2)">Started ${new Date(s.timeStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} at OD ${Number(s.odStart).toLocaleString()} · ${s.tripCount} load${s.tripCount === 1 ? '' : 's'} hauled${s.actualTons ? ` · ${s.actualTons.toFixed(2)} t` : ''}</span>` : 'Finish this freight.';
   document.getElementById('ff-odo').value = '';
   document.getElementById('ff-odo-hint').textContent = s ? `Must be at least ${Number(s.odStart).toLocaleString()}` : '';
   document.getElementById('finishfreight-modal').style.display = 'flex';
@@ -4496,8 +4507,11 @@ function shiftsPanel(shifts) {
         <div class="qa-fact">End <b>${t(s.endAt)}</b> · OD <b>${s.endOdometer == null ? '—' : Number(s.endOdometer).toLocaleString()}</b></div>
         <div class="qa-fact">Daily <b>${s.dailyMiles == null ? '—' : s.dailyMiles.toLocaleString() + ' mi'}</b> · Billable <b>${(s.billableMiles || 0).toLocaleString()} mi</b> · Non-billable <b>${s.nonBillableMiles == null ? '—' : s.nonBillableMiles.toLocaleString() + ' mi'}</b></div>
         <div class="qa-fact">Breaks <b>${s.breakMinutes || 0} min</b>${s.workMinutes != null ? ` · Work <b>${Math.floor(s.workMinutes / 60)}h ${String(s.workMinutes % 60).padStart(2, '0')}m</b>` : ''}</div>
-        ${seg ? `<div class="qa-fact" style="grid-column:1/-1">Freight open: <b>${escapeHtml(seg.customer)}</b> · ${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${t(seg.timeStart)} · OD ${Number(seg.odStart).toLocaleString()}</div>` : ''}
-        ${(s.segments || []).filter(x => x.status === 'closed').map(x => `<div class="qa-fact" style="grid-column:1/-1">Freight: <b>${escapeHtml(x.customer)}</b> · ${escapeHtml(x.originName)} → ${escapeHtml(x.destinationLabel)} · ${t(x.timeStart)}–${t(x.timeEnd)} · ${x.billableMiles.toLocaleString()} mi · ${(x.billableMinutes / 60).toFixed(2)} h · ${x.tripCount} trip${x.tripCount === 1 ? '' : 's'}${x.actualTons ? ` · ${x.actualTons.toFixed(2)} t` : ''} <a href="/api/freight-segments/${encodeURIComponent(x.id)}/freight-bill" target="_blank">Freight Bill${x.locked ? '' : ' (draft)'}</a></div>`).join('')}
+        ${seg ? `<div class="qa-fact" style="grid-column:1/-1;border-color:var(--A)">Freight open: <b>${escapeHtml(seg.customer)}</b> · ${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${t(seg.timeStart)} · OD ${Number(seg.odStart).toLocaleString()} · PO ${(seg.poNumbers || []).join(', ') || '—'} · ${seg.loadIds.length} load record${seg.loadIds.length === 1 ? '' : 's'} · ${seg.tripCount} trip${seg.tripCount === 1 ? '' : 's'}${seg.actualTons ? ` · ${seg.actualTons.toFixed(2)} t` : ''}</div>` : ''}
+        ${(s.segments || []).filter(x => x.status === 'closed').map(x => `<div class="qa-fact" style="grid-column:1/-1">Freight: <b>${escapeHtml(x.customer)}</b> · ${escapeHtml(x.originName)} → ${escapeHtml(x.destinationLabel)} · ${t(x.timeStart)}–${t(x.timeEnd)} · <b>${x.billableMiles.toLocaleString()} mi</b> · <b>${(x.billableMinutes / 60).toFixed(2)} h</b> · PO ${(x.poNumbers || []).join(', ') || '—'} · ${x.loadIds.length} load record${x.loadIds.length === 1 ? '' : 's'} · ${x.tripCount} trip${x.tripCount === 1 ? '' : 's'}${x.actualTons ? ` · ${x.actualTons.toFixed(2)} t` : ''}
+          · <span style="font-weight:700;color:${x.locked ? 'var(--G)' : 'var(--A)'}">${x.locked ? 'locked — all loads approved' : `${x.approvedLoads} of ${x.loadIds.length} approved`}</span>
+          ${x.closeReason && x.closeReason !== 'driver' ? ` · <span style="color:var(--R);font-weight:600">closed by office${x.closeReason === 'end-of-day-manager' ? ' at day end — check the ending odometer' : x.closeReason === 'truck-change' ? ' at truck change' : ': ' + escapeHtml(x.closeReason)}</span>` : ''}
+          <a href="/api/freight-segments/${encodeURIComponent(x.id)}/freight-bill" target="_blank">Freight Bill${x.locked ? '' : ' (draft)'}</a></div>`).join('')}
       </div>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <a class="btn ghost" style="font-size:12px" href="/api/shifts/${encodeURIComponent(s.id)}/daily-log" target="_blank">Daily Log${s.status === 'open' ? ' (draft)' : ''}</a>

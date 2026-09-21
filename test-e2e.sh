@@ -876,6 +876,7 @@ chk "5. break running shows on the day"              "$(sc "d['shift']['openBrea
 chk "   ending a break twice refused"                "$(curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/break -d '{"action":"end"}' -o /dev/null; curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/break -d '{"action":"end"}' | jq "d['error']")" "No break is running"
 chk "   break recorded with an end time"             "$(sc "d['shift']['openBreak'], bool(d['shift']['breaks'][0]['endAt'])")" "False True"
 # Truck change: old truck's final reading, new truck's first reading, never mixed.
+chk "5b. trailer 3B is on Leonardo's open day → Beryle cannot start with it" "$(curl -s -b $BD -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-2","trailerId":"'"$TR"'","odometer":9000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['code'], d['error']")" "trailer_in_use Trailer 3B is already on Leonardo's open day (Truck #12)"
 curl -s -b $BD -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-2","odometer":9000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' -o /dev/null
 chk "6. change to a truck on another open day refused" "$(curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/truck-change -d '{"fromOdometer":41050,"toTruckId":"truck-2","toOdometer":9001}' | jq "d['code']")" "truck_in_use"
 chk "   final reading below the leg start refused"   "$(curl -s -b $LD -H "$J" -X POST $B/api/shifts/$SH/truck-change -d '{"fromOdometer":40990,"toTruckId":"truck-4","toOdometer":62000}' | jq "d['error']")" "Truck #12's final reading cannot be below its starting reading 41,000"
@@ -980,7 +981,9 @@ chk "   office sets 6:30 → 3:00 with a reason: 8.50 billable hours, 217 miles 
 chk "   an end odometer beyond the day is refused later, at End day it is checked"  "$(curl -s -b $M -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"odEnd":85500,"reason":"typo"}' | jq "d['error']")" "The ending odometer (85,500) cannot be below the starting odometer (85,591)"
 # The ABC load: leave it unstarted for the packet numbers (void it), so the day has exactly one segment.
 curl -s -b $M -X DELETE $B/api/loads/$CA -o /dev/null
+chk "12b. End day below the freight's end (85,700 < 85,808) is refused" "$(curl -s -b $CD -H "$J" -X POST $B/api/shifts/$SH/end -d '{"odometer":85700}' | jq "d['error']")|$(sc "d['shift']['status']")" "The Dave Christian Construction freight ended at 85,808 — the day's ending odometer cannot be lower|open"
 chk "13. End day at 85,868: daily 310, billable 217, non-billable 93 — all derived" "$(curl -s -b $CD -H "$J" -X POST $B/api/shifts/$SH/end -d '{"odometer":85868}' | jq "d['shift']['status'], d['shift']['dailyMiles'], d['shift']['billableMiles'], d['shift']['nonBillableMiles'], d['shift']['billableMinutes']")" "closed 310 217 93 510"
+chk "   the driver's screen now says the day is closed, not 'not started'" "$(sc "d['shift'], d['lastShift']['date']==d['today'], d['lastShift']['dailyMiles'], d['lastShift']['billableMiles'], d['lastShift']['truckNum']")" "None True 310 217 Truck #3"
 chk "   nothing stores the 93"                      "$(curl -s -b $M $B/api/shifts/$SH | python3 -c "import json,sys;s=json.load(sys.stdin)['shift'];print('nonBillableMiles' in s, [k for k in s if 'nonbill' in k.lower()])")|$(python3 -c "import json;s=json.load(open('data.json'));sh=[x for x in s['shifts'] if x['id']=='$SH'][0];print([k for k in sh if 'nonbill' in k.lower() or 'daily' in k.lower()])")" "True ['nonBillableMiles']|[]"
 # Approval → lock; corrections after lock go through void, not a second system.
 curl -s -b $M -H "$J" -X POST $B/api/loads/$CL/approve -d '{}' -o /dev/null
@@ -1029,18 +1032,24 @@ chk "   the second load says where its hours were billed" "$(curl -s -b $M $B/ap
 curl -s -b $M -H "$J" -X POST $B/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
 HB=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$H1\",\"$H2\"]}" | jq "d['batches'][0]['id']")
 curl -s -b $M -H "$J" -X POST $B/api/billing-batches/$HB/send -d '{}' -o /dev/null
-chk "   QuickBooks line: quantity 2 hours, \$190"    "$(curl -s -b $M $B/api/_test/qb-fake | jq "[(ln['quantity'], ln['amount']) for ln in d['invoices'][-1]['lines']]")" "[(2, 190), (1, 0)]"
+chk "   QuickBooks lines: 2 hours / \$190, and the second load 0 / \$0 saying where its hours went" "$(curl -s -b $M $B/api/_test/qb-fake | jq "[(ln['quantity'], ln['amount'], 'hours billed with' in ln['description']) for ln in d['invoices'][-1]['lines']]")" "[(2, 190, False), (0, 0, True)]"
 # Second segment on the same day (mileage customer), windows must not overlap.
 curl -s -b $M -H "$J" -X POST $B/api/customers -d '{"name":"Mileage Co","city":"Sanger"}' -o /dev/null
 curl -s -b $M -H "$J" -X POST $B/api/customer-prices -d '{"customer":"Mileage Co","material":"Dirt","unit":"mile","price":4}' -o /dev/null
-curl -s -b $M -H "$J" -X POST $B/api/pos -d '{"po":{"poNumber":"M-1","customer":"Mileage Co","deliveryDate":"'"$TODAY"'","address":"2 Mile Rd","city":"Sanger","plannedVendorId":"vbt"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
-M1=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='M-1'][0]['id']][0]")
+SPLIT='{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}'
+curl -s -b $M -H "$J" -X POST $B/api/pos -d '{"po":{"poNumber":"M-1","customer":"Mileage Co","deliveryDate":"'"$TODAY"'","address":"2 Mile Rd","city":"Sanger","plannedVendorId":"vbt"},"splits":['"$SPLIT,$SPLIT,$SPLIT,$SPLIT"']}' -o /dev/null
+MLS=$(curl -s -b $M $B/api/data | jq "' '.join(l['id'] for l in d['loads'] if l['poId']==[p for p in d['pos'] if p['poNumber']=='M-1'][0]['id'])")
+M1=${MLS%% *}
 curl -s -b $LG -H "$J" -X POST $B/api/loads/$M1/trip-action -d '{"action":"start-trip"}' -o /dev/null
 chk "17. a second segment cannot start inside the first one's odometer window" "$(curl -s -b $LG -H "$J" -X POST $B/api/loads/$M1/trip-action -d '{"action":"arrived-pickup","yardId":"vbt","odometer":41050}' | jq "d['error']")" "Overlaps the Hourly Co freight (41,020 → 41,080)"
-run $M1 vbt 41090
+k=0; for L in $MLS; do k=$((k+1)); if [ $k -eq 1 ]; then run $L vbt 41090; else run $L vbt; fi; done
 MS=$(curl -s -b $M $B/api/freight-segments | jq "[s['id'] for s in d['segments'] if s['customer']=='Mileage Co'][0]")
+chk "   four mileage loads share ONE segment"       "$(curl -s -b $M $B/api/freight-segments/$MS | jq "len(d['segment']['loadIds']), d['segment']['tripCount']")" "4 4"
 curl -s -b $LG -H "$J" -X POST $B/api/freight-segments/$MS/close -d '{"odometer":41120}' -o /dev/null
-chk "   mileage line: 30 mi × \$4 = \$120, once"    "$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$M1\"]}" | jq "d['groups'][0]['lineItems'][0]['measure'], d['groups'][0]['totalAmount']")" "30 120"
+MIDS=$(python3 -c "import json;print(json.dumps('$MLS'.split()))")
+chk "   mileage line: 4 loads, 30 mi × \$4 = \$120 ONCE (not 120 mi / \$480)" "$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":$MIDS}" | jq "len(d['groups'][0]['lineItems']), d['groups'][0]['lineItems'][0]['loads'], d['groups'][0]['lineItems'][0]['measure'], d['groups'][0]['totalAmount'], d['groups'][0]['lineItems'][0]['description']")" "1 4 30 120 Dirt — 4 loads (30.00 miles from freight $MS @ \$4/mile)"
+MB=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches -d "{\"loadIds\":$MIDS}" | jq "d['batches'][0]['id']"); curl -s -b $M -H "$J" -X POST $B/api/billing-batches/$MB/send -d '{}' -o /dev/null
+chk "   QuickBooks receives quantity 30 miles, \$120" "$(curl -s -b $M $B/api/_test/qb-fake | jq "[(ln['quantity'], ln['amount']) for ln in d['invoices'][-1]['lines']]")" "[(30, 120)]"
 chk "   Leonardo's day: two segments, 60 + 30 = 90 billable of 130 daily, 40 non-billable" "$(curl -s -b $LG -H "$J" -X POST $B/api/shifts/$LS/end -d '{"odometer":41130}' | jq "d['shift']['dailyMiles'], d['shift']['billableMiles'], d['shift']['nonBillableMiles'], len(d['shift']['segments'])")" "130 90 40 2"
 # The outputs, rendered from the records.
 FB=$(curl -s -b $M $B/api/freight-segments/$FS/freight-bill)

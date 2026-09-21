@@ -3086,6 +3086,7 @@ const INSPECTION_ITEMS = [
 ];
 function openShiftFor(driverId) { return (store.shifts || []).find(s => s.driverId === driverId && s.status === 'open') || null; }
 function openShiftOnTruck(truckId) { return (store.shifts || []).find(s => s.truckId === truckId && s.status === 'open') || null; }
+function openShiftWithTrailer(trailerId, exceptShiftId) { return (store.shifts || []).find(s => s.trailerId === trailerId && s.status === 'open' && s.id !== exceptShiftId) || null; }
 function parseOdometer(v) {
   if (v === '' || v == null) return null;
   const n = Number(String(v).replace(/,/g, ''));
@@ -3419,7 +3420,8 @@ app.get('/api/shifts/current', reqAuth, (req, res) => {
   res.json({
     shift: shiftPublic(shift), inspectionItems: INSPECTION_ITEMS, trucks, trailers,
     defaults: { truckId: usualTruckId, trailerId: usualTrailer ? usualTrailer.id : null },
-    lastShift: (() => { const prev = (store.shifts || []).filter(s => s.driverId === driverId && s.status === 'closed').sort((a, b) => (b.endAt || '').localeCompare(a.endAt || ''))[0]; return prev ? { truckId: prev.truckId, trailerId: prev.trailerId, date: prev.date } : null; })(),
+    lastShift: (() => { const prev = (store.shifts || []).filter(s => s.driverId === driverId && s.status === 'closed').sort((a, b) => (b.endAt || '').localeCompare(a.endAt || ''))[0]; if (!prev) return null; const pd = shiftDerived(prev); return { id: prev.id, truckId: prev.truckId, trailerId: prev.trailerId, truckNum: prev.truckNum, trailerNum: prev.trailerNum, date: prev.date, endAt: prev.endAt, endOdometer: prev.endOdometer, dailyMiles: pd.dailyMiles, billableMiles: pd.billableMiles, closedBy: prev.closedBy }; })(),
+    today: todayStr(),
   });
 });
 
@@ -3440,6 +3442,8 @@ app.post('/api/shifts/start', reqAuth, async (req, res) => {
     trailer = (store.trailers || []).find(t => t.id === b.trailerId);
     if (!trailer) return res.status(400).json({ error: 'Unknown trailer' });
     if (trailer.active === false) return res.status(400).json({ error: `Trailer ${trailer.number} is deactivated` });
+    const onTrailer = openShiftWithTrailer(trailer.id);
+    if (onTrailer) return res.status(409).json({ error: `Trailer ${trailer.number} is already on ${onTrailer.driverName}'s open day (${onTrailer.truckNum})`, code: 'trailer_in_use' });
   }
   const odo = parseOdometer(b.odometer);
   if (odo == null || Number.isNaN(odo)) return res.status(400).json({ error: 'Enter the starting odometer as a whole number' });
@@ -3518,6 +3522,8 @@ app.post('/api/shifts/:id/truck-change', reqAuth, async (req, res) => {
   if (b.toTrailerId !== undefined && b.toTrailerId) {
     trailer = (store.trailers || []).find(t => t.id === b.toTrailerId);
     if (!trailer || trailer.active === false) return res.status(400).json({ error: 'Unknown or deactivated trailer' });
+    const onTrailer = openShiftWithTrailer(trailer.id, s.id);
+    if (onTrailer) return res.status(409).json({ error: `Trailer ${trailer.number} is already on ${onTrailer.driverName}'s open day (${onTrailer.truckNum})`, code: 'trailer_in_use' });
   }
   const now = new Date().toISOString();
   const closed = await closeOpenSegmentForShift(s, { odometer: fromOdo, by: u, reason: 'truck-change', at: now });
@@ -3542,6 +3548,11 @@ async function endShift(s, { odometer, by, reason, signature, forced }) {
   if (odo == null || Number.isNaN(odo)) return { error: 'Enter the ending odometer as a whole number' };
   const floor = currentOdometerFloor(s);
   if (odo < floor) return { error: `The ending odometer cannot be below ${s.truckNum}'s starting reading ${floor.toLocaleString()}` };
+  // The day cannot end before its freight did: a closed segment on the
+  // current truck fixes a floor, otherwise daily miles would fall below
+  // billable miles.
+  const lastFreight = segmentsForShift(s).filter(x => x.status === 'closed' && x.truckId === s.truckId && x.odEnd != null).sort((a, b) => b.odEnd - a.odEnd)[0];
+  if (lastFreight && odo < lastFreight.odEnd) return { error: `The ${lastFreight.customer} freight ended at ${lastFreight.odEnd.toLocaleString()} — the day's ending odometer cannot be lower` };
   const openSeg = segmentsForShift(s).find(x => x.status === 'open');
   if (openSeg && !forced) return { error: `Freight segment still open — finish the ${openSeg.customer} freight (${openSeg.originName} → ${openSeg.destinationLabel}) before ending your day`, code: 'segment_open', segment: segmentPublic(openSeg), status: 409 };
   const now = new Date().toISOString();
@@ -3956,8 +3967,11 @@ function buildBillingGroups(loadIds) {
       ln.loads += Number(load.loadsDelivered) || 0;
       ln.tons  += tons;
       ln.tickets += loadTons(load).ticketsWithTons;
-      // Hour/mile quantity: the segment's measure, added once per segment.
+      // Hour/mile quantity: the segment's measure, added once per segment. A
+      // load whose measure went to another load in the same segment carries
+      // the explanation onto the line.
       if (MEASURED_UNITS[unit] && !revD.unconfigured) ln.measure += revD.quantity || 0;
+      if (MEASURED_UNITS[unit] && !revD.unconfigured && revD.reason && !(revD.quantity > 0)) { ln.notes = ln.notes || []; if (!ln.notes.includes(revD.reason)) ln.notes.push(revD.reason); }
       (revD.segmentIds || []).forEach(id => { if (!ln.segmentIds.includes(id)) ln.segmentIds.push(id); });
       ln.amount += rev;
       ln.loadIds.push(load.id);
@@ -3977,7 +3991,9 @@ function buildBillingGroups(loadIds) {
                 ? ` (${ln.tons.toFixed(2)} ton actual from ${ln.tickets} ticket${ln.tickets === 1 ? '' : 's'} @ $${ln.rate}/ton)`
                 : ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)`)
             : MEASURED_UNITS[ln.unit] && ln.segmentIds.length
-              ? ` (${ln.measure.toFixed(2)} ${MEASURED_UNITS[ln.unit]} from freight ${ln.segmentIds.join(', ')} @ $${ln.rate}/${ln.unit})`
+              ? (ln.measure > 0
+                  ? ` (${ln.measure.toFixed(2)} ${MEASURED_UNITS[ln.unit]} from freight ${ln.segmentIds.join(', ')} @ $${ln.rate}/${ln.unit})`
+                  : ` (${(ln.notes || []).join('; ') || `${MEASURED_UNITS[ln.unit]} billed on freight ${ln.segmentIds.join(', ')}`})`)
               : MEASURED_UNITS[ln.unit]
                 ? ` (${ln.measure.toFixed(2)} ${MEASURED_UNITS[ln.unit]} @ $${ln.rate}/${ln.unit})`
                 : ` (@ $${ln.rate}/${ln.unit})`)
@@ -4289,7 +4305,9 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
       qbCustomerId,
       lines: b.lineItems.map(ln => ({
         description: ln.description,
-        quantity: ln.unit === 'ton' ? ln.tons : (MEASURED_UNITS[ln.unit] && ln.measure ? ln.measure : ln.loads),
+        // Hour/mile lines carry the freight measure; a line whose measure was
+        // billed with another load in the same freight is a $0, 0-quantity line.
+        quantity: ln.unit === 'ton' ? ln.tons : (MEASURED_UNITS[ln.unit] && (ln.segmentIds || []).length ? ln.measure : ln.loads),
         amount: ln.amount,
       })),
       memo,
