@@ -164,19 +164,26 @@ Rigo is in this truck" and to flag disagreement).
 
 ### Dedicated Postgres tables (written by webhooks, read by VBT)
 
+As implemented through L2 (names and retention are the code's, `linxup.js`;
+the nightly `prune()` runs at boot and every 24 h):
+
 | Table | Key | Purpose / retention |
 |---|---|---|
-| `linxup_trackers` | `tracker_id` PK | Mirror of every tracker Linxup has told us about: name, IMEI, serial, VIN, make/model/year, fleet_id, company_id, person_id, person_name, active, first_seen, updated_at, raw. Feeds the "link a tracker" picker. Kept. |
-| `linxup_position_latest` | `tracker_id` PK | One row per tracker: at, lat, lng, speed, heading, direction, odometer, engine_on, fuel_level, battery, accuracy, signal, speeding, geofence_id, geofence_name, address_line, person_id, received_at. Also mirrored in memory. |
-| `linxup_positions` | (`tracker_id`, `at`) PK | History. Raw 30 days; thinned to one row per 5 min from 30 days to 12 months; dropped after. Index on (tracker_id, at DESC). |
-| `linxup_geofences` | `geofence_id` PK | Mirror from Geofence Change: name, group, type, radius, points (JSON), notification, deleted_at. Kept. |
-| `linxup_place_visits` | (`tracker_id`, `geofence_id`, `entered_at`) unique | One row per visit: entered_at, left_at, duration_min, **source** (`linxup` fence event or `derived` from positions against a VBT pin), place_kind (yard / vendor / jobsite / other), vbt_place_id (vendor id / PO id / 'vbt'), load_id, trip_number (attribution at event time, nullable). Kept indefinitely — this is the evidence. |
-| `linxup_trips` | (`tracker_id`, `start_at`) unique | Ignition cycles: end_at, start/end lat/lng/address, distance_mi, authorized/unauthorized mi, duration_min, start/end geofence, person_id, load ids overlapping in time (JSON). Kept. |
-| `linxup_stops` | (`tracker_id`, `start_at`) unique | IDLE / OFF stops with duration and place. Kept 12 months. |
-| `linxup_usage` | (`tracker_id`, `start_at`) unique | Usage periods with engine_on flag and duration. Kept. |
-| `linxup_alerts` | `alert_id` PK | Code, descriptions, time, lat/lng, tracker, person, geofence, acknowledged_by/at (VBT-side). Kept 12 months. |
-| `linxup_media` | `media_id` PK | URLs + timestamp (+ alert_id if the payload ever includes it). Kept 90 days (URL lifetime unknown). |
-| `linxup_webhook_log` | id | Every received message: type, received_at, http status we returned, payload sha1, tracker_id, outcome (stored / duplicate / rejected / unknown-tracker). Kept 7 days. The debugging and dedupe-audit trail. |
+| `linxup_trackers` | `tracker_id` PK | Mirror of every tracker Linxup has told us about: name, IMEI, serial, VIN, make/model/year, fleet, company, person_id/name, active, status_changed_at, first_seen, last_message. Feeds the "link a tracker" picker. Kept. |
+| `linxup_latest_positions` | `tracker_id` PK | One row per tracker, moved only by a newer fix. Also mirrored in memory. What the board and the map read. |
+| `linxup_positions` | (`tracker_id`, `at`) PK | History. Raw 30 days; thinned to one row per 5 min per tracker from 30 to 365 days; dropped after. Index on (at). |
+| `linxup_geofences` | `geofence_id` PK | Learned from Geofence Events, Stops and Trips (id, name, group); the VBT mapping itself lives on the vendor (`linxupGeofenceId`). Kept. |
+| `linxup_geofence_events` | (`tracker_id`, `geofence_id`, `entered_at`) PK | One row per visit: left_at, duration_min, fence name/group, person, VIN, fleet. ENTER and EXIT complete the same row in either order. Kept indefinitely — this is the evidence. Jobsite proximity is **derived at read time** from positions against the PO pin and is not stored. |
+| `linxup_vehicle_trips` | (`tracker_id`, `start_at`) PK | Linxup vehicle trips (ignition cycles): end, start/end lat/lng/address, distance, authorized/unauthorized mi, duration, start/end fence, person, VIN. Kept. |
+| `linxup_stops` | (`tracker_id`, `start_at`) PK | Idle / engine-off stops with duration, place, address, fence. Kept. |
+| `linxup_usage` | (`tracker_id`, `start_at`) PK | Usage periods with engine_on and duration. Kept. |
+| `linxup_webhook_log` | id | Every received message: type, received_at, http status we returned, payload sha1, tracker_id, outcome, note; the raw body for Device Status/Update and for deferred types (alert, geofence-change, media). Kept 30 days (Position entries 7 days). |
+
+Not yet tables (L3): alerts and media exist only as raw bodies in
+`linxup_webhook_log`, so they are lost after 30 days until L3 stores them.
+Load attribution is never stored on a telemetry row; it is computed when a
+load is read, by truck and time, so a later reassignment or a corrected trip
+never leaves stale attribution behind.
 
 All timestamps are `TIMESTAMPTZ` converted from Linxup's epoch milliseconds;
 "day" grouping uses `OPERATING_TZ`, as everything else in VBT does.
@@ -474,7 +481,8 @@ mapped to a fence by a manager on Vendors (`vendor.linxupGeofenceId`, audited),
 an exact name match is only suggested and, when used unconfirmed, labelled
 "matched by name". Correlation is by truck and time, read-only:
 `GET /api/loads/:id/telemetry` takes each VBT trip's window (start − 30 min to
-completed + 30 min, or now) on the truck that trip ran on and returns, per
+completed + 30 min, or now, never reaching into the previous or next trip on
+the load) on the truck that trip ran on and returns, per
 trip, pickup evidence (fence visits, else GPS near the yard pin), jobsite
 evidence ("near jobsite based on GPS" from the PO pin, plus stops there),
 other visits, stops, vehicle trips, usage, a chronological telemetry timeline

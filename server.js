@@ -7249,7 +7249,11 @@ async function loadTelemetryEvidence(load, opts = {}) {
     if (!ev.linked) { ev.note = 'The truck this trip ran on is not linked to a Linxup tracker.'; continue; }
     out.linked = true;
     const startMs = Date.parse(ts.start), endMs = ts.completed ? Date.parse(ts.completed) : now;
-    const from = startMs - EV_PAD_MS, to = Math.min(endMs + EV_PAD_MS, now);
+    // The window is padded 30 min each side, but never reaches into the
+    // neighbouring trips: back-to-back hauls on one truck keep their own record.
+    const prevEnd = i > 0 && started[i - 1].isoStamps && started[i - 1].isoStamps.completed ? Date.parse(started[i - 1].isoStamps.completed) : -Infinity;
+    const nextStart = i + 1 < started.length && started[i + 1].isoStamps && started[i + 1].isoStamps.start ? Date.parse(started[i + 1].isoStamps.start) : Infinity;
+    const from = Math.max(startMs - EV_PAD_MS, prevEnd), to = Math.min(endMs + EV_PAD_MS, now, nextStart);
     const w = await linxup.window(truck.linxup.trackerId, from, to);
     const pickup = resolvePickupYard(load, po, trip);
     const vendor = (store.vendors || []).find(v => v.id === pickup.id) || null;

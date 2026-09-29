@@ -1826,6 +1826,17 @@ l2_suite() {
   lx geofence-event "$(fence ENTER 701 9 'Vulcan Materials Fresno' 10800)" >/dev/null; lx geofence-event "$(fence EXIT 701 9 'Vulcan Materials Fresno' 10800 10200)" >/dev/null
   mg PUT /api/fleet/trucks/truck-14/linxup '{"trackerId":703}' >/dev/null; lx geofence-event "$(fence ENTER 703 9 'Vulcan Materials Fresno' 120)" >/dev/null
   chk "$TAG a visit three hours before the trip, and a visit by a truck with no load, are kept but attached to no load: trip 1 still has its three, the free truck shows its last fence only" "$(ev $LB "len(t['otherVisits'])")|$(tel truck-14 "t['state'], x['lastFence']['name']")|$(tod "sorted(i['kind'] for i in d['telemetryIssues'] if i['truckId']=='truck-14')")" "3|available Vulcan Materials Fresno|[]"
+  # ── Back-to-back trips on ONE truck: each trip keeps its own record ──
+  local RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+  mg PUT /api/fleet/trucks/truck-12/linxup '{"trackerId":704}' >/dev/null   # a truck with no telemetry yet, so the count is exact
+  local P3=$(mg POST /api/pos '{"po":{"poNumber":"LX-3","customer":"Linx Co","deliveryDate":"'"$TODAY"'","address":"9 Gate Rd","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-12","material":"Sand","loadsAssigned":2,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+  local LR=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P3'][0]")
+  dr $RG $LR '{"action":"start-trip"}' >/dev/null; dr $RG $LR '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $RG $LR "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $RG $LR '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $LR '{"action":"trip-complete"}' >/dev/null
+  dr $RG $LR '{"action":"start-trip"}' >/dev/null
+  local T2=$(date +%s%3N)   # a fence visit right after trip 2 started, well inside trip 1's 30-minute tail
+  lx geofence-event "{\"eventType\":\"FENCE_ENTER\",\"enterDateTime\":$T2,\"tracker\":{\"trackerId\":704},\"geofence\":{\"geofenceId\":9,\"name\":\"Vulcan Materials Fresno\"},\"company\":{\"companyId\":1}}" >/dev/null
+  chk "$TAG back-to-back trips on Truck #12: a visit after trip 2 began belongs to trip 2 only — trip 1's window stops where trip 2 starts, so nothing is counted twice" "$(ev $LR "len(t['pickup']['visits']), len(t['otherVisits']), len(t2['pickup']['visits']), [e['tripNum'] for e in d['timeline'] if e['kind']=='fence-enter']")" "0 0 1 [2]"
+  rm -f $RG
   # ── Completed, approved, archived: the evidence is still readable, the load never moves ──
   dr $BE $LB "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $BE $LB '{"action":"arrived-jobsite"}' >/dev/null; dr $BE $LB '{"action":"trip-complete"}' >/dev/null
   curl -s -b $BE -H "$J" -X PUT $B/api/loads/$LB -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $BE $LB '{"action":"delivered"}' >/dev/null
