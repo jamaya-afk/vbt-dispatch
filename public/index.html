@@ -165,6 +165,21 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .conflict-list li::marker{color:var(--A)}
 .conflict-hint{font-size:12.5px;color:var(--txt2);padding:10px 12px;background:var(--bg2);border-radius:var(--r)}
 .conflict-modal .modal-foot .btn{min-height:40px;padding:8px 20px;font-size:13px}
+/* Billing: the state machine strip, amounts, selection total */
+.bill-flow{width:100%;display:flex;align-items:stretch;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.bf-step{flex:1;min-width:140px;text-align:left;background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:9px 11px;cursor:pointer;font-family:var(--f);color:var(--txt);box-shadow:var(--shadow)}
+.bf-step:hover{border-color:var(--Bd)}
+.bf-step.active{outline:2px solid var(--B);outline-offset:1px}
+.bf-step .bf-n{font-size:20px;font-weight:800;line-height:1}
+.bf-step .bf-l{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-top:4px}
+.bf-step .bf-s{font-size:11px;color:var(--txt3);margin-top:3px;line-height:1.3}
+.bf-arrow{align-self:center;color:var(--txt3);font-size:16px}
+.bill-sel{font-size:12.5px;color:var(--txt2);white-space:nowrap}
+.bill-amt{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.bill-rate{font-size:11px;color:var(--txt3)}
+.bill-unpriced{color:var(--A);font-weight:700;font-size:12px}
+.bill-gap-note{color:var(--A);font-weight:700;font-size:11px;margin-top:2px}
+tr.bill-gap td{background:#fffdf5}
 /* Edit PO */
 .pe-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
 @media(max-width:560px){.pe-grid{grid-template-columns:1fr}}
@@ -3610,8 +3625,31 @@ let billSelected = new Set();
 let billSubview = 'ready';   // 'ready' | 'batches'
 let billCachedItems = [];    // last server response for client-side filtering
 
+// The billing state machine in one line, with live counts. A load moves left
+// to right and only through its own action (submit, approve, send or mark
+// billed, archive); nothing on this strip changes a state.
+const bfMoney = v => '$' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function billingFlowHtml(active) {
+  const live = (loads || []).filter(l => !l.voided);
+  const n = {
+    submitted: live.filter(l => l.approvalStatus === 'submitted').length,
+    approved:  live.filter(l => l.approvalStatus === 'approved').length,
+    ready:     live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready' && !l.billingBatchId).length,
+    batched:   live.filter(l => l.approvalStatus === 'approved' && l.billStatus !== 'billed' && l.billingBatchId).length,
+    billed:    live.filter(l => l.billStatus === 'billed').length,
+  };
+  const step = (key, label, count, sub, go) => `<button type="button" class="bf-step ${active === key ? 'active' : ''}" onclick="${go}"><div class="bf-n">${count}</div><div class="bf-l">${label}</div><div class="bf-s">${sub}</div></button>`;
+  return `<div class="bill-flow">
+    ${step('submitted', 'Submitted', n.submitted, 'driver finished · review in Approvals', "goTab('approvals')")}<span class="bf-arrow">→</span>
+    ${step('approved', 'Approved', n.approved, 'checked & locked · counts everything to the right', "goTab('approvals')")}<span class="bf-arrow">→</span>
+    ${step('ready', 'Ready to Bill', n.ready, n.batched ? `send to QuickBooks · ${n.batched} on a batch in flight` : 'send to QuickBooks, or mark billed with a reference', "setBillSubview('ready')")}<span class="bf-arrow">→</span>
+    ${step('billed', 'Billed', n.billed, 'invoice on record · undo only by voiding the batch or Unbill with a reason', "goTab('history')")}<span class="bf-arrow">→</span>
+    ${step('archived', 'Archived', '⌁', 'off the board, kept forever · can be unarchived', "goTab('history')")}
+  </div>`;
+}
 function renderBilling() {
   document.getElementById('bill-filters').innerHTML = `
+    ${billingFlowHtml(billSubview === 'batches' ? 'billed' : 'ready')}
     <div style="display:flex;gap:6px;background:var(--bg2);padding:3px;border-radius:20px;margin-right:auto">
       <button class="view-btn ${billSubview === 'ready' ? 'active' : ''}" onclick="setBillSubview('ready')">Ready to Bill</button>
       <button class="view-btn ${billSubview === 'batches' ? 'active' : ''}" onclick="setBillSubview('batches')">Billing Batches</button>
@@ -3655,6 +3693,7 @@ function renderBillReady() {
         ${trucks.map(t => `<option value="${t.id}" ${billFilters.truckId === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}
       </select>
       <span style="flex:1"></span>
+      <span class="bill-sel" id="bill-sel-total"></span>
       <button class="btn ghost" onclick="previewInvoice()" id="preview-bill-btn" disabled>Preview Invoice</button>
       <button class="btn primary" onclick="sendSelectedToQuickBooks()" id="send-qb-btn" disabled>Send to QuickBooks</button>
       <button class="btn ghost" onclick="markBilled()" id="mark-billed-btn" disabled title="Manual: mark billed without QuickBooks (use only if billing outside QB)">Mark Billed (manual)</button>
@@ -3685,13 +3724,16 @@ async function loadBilling() {
     refreshBillButtons();
     return;
   }
+  const totals = d.totals || {};
+  const shownTotal = items.reduce((s, l) => s + (l.priceable ? l.amount : 0), 0);
+  const unpriced = items.filter(l => !l.priceable).length;
   wrap.innerHTML = `<div class="table-scroll"><table class="bill-table">
     <thead><tr>
       <th><input type="checkbox" id="bill-all" onchange="toggleAllBill(this.checked)"></th>
-      <th>PO</th><th>Customer</th><th>City</th><th>Material</th><th>Loads</th><th>Driver</th><th>Date</th><th>Approved</th>
+      <th>PO</th><th>Customer</th><th>City</th><th>Material</th><th>Loads</th><th>Driver</th><th>Date</th><th>Approved</th><th style="text-align:right">Amount</th>
     </tr></thead>
     <tbody>
-      ${items.map(l => `<tr>
+      ${items.map(l => `<tr class="${l.approvalWarnings && l.approvalWarnings.length ? 'bill-gap' : ''}">
         <td><input type="checkbox" data-id="${l.id}" onchange="toggleBillSelect('${l.id}', this.checked)" ${billSelected.has(l.id) ? 'checked' : ''}></td>
         <td style="font-weight:600;color:var(--B)">${l.poNumber}</td>
         <td>${l.customer}</td>
@@ -3700,9 +3742,14 @@ async function loadBilling() {
         <td>${l.loadsDelivered}</td>
         <td>${l.driverName}</td>
         <td>${fmtDate(l.deliveryDate)}</td>
-        <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}</td>
+        <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}${l.approvalWarnings && l.approvalWarnings.length ? `<div class="bill-gap-note" title="${escapeAttr(l.approvalWarnings.join('; '))}">⚠ approved with a gap</div>` : ''}</td>
+        <td class="bill-amt">${l.priceable ? `<b>${bfMoney(l.amount)}</b><div class="bill-rate">${escapeHtml(l.rateLabel || '')}${l.basis === 'actual' ? ' · actual tons' : ''}</div>` : `<span class="bill-unpriced" title="${escapeAttr(l.priceReason || '')}">not priceable</span><div class="bill-rate">${escapeHtml((l.priceReason || '').slice(0, 60))}${(l.priceReason || '').length > 60 ? '…' : ''}</div>`}</td>
       </tr>`).join('')}
     </tbody>
+    <tfoot><tr>
+      <td colspan="9" style="font-weight:700">${items.length} load${items.length === 1 ? '' : 's'} ready to bill${unpriced ? ` · <span class="bill-unpriced">${unpriced} not priceable yet</span>` : ''}${totals.count != null && totals.count !== items.length ? ` <span style="color:var(--txt3);font-weight:500">(${totals.count} in all · ${bfMoney(totals.amount)})</span>` : ''}</td>
+      <td class="bill-amt" id="bill-shown-total"><b>${bfMoney(shownTotal)}</b></td>
+    </tr></tfoot>
   </table></div>`;
   refreshBillButtons();
 }
@@ -3713,6 +3760,11 @@ function refreshBillButtons() {
   set('preview-bill-btn',  n ? `Preview Invoice (${n})` : 'Preview Invoice');
   set('send-qb-btn',       n ? `Send ${n} to QuickBooks` : 'Send to QuickBooks');
   set('mark-billed-btn',   n ? `Mark ${n} Billed (manual)` : 'Mark Billed (manual)');
+  const sel = (billCachedItems || []).filter(l => billSelected.has(l.id));
+  const total = sel.reduce((s, l) => s + (l.priceable ? l.amount : 0), 0);
+  const unpriced = sel.filter(l => !l.priceable).length;
+  const el = document.getElementById('bill-sel-total');
+  if (el) el.innerHTML = n ? `Selected: <b>${n}</b> · <b>${bfMoney(total)}</b>${unpriced ? ` · <span class="bill-unpriced">${unpriced} not priceable</span>` : ''}` : '';
 }
 
 function toggleBillSelect(id, checked) {
@@ -3728,12 +3780,23 @@ function toggleAllBill(checked) {
   refreshBillButtons();
 }
 
+// Manual billing is the exception, so it asks for the invoice reference and
+// says what it does and does not do. Undo is Unbill in History, with a reason.
 async function markBilled() {
   if (!billSelected.size) return;
-  if (!confirm(`Mark ${billSelected.size} load(s) as billed (manual, NOT sent to QuickBooks)?`)) return;
-  const d = await api('POST', '/api/loads/bill', { loadIds: [...billSelected] });
+  const sel = (billCachedItems || []).filter(l => billSelected.has(l.id));
+  const total = sel.reduce((s, l) => s + (l.priceable ? l.amount : 0), 0);
+  const a = await askDialog({
+    title: 'Mark billed outside QuickBooks?',
+    bodyHtml: `<div class="ask-sub">${sel.length} load${sel.length === 1 ? '' : 's'} · ${bfMoney(total)}${sel.some(l => !l.priceable) ? ' · some not priceable' : ''}</div>
+               <div class="conflict-hint">Only for an invoice made <b>outside</b> QuickBooks. The loads move to <b>Billed</b> (and can be archived); nothing is sent anywhere. Undo is <b>Unbill</b> in History, with a reason.</div>`,
+    confirmLabel: 'Mark billed', confirmClass: 'primary',
+    reason: { label: 'Invoice number or reference', placeholder: 'e.g. INV-2041 (paper invoice)', required: true },
+  });
+  if (!a.go) return;
+  const d = await api('POST', '/api/loads/bill', { loadIds: [...billSelected], reference: a.reason });
   if (d.ok) {
-    toast(`Marked ${d.billed} as billed`, 'success');
+    toast(`Marked ${d.billed} as billed · ${a.reason}`, 'success');
     billSelected.clear();
     await loadAll();
     renderBilling();
@@ -6317,14 +6380,14 @@ async function renderHistory() {
     const billed = data.billed || [];
     const archive = data.archive || [];
 
-    let h = '<div class="history-wrap">';
+    let h = '<div class="history-wrap">' + billingFlowHtml('billed');
 
     // Section 1: Billed loads ready to archive
     h += `<div class="history-section">
       <div class="history-head">
         <div>
           <h2>Billed Loads (${billed.length})</h2>
-          <p>These loads have been billed. Archiving moves them off the active board into History; every record stays in the database.</p>
+          <p>Billed and waiting to be archived. A load billed through QuickBooks is released only by voiding its batch (Billing → Batches); one marked billed by hand can be <b>unbilled</b> here with a reason. Archiving moves them off the active board; every record stays in the database.</p>
         </div>
         ${billed.length ? `<button class="btn success" onclick="archiveBilledLoads()">Archive billed loads</button>` : ''}
       </div>`;
@@ -6333,9 +6396,14 @@ async function renderHistory() {
       h += '<div class="empty-state" style="padding:30px"><p>No billed loads waiting to archive.</p></div>';
     } else {
       h += `<table class="report-table" style="border-radius:0;box-shadow:none;margin:0">
-        <thead><tr><th>PO</th><th>Customer</th><th>Material</th><th>Loads</th><th>Driver</th><th>Yard</th><th>Date</th><th>Billed</th></tr></thead>
+        <thead><tr><th>PO</th><th>Customer</th><th>Material</th><th>Loads</th><th>Driver</th><th>Yard</th><th>Date</th><th>Billed</th><th>Billed via</th><th></th></tr></thead>
         <tbody>
-        ${billed.map(l => `<tr>
+        ${billed.map(l => {
+          const viaBatch = !!(l.billingBatchId || l.qbInvoiceId);
+          const via = viaBatch
+            ? `QuickBooks${l.qbInvoiceNumber ? ' · invoice ' + escapeHtml(l.qbInvoiceNumber) : ''}<div class="batch-info">batch ${escapeHtml(l.billingBatchId || '')}</div>`
+            : `Manual${l.manualBillRef ? ' · ' + escapeHtml(l.manualBillRef) : ''}<div class="batch-info">${l.billedBy ? 'by ' + escapeHtml(l.billedBy) : 'no reference recorded'}</div>`;
+          return `<tr data-billed-load="${l.id}">
           <td style="font-weight:600;color:var(--B)">${l.poNumber}</td>
           <td>${l.customer}</td>
           <td>${l.material}</td>
@@ -6344,7 +6412,9 @@ async function renderHistory() {
           <td>${(l.pickup && l.pickup.name) || '—'}</td>
           <td>${fmtDate(l.deliveryDate)}</td>
           <td style="font-size:11px;color:var(--txt2)">${l.billedAt ? new Date(l.billedAt).toLocaleDateString() : ''}</td>
-        </tr>`).join('')}
+          <td style="font-size:12px">${via}</td>
+          <td style="text-align:right">${viaBatch ? `<span class="batch-info" title="Void the batch on the Billing → Batches screen to release this load">void the batch to release</span>` : `<button class="btn ghost" style="padding:5px 10px;font-size:12px" onclick="unbillLoad('${l.id}')">Unbill…</button>`}</td>
+        </tr>`; }).join('')}
         </tbody>
       </table>`;
     }
@@ -6355,19 +6425,23 @@ async function renderHistory() {
       <div class="history-head">
         <div>
           <h2>Archive Log</h2>
-          <p>Past archive batches. Archived loads stay in the database and still count in Reports.</p>
+          <p>Past archive batches. Archived loads stay in the database and still count in Reports. Unarchiving brings a batch's loads and POs back onto the active lists exactly as they were — to re-bill after a voided batch, or to correct something.</p>
         </div>
       </div>`;
     if (archive.length === 0) {
       h += '<div class="empty-state" style="padding:30px"><p>No archives yet.</p></div>';
     } else {
       archive.forEach(b => {
-        h += `<div class="archive-batch">
+        const released = (b.loads || []).filter(l => l.billStatus !== 'billed').length;
+        h += `<div class="archive-batch" data-archive-batch="${b.batchId}">
           <div>
             <div style="font-weight:600">${b.poCount} POs · ${b.loadCount} loads</div>
-            <div class="batch-info">${b.batchId} · ${new Date(b.archivedAt).toLocaleString()} · by ${b.archivedBy}</div>
+            <div class="batch-info">${b.batchId} · ${new Date(b.archivedAt).toLocaleString()} · by ${b.archivedBy}${released ? ` · <span style="color:var(--A);font-weight:700">${released} released by a voided batch — unarchive to re-bill</span>` : ''}</div>
           </div>
-          <span class="batch-status synced">${(b.loads || []).length} load record${(b.loads || []).length === 1 ? '' : 's'} kept</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="batch-status synced">${(b.loads || []).length} load record${(b.loads || []).length === 1 ? '' : 's'} kept</span>
+            <button class="btn ghost" style="padding:5px 10px;font-size:12px" onclick="unarchiveBatch('${b.batchId}')">Unarchive…</button>
+          </div>
         </div>`;
       });
     }
@@ -6381,13 +6455,49 @@ async function renderHistory() {
 }
 
 async function archiveBilledLoads() {
-  if (!confirm('Move all billed loads (and POs whose loads are all billed) off the active board into History?\n\nEvery record stays in the database and still counts in Reports. Continue?')) return;
+  const a = await askDialog({
+    title: 'Archive billed loads?',
+    bodyHtml: `<div class="conflict-hint">Every billed load (and every PO whose loads are all billed) moves off the active board into History. Every record stays in the database and still counts in Reports. A load on a QuickBooks batch that has not finished sending stays put. This can be undone with <b>Unarchive</b>.</div>`,
+    confirmLabel: 'Archive', confirmClass: 'success',
+  });
+  if (!a.go) return;
   const d = await api('POST', '/api/history/archive', {});
   if (d.ok) {
-    toast(`Archived ${d.archived.loads} loads in batch ${d.archived.batchId}`, 'success');
+    toast(`Archived ${d.archived.loads} loads in batch ${d.archived.batchId}${d.heldBack ? ` · ${d.heldBack} held back (batch still sending)` : ''}`, 'success');
     await loadAll();
     renderHistory();
   } else toast(d.error || 'Failed to archive', 'error');
+}
+// Undo a manual "Mark Billed": back to Ready to Bill, with the reason on the
+// record. Loads billed through QuickBooks are released only by voiding the batch.
+async function unbillLoad(id) {
+  const l = (loads || []).find(x => x.id === id) || {};
+  const po = (pos || []).find(p => p.id === l.poId) || {};
+  const a = await askDialog({
+    title: 'Unbill this load?',
+    bodyHtml: `<div class="ask-sub">PO ${escapeHtml(po.poNumber || '—')} · ${escapeHtml(po.customer || '')} · ${escapeHtml(l.material || '')} · ${escapeHtml(l.driverName || '')}${l.manualBillRef ? ` · marked billed as ${escapeHtml(l.manualBillRef)}` : ''}</div>
+               <div class="conflict-hint">The load goes back to <b>Ready to Bill</b>. Nothing in QuickBooks changes (it was never sent there). Make sure the outside invoice is cancelled or corrected, or the customer will be billed twice.</div>`,
+    confirmLabel: 'Unbill', confirmClass: 'danger',
+    reason: { label: 'Reason', placeholder: 'e.g. paper invoice INV-2041 was cancelled', required: true },
+  });
+  if (!a.go) return;
+  const d = await api('POST', `/api/loads/${id}/unbill`, { reason: a.reason });
+  if (d.ok) { toast('Back in Ready to Bill', 'success'); await loadAll(); renderHistory(); }
+  else toast(d.error || 'Could not unbill', 'error');
+}
+// Bring an archive batch back: the same POs and loads, exactly as archived.
+async function unarchiveBatch(batchId) {
+  const a = await askDialog({
+    title: 'Unarchive this batch?',
+    bodyHtml: `<div class="ask-sub">${escapeHtml(batchId)}</div>
+               <div class="conflict-hint">Its loads and POs come back onto the active lists exactly as they were archived: billed loads back under Billed Loads, loads released by a voided batch back in <b>Ready to Bill</b>. Nothing is created or lost.</div>`,
+    confirmLabel: 'Unarchive', confirmClass: 'primary',
+    reason: { label: 'Reason', placeholder: 'e.g. re-bill after the voided batch', required: true },
+  });
+  if (!a.go) return;
+  const d = await api('POST', `/api/history/${encodeURIComponent(batchId)}/unarchive`, { reason: a.reason });
+  if (d.ok) { toast(`Restored ${d.restored.loads} load${d.restored.loads === 1 ? '' : 's'} and ${d.restored.pos} PO${d.restored.pos === 1 ? '' : 's'}`, 'success'); await loadAll(); renderHistory(); }
+  else toast(d.error || 'Could not unarchive', 'error');
 }
 
 // ── DRIVERS & TRUCKS (admin only) ────────────────────────────────────────────

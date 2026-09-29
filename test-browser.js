@@ -299,6 +299,50 @@ async function call(cookie, method, path, body) {
   chk('   the modal reopened with the new count', await page.evaluate(() => ((document.querySelector('#poedit-modal .pe-follow') || {}).innerText || '').replace(/\s+/g, ' ').startsWith('2 loads on this PO.')), true);
   await page.evaluate(() => closeEditPO()); await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
 
+  console.log('── Office: billing shows the money and the state machine; manual billing is guarded ──');
+  // Matthew's approved load (PO 10484) is the one load in Ready to Bill: 1 load × 25 t × $25.
+  await page.evaluate(async () => { await loadAll(); goTab('billing'); }); await page.waitForTimeout(900);
+  const bvis = await page.evaluate(() => {
+    const steps = Array.from(document.querySelectorAll('#bill-filters .bill-flow .bf-step')).map(s => `${s.querySelector('.bf-l').textContent}${s.classList.contains('active') ? '*' : ''}:${s.querySelector('.bf-n').textContent}`);
+    const row = document.querySelector('#bill-list tbody tr');
+    return { steps: steps.join(' → '), amount: row ? row.querySelector('.bill-amt').innerText.replace(/\s+/g, ' ').trim() : 'no row', total: (document.getElementById('bill-shown-total') || {}).innerText, sel: document.getElementById('bill-sel-total').innerText };
+  });
+  chk('1. the strip reads Submitted → Approved → Ready to Bill → Billed → Archived, with live counts, Ready active', bvis.steps, 'Submitted:0 → Approved:1 → Ready to Bill*:1 → Billed:0 → Archived:⌁');
+  chk('2. the Ready to Bill table prices each load and totals the page', `${bvis.amount} | ${bvis.total} | ${bvis.sel}`, '$625.00 $25/ton | $625.00 | ');
+  await page.click('#bill-list tbody tr input[type=checkbox]'); await page.waitForTimeout(200);
+  chk('   selecting shows the selected total next to the actions', await page.evaluate(() => document.getElementById('bill-sel-total').innerText.replace(/\s+/g, ' ')), 'Selected: 1 · $625.00');
+  await page.click('#mark-billed-btn'); await page.waitForTimeout(400);
+  const mb = await page.evaluate(() => { const m = document.getElementById('ask-modal'); return m ? `${m.querySelector('h2').textContent.trim()} | ${m.querySelector('#ask-go').disabled} | ${m.querySelector('.ask-sub').innerText.replace(/\s+/g, ' ')}` : 'no dialog'; });
+  chk('3. Mark Billed (manual) asks for the invoice reference in the app and cannot proceed without it', mb, 'Mark billed outside QuickBooks? | true | 1 load · $625.00');
+  await page.fill('#ask-reason', 'INV-7 (paper)'); await page.click('#ask-go'); await page.waitForTimeout(900);
+  let lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('   …the load is billed with the reference on record', `${lm2.billStatus} ${lm2.manualBillRef} ${lm2.billedBy}`, 'billed INV-7 (paper) joshua');
+  await page.evaluate(() => goTab('history')); await page.waitForTimeout(900);
+  const hs = await page.evaluate(() => {
+    const row = document.querySelector('#history-content tr[data-billed-load]');
+    return row ? `${row.querySelector('td:nth-child(9)').innerText.replace(/\s+/g, ' ').trim()} | ${Array.from(row.querySelectorAll('button')).map(b => b.textContent.trim()).join(',')} | ${document.querySelectorAll('#history-content .bf-step.active .bf-l').length ? document.querySelector('#history-content .bf-step.active .bf-l').textContent : ''}` : 'no row';
+  });
+  chk('4. History names how each load was billed and offers Unbill only for manual billing; the strip marks Billed', hs, 'Manual · INV-7 (paper) by joshua | Unbill… | Billed');
+  await page.click('#history-content tr[data-billed-load] button'); await page.waitForTimeout(400);
+  chk('5. Unbill asks for a reason in the app', await page.evaluate(() => { const m = document.getElementById('ask-modal'); return m ? `${m.querySelector('h2').textContent.trim()} ${m.querySelector('#ask-go').disabled}` : 'no dialog'; }), 'Unbill this load? true');
+  await page.fill('#ask-reason', 'paper invoice cancelled'); await page.click('#ask-go'); await page.waitForTimeout(900);
+  lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('   …back to Ready to Bill, the reversal on the record', `${lm2.billStatus} ${lm2.manualBillRef || ''}|${(lm2.billHistory || []).map(h => h.action + ':' + h.reason + ':' + h.reference).join(',')}`, 'ready |unbilled:paper invoice cancelled:INV-7 (paper)');
+  await call(mgr, 'POST', '/api/loads/bill', { loadIds: [lMat.id], reference: 'INV-8' });
+  await page.evaluate(() => renderHistory()); await page.waitForTimeout(700);
+  await page.click('#history-content .history-head button.btn.success'); await page.waitForTimeout(400);
+  chk('6. Archive asks in the app', await page.evaluate(() => { const m = document.getElementById('ask-modal'); return m ? m.querySelector('h2').textContent.trim() : 'no dialog'; }), 'Archive billed loads?');
+  await page.click('#ask-go'); await page.waitForTimeout(900);
+  const arch = await page.evaluate(() => Array.from(document.querySelectorAll('#history-content .archive-batch')).map(b => Array.from(b.querySelectorAll('button')).map(x => x.textContent.trim()).join(',')).join('|'));
+  chk('   …the batch is in the archive log with Unarchive', arch, 'Unarchive…');
+  await page.click('#history-content .archive-batch button'); await page.waitForTimeout(400);
+  chk('7. Unarchive asks for a reason', await page.evaluate(() => { const m = document.getElementById('ask-modal'); return m ? `${m.querySelector('h2').textContent.trim()} ${m.querySelector('#ask-go').disabled}` : 'no dialog'; }), 'Unarchive this batch? true');
+  await page.fill('#ask-reason', 'need to correct the invoice'); await page.click('#ask-go'); await page.waitForTimeout(900);
+  lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('   …the load is back on the active lists, still billed, and the archive log is empty', `${lm2 ? lm2.billStatus : 'missing'} ${await page.evaluate(() => document.querySelectorAll('#history-content .archive-batch').length)}`, 'billed 0');
+  chk('   no browser confirm() or prompt() in any of this', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
+
   console.log('── Fleet Map ──');
   const navCount = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-item')).filter(b => b.textContent.includes('Fleet Map') && getComputedStyle(b).display !== 'none').length);
   chk('1. manager sees the Fleet Map tab', navCount, 1);

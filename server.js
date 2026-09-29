@@ -4352,16 +4352,25 @@ app.get('/api/ready-to-bill', reqMgr, (req, res) => {
   if (filters.material) items = items.filter(l => l.material === filters.material);
   if (filters.truckId)  items = items.filter(l => l.truckId === filters.truckId);
   if (filters.poId)     items = items.filter(l => l.poId === filters.poId);
-  // Enrich with PO data
+  // Enrich with PO data and what each load is worth as it stands — priced by
+  // the same engine that prices the invoice, so the screen and QuickBooks agree.
   const enriched = items.map(l => {
     const po = store.pos.find(p => p.id === l.poId) || {};
-    return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address };
+    const r = revenueDetail(l);
+    const priceable = r.amount != null && !r.unconfigured;
+    return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address,
+      amount: priceable ? Math.round(r.amount * 100) / 100 : null, priceable,
+      priceReason: priceable ? '' : (r.reason || 'not priceable yet'), basis: r.basis || 'planned', rateLabel: `$${r.rate}/${r.unit}` };
   });
-  res.json({ items: enriched });
+  const priced = enriched.filter(x => x.priceable);
+  res.json({ items: enriched, totals: { count: enriched.length, amount: Math.round(priced.reduce((s, x) => s + x.amount, 0) * 100) / 100, priced: priced.length, unpriced: enriched.length - priced.length } });
 });
 
 app.post('/api/loads/bill', reqMgr, async (req, res) => {
   const ids = req.body.loadIds || [];
+  // The invoice made outside QuickBooks, so the record says where the money
+  // went. The screen requires it; the API keeps it optional for older callers.
+  const reference = String(req.body.reference || '').trim();
   let count = 0;
   const billedIds = [];
   const skipped = [];
@@ -4373,6 +4382,8 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
     if (l.billingBatchId || l.qbInvoiceId) { skipped.push(l.id); return; }
     l.billStatus = 'billed';
     l.billedAt   = new Date().toISOString();
+    l.billedBy   = req.session.user.username;
+    l.manualBillRef = reference;
     billedIds.push(l.id);
     count++;
   });
@@ -4386,10 +4397,41 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
     logAction(req.session.user, 'marked-billed', '', {
       count,
       loadIds: billedIds,
+      reference,
     });
   }
   await saveData();
   res.json({ success: true, billed: count });
+});
+
+// ── API: UNBILL (manual billing only) ───────────────────────────────────────
+// The reverse of "Mark Billed (manual)", for a load that was marked billed by
+// hand and never reached QuickBooks: it goes back to Ready to Bill with the
+// reason on the record. A load on a billing batch or with an invoice is never
+// unbilled here — voiding the batch is the one way to release it, so the
+// invoice in QuickBooks and the load can never disagree. There is no button
+// that re-bills anything silently.
+app.post('/api/loads/:id/unbill', reqMgr, async (req, res) => {
+  const l = store.loads.find(x => x.id === req.params.id);
+  if (!l) {
+    const archived = findLoadAnywhere(req.params.id);
+    return res.status(archived ? 400 : 404).json({ error: archived ? 'This load is archived. Unarchive its batch first, then unbill it.' : 'Load not found' });
+  }
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to unbill' });
+  if (l.billStatus !== 'billed') return res.status(400).json({ error: 'This load is not billed' });
+  if (l.billingBatchId || l.qbInvoiceId) {
+    return res.status(409).json({
+      error: `This load was billed through batch ${l.billingBatchId || ''}${l.qbInvoiceNumber ? ` (invoice ${l.qbInvoiceNumber})` : ''}. Void the batch to release it — the invoice and the load must never disagree.`,
+      code: 'billed_by_batch', billingBatchId: l.billingBatchId || null,
+    });
+  }
+  const was = { billedAt: l.billedAt || '', billedBy: l.billedBy || '', reference: l.manualBillRef || '' };
+  l.billStatus = 'ready'; l.billedAt = ''; l.billedBy = ''; l.manualBillRef = '';
+  l.billHistory = [...(l.billHistory || []), { action: 'unbilled', at: new Date().toISOString(), by: req.session.user.username, reason, ...was }];
+  logAction(req.session.user, 'unbilled-load', l.id, { reason, ...was });
+  await saveData();
+  res.json({ success: true, load: l });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6728,6 +6770,32 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
 
   await saveData();
   res.json({ success: true, archived: { pos: archivedPos.length, loads: billed.length, batchId }, heldBack });
+});
+
+// Unarchive one batch: its POs and loads come back onto the active lists
+// exactly as they were archived — to re-bill after a voided batch, or to
+// correct something after the fact. Nothing is created or lost: the same
+// records move back, the archive entry is removed, and the move is audited
+// with its reason.
+app.post('/api/history/:batchId/unarchive', reqMgr, async (req, res) => {
+  const idx = (store.archive || []).findIndex(b => b.batchId === req.params.batchId);
+  if (idx === -1) return res.status(404).json({ error: 'Archive batch not found' });
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to unarchive' });
+  const b = store.archive[idx];
+  const liveLoadIds = new Set(store.loads.map(l => l.id)), livePoIds = new Set(store.pos.map(p => p.id));
+  const loads = (b.loads || []).filter(l => !liveLoadIds.has(l.id));
+  const pos = (b.pos || []).filter(p => !livePoIds.has(p.id));
+  // A load comes back onto its PO: the PO is still live (it kept unbilled
+  // loads) or it comes back in this same batch.
+  const orphan = loads.filter(l => !livePoIds.has(l.poId) && !pos.some(p => p.id === l.poId));
+  if (orphan.length) return res.status(409).json({ error: `${orphan.length} load(s) in this batch belong to a PO that sits in another archive batch; unarchive that batch first.`, loadIds: orphan.map(l => l.id) });
+  store.loads.push(...loads);
+  store.pos.push(...pos);
+  store.archive.splice(idx, 1);
+  logAction(req.session.user, 'unarchived-batch', b.batchId, { reason, poCount: pos.length, loadCount: loads.length, archivedAt: b.archivedAt, archivedBy: b.archivedBy });
+  await saveData();
+  res.json({ success: true, restored: { pos: pos.length, loads: loads.length }, batchId: b.batchId });
 });
 
 // ── CREDENTIAL FILE GUARD ────────────────────────────────────────────────────

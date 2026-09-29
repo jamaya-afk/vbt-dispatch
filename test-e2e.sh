@@ -1540,6 +1540,56 @@ chk "   when the database refuses the write, nothing is added and the dispatcher
 mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
 chk "   the screen: Edit PO from the PO card and the load detail; a date change goes through the same conflict dialog; the rules are written down" "$(grep -cF "onclick=\"openEditPO('\${p.id}')\"" public/index.html)|$(grep -cF "openEditPO('\${l.poId}')" public/index.html)|$(grep -cF "postAssignment(\`/api/pos/\${p.id}\`, body, 'Move', reason, 'PUT')" public/index.html)|$(test -s PO-EDITING.md && grep -c '^| Delivery date' PO-EDITING.md)" "1|1|1|1"
 
+echo
+echo "── 45. Billing visibility: amounts, the state machine, guarded manual billing, unbill, unarchive ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-billing.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+mgc() { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+rtb() { curl -s -b $M "$B/api/ready-to-bill" | jq "$1"; }
+haul() { dr $1 $2 '{"action":"start-trip"}' >/dev/null; dr $1 $2 "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null
+  dr $1 $2 "{\"action\":\"loaded\",\"ticket\":${4:-$(tkt)}}" >/dev/null; dr $1 $2 '{"action":"arrived-jobsite"}' >/dev/null; dr $1 $2 '{"action":"trip-complete"}' >/dev/null; }
+submit() { curl -s -b $1 -H "$J" -X PUT $B/api/loads/$2 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $1 $2 '{"action":"delivered"}' >/dev/null; }
+mg POST /api/_test/qb-fake '{"mode":"ok"}' -o /dev/null
+mg POST /api/customers '{"name":"Actual Co","billingBasis":"actual"}' >/dev/null
+# Beryle: 3/4 Rock for Rate Co (planned basis → 25 t × $25). Matthew: Dirt for Actual Co with a VBT ticket that has no tons (not priceable).
+# Rigo: Dirt for Rate Co, later billed through a QuickBooks batch.
+P1=$(mg POST /api/pos '{"po":{"poNumber":"R45-1","customer":"Rate Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":1,"vendorId":"vulcan"},{"truckId":"rigo","truckUnitId":"truck-14","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+P2=$(mg POST /api/pos '{"po":{"poNumber":"R45-2","customer":"Actual Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LB=$(loadof $P1 beryle); LR=$(loadof $P1 rigo); LM=$(loadof $P2 matthew)
+haul $BE $LB vulcan; submit $BE $LB; mg POST /api/loads/$LB/approve >/dev/null
+haul $RG $LR vbt;    submit $RG $LR; mg POST /api/loads/$LR/approve >/dev/null
+haul $MA $LM vbt '{"source":"vbt","number":"V-45"}'; submit $MA $LM; mg POST /api/loads/$LM/approve '{"acknowledge":true}' >/dev/null
+chk "45 Ready to Bill prices every load with the invoice engine, says why one cannot be priced, and totals the rest" "$(rtb "sorted((x['id'], x['priceable'], x['amount'], x['rateLabel'], x['basis']) for x in d['items']), d['totals']")" "[('$LB', True, 625, '\$25/ton', 'planned'), ('$LR', True, 625, '\$25/ton', 'planned'), ('$LM', False, None, '\$25/ton', 'actual')] {'count': 3, 'amount': 1250, 'priced': 2, 'unpriced': 1}"
+chk "   …the reason is the one billing would give, and the approval gap rides along" "$(rtb "[(x['priceReason'].startswith('Actual Co is billed on actual ticket tons'), x.get('approvalWarnings')) for x in d['items'] if x['id']=='$LM'][0]")" "(True, ['Ticket: Actual Co is billed on actual tons and 1 ticket(s) have no tons'])"
+# Manual billing records who and which outside invoice; unbill reverses it with a reason
+chk "   Mark Billed (manual) records the outside invoice reference and who did it" "$(mg POST /api/loads/bill "{\"loadIds\":[\"$LB\"],\"reference\":\"INV-2041\"}" | jq "d['billed']")|$(load $LB "l['billStatus'], l['manualBillRef'], l['billedBy']")|$(curl -s -b $M "$B/api/audit-log?action=marked-billed" | jq "d['entries'][0]['details']['reference']")" "1|billed INV-2041 joshua|INV-2041"
+chk "   unbill needs a reason; a load that is not billed cannot be unbilled" "$(mgc POST /api/loads/$LB/unbill '{}')|$(mgc POST /api/loads/$LR/unbill '{"reason":"x"}')" "400|400"
+chk "   unbill puts a manually billed load back in Ready to Bill, with the reversal on the record and in the audit log" "$(mg POST /api/loads/$LB/unbill '{"reason":"paper invoice cancelled"}' | jq "d['success'], d['load']['billStatus'], d['load']['manualBillRef']")|$(load $LB "[(h['action'], h['reason'], h['reference']) for h in l['billHistory']]")|$(curl -s -b $M "$B/api/audit-log?action=unbilled-load" | jq "d['entries'][0]['target']=='$LB', d['entries'][0]['details']['reference']")|$(rtb "'$LB' in [x['id'] for x in d['items']]")" "True ready |[('unbilled', 'paper invoice cancelled', 'INV-2041')]|True INV-2041|True"
+# A load billed through QuickBooks is released only by voiding the batch
+BQ=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LR\"]}" | jq "d['batches'][0]['id']")
+mg POST /api/billing-batches/$BQ/send >/dev/null
+chk "   a load billed through a QuickBooks batch cannot be unbilled (409 points at the batch) — the invoice and the load never disagree" "$(load $LR "l['billStatus'], l['qbInvoiceId']")|$(mg POST /api/loads/$LR/unbill '{"reason":"x"}' -w ' %{http_code}' | python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, d['code'], d['billingBatchId']=='$BQ')")|$(load $LR "l['billStatus']")" "billed INV-1|409 billed_by_batch True|billed"
+# Archive, then bring it back
+mg POST /api/loads/bill "{\"loadIds\":[\"$LB\"],\"reference\":\"INV-2041-B\"}" >/dev/null
+AR=$(mg POST /api/history/archive | jq "d['archived']['batchId']")
+chk "   archived: both billed loads and their fully billed PO leave the active lists" "$(curl -s -b $M $B/api/data | jq "sorted(l['id'] for l in d['loads']), [p['poNumber'] for p in d['pos']]")" "['$LM'] ['R45-2']"
+chk "   unarchive needs a reason; an unknown batch is 404" "$(mgc POST /api/history/$AR/unarchive '{}')|$(mgc POST /api/history/BATCH-nope/unarchive '{"reason":"x"}')" "400|404"
+mg POST /api/billing-batches/$BQ/void '{"reason":"customer dispute"}' >/dev/null      # releases Rigo's archived load while it sits in the archive
+chk "   unarchive brings the batch back exactly as it was: the PO, the manual-billed load still billed, the released load in Ready to Bill again" "$(mg POST /api/history/$AR/unarchive '{"reason":"re-bill after the voided batch"}' | jq "d['success'], d['restored']")|$(curl -s -b $M $B/api/data | jq "sorted(l['id'] for l in d['loads']), sorted(p['poNumber'] for p in d['pos'])")|$(load $LR "l['billStatus'], repr(l['billingBatchId'])")|$(rtb "sorted(x['id'] for x in d['items'])")|$(curl -s -b $M $B/api/history | jq "len(d['archive'])")" "True {'pos': 1, 'loads': 2}|['$LB', '$LR', '$LM'] ['R45-1', 'R45-2']|ready ''|['$LR', '$LM']|0"
+chk "   …audited with the reason; the released load can be billed again, once" "$(curl -s -b $M "$B/api/audit-log?action=unarchived-batch" | jq "d['entries'][0]['target']=='$AR', d['entries'][0]['details']['reason'], d['entries'][0]['details']['loadCount']")|$(mg POST /api/loads/bill "{\"loadIds\":[\"$LR\"],\"reference\":\"INV-9\"}" | jq "d['billed']")|$(mgc POST /api/loads/bill "{\"loadIds\":[\"$LR\"]}")|$(mg POST /api/loads/bill "{\"loadIds\":[\"$LR\"]}" | jq "d['billed']")" "True re-bill after the voided batch 2|1|200|0"
+chk "   the screen: the state machine strip on Billing and History; manual billing, unbill, unarchive and archive all ask in the app, never with confirm()" "$(grep -c 'billingFlowHtml(' public/index.html)|$(sed -n '/^async function markBilled/,/^\/\/ ── PREVIEW + SEND TO QB/p' public/index.html | grep -c '[^a-zA-Z]confirm(')|$(sed -n '/^async function archiveBilledLoads/,/^\/\/ ── DRIVERS & TRUCKS/p' public/index.html | grep -c '[^a-zA-Z]confirm(\|prompt(')|$(sed -n '/^async function archiveBilledLoads/,/^\/\/ ── DRIVERS & TRUCKS/p' public/index.html | grep -c "required: true")" "3|0|0|2"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
