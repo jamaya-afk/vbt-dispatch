@@ -115,6 +115,8 @@ Ordering principle: anything that can produce a wrong invoice or destroy evidenc
 
 ### 5.1 Critical (fix before the next real billing cycle)
 
+**Status (2026-09-29): all eleven items below are done, plus a twelfth (double-tap guards on Start and Arrived at Job Site). Each is covered by section 40 of `test-e2e.sh` (73 assertions); the full suite is 528 end-to-end and 104 browser assertions, all passing.** Two related adjustments made while implementing: the vendor cost model became per-trip (each trip carries the rate fixed at the scale, and a missing or default price is resolved live when the office adds it), and PO creation warns about truck or trailer double-booking but not about a driver who is out hauling, since queuing a driver's next job is normal planning.
+
 | # | Fix | Where | Size |
 |---|---|---|---|
 | C1 | Void refuses a load whose `billStatus==='billed'` unless it is first un-marked through an audited "Unbill (manual)" action; unvoid restores the prior `billStatus` instead of forcing `ready`. | `server.js:3821-3880` | small |

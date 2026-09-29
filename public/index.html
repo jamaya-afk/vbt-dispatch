@@ -1964,7 +1964,7 @@ function loadCard(l) {
     <div class="lc-driver-row">
       ${driverHtml}
       ${(role === 'manager' || role === 'admin') && !l.locked
-        ? `<button class="lc-assign-btn" onclick="event.stopPropagation();openReassignModal('single','${l.id}')" title="Assign or change driver">${l.truckId && l.truckId !== 'unassigned' ? 'Reassign' : 'Assign'}</button>`
+        ? `<button class="lc-assign-btn" onclick="event.stopPropagation();qaOpenFor('${l.id}')" title="Assign driver, truck and yard">${l.truckId && l.truckId !== 'unassigned' ? 'Reassign' : 'Assign'}</button>`
         : ''}
     </div>
   </div>`;
@@ -2256,7 +2256,7 @@ async function savePO() {
     }));
     if (!validSplits.length) { toast('Add at least one load', 'error'); return; }
     const btn = document.getElementById('po-save'); btn.disabled = true; btn.textContent = 'Saving…';
-    const d = await api('POST', '/api/pos', { po, splits: validSplits });
+    const d = await postAssignment('/api/pos', { po, splits: validSplits }, 'Assign');
     btn.disabled = false; btn.textContent = 'Save PO';
     if (d.ok) {
       toast(`PO ${d.po?.poNumber || ''} created — ${validSplits.length} load assignment${validSplits.length === 1 ? '' : 's'}`, 'success');
@@ -2832,10 +2832,11 @@ async function confirmReassign() {
   // Update loads in parallel
   document.getElementById('reassign-confirm-btn').disabled = true;
   let success = 0, failed = 0;
+  const reason = (document.getElementById('reassign-reason')?.value || '').trim();
   for (const id of loadIds) {
-    // Same endpoint as Quick Assign, so the same validation and audit apply.
-    const d = await api('POST', `/api/loads/${id}/assign`, { driverId: reassignTarget || null });
-    if (d.ok) success++; else failed++;
+    // Same endpoint as Quick Assign, so the same validation, conflict check and audit apply.
+    const d = await postAssignment(`/api/loads/${id}/assign`, { driverId: reassignTarget || null }, 'Reassign', reason);
+    if (d.ok) success++; else { failed++; if (d.error && loadIds.length === 1) toast(d.error, 'error'); }
   }
 
   if (failed === 0) {
@@ -4311,6 +4312,9 @@ async function retryBatch(id) {
   // again if the reset was accepted.
   const rt = await api('POST', `/api/billing-batches/${id}/retry`, {});
   if (!rt.ok) { toast(rt.error || 'Retry refused', 'error'); renderBillBatches(); return; }
+  // The interrupted send had already created the invoice: it was found in
+  // QuickBooks and adopted. Nothing to send.
+  if (rt.recovered) { toast(`Invoice ${rt.batch?.qbInvoiceNumber || rt.batch?.qbInvoiceId || ''} was already in QuickBooks — batch marked as sent`, 'success'); await loadAll(); renderBillBatches(); return; }
   const r = await api('POST', `/api/billing-batches/${id}/send`, {});
   if (r.ok) toast('Sent to QuickBooks', 'success'); else toast(r.error || 'Retry failed', 'error');
   renderBillBatches();
@@ -4608,6 +4612,17 @@ function qaOpen(loadId) {
   qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId, trailerId: l.trailerId || null };
   qaPaintSheet();
 }
+// The same sheet from anywhere else (the Board), for a load on any date: the
+// availability of drivers, trucks and trailers is fetched for that load's day.
+// One assignment path, so a load can never end up with a driver and no truck.
+async function qaOpenFor(loadId) {
+  const l = loads.find(x => x.id === loadId); if (!l) return;
+  if (l.locked) { toast('This load is approved and locked', 'error'); return; }
+  const d = await api('GET', '/api/today?date=' + encodeURIComponent(l.deliveryDate || ''));
+  if (!d.ok || !(d.loads || []).some(x => x.id === loadId)) { toast(d.error || 'Could not load this day', 'error'); return; }
+  todayData = d;
+  qaOpen(loadId);
+}
 
 function qaPaintSheet() {
   const d = todayData, p = qaPick;
@@ -4675,13 +4690,29 @@ function qaPaintSheet() {
 function qaSet(field, val) { qaPick[field] = val; qaPaintSheet(); }
 function qaClose() { const el = document.getElementById('qa-sheet-bg'); if (el) el.remove(); qaPick = null; }
 
+// The server refuses an assignment that collides with work already on the
+// board (driver mid-haul elsewhere, truck on another driver's load) with 409
+// and the exact conflicts. The dispatcher sees them and chooses: Cancel, or
+// go ahead — which resends with `force` and is written to the audit log.
+function confirmConflicts(r, verb) {
+  if (!(r.status === 409 && Array.isArray(r.conflicts) && r.conflicts.length)) return false;
+  return confirm(r.conflicts.map(c => '• ' + c.message).join('\n') + `\n\nOK = ${verb} anyway · Cancel = leave it as it is`);
+}
+// POST an assignment; on a conflict the dispatcher decides, and a "go ahead"
+// is resent with `force` so the override lands in the audit log.
+async function postAssignment(url, body, verb, reason) {
+  let d = await api('POST', url, body);
+  if (!d.ok && confirmConflicts(d, verb)) d = await api('POST', url, { ...body, force: true, reason: reason || 'dispatcher confirmed the conflict' });
+  return d;
+}
+
 async function qaConfirm() {
   const p = qaPick; if (!p) return;
   const btn = document.getElementById('qa-confirm');
   btn.disabled = true; btn.textContent = 'Assigning…';
-  const r = await api('POST', `/api/loads/${p.loadId}/assign`, {
+  const r = await postAssignment(`/api/loads/${p.loadId}/assign`, {
     driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId, trailerId: p.trailerId || null,
-  });
+  }, 'Reassign');
   if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; return toast(r.error || 'Assign failed', 'error'); }
   const who = r.load.driverName || 'Unassigned';
   const truck = r.truck ? r.truck.truckNum : 'no truck';

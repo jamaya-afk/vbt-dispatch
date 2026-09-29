@@ -165,6 +165,27 @@ function applyTokenToConnection(conn, tok) {
 }
 
 // ── API HELPER ───────────────────────────────────────────────────────────────
+// Every request to Intuit has a deadline. A request that gets no answer at
+// all (timeout, dropped connection) is marked `uncertain` when it could have
+// changed something on Intuit's side — the caller must look before it
+// retries, or the same invoice is created twice.
+const QB_TIMEOUT_MS = Number(process.env.QB_TIMEOUT_MS || 30000);
+async function timedFetch(url, opts, { mutating }) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), QB_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } catch (e) {
+    const timedOut = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+    const err = new Error(timedOut ? `QuickBooks did not answer within ${Math.round(QB_TIMEOUT_MS / 1000)}s` : `QuickBooks request failed: ${e && e.message || e}`);
+    err.timeout = timedOut;
+    err.uncertain = !!mutating;
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function qbFetch(conn, method, pathWithQuery, jsonBody, extraHeaders) {
   if (!conn || !conn.realmId) throw new Error('QuickBooks not connected (no realmId)');
   const access = await ensureFreshToken(conn);
@@ -182,7 +203,7 @@ async function qbFetch(conn, method, pathWithQuery, jsonBody, extraHeaders) {
   } else if (jsonBody) {
     body = jsonBody;
   }
-  const r = await fetch(url, { method, headers, body });
+  const r = await timedFetch(url, { method, headers, body }, { mutating: method !== 'GET' });
   const text = await r.text();
   let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!r.ok) {
@@ -316,9 +337,56 @@ async function createInvoice(conn, args) {
   return data?.Invoice || null;
 }
 
+// Current copy of an entity (needed for its SyncToken before a void/delete:
+// any edit in QuickBooks bumps it, and a stale token is refused).
+async function getEntity(conn, type, id) {
+  const data = await qbFetch(conn, 'GET', `/${type.toLowerCase()}/${encodeURIComponent(id)}`);
+  return data?.[type] || null;
+}
+
 async function voidInvoice(conn, invoiceId) {
-  const data = await qbFetch(conn, 'POST', `/invoice?operation=void`, { Id: invoiceId, SyncToken: '0' });
+  const cur = await getEntity(conn, 'Invoice', invoiceId);
+  if (!cur) throw new Error(`Invoice ${invoiceId} was not found in QuickBooks`);
+  const data = await qbFetch(conn, 'POST', `/invoice?operation=void`, { Id: invoiceId, SyncToken: String(cur.SyncToken ?? '0') });
   return data?.Invoice || null;
+}
+
+// QuickBooks has no void for a Bill; it is deleted.
+async function deleteBill(conn, billId) {
+  const cur = await getEntity(conn, 'Bill', billId);
+  if (!cur) throw new Error(`Bill ${billId} was not found in QuickBooks`);
+  const data = await qbFetch(conn, 'POST', `/bill?operation=delete`, { Id: billId, SyncToken: String(cur.SyncToken ?? '0') });
+  return data?.Bill || { Id: billId, status: 'Deleted' };
+}
+
+// After a send that got no answer: is there already an invoice for this
+// batch? Our PrivateNote names the batch id, and DocNumber carries the PO
+// number, so the lookup is exact. Falls back to the customer's recent
+// invoices when the batch had no PO number.
+async function findInvoiceForBatch(conn, { docNumber, batchId, qbCustomerId }) {
+  const marker = `batch ${batchId}`;
+  const matches = inv => String(inv.PrivateNote || '').includes(marker);
+  if (docNumber) {
+    const q = encodeURIComponent(`select * from Invoice where DocNumber = '${String(docNumber).replace(/'/g, "\\'")}'`);
+    const data = await qbFetch(conn, 'GET', `/query?query=${q}`);
+    const hit = (data?.QueryResponse?.Invoice || []).find(matches);
+    if (hit) return hit;
+  }
+  if (qbCustomerId) {
+    const q = encodeURIComponent(`select * from Invoice where CustomerRef = '${String(qbCustomerId).replace(/'/g, "\\'")}' orderby MetaData.CreateTime desc maxresults 100`);
+    const data = await qbFetch(conn, 'GET', `/query?query=${q}`);
+    const hit = (data?.QueryResponse?.Invoice || []).find(matches);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// Vendor bills carry our own bill id as DocNumber, so recovery is a direct lookup.
+async function findBillByDocNumber(conn, docNumber) {
+  if (!docNumber) return null;
+  const q = encodeURIComponent(`select * from Bill where DocNumber = '${String(docNumber).replace(/'/g, "\\'")}'`);
+  const data = await qbFetch(conn, 'GET', `/query?query=${q}`);
+  return (data?.QueryResponse?.Bill || [])[0] || null;
 }
 
 async function createBill(conn, args) {
@@ -371,7 +439,7 @@ async function attachToEntity(conn, args) {
   const tail = Buffer.from(`${lf}--${boundary}--${lf}`, 'utf8');
   const body = Buffer.concat([head1, head2, args.buffer, tail]);
 
-  const r = await fetch(url, {
+  const r = await timedFetch(url, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${access}`,
@@ -380,7 +448,7 @@ async function attachToEntity(conn, args) {
       'Content-Length': String(body.length),
     },
     body,
-  });
+  }, { mutating: false });   // an attachment is best-effort; a retry only adds a duplicate file
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = { raw: text }; }
   if (!r.ok) {
@@ -423,6 +491,10 @@ module.exports = {
   createInvoice,
   voidInvoice,
   createBill,
+  deleteBill,
+  getEntity,
+  findInvoiceForBatch,
+  findBillByDocNumber,
   attachToEntity,
   fetchRemoteAsBuffer,
   QB_ENVIRONMENT,
