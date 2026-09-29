@@ -1221,8 +1221,8 @@ PQ=$(data "[p['id'] for p in d['pos'] if p['poNumber']=='P0-Q'][0]")
 mg PUT /api/drivers/leonardo '{"status":"off"}' >/dev/null
 chk "   PO form refuses an off-duty driver like Quick Assign does (400)"      "$(mgc POST /api/pos '{"po":{"poNumber":"P0-X","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "400"
 mg PUT /api/drivers/leonardo '{"status":"available"}' >/dev/null
-chk "   the Board's Assign button opens the same Driver → Truck → Yard sheet" "$(grep -c "qaOpenFor('\${l.id}')" public/index.html)|$(sed -n '/^function loadCard/,/^}/p' public/index.html | grep -c "openReassignModal('single'")" "1|0"
-chk "   every assignment path goes through one conflict-aware call"          "$(grep -c 'postAssignment(' public/index.html)" "4"
+chk "   the Board card and the load detail both open the same Driver → Truck → Yard sheet" "$(grep -c "qaOpenFor('\${l.id}')" public/index.html)|$(sed -n '/^function loadCard/,/^}/p' public/index.html | grep -c "openReassignModal('single'")" "2|0"
+chk "   every assignment path goes through one conflict-aware call (sheet, PO form, reassign modal, date move)" "$(grep -c 'postAssignment(' public/index.html)|$(grep -c "openReassignModal('single'" public/index.html)" "5|0"
 
 # ── C8. Field evidence is never deleted ──
 chk "C8 a load with a delivered trip cannot be deleted (403)"                "$(mgc DELETE /api/loads/$L1)" "403"
@@ -1251,9 +1251,12 @@ mg POST /api/loads/$L1/approve >/dev/null
 chk "   an approved, unbilled load voided and restored returns to Ready to Bill" "$(mg POST /api/loads/$L1/void '{"reason":"check"}' -o /dev/null; mg POST /api/loads/$L1/unvoid >/dev/null; load $L1 "l['approvalStatus'], l['billStatus']")" "approved ready"
 
 # ── C5. Vendor cost follows the yard the driver actually used, trip by trip ──
-chk "C5 planned Vulcan, trip 1 at Vulcan (\$38), trip 2 at CEMEX (default \$22): two cost lines" "$(curl -s -b $M $B/api/profitability >/dev/null; mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "sorted((g['vendorName'], g['totalAmount'], g['lineItems'][0]['loads'], g['lineItems'][0]['isDefault']) for g in d['groups'])")" "[('CEMEX', 550, 1, True), ('Vulcan', 950, 1, False)]"
-chk "   the default-rate line says so on the bill"                           "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "[g['lineItems'][0]['description'] for g in d['groups'] if g['vendorName']=='CEMEX'][0]")" "3/4 Rock — 1 load (25.00 ton @ \$22/ton) [default rate — no CEMEX price on file for 3/4 Rock]"
-chk "   Material Costs agrees, per yard"                                     "$(curl -s -b $M $B/api/material-costs | jq "d['vendors']['vulcan']['totalLoads'], int(d['vendors']['vulcan']['totalCost']), d['vendors']['cemex']['totalLoads'], int(d['vendors']['cemex']['totalCost'])")" "1 950 1 550"
+chk "C5 planned Vulcan, trip 1 at Vulcan (\$38), trip 2 at CEMEX (no price on file → \$22 default): two cost lines, CEMEX not billable" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "sorted((g['vendorName'], g['totalAmount'], g['lineItems'][0]['loads'], g['lineItems'][0]['isDefault'], g['unconfigured']) for g in d['groups'])")" "[('CEMEX', 550, 1, True, True), ('Vulcan', 950, 1, False, False)]"
+chk "   a default rate is an estimate, not a price: named as such, refused as a bill" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "[g['lineItems'][0]['description'] for g in d['groups'] if g['vendorName']=='CEMEX'][0]")|$(mgc POST /api/vendor-bills "{\"loadIds\":[\"$L1\"]}")" "3/4 Rock — 1 load (25.00 ton @ \$22/ton) [default rate — no CEMEX price on file for 3/4 Rock] [NOT PRICEABLE]|400"
+chk "   Material Costs shows the estimate meanwhile, per yard"               "$(curl -s -b $M $B/api/material-costs | jq "d['vendors']['vulcan']['totalLoads'], int(d['vendors']['vulcan']['totalCost']), d['vendors']['cemex']['totalLoads'], int(d['vendors']['cemex']['totalCost'])")" "1 950 1 550"
+chk "   Profitability splits the same load the same way (Vulcan 1 / CEMEX 1)" "$(curl -s -b $M $B/api/profitability | jq "(lambda v: (v['vulcan']['loads'], int(v['vulcan']['cost']), v['cemex']['loads'], int(v['cemex']['cost'])))({x['key']: x for x in d['byVendor']})")" "(1, 950, 1, 550)"
+mg POST /api/vendors/cemex/prices '{"material":"3/4 Rock","unit":"ton","price":20}' >/dev/null
+chk "   once CEMEX's price is on file the trip is costed at it (\$20 × 25) and billable" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "[(g['vendorName'], g['totalAmount'], g['unconfigured']) for g in d['groups'] if g['vendorName']=='CEMEX']")" "[('CEMEX', 500, False)]"
 VB=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$L1\"]}"); VBV=$(echo "$VB" | jq "[b['id'] for b in d['bills'] if b['vendorId']=='vulcan'][0]"); VBC=$(echo "$VB" | jq "[b['id'] for b in d['bills'] if b['vendorId']=='cemex'][0]")
 chk "   two bills created; each trip claimed by its own vendor's bill"       "$(echo "$VB" | jq "len(d['bills'])")|$(load $L1 "l['trips'][0]['vendorBillId']=='$VBV', l['trips'][1]['vendorBillId']=='$VBC'")" "2|True True"
 chk "   the same hauls cannot be billed to a vendor twice"                   "$(mgc POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}")" "400"
@@ -1310,10 +1313,13 @@ chk "C2 archive: the two billed loads (one QuickBooks, one manual) leave the boa
 chk "   the batch still shows its (archived) loads"                          "$(curl -s -b $M $B/api/billing-batches/$B3 | jq "[l['id'] for l in d['loads']]")" "['$L1']"
 chk "   Material Costs and Reports still count them"                        "$(curl -s -b $M $B/api/material-costs | jq "int(d['grandTotal'])==$BEFORE_COST")|$(curl -s -b $M $B/api/reports | jq "d['totals']['billedThisMonth']")" "True|2"
 chk "   voiding the batch after archive releases the archived load too (no phantom 'billed')" "$(mg POST /api/billing-batches/$B3/void '{"reason":"customer dispute"}' | jq "d['success']")|$(curl -s -b $M $B/api/history | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for b in d['archive'] for x in b['loads'] if x['id']=='$L1'][0];print(l['billStatus'], repr(l['qbInvoiceId']), repr(l['billingBatchId']))")" "True|ready '' ''"
+chk "   an archived load is still owed to its vendor: the released CEMEX trip can be billed" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "[(g['vendorName'], g['lineItems'][0]['loads']) for g in d['groups']]")" "[('CEMEX', 1)]"
 
 # ── C9 + C11. Shifts: odometers are per truck; an office close waits for review ──
 chk "C9 Rigo starts his day on Truck #4 at 100,000"                          "$(curl -s -b $RG -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-4","odometer":100000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['shift']['truckNum'], d['shift']['startOdometer']")" "Truck #4 100000"
 SH=$(curl -s -b $RG $B/api/shifts/current | jq "d['shift']['id']")
+mg POST /api/customers '{"name":"Segment Co","city":"Madera"}' >/dev/null
+mg POST /api/customer-prices '{"customer":"Segment Co","material":"3/4 Rock","unit":"hour","price":95}' >/dev/null   # an hourly customer: billed from the freight window
 P6=$(newpo '{"po":{"poNumber":"P0-6","customer":"Segment Co","deliveryDate":"'"$TODAY"'","address":"9 Seg Rd","city":"Madera","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}'); P6=${P6%% *}; L6=$(loadof $P6)
 dr $RG $L6 '{"action":"start-trip"}' >/dev/null
 FS1=$(dr $RG $L6 '{"action":"arrived-pickup","yardId":"vulcan","odometer":100010}' | jq "d['load']['freightSegmentId']")
@@ -1329,9 +1335,34 @@ curl -s -b $RG -H "$J" -X PUT $B/api/loads/$L6 -d "{\"pod\":{\"signedBy\":\"x\",
 dr $RG $L6 '{"action":"delivered"}' >/dev/null; mg POST /api/loads/$L6/approve >/dev/null
 chk "   the finished Truck #4 freight is locked (all its loads approved)"   "$(curl -s -b $M $B/api/freight-segments/$FS1 | jq "d['segment']['locked']")" "True"
 chk "C11 Rigo forgot End day; the office closes it: freight closed but NOT locked — it waits for review" "$(mg POST /api/shifts/$SH/close '{"odometer":50100,"reason":"driver forgot to end the day"}' | jq "d['shift']['status']")|$(curl -s -b $M $B/api/freight-segments/$FS2 | jq "d['segment']['status'], d['segment']['locked'], bool(d['segment']['needsReview'])")" "closed|closed False True"
-chk "   the Freight Bill stays DRAFT meanwhile"                             "$(curl -s -b $M $B/api/freight-segments/$FS2/freight-bill | python3 -c "import sys;h=sys.stdin.read();print('DRAFT' in h, 'FINAL' in h)")" "True False"
+chk "   the Freight Bill stays DRAFT meanwhile"                             "$(curl -s -b $M $B/api/freight-segments/$FS2/freight-bill | python3 -c "import sys;h=sys.stdin.read();print('DRAFT' in h, 'FINAL' in h, 'awaiting review' in h)")" "True False True"
+chk "   …and the hourly invoice will not bill the office-typed window until it is reviewed" "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$L6\"]}" | jq "d['groups'][0]['unconfigured'], 'closed by the office' in d['groups'][0]['unconfiguredReasons'][0]")" "True True"
+chk "   the office sees the review link on the day panel"                  "$(grep -c "confirmSegmentEnding(" public/index.html)" "2"
 sleep 1
 chk "   a manager reviews the window with a reason → locked, FINAL"         "$(mg PUT /api/freight-segments/$FS2 "{\"odEnd\":50040,\"timeEnd\":\"$(date -u +%FT%TZ)\",\"reason\":\"driver confirmed 50,040 at the last drop\"}" | jq "d['segment']['odEnd'], d['segment']['locked'], d['segment']['needsReview']")|$(curl -s -b $M $B/api/freight-segments/$FS2/freight-bill | python3 -c "import sys;h=sys.stdin.read();print('DRAFT' in h, 'FINAL' in h)")" "50040 True None|False True"
+chk "   …now the hourly invoice prices from the two freight windows"         "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$L6\"]}" | jq "d['groups'][0]['unconfigured'], d['groups'][0]['lineItems'][0]['basis'], d['groups'][0]['lineItems'][0]['unit']")" "False segment hour"
+
+# ── Review findings: a hand-counted remainder is claimed too; a date move checks conflicts;
+#    a batch that failed AFTER its invoice existed recovers instead of sticking ──
+P10=$(newpo '{"po":{"poNumber":"P0-10","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"Base Rock","loadsAssigned":3,"vendorId":"vulcan"}]}'); P10=${P10%% *}; L10=$(loadof $P10)
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+dr $MA $L10 '{"action":"start-trip"}' >/dev/null; dr $MA $L10 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $MA $L10 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $MA $L10 '{"action":"arrived-jobsite"}' >/dev/null; dr $MA $L10 '{"action":"trip-complete"}' >/dev/null
+curl -s -b $MA -H "$J" -X PUT $B/api/loads/$L10 -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+dr $MA $L10 '{"action":"incomplete","delivered":2}' >/dev/null; mg POST /api/loads/$L10/approve >/dev/null
+chk "R1 one recorded trip + one hand-counted load → billed once as 2 loads; nothing left to bill; void releases both" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}" | jq "d['groups'][0]['lineItems'][0]['loads'], d['groups'][0]['totalAmount']")|$(VBX=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$L10\"]}" | jq "d['bills'][0]['id']"); mgc POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}"; echo -n '|'; mg POST /api/vendor-bills/$VBX/void '{"reason":"check"}' >/dev/null; mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}" | jq "d['groups'][0]['lineItems'][0]['loads']")" "2 1100|400|2"
+TOMORROW=$(date -d '+1 day' +%F)
+P11=$(newpo '{"po":{"poNumber":"P0-11","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"carlos","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}'); P11=${P11%% *}; L11=$(loadof $P11)
+mg POST /api/pos '{"po":{"poNumber":"P0-12","customer":"Phase Zero Co","deliveryDate":"'"$TOMORROW"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' >/dev/null
+dr $CA $L11 '{"action":"start-trip"}' >/dev/null
+R=$(mg POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$L11\",\"newDate\":\"$TOMORROW\",\"reason\":\"customer pushed a day\"}")
+chk "R2 a date move checks conflicts: mid-haul load, and Truck #2B is Rigo's tomorrow → 409" "$(echo "$R" | jq "d['code'], sorted(c['type'] for c in d['conflicts'])")|$(load $L11 "l['deliveryDate']=='$TODAY'")" "assignment_conflict ['load-in-progress', 'truck-busy']|True"
+chk "   with the dispatcher's go-ahead it moves, and the override is audited"  "$(mg POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$L11\",\"newDate\":\"$TOMORROW\",\"reason\":\"customer pushed a day\",\"force\":true}" | jq "d['success'], d['moved']")|$(load $L11 "l['deliveryDate']=='$TOMORROW'")|$(curl -s -b $M "$B/api/audit-log?action=moved-loads" | jq "d['entries'][0]['details']['conflictsOverridden']")" "True 1|True|['load-in-progress', 'truck-busy']"
+B4=$(mg POST /api/billing-batches "{\"loadIds\":[\"$L5\"]}" | jq "d['batches'][0]['id']")
+INV_BEFORE=$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")
+mg POST /api/_test/save-mode '{"mode":"fail","after":1}' >/dev/null       # the 'syncing' save passes; the save after the invoice fails
+chk "R3 the invoice is created but the save after it fails → 503, batch failed WITH its invoice id" "$(mgc POST /api/billing-batches/$B4/send)|$(curl -s -b $M $B/api/billing-batches/$B4 | jq "d['batch']['syncStatus'], d['batch']['qbInvoiceId']!=''")" "503|failed True"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   Retry confirms the invoice in QuickBooks and marks the batch sent — no second invoice, nothing stuck" "$(mg POST /api/billing-batches/$B4/retry | jq "d['recovered'], d['batch']['syncStatus']")|$(load $L5 "l['billStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated'] - $INV_BEFORE")" "True sent_to_quickbooks|billed|1"
 
 # ── C10. Concurrent writes: all answered, memory and disk agree ──
 P7=$(newpo '{"po":{"poNumber":"P0-7","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}'); P7=${P7%% *}; L7=$(loadof $P7)

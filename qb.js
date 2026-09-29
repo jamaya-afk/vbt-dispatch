@@ -365,7 +365,9 @@ async function deleteBill(conn, billId) {
 // invoices when the batch had no PO number.
 async function findInvoiceForBatch(conn, { docNumber, batchId, qbCustomerId }) {
   const marker = `batch ${batchId}`;
-  const matches = inv => String(inv.PrivateNote || '').includes(marker);
+  // A voided invoice keeps its note (QuickBooks prefixes it with "Voided");
+  // it is not the live invoice for this batch.
+  const matches = inv => String(inv.PrivateNote || '').includes(marker) && !/^voided\b/i.test(String(inv.PrivateNote || '').trim());
   if (docNumber) {
     const q = encodeURIComponent(`select * from Invoice where DocNumber = '${String(docNumber).replace(/'/g, "\\'")}'`);
     const data = await qbFetch(conn, 'GET', `/query?query=${q}`);

@@ -2602,7 +2602,7 @@ function openLoadDetail(id) {
   let actions = '';
   if (role === 'manager' || role === 'admin') {
     if (!l.locked) {
-      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openReassignModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Reassign Driver</button>`;
+      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();qaOpenFor('${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Reassign Driver</button>`;
       actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openMoveModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Move Date</button>`;
     }
     if (!l.approvalStatus || l.approvalStatus === 'pending') {
@@ -2966,7 +2966,9 @@ async function confirmMove() {
     loadId: scope === 'single' ? movePayload.loadId : null,
   };
 
-  const d = await api('POST', '/api/loads/move', payload);
+  // A date move is an assignment on the new date: the same conflict check, the
+  // same Cancel / go-ahead choice.
+  const d = await postAssignment('/api/loads/move', payload, 'Move');
   if (d.ok) {
     let msg = `Moved ${d.moved} load${d.moved !== 1 ? 's' : ''} to ${fmtDate(newDate)}`;
     if (d.skipped > 0) msg += ` (${d.skipped} locked, skipped)`;
@@ -4534,6 +4536,22 @@ function qaSetFilter(f) { qaFilter = f; paintToday(); }
 // The drivers' day, from the shift records: who started, on what, odometer,
 // open freight, daily and billable miles once closed. Daily Log and Freight
 // Bill open as print pages rendered from the same records.
+// A day closed by the office left its freight with an office-typed ending
+// odometer and time. Until a manager confirms (or corrects) them here, the
+// freight cannot lock and its hours/miles are not billed.
+async function confirmSegmentEnding(id, currentOdEnd) {
+  const odo = prompt(`Ending odometer for this freight — blank keeps ${currentOdEnd == null ? 'the recorded value' : Number(currentOdEnd).toLocaleString()}:`, '');
+  if (odo === null) return;
+  const reason = prompt('Confirmation note (required) — e.g. "driver confirmed 50,040 at the last drop":');
+  if (!reason || !reason.trim()) return;
+  const body = { reason: reason.trim() };
+  if (odo.trim()) body.odEnd = odo.trim();
+  const r = await api('PUT', `/api/freight-segments/${id}`, body);
+  if (!r.ok) return toast(r.error || 'Could not confirm', 'error');
+  toast(r.segment?.locked ? 'Freight confirmed and locked' : 'Freight ending confirmed', 'success');
+  if (currentTab === 'today') renderToday();
+}
+
 function shiftsPanel(shifts) {
   if (!shifts.length) return '';
   const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
@@ -4552,7 +4570,7 @@ function shiftsPanel(shifts) {
         ${(s.segments || []).filter(x => x.status === 'closed').map(x => `<div class="qa-fact" style="grid-column:1/-1">Freight: <b>${escapeHtml(x.customer)}</b> · ${escapeHtml(x.originName)} → ${escapeHtml(x.destinationLabel)} · ${t(x.timeStart)}–${t(x.timeEnd)} · <b>${x.billableMiles.toLocaleString()} mi</b> · <b>${(x.billableMinutes / 60).toFixed(2)} h</b> · PO ${(x.poNumbers || []).join(', ') || '—'} · ${x.loadIds.length} load record${x.loadIds.length === 1 ? '' : 's'} · ${x.tripCount} trip${x.tripCount === 1 ? '' : 's'}${x.actualTons ? ` · ${x.actualTons.toFixed(2)} t` : ''}
           · <span style="font-weight:700;color:${x.locked ? 'var(--G)' : 'var(--A)'}">${x.locked ? 'locked — all loads approved' : `${x.approvedLoads} of ${x.loadIds.length} approved`}</span>
           ${x.closeReason && x.closeReason !== 'driver' ? ` · <span style="color:var(--R);font-weight:600">closed by office${x.closeReason === 'end-of-day-manager' ? ' at day end — check the ending odometer' : x.closeReason === 'truck-change' ? ' at truck change' : ': ' + escapeHtml(x.closeReason)}</span>` : ''}
-          <a href="/api/freight-segments/${encodeURIComponent(x.id)}/freight-bill" target="_blank">Freight Bill${x.locked ? '' : ' (draft)'}</a></div>`).join('')}
+          <a href="/api/freight-segments/${encodeURIComponent(x.id)}/freight-bill" target="_blank">Freight Bill${x.locked ? '' : ' (draft)'}</a>${x.needsReview ? ` · <a href="#" style="color:var(--A);font-weight:700" onclick="event.preventDefault();confirmSegmentEnding('${x.id}', ${x.odEnd == null ? 'null' : x.odEnd})">Closed by the office — confirm ending</a>` : ''}</div>`).join('')}
       </div>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <a class="btn ghost" style="font-size:12px" href="/api/shifts/${encodeURIComponent(s.id)}/daily-log" target="_blank">Daily Log${s.status === 'open' ? ' (draft)' : ''}</a>
