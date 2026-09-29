@@ -265,6 +265,40 @@ async function call(cookie, method, path, body) {
   chk('   no browser confirm() or prompt() anywhere in this', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
 
+  console.log('── Office: Edit PO — the order changes, the work follows where it can ──');
+  // A fresh order for Leonardo (Truck #2, nothing hauled), edited from the PO card.
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: '10485', customer: 'Gate Rd Builders', deliveryDate: today, address: '9 Gate Rd', city: 'Fresno', plannedVendorId: 'vbt' },
+    splits: [{ truckId: 'leonardo', truckUnitId: 'truck-2', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }] });
+  const d85 = (await call(mgr, 'GET', '/api/data')).data; const p85 = d85.pos.find(p => p.poNumber === '10485'); const l85 = d85.loads.find(l => l.poId === p85.id);
+  await page.evaluate(async () => { await loadAll(); goTab('pos'); }); await page.waitForTimeout(500);
+  const pe = await page.evaluate(async () => {
+    const card = Array.from(document.querySelectorAll('#pos-content .qa-card')).find(c => /10485/.test(c.innerText));
+    const btn = card && Array.from(card.querySelectorAll('button')).find(b => b.textContent.trim() === 'Edit PO');
+    if (!btn) return null; btn.click(); await new Promise(r => setTimeout(r, 300));
+    const m = document.getElementById('poedit-modal'); if (!m) return null;
+    return { title: m.querySelector('h2').textContent.trim(), frozen: !!m.querySelector('.pe-frozen'), follow: m.querySelector('.pe-follow').innerText.replace(/\s+/g, ' '),
+             number: document.getElementById('pe-number').value, disabled: document.getElementById('pe-number').disabled, yard: document.getElementById('pe-yard').value };
+  });
+  chk('1. Edit PO opens from the PO card with the order\'s fields, nothing frozen', pe ? `${pe.title} ${pe.frozen} ${pe.number} ${pe.disabled} ${pe.yard}` : 'no modal', 'Edit PO 10485 · Gate Rd Builders false 10485 false vbt');
+  chk('   …and says what will follow', !!pe && /1 load on this PO\. 1 can still follow a date, customer-price or yard change/.test(pe.follow), true);
+  const tomorrow = new Date(Date.now() + 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  await page.fill('#pe-date', tomorrow); await page.fill('#pe-notes', 'Gate code 4471'); await page.fill('#pe-reason', 'customer pushed the pour a day');
+  await page.click('#pe-save'); await page.waitForTimeout(900);
+  const d85b = (await call(mgr, 'GET', '/api/data')).data; const p85b = d85b.pos.find(p => p.id === p85.id); const l85b = d85b.loads.find(l => l.id === l85.id);
+  chk('2. Save: the PO and its operational load move to tomorrow with the reason; notes saved; modal closed',
+    `${p85b.deliveryDate === tomorrow} ${l85b.deliveryDate === tomorrow} ${(l85b.moveHistory || [{}])[0].reason} ${p85b.notes} ${await page.evaluate(() => !document.getElementById('poedit-modal'))}`, 'true true customer pushed the pour a day Gate code 4471 true');
+  chk('   the confirmation says what followed', /PO 10485 saved · 1 load moved to /.test(await page.evaluate(() => Array.from(document.querySelectorAll('.toast')).map(t => t.textContent).join(' | '))), true);
+  await page.evaluate(id => openEditPO(id), p85.id); await page.waitForTimeout(300);
+  await page.click('#poedit-modal .pe-add summary'); await page.waitForTimeout(200);
+  await page.selectOption('#pe-al-driver', 'matthew'); await page.waitForTimeout(150);
+  chk('3. Add load: choosing the driver pre-fills their usual truck', await page.evaluate(() => document.getElementById('pe-al-truck').value), 'truck-4');
+  await page.selectOption('#pe-al-material', 'Dirt'); await page.fill('#pe-al-loads', '2');
+  await page.click('#pe-al-go'); await page.waitForTimeout(900);
+  const d85c = (await call(mgr, 'GET', '/api/data')).data; const added = d85c.loads.filter(l => l.poId === p85.id && l.id !== l85.id);
+  chk('   …the load is on the same order, on its current date, with the form\'s driver, truck and count', added.length === 1 ? `${added[0].truckId} ${added[0].truckUnitId} ${added[0].loadsAssigned} ${added[0].deliveryDate === tomorrow} ${added[0].vendorId}` : `added ${added.length}`, 'matthew truck-4 2 true vbt');
+  chk('   the modal reopened with the new count', await page.evaluate(() => ((document.querySelector('#poedit-modal .pe-follow') || {}).innerText || '').replace(/\s+/g, ' ').startsWith('2 loads on this PO.')), true);
+  await page.evaluate(() => closeEditPO()); await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
+
   console.log('── Fleet Map ──');
   const navCount = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-item')).filter(b => b.textContent.includes('Fleet Map') && getComputedStyle(b).display !== 'none').length);
   chk('1. manager sees the Fleet Map tab', navCount, 1);

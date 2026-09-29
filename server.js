@@ -2780,68 +2780,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       console.log(`[create-PO] SKIPPING split — missing material or loadsAssigned:`, JSON.stringify(s));
       return;
     }
-    const truck = driverRoster().find(t => t.id === s.truckId);   // DRIVER, not vehicle
-    const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
-    const trailer = s.trailerId ? (store.trailers || []).find(t => t.id === s.trailerId && t.active !== false) : null;
-    console.log(`[create-PO] Creating load: truckId="${s.truckId}", material="${s.material}", loads=${s.loadsAssigned}, driver="${truck?.label || '(unassigned)'}", vendor="${vendor?.name || '(none)'}"`);
-
-    // Pricing snapshots — locked at PO creation
-    let customerRate = { price: 25, unit: 'ton', isDefault: true };
-    let vendorRate   = { price: 22, unit: 'ton', isDefault: true, isInternal: false };
-    try {
-      customerRate = resolveCustomerRate(newPo.customer, s.material);
-      vendorRate   = resolveVendorRate(s.vendorId, s.material);
-    } catch (e) {
-      console.warn('[create-PO] price resolution failed, using fallback defaults:', e.message);
-    }
-
-    const newLoad = {
-      id: 'LOAD-' + store.nextLoadId++,
-      poId: newPo.id,
-      material: s.material,
-      vendorId: s.vendorId || null,
-      vendorName: vendor?.name || '',
-      unit: s.unit || customerRate.unit || 'ton',
-      pricePerUnit: vendorRate.price,
-      loadsAssigned: Number(s.loadsAssigned) || 0,
-      loadsDelivered: 0,
-      truckId: s.truckId || null,               // legacy name: this is the DRIVER
-      driverName: truck?.label || '',
-      // Vehicle, chosen independently of the driver. Deliberately NOT defaulted
-      // to that driver's historical truck — a driver can run a different truck
-      // any day, and silently assuming one would put the wrong truck number in
-      // front of the driver. Unset until the dispatcher picks.
-      truckUnitId: s.truckUnitId || null,
-      trailerId: trailer ? trailer.id : null,
-      deliveryDate: newPo.deliveryDate,
-      status: s.truckId ? 'active' : 'unassigned',
-      timestamps: {},
-      trips: [],
-      gps: {},
-      pod: { signedBy: '', signature: '', signedAt: '' },
-      ticketImage: '',
-      ticketImageAt: '',
-      approvalStatus: 'pending',
-      submittedAt: '',
-      approvedAt: '',
-      approvedBy: '',
-      rejectReason: '',
-      billStatus: 'not-ready',
-      billedAt: '',
-      locked: false,
-      voided: false,
-      notes: '',
-      // Pricing snapshots
-      tonsPerLoad: qtyPerLoad('ton', s.material),
-      customerRate: customerRate.price,
-      customerUnit: customerRate.unit,
-      customerRateIsDefault: customerRate.isDefault,
-      vendorRate: vendorRate.price,
-      vendorUnit: vendorRate.unit,
-      vendorRateIsDefault: vendorRate.isDefault,
-      vendorIsInternal: vendorRate.isInternal || false,
-    };
-    store.loads.push(newLoad);
+    store.loads.push(makeLoadForPo(newPo, s));
   });
 
   // Audit logging is best-effort — never let it block PO/load creation
@@ -2884,38 +2823,245 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   }
 });
 
+// One load on an order, from a New PO form split or an Add-load request: the
+// driver (legacy field truckId), the vehicle, the trailer, the yard, and the
+// customer and vendor prices in force right now, snapshotted onto the load.
+function makeLoadForPo(po, s) {
+  const truck = driverRoster().find(t => t.id === s.truckId);   // DRIVER, not vehicle
+  const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
+  const trailer = s.trailerId ? (store.trailers || []).find(t => t.id === s.trailerId && t.active !== false) : null;
+  let customerRate = { price: 25, unit: 'ton', isDefault: true };
+  let vendorRate   = { price: 22, unit: 'ton', isDefault: true, isInternal: false };
+  try {
+    customerRate = resolveCustomerRate(po.customer, s.material);
+    vendorRate   = resolveVendorRate(s.vendorId, s.material);
+  } catch (e) {
+    console.warn('[make-load] price resolution failed, using fallback defaults:', e.message);
+  }
+  return {
+    id: 'LOAD-' + store.nextLoadId++,
+    poId: po.id,
+    material: s.material,
+    vendorId: s.vendorId || null,
+    vendorName: vendor?.name || '',
+    unit: s.unit || customerRate.unit || 'ton',
+    pricePerUnit: vendorRate.price,
+    loadsAssigned: Number(s.loadsAssigned) || 0,
+    loadsDelivered: 0,
+    truckId: s.truckId || null,               // legacy name: this is the DRIVER
+    driverName: truck?.label || '',
+    // Vehicle, chosen independently of the driver. Deliberately NOT defaulted
+    // to that driver's historical truck — a driver can run a different truck
+    // any day, and silently assuming one would put the wrong truck number in
+    // front of the driver. Unset until the dispatcher picks.
+    truckUnitId: s.truckUnitId || null,
+    trailerId: trailer ? trailer.id : null,
+    deliveryDate: po.deliveryDate,
+    status: s.truckId ? 'active' : 'unassigned',
+    timestamps: {},
+    trips: [],
+    gps: {},
+    pod: { signedBy: '', signature: '', signedAt: '' },
+    ticketImage: '',
+    ticketImageAt: '',
+    approvalStatus: 'pending',
+    submittedAt: '',
+    approvedAt: '',
+    approvedBy: '',
+    rejectReason: '',
+    billStatus: 'not-ready',
+    billedAt: '',
+    locked: false,
+    voided: false,
+    notes: '',
+    // Pricing snapshots
+    tonsPerLoad: qtyPerLoad('ton', s.material),
+    customerRate: customerRate.price,
+    customerUnit: customerRate.unit,
+    customerRateIsDefault: customerRate.isDefault,
+    vendorRate: vendorRate.price,
+    vendorUnit: vendorRate.unit,
+    vendorRateIsDefault: vendorRate.isDefault,
+    vendorIsInternal: vendorRate.isInternal || false,
+  };
+}
+// A PO's materials and status are derived from its loads, never edited.
+function poMaterialsFromLoads(poId) {
+  const counts = {};
+  store.loads.filter(l => l.poId === poId && !l.voided).forEach(l => { counts[l.material] = (counts[l.material] || 0) + (Number(l.loadsAssigned) || 0); });
+  return Object.keys(counts).map(m => ({ material: m, totalLoads: counts[m] }));
+}
+function poStatusFromLoads(po) {
+  const linked = store.loads.filter(l => l.poId === po.id && !l.voided);
+  const allDone = linked.length > 0 && linked.every(l => l.status === 'completed' || l.approvalStatus === 'approved' || l.billStatus === 'billed');
+  return allDone ? 'completed' : (po.deliveryDate > todayStr() ? 'scheduled' : 'active');
+}
+
 // ── API: UPDATE PO ──────────────────────────────────────────────────────────
+// The rules are written down in PO-EDITING.md. The PO is the order; loads are
+// the work. A change to the order follows through to loads that are still
+// OPERATIONAL (pending or rejected, not locked, no trip started, nothing
+// delivered). Loads with a field record — a trip, a delivery, a submission,
+// an approval, an invoice — are HISTORY and keep the facts they were done
+// under. Once any load is approved or billed, the fields that identify the
+// order on an invoice are frozen. Nothing changes until every check passes.
+const PO_EDITABLE = ['poNumber', 'customer', 'customerId', 'job', 'jobCode', 'address', 'city', 'deliveryDate', 'plannedVendorId', 'notes', 'reason', 'force'];
+const PO_INVOICE_FIELDS = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'];
+function loadIsOperational(l) {
+  return !l.voided && !l.locked && l.approvalStatus !== 'submitted' && l.approvalStatus !== 'approved'
+    && !(l.trips || []).length && !(Number(l.loadsDelivered) || 0);
+}
 app.put('/api/pos/:id', reqMgr, async (req, res) => {
   const idx = store.pos.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const old = store.pos[idx];
-  // Once any load on this PO is approved, the fields that identify the PO on
-  // an invoice are frozen — otherwise approved work could be re-labelled to
-  // another customer or PO number after the fact.
-  const hasApproved = store.loads.some(l => l.poId === old.id && l.approvalStatus === 'approved');
+  const body = req.body || {};
+  const unknown = Object.keys(body).filter(k => !PO_EDITABLE.includes(k));
+  if (unknown.length) return res.status(400).json({ error: `These fields cannot be changed through a PO update: ${unknown.join(', ')}. Status and materials follow the loads; jobsite coordinates and customer updates have their own actions.`, rejectedFields: unknown });
+
+  // The customer, resolved as on creation: canonical spelling from the master,
+  // a new name added to it (only once the whole edit is accepted).
+  let customer = old.customer, autoAddedCustomerId = null;
+  if (body.customerId || body.customer !== undefined) {
+    if (!Array.isArray(store.customers)) store.customers = [];
+    const byId = body.customerId ? store.customers.find(c => c.id === body.customerId) : null;
+    const typed = String(body.customer ?? '').trim();
+    if (byId) customer = byId.name;
+    else {
+      if (!typed) return res.status(400).json({ error: 'Customer cannot be blank' });
+      const existing = store.customers.find(c => String(c.name || '').toLowerCase().trim() === typed.toLowerCase());
+      if (existing) customer = existing.name;
+      else { customer = typed; autoAddedCustomerId = 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000); }
+    }
+  }
+  const next = { ...old, customer };
+  for (const k of ['job', 'jobCode', 'address', 'city', 'notes', 'deliveryDate', 'plannedVendorId']) if (body[k] !== undefined) next[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
+  if (body.poNumber !== undefined) next.poNumber = String(body.poNumber).trim();
+  if (customer !== old.customer && body.job === undefined && (old.job || '') === (old.customer || '')) next.job = customer;   // a job name that mirrored the customer follows it
+  if (body.deliveryDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(body.deliveryDate))) return res.status(400).json({ error: 'Delivery date must be YYYY-MM-DD' });
+  let newYard = null;
+  if (body.plannedVendorId !== undefined) {
+    newYard = store.vendors.find(v => v.id === body.plannedVendorId && v.active !== false);
+    if (!newYard) return res.status(400).json({ error: 'Unknown pickup yard' });
+    next.pickup = newYard.name;
+  }
+  const changed = k => String(next[k] ?? '') !== String(old[k] ?? '');
+  const mine = store.loads.filter(l => l.poId === old.id && !l.voided);
+  const hasApproved = store.loads.some(l => l.poId === old.id && (l.approvalStatus === 'approved' || l.billStatus === 'billed'));
   if (hasApproved) {
-    const frozen = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'].filter(k => k in req.body && req.body[k] !== old[k]);
+    const frozen = PO_INVOICE_FIELDS.filter(changed);
     if (frozen.length) return res.status(403).json({ error: `This PO has approved loads; ${frozen.join(', ')} cannot change.`, frozenFields: frozen });
   }
-  if (req.body.poNumber !== undefined && poNumberKey(req.body.poNumber) !== poNumberKey(old.poNumber)) {
-    if (!String(req.body.poNumber).trim()) return res.status(400).json({ error: 'PO number cannot be blank' });
-    if (findPoByNumber(req.body.poNumber, old.id)) return res.status(409).json({ error: duplicatePoMessage(req.body.poNumber), duplicate: true });
+  if (changed('poNumber')) {
+    if (!next.poNumber) return res.status(400).json({ error: 'PO number cannot be blank' });
+    if (findPoByNumber(next.poNumber, old.id)) return res.status(409).json({ error: duplicatePoMessage(next.poNumber), duplicate: true });
   }
-  // Coordinates change only through /location, never through a generic update.
-  const { geo: _ignoredGeo, ...poBody } = req.body || {};
-  const updated = { ...old, ...poBody, id: old.id, createdAt: old.createdAt };
-  store.pos[idx] = updated;
-  // If delivery date changed, sync to all linked loads
-  if (req.body.deliveryDate && req.body.deliveryDate !== old.deliveryDate) {
-    store.loads.filter(l => l.poId === old.id && !l.locked).forEach(l => l.deliveryDate = req.body.deliveryDate);
+  const operational = mine.filter(loadIsOperational);
+
+  // Date: operational loads follow; work in progress and history keep theirs.
+  // A truck or trailer already on another driver's load on the new date is a
+  // conflict — shown in the app, Cancel or go ahead (audited).
+  const dateMoved = changed('deliveryDate') ? operational : [];
+  const dateKept  = changed('deliveryDate') ? mine.filter(l => !loadIsOperational(l)).map(l => l.id) : [];
+  const conflicts = [];
+  for (const l of dateMoved) assignmentConflicts({ ...l, deliveryDate: next.deliveryDate }, { truckUnitId: l.truckUnitId || undefined, trailerId: l.trailerId || undefined }).forEach(c => conflicts.push(c));
+  if (conflicts.length && body.force !== true) {
+    return res.status(409).json({ error: conflicts.map(c => c.message).join(' '), code: 'assignment_conflict', conflicts });
   }
-  logAction(req.session.user, 'updated-po', updated.id, {
-    poNumber: updated.poNumber,
-    changes: Object.keys(req.body),
-    dateChanged: req.body.deliveryDate && req.body.deliveryDate !== old.deliveryDate,
-  });
+  // Customer: operational loads still on the old customer's list rate are
+  // re-priced from the new customer's; a hand-set rate stays.
+  const repriced = [], keptPrice = [], priceChanges = new Map();
+  if (changed('customer')) {
+    for (const l of operational) {
+      const was = resolveCustomerRate(old.customer, l.material);
+      if (Number(l.customerRate) === was.price && (l.customerUnit || 'ton') === was.unit) { priceChanges.set(l.id, resolveCustomerRate(customer, l.material)); repriced.push(l.id); }
+      else keptPrice.push(l.id);
+    }
+  }
+  // Planned yard: operational loads that were following the plan follow it
+  // again, re-priced with that vendor's rate. An explicit yard stays; a yard
+  // a driver already loaded at is a fact (such loads are not operational).
+  const yardChanged = [];
+  if (newYard && changed('plannedVendorId')) {
+    for (const l of operational) if ((l.vendorId || old.plannedVendorId || 'vbt') === (old.plannedVendorId || 'vbt')) yardChanged.push(l.id);
+  }
+  const geoCleared = !!(old.geo && (changed('address') || changed('city')));
+
+  // ── Every check passed: apply ──
+  const now = new Date().toISOString(), by = req.session.user.username;
+  const reason = String(body.reason || '').trim();
+  if (autoAddedCustomerId) store.customers.push({ id: autoAddedCustomerId, name: customer, code: '', address: next.address || '', city: next.city || '', phone: '', email: '', notes: '', active: true, createdAt: now });
+  for (const l of dateMoved) {
+    if (!l.originalScheduledDate) l.originalScheduledDate = l.deliveryDate;
+    l.moveHistory = l.moveHistory || [];
+    l.moveHistory.push({ from: l.deliveryDate, to: next.deliveryDate, reason: reason || 'PO date changed', movedBy: by, movedAt: now, scope: 'po-edit' });
+    l.deliveryDate = next.deliveryDate;
+  }
+  for (const [id, rate] of priceChanges) { const l = mine.find(x => x.id === id); l.customerRate = rate.price; l.customerUnit = rate.unit; l.customerRateIsDefault = rate.isDefault; }
+  for (const id of yardChanged) {
+    const l = mine.find(x => x.id === id);
+    const vr = resolveVendorRate(newYard.id, l.material);
+    l.vendorId = newYard.id; l.vendorName = newYard.name; l.actualYardId = null; l.actualYardName = '';
+    l.vendorRate = vr.price; l.vendorUnit = vr.unit; l.vendorRateIsDefault = vr.isDefault; l.vendorIsInternal = !!vr.isInternal; l.pricePerUnit = vr.price;
+  }
+  if (changed('deliveryDate')) {
+    if (!next.originalDeliveryDate) next.originalDeliveryDate = old.deliveryDate;
+    next.poMoveHistory = [...(old.poMoveHistory || []), { from: old.deliveryDate, to: next.deliveryDate, reason: reason || 'PO date changed', movedBy: by, movedAt: now }];
+  }
+  if (geoCleared) delete next.geo;   // the saved pin described the old address
+  next.id = old.id; next.createdAt = old.createdAt;
+  store.pos[idx] = next;
+  next.status = poStatusFromLoads(next);
+  next.materials = poMaterialsFromLoads(next.id);
+  const fields = {};
+  for (const k of ['poNumber', 'customer', 'job', 'jobCode', 'address', 'city', 'deliveryDate', 'plannedVendorId', 'notes']) if (changed(k)) fields[k] = { from: old[k] ?? '', to: next[k] ?? '' };
+  const propagation = { dateMoved: dateMoved.map(l => l.id), dateKept, repriced, keptPrice, yardChanged, geoCleared,
+    ...(conflicts.length ? { conflictsOverridden: { types: conflicts.map(c => c.type), reason } } : {}) };
+  logAction(req.session.user, 'updated-po', next.id, { poNumber: next.poNumber, changes: Object.keys(fields), fields, propagation });
   await saveData();
-  res.json({ success: true, po: updated });
+  res.json({ success: true, po: next, propagation });
+});
+
+// ── API: ADD A LOAD TO AN ORDER ─────────────────────────────────────────────
+// "They need two more loads" is an edit to the order, not a new PO. The same
+// validation, price snapshot and conflict rules as the New PO form apply, and
+// nothing already on the PO changes. (PO-EDITING.md)
+app.post('/api/pos/:id/loads', reqMgr, async (req, res) => {
+  const po = store.pos.find(p => p.id === req.params.id);
+  if (!po) return res.status(404).json({ error: 'Not found' });
+  const s = req.body || {};
+  if (!s.material || !(Number(s.loadsAssigned) > 0)) return res.status(400).json({ error: 'Material and number of loads are required' });
+  if (s.truckUnitId && !(store.trucks || []).some(t => t.id === s.truckUnitId)) return res.status(400).json({ error: `Unknown truck "${s.truckUnitId}"` });
+  if (s.truckId && !driverRoster().some(d => d.id === s.truckId)) return res.status(400).json({ error: `Unknown or inactive driver "${s.truckId}"` });
+  if (s.vendorId && !store.vendors.some(v => v.id === s.vendorId)) return res.status(400).json({ error: 'Unknown pickup yard' });
+  const rd = s.truckId ? rosterDriver(s.truckId) : null;
+  if (rd && rd.status === 'off') return res.status(400).json({ error: `${rd.name} is marked off today` });
+  const tk = s.truckUnitId ? (store.trucks || []).find(t => t.id === s.truckUnitId) : null;
+  if (tk && (tk.active === false || tk.status === 'maintenance' || tk.status === 'out-of-service')) return res.status(400).json({ error: `${tk.truckNum} is ${tk.active === false ? 'deactivated' : tk.status}` });
+  const blank = { id: 'the new load', poId: po.id, deliveryDate: po.deliveryDate, truckId: null, truckUnitId: null, trailerId: null, driverName: '', trips: [], approvalStatus: 'pending', voided: false };
+  const conflicts = assignmentConflicts(blank, { driverId: s.truckId || undefined, truckUnitId: s.truckUnitId || undefined, trailerId: s.trailerId || undefined }, { skipDriverBusy: true });
+  if (conflicts.length && s.force !== true) return res.status(409).json({ error: conflicts.map(c => c.message).join(' '), code: 'assignment_conflict', conflicts });
+
+  const load = makeLoadForPo(po, { ...s, vendorId: s.vendorId || po.plannedVendorId || 'vbt' });
+  const before = { status: po.status, materials: po.materials };
+  store.loads.push(load);
+  po.materials = poMaterialsFromLoads(po.id);
+  po.status = poStatusFromLoads(po);                      // a completed order with new work is open again
+  logAction(req.session.user, 'added-load', load.id, {
+    poNumber: po.poNumber, customer: po.customer, material: load.material, loadsAssigned: load.loadsAssigned,
+    driver: load.driverName, truck: (getTruckForLoad(load) || {}).truckNum || '', yard: load.vendorName,
+    ...(conflicts.length ? { conflictsOverridden: { types: conflicts.map(c => c.type), reason: String(s.reason || '').trim() } } : {}),
+  });
+  try { await saveData(); }
+  catch (e) {
+    // On record only once saved — the same promise the New PO form makes.
+    store.loads = store.loads.filter(l => l.id !== load.id);
+    po.materials = before.materials; po.status = before.status;
+    store.auditLog = (store.auditLog || []).filter(a => !(a.action === 'added-load' && a.target === load.id));
+    if (isDbError(e)) e.userMessage = 'Unable to save — the database did not accept the write. Nothing was added; please try again.';
+    throw e;
+  }
+  res.json({ success: true, load, po });
 });
 
 // ── API: SAVED LOCATIONS (office only) ──────────────────────────────────────

@@ -1224,7 +1224,7 @@ mg PUT /api/drivers/leonardo '{"status":"off"}' >/dev/null
 chk "   PO form refuses an off-duty driver like Quick Assign does (400)"      "$(mgc POST /api/pos '{"po":{"poNumber":"P0-X","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "400"
 mg PUT /api/drivers/leonardo '{"status":"available"}' >/dev/null
 chk "   the Board card and the load detail both open the same Driver → Truck → Yard sheet" "$(grep -c "qaOpenFor('\${l.id}')" public/index.html)|$(sed -n '/^function loadCard/,/^}/p' public/index.html | grep -c "openReassignModal('single'")" "2|0"
-chk "   every assignment path goes through one conflict-aware call (sheet, PO form, reassign modal, date move)" "$(grep -c 'postAssignment(' public/index.html)|$(grep -c "openReassignModal('single'" public/index.html)" "5|0"
+chk "   every assignment path goes through one conflict-aware call (sheet, PO form, reassign modal, date move)" "$(grep -c 'postAssignment(' public/index.html)|$(grep -c "openReassignModal('single'" public/index.html)" "7|0"
 
 # ── C8. Field evidence is never deleted ──
 chk "C8 a load with a delivered trip cannot be deleted (403)"                "$(mgc DELETE /api/loads/$L1)" "403"
@@ -1442,7 +1442,7 @@ chk "42 the conflict dialog is in the page (a Promise the caller awaits), not a 
 chk "   it is titled for what collides and offers Cancel and the verb (Assign / Reassign / Move)" "$(grep -c "'driver-busy': 'Driver Already Assigned', 'truck-busy': 'Truck Already Assigned'" public/index.html)|$(echo "$CF" | grep -c 'id="conflict-cancel">Cancel<')|$(echo "$CF" | grep -c 'id="conflict-go">\${escapeHtml(verb)}<')" "1|1|1"
 chk "   Cancel is the default: focused, Escape, the × and the backdrop all cancel" "$(echo "$CF" | grep -c "conflict-cancel').focus()")|$(echo "$CF" | grep -c "e.key === 'Escape'")|$(echo "$CF" | grep -c "conflict-x').onclick = () => done(false)")|$(echo "$CF" | grep -c "e.target === el) done(false)")" "1|1|1|1"
 chk "   a go-ahead is resent with force and the typed reason; a Cancel is reported as cancelled" "$(grep -c "force: true, reason: c.reason || reason ||" public/index.html)|$(grep -c "d = { ...d, cancelled: true }" public/index.html)" "1|1"
-chk "   every assignment path (sheet, reassign modal, PO form, date move) stays quiet on Cancel" "$(grep -c '\.cancelled)' public/index.html)|$(grep -c 'postAssignment(' public/index.html)" "4|5"
+chk "   every assignment path (sheet, reassign modal, PO form, date move) stays quiet on Cancel" "$(grep -c '\.cancelled)' public/index.html)|$(grep -c 'postAssignment(' public/index.html)" "6|7"
 
 echo
 echo "── 43. Approval confirms the record: Driver · Truck · Pickup yard · Ticket · Delivery ──"
@@ -1481,6 +1481,64 @@ chk "   …and in the audit log" "$(curl -s -b $M "$B/api/audit-log?action=appro
 chk "   an approved load carries no checklist any more (it is locked)" "$(appr $LM "a")" "None"
 AP=$(sed -n '/^async function approveLoad/,/^\/\/ ── BILLING/p' public/index.html)
 chk "   approve and reject are decided in the app: no prompt(), no confirm(); a stale page re-asks with the server's checklist" "$(echo "$AP" | grep -c 'prompt(\|[^a-zA-Z]confirm(')|$(echo "$AP" | grep -c 'confirmApproval(l, d.checklist)')|$(grep -c 'approvalChecklistHtml(l.approval, true)' public/index.html)|$(grep -c 'acknowledge: !!(check && !check.ready)' public/index.html)" "0|1|1|1"
+
+echo
+echo "── 44. Editing a PO: the order changes, the work follows only where it is still operational (PO-EDITING.md) ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-poedit.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+LE=$(mktemp); curl -s -c $LE -X POST -d "username=leonardo&password=leo123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+po()   { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);p=[x for x in d['pos'] if x['id']=='$1'][0];print($2)"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+code() { python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, $1)"; }
+haul() { dr $1 $2 '{"action":"start-trip"}' >/dev/null; dr $1 $2 "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null
+  dr $1 $2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $1 $2 '{"action":"arrived-jobsite"}' >/dev/null; dr $1 $2 '{"action":"trip-complete"}' >/dev/null; }
+submit() { curl -s -b $1 -H "$J" -X PUT $B/api/loads/$2 -d "{\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $1 $2 '{"action":"delivered"}' >/dev/null; }
+mg POST /api/customer-prices '{"customer":"Priced Co","material":"3/4 Rock","unit":"ton","price":30}' >/dev/null
+# Fixture: four loads on one order — Beryle rolling (work in progress), Matthew following the planned yard,
+# Rigo on an explicit yard with a hand-set price, one load still unassigned. The jobsite has a saved pin.
+P=$(mg POST /api/pos '{"po":{"poNumber":"E44-1","customer":"Edit Co","deliveryDate":"'"$TODAY"'","address":"1 Old Rd","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"},{"truckId":"matthew","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vulcan"},{"truckId":"rigo","truckUnitId":"truck-14","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":null,"truckUnitId":null,"material":"3/4 Rock","loadsAssigned":1,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+LB=$(loadof $P beryle); LM=$(loadof $P matthew); LR=$(loadof $P rigo); LU=$(loadof $P "")
+mg PUT /api/pos/$P/location '{"lat":36.7,"lng":-119.7}' >/dev/null
+dr $BE $LB '{"action":"start-trip"}' >/dev/null
+mg PUT /api/loads/$LR '{"customerRate":40}' >/dev/null
+PC=$(mg POST /api/pos '{"po":{"poNumber":"E44-C","customer":"Other Co","deliveryDate":"'"$TOMORROW"'","plannedVendorId":"vbt"},"splits":[{"truckId":"carlos","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+chk "44 only the order's own fields go through a PO update; status, materials and the pin are derived or have their own action" "$(mg PUT /api/pos/$P '{"status":"completed","notes":"x"}' -w ' %{http_code}' | code "d['rejectedFields']")|$(po $P "p['status'], repr(p['notes'])")" "400 ['status']|active ''"
+R=$(mg PUT /api/pos/$P "{\"deliveryDate\":\"$TOMORROW\",\"reason\":\"pour moved\"}")
+chk "   a date change that would put Truck #4 on two drivers tomorrow is a conflict: 409, nothing changed" "$(echo "$R" | jq "d['code'], d['conflicts'][0]['type']")|$(po $P "p['deliveryDate']=='$TODAY'")|$(load $LM "l['deliveryDate']=='$TODAY'")" "assignment_conflict truck-busy|True|True"
+R=$(mg PUT /api/pos/$P "{\"deliveryDate\":\"$TOMORROW\",\"reason\":\"pour moved\",\"force\":true}")
+chk "   with the go-ahead: operational loads follow; Beryle's load in progress keeps today; the override is recorded" "$(echo "$R" | jq "sorted(d['propagation']['dateMoved']), d['propagation']['dateKept'], d['propagation']['conflictsOverridden']")" "['$LM', '$LR', '$LU'] ['$LB'] {'types': ['truck-busy'], 'reason': 'pour moved'}"
+chk "   …each moved load carries the reason in its move history; the PO is rescheduled" "$(load $LM "l['deliveryDate']=='$TOMORROW', l['moveHistory'][-1]['reason'], l['moveHistory'][-1]['scope'], l['originalScheduledDate']=='$TODAY'")|$(load $LB "l['deliveryDate']=='$TODAY', l.get('moveHistory')")|$(po $P "p['deliveryDate']=='$TOMORROW', p['status'], p['poMoveHistory'][-1]['reason']")" "True pour moved po-edit True|True None|True scheduled pour moved"
+R=$(mg PUT /api/pos/$P '{"customer":"Priced Co"}')
+chk "   customer change: loads still on the old list price are re-priced (3/4 Rock is \$30 for Priced Co); a hand-set price stays; work in progress keeps its snapshot" "$(echo "$R" | jq "sorted(d['propagation']['repriced']), d['propagation']['keptPrice'], d['po']['customer'], d['po']['job']")|$(load $LU "l['customerRate']")|$(load $LM "l['customerRate']")|$(load $LR "l['customerRate']")|$(load $LB "l['customerRate']")" "['$LM', '$LU'] ['$LR'] Priced Co Priced Co|30|25|40|25"
+R=$(mg PUT /api/pos/$P '{"address":"2 New Rd"}')
+chk "   a new address clears the saved jobsite pin (it described the old address)" "$(echo "$R" | jq "d['propagation']['geoCleared'], 'geo' in d['po']")|$(po $P "p['address'], p.get('geo')")" "True False|2 New Rd None"
+R=$(mg PUT /api/pos/$P '{"plannedVendorId":"teichert"}')
+chk "   planned-yard change: loads that followed the plan follow it and are re-priced for that vendor; an explicit yard stays; a load in progress is untouched" "$(echo "$R" | jq "sorted(d['propagation']['yardChanged']), d['po']['pickup']")|$(load $LM "l['vendorId'], l['vendorName'], l['vendorIsInternal']")|$(load $LR "l['vendorId']")|$(load $LB "l['vendorId']")" "['$LM', '$LU'] Teichert|teichert Teichert False|vbt|vulcan"
+chk "   the audit entry has each changed field, old and new, and what followed" "$(curl -s -b $M "$B/api/audit-log?action=updated-po" | jq "e=d['entries'][0]['details'];(e['changes'], e['fields']['plannedVendorId'], sorted(e['propagation']['yardChanged']))" 2>/dev/null || curl -s -b $M "$B/api/audit-log?action=updated-po" | python3 -c "import json,sys;d=json.load(sys.stdin);e=d['entries'][0]['details'];print((e['changes'], e['fields']['plannedVendorId'], sorted(e['propagation']['yardChanged'])))")" "(['plannedVendorId'], {'from': 'vulcan', 'to': 'teichert'}, ['$LM', '$LU'])"
+# Frozen once approved
+PF=$(mg POST /api/pos '{"po":{"poNumber":"E44-F","customer":"Frozen Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']"); LF=$(loadof $PF leonardo)
+haul $LE $LF vbt; submit $LE $LF; mg POST /api/loads/$LF/approve >/dev/null
+chk "   once a load is approved the invoice fields are frozen; date, yard and notes still edit, and the approved load keeps its date" "$(mg PUT /api/pos/$PF '{"customer":"Someone Else","poNumber":"E44-X"}' -w ' %{http_code}' | code "sorted(d['frozenFields'])")|$(mg PUT /api/pos/$PF "{\"deliveryDate\":\"$TOMORROW\",\"notes\":\"bill by Friday\"}" | jq "d['success'], d['propagation']['dateMoved'], d['propagation']['dateKept'], d['po']['status']")|$(load $LF "l['deliveryDate']=='$TODAY'")" "403 ['customer', 'job', 'poNumber']|True [] ['$LF'] completed|True"
+# Add work to an order
+R=$(mg POST /api/pos/$P/loads '{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":2,"vendorId":"vbt"}')
+LN=$(echo "$R" | jq "d['load']['id']")
+chk "   add a load to the order: same PO, the PO's current date, prices snapshotted now (Priced Co, VBT yard), materials recounted" "$(echo "$R" | jq "d['success'], d['load']['poId']=='$P', d['load']['deliveryDate']=='$TOMORROW', d['load']['driverName'], d['load']['truckUnitId'], d['load']['customerRate'], d['load']['vendorIsInternal'], d['load']['vendorRate'], sorted((m['material'], m['totalLoads']) for m in d['po']['materials'])")" "True True True Leonardo truck-12 25 True 0 [('3/4 Rock', 3), ('Dirt', 4)]"
+chk "   …and it is on the board for that day, audited as added" "$(curl -s -b $M "$B/api/today?date=$TOMORROW" | jq "[(l['bucket'], l['driverName'], l['truckNum']) for l in d['loads'] if l['id']=='$LN'][0]")|$(curl -s -b $M "$B/api/audit-log?action=added-load" | jq "d['entries'][0]['target']=='$LN', d['entries'][0]['details']['poNumber']")" "('assigned', 'Leonardo', 'Truck #12')|True E44-1"
+chk "   the same guards as the New PO form: a truck on another driver's open load is a conflict; an unknown driver or a missing material is refused" "$(mg POST /api/pos/$P/loads '{"truckId":"carlos","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1}' | jq "d['code'], d['conflicts'][0]['type']")|$(mg POST /api/pos/$P/loads '{"truckId":"nobody","material":"Dirt","loadsAssigned":1}' -o /dev/null -w '%{http_code}')|$(mg POST /api/pos/$P/loads '{"truckId":"carlos","loadsAssigned":1}' -o /dev/null -w '%{http_code}')" "assignment_conflict truck-busy|400|400"
+chk "   a completed order that gets new work is open again" "$(mg POST /api/pos/$PF/loads '{"truckId":"carlos","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}' | jq "d['success'], d['po']['status']")" "True scheduled"
+mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
+N0=$(curl -s -b $M $B/api/data | jq "len(d['loads'])")
+chk "   when the database refuses the write, nothing is added and the dispatcher is told so" "$(mg POST /api/pos/$P/loads '{"truckId":"matthew","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}' -w ' %{http_code}' | code "d['error'].startswith('Unable to save'), 'Nothing was added' in d['error']")|$(curl -s -b $M $B/api/data | jq "len(d['loads'])==$N0")" "503 True True|True"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   the screen: Edit PO from the PO card and the load detail; a date change goes through the same conflict dialog; the rules are written down" "$(grep -cF "onclick=\"openEditPO('\${p.id}')\"" public/index.html)|$(grep -cF "openEditPO('\${l.poId}')" public/index.html)|$(grep -cF "postAssignment(\`/api/pos/\${p.id}\`, body, 'Move', reason, 'PUT')" public/index.html)|$(test -s PO-EDITING.md && grep -c '^| Delivery date' PO-EDITING.md)" "1|1|1|1"
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.

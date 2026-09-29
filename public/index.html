@@ -165,6 +165,14 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .conflict-list li::marker{color:var(--A)}
 .conflict-hint{font-size:12.5px;color:var(--txt2);padding:10px 12px;background:var(--bg2);border-radius:var(--r)}
 .conflict-modal .modal-foot .btn{min-height:40px;padding:8px 20px;font-size:13px}
+/* Edit PO */
+.pe-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
+@media(max-width:560px){.pe-grid{grid-template-columns:1fr}}
+.pe-frozen{font-size:12.5px;padding:10px 12px;border-radius:var(--r);background:var(--Ab);border:1px solid var(--Ad);color:var(--A)}
+.pe-follow{font-size:12.5px;color:var(--txt2);padding:10px 12px;background:var(--bg2);border-radius:var(--r)}
+.pe-add{border-top:1px solid var(--bdr);padding-top:10px}
+.pe-add summary{cursor:pointer;font-size:12.5px;font-weight:700;color:var(--B)}
+.field input:disabled{background:var(--bg2);color:var(--txt3);cursor:not-allowed}
 /* Approval checklist: ✓ on record, ⚠ missing — on the card and in the dialog */
 .ask-modal{max-width:480px}
 .ask-modal .modal-foot .btn{min-height:40px;padding:8px 20px;font-size:13px}
@@ -2073,6 +2081,7 @@ function openLoadDetail(id) {
       actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();qaOpenFor('${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Reassign Driver</button>`;
       actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openMoveModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Move Date</button>`;
     }
+    actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openEditPO('${l.poId}')">Edit PO</button>`;
     actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openNotifySheet('${l.poId}')">Customer updates: ${po.notifications && po.notifications.enabled ? 'On' : 'Off'}</button>`;
     if (!l.approvalStatus || l.approvalStatus === 'pending') {
       actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
@@ -4026,6 +4035,7 @@ function poCard(r) {
       <div class="qa-fact">Jobsite: <b>${p.geo ? `${p.geo.lat.toFixed(5)}, ${p.geo.lng.toFixed(5)}` : 'no coordinates'}</b>${geoLabel(p.geo)}</div>
     </div>
     <div class="qa-actions">
+      <button class="qa-btn" onclick="openEditPO('${p.id}')">Edit PO</button>
       <button class="qa-btn ghost" onclick="setLocationPrompt('po', '${p.id}')">📍 Set jobsite location</button>
       ${r.locked
         ? (r.blocking.length
@@ -4035,6 +4045,111 @@ function poCard(r) {
         : `<button class="qa-btn ghost" style="color:#b42318;border-color:#fca5a5" onclick="deletePO('${p.id}', ${r.loadCount})">Delete PO</button>`}
     </div>
   </div>`;
+}
+
+// ── EDIT PO ──────────────────────────────────────────────────────────────────
+// The order changes here; the work follows only where it is still operational.
+// The rules are in PO-EDITING.md and enforced by the server; the screen shows
+// what is frozen and what will follow before the dispatcher saves.
+let editPoId = null;
+function poIsFrozen(poId) { return (loads || []).some(l => l.poId === poId && !l.voided && (l.approvalStatus === 'approved' || l.billStatus === 'billed')); }
+function loadIsOperationalUI(l) { return !l.voided && !l.locked && l.approvalStatus !== 'submitted' && l.approvalStatus !== 'approved' && !(l.trips || []).length && !(l.loadsDelivered || 0); }
+function closeEditPO() { const el = document.getElementById('poedit-modal'); if (el) el.remove(); editPoId = null; }
+function openEditPO(poId) {
+  const p = (pos || []).find(x => x.id === poId); if (!p) return toast('PO not found', 'error');
+  closeEditPO(); editPoId = poId;
+  const mine = (loads || []).filter(l => l.poId === poId && !l.voided);
+  const follow = mine.filter(loadIsOperationalUI).length;
+  const frozen = poIsFrozen(poId);
+  const matNames = (materials || []).map(m => typeof m === 'string' ? m : (m.name || m.material || ''));
+  const yardOpts = (vendors || []).filter(v => v.active !== false).map(v => `<option value="${escapeAttr(v.id)}" ${v.id === (p.plannedVendorId || 'vbt') ? 'selected' : ''}>${escapeHtml(v.name)}</option>`).join('');
+  const drvOpts = `<option value="">Unassigned</option>` + (trucks || []).map(d => { const rd = (rosterDrivers || []).find(x => x.id === d.id) || {}; return `<option value="${escapeAttr(d.id)}" ${rd.status === 'off' ? 'disabled' : ''}>${escapeHtml(d.label)}${rd.status === 'off' ? ' (off)' : ''}</option>`; }).join('');
+  const truckOpts = `<option value="">No truck yet</option>` + (fleet || []).filter(t => t.active !== false).map(t => `<option value="${escapeAttr(t.id)}" ${t.status && t.status !== 'available' ? 'disabled' : ''}>${escapeHtml(t.truckNum)}${t.status && t.status !== 'available' ? ' (' + t.status + ')' : ''}</option>`).join('');
+  const f = (id, label, val, extra = '') => `<div class="field"><label>${label}</label><input type="text" id="${id}" value="${escapeAttr(val || '')}" ${extra}></div>`;
+  const dis = frozen ? 'disabled title="Frozen: this PO has approved loads"' : '';
+  const el = document.createElement('div');
+  el.className = 'modal-bg'; el.id = 'poedit-modal';
+  el.innerHTML = `
+    <div class="modal" style="max-width:620px" role="dialog" aria-labelledby="pe-title">
+      <div class="modal-head"><h2 id="pe-title">Edit PO ${escapeHtml(p.poNumber || '')} · ${escapeHtml(p.customer || '')}</h2><button type="button" class="modal-close" onclick="closeEditPO()">&#215;</button></div>
+      <div class="modal-body">
+        ${frozen ? `<div class="pe-frozen">This PO has approved loads. PO number, customer, job and jobsite are <b>frozen</b> — they are on an invoice. The date, planned yard and notes can still change for loads that have not started.</div>` : ''}
+        <div class="pe-grid">
+          ${f('pe-number', 'PO number', p.poNumber, dis)}
+          <div class="field"><label>Customer</label><input type="text" id="pe-customer" list="pe-customers" value="${escapeAttr(p.customer || '')}" ${dis}><datalist id="pe-customers">${(customers || []).map(c => `<option value="${escapeAttr(c.name)}">`).join('')}</datalist></div>
+          ${f('pe-job', 'Job name', p.job, dis)}
+          ${f('pe-jobcode', 'Job code', p.jobCode, dis)}
+          ${f('pe-address', 'Jobsite address', p.address, dis)}
+          ${f('pe-city', 'City', p.city, dis)}
+          <div class="field"><label>Delivery date</label><input type="date" id="pe-date" value="${escapeAttr(p.deliveryDate || '')}"></div>
+          <div class="field"><label>Planned pickup yard</label><select id="pe-yard">${yardOpts}</select></div>
+        </div>
+        <div class="field"><label>Notes</label><textarea id="pe-notes" rows="2">${escapeHtml(p.notes || '')}</textarea></div>
+        <div class="field"><label>Reason for the change (optional)</label><input type="text" id="pe-reason" placeholder="e.g. customer pushed the pour a day"></div>
+        <div class="pe-follow"><b>${mine.length} load${mine.length === 1 ? '' : 's'} on this PO.</b> ${follow} can still follow a date, customer-price or yard change (nothing hauled yet)${mine.length - follow ? `; ${mine.length - follow} keep their date and prices (work started or on record).` : '.'}${p.geo ? ' Changing the address clears the saved jobsite pin.' : ''}</div>
+        <details class="pe-add"><summary>Add a load to this order</summary>
+          <div class="pe-grid" style="margin-top:8px">
+            <div class="field"><label>Driver</label><select id="pe-al-driver" onchange="peDriverChanged(this.value)">${drvOpts}</select></div>
+            <div class="field"><label>Truck</label><select id="pe-al-truck">${truckOpts}</select></div>
+            <div class="field"><label>Material</label><select id="pe-al-material">${matNames.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('')}</select></div>
+            <div class="field"><label>Loads</label><input type="number" id="pe-al-loads" min="1" step="1" value="1"></div>
+            <div class="field"><label>Pickup yard</label><select id="pe-al-yard">${yardOpts}</select></div>
+            <div class="field" style="justify-content:flex-end"><button type="button" class="btn success" id="pe-al-go" onclick="addLoadToPO()">Add load</button></div>
+          </div>
+        </details>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn ghost" onclick="closeEditPO()">Cancel</button>
+        <button type="button" class="btn primary" id="pe-save" onclick="saveEditPO()">Save changes</button>
+      </div>
+    </div>`;
+  el.addEventListener('mousedown', e => { if (e.target === el) closeEditPO(); });
+  document.body.appendChild(el);
+}
+function peDriverChanged(driverId) {
+  const rd = (rosterDrivers || []).find(x => x.id === driverId);
+  const sel = document.getElementById('pe-al-truck'); if (!sel) return;
+  if (rd && rd.defaultTruckId && Array.from(sel.options).some(o => o.value === rd.defaultTruckId && !o.disabled)) sel.value = rd.defaultTruckId;
+}
+function propagationSummary(d, p) {
+  const pr = d.propagation || {}; const parts = [`PO ${d.po?.poNumber || ''} saved`];
+  if (pr.dateMoved?.length) parts.push(`${pr.dateMoved.length} load${pr.dateMoved.length === 1 ? '' : 's'} moved to ${fmtDate(d.po.deliveryDate)}`);
+  if (pr.dateKept?.length) parts.push(`${pr.dateKept.length} kept ${pr.dateKept.length === 1 ? 'its' : 'their'} date (work started or on record)`);
+  if (pr.repriced?.length) parts.push(`${pr.repriced.length} re-priced for ${d.po.customer}`);
+  if (pr.keptPrice?.length) parts.push(`${pr.keptPrice.length} kept a hand-set price`);
+  if (pr.yardChanged?.length) parts.push(`${pr.yardChanged.length} now load at ${d.po.pickup || 'the new yard'}`);
+  if (pr.geoCleared) parts.push('jobsite pin cleared — set it again');
+  return parts.join(' · ');
+}
+async function saveEditPO() {
+  const p = (pos || []).find(x => x.id === editPoId); if (!p) return;
+  const g = id => { const e = document.getElementById(id); return e ? e.value : undefined; };
+  const body = {};
+  const set = (k, v) => { if (v !== undefined && String(v ?? '').trim() !== String(p[k] ?? '').trim()) body[k] = String(v).trim(); };
+  if (!poIsFrozen(p.id)) { set('poNumber', g('pe-number')); set('customer', g('pe-customer')); set('job', g('pe-job')); set('jobCode', g('pe-jobcode')); set('address', g('pe-address')); set('city', g('pe-city')); }
+  set('deliveryDate', g('pe-date')); set('plannedVendorId', g('pe-yard')); set('notes', g('pe-notes'));
+  const reason = (g('pe-reason') || '').trim();
+  if (!Object.keys(body).length) { closeEditPO(); return toast('Nothing changed', ''); }
+  if (reason) body.reason = reason;
+  const btn = document.getElementById('pe-save'); btn.disabled = true; btn.textContent = 'Saving…';
+  // A date change is an assignment on the new date: the same conflict check, the same Cancel / go-ahead choice.
+  const d = await postAssignment(`/api/pos/${p.id}`, body, 'Move', reason, 'PUT');
+  if (!d.ok) { btn.disabled = false; btn.textContent = 'Save changes'; if (!d.cancelled) toast(d.error || 'Save failed', 'error'); return; }
+  closeEditPO();
+  toast(propagationSummary(d, p), 'success');
+  await loadAll(); refreshCurrentView();
+}
+async function addLoadToPO() {
+  const p = (pos || []).find(x => x.id === editPoId); if (!p) return;
+  const g = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+  const body = { truckId: g('pe-al-driver') || null, truckUnitId: g('pe-al-truck') || null, material: g('pe-al-material'), loadsAssigned: Number(g('pe-al-loads')) || 0, vendorId: g('pe-al-yard') || (p.plannedVendorId || 'vbt') };
+  if (!body.material || body.loadsAssigned < 1) return toast('Pick a material and how many loads', 'error');
+  const btn = document.getElementById('pe-al-go'); btn.disabled = true;
+  const d = await postAssignment(`/api/pos/${p.id}/loads`, body, 'Assign', (g('pe-reason') || '').trim());
+  btn.disabled = false;
+  if (!d.ok) { if (!d.cancelled) toast(d.error || 'Could not add the load', 'error'); return; }
+  toast(`Added ${body.loadsAssigned} load${body.loadsAssigned === 1 ? '' : 's'} of ${body.material} — ${d.load.driverName || 'unassigned'}`, 'success');
+  await loadAll(); refreshCurrentView(); openEditPO(p.id);
 }
 
 // ── QUICK ASSIGN / TODAY'S DISPATCH ─────────────────────────────────────────
@@ -4437,11 +4552,11 @@ function confirmConflicts(r, verb, reason) {
 // POST an assignment; on a conflict the dispatcher decides, and a "go ahead"
 // is resent with `force` so the override lands in the audit log. A Cancel
 // comes back as { ok:false, cancelled:true } so callers stay quiet about it.
-async function postAssignment(url, body, verb, reason) {
-  let d = await api('POST', url, body);
+async function postAssignment(url, body, verb, reason, method = 'POST') {
+  let d = await api(method, url, body);
   if (!d.ok && d.status === 409 && Array.isArray(d.conflicts) && d.conflicts.length) {
     const c = await confirmConflicts(d, verb, reason);
-    if (c.go) d = await api('POST', url, { ...body, force: true, reason: c.reason || reason || 'dispatcher confirmed the conflict' });
+    if (c.go) d = await api(method, url, { ...body, force: true, reason: c.reason || reason || 'dispatcher confirmed the conflict' });
     else d = { ...d, cancelled: true };
   }
   return d;
