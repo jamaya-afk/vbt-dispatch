@@ -74,156 +74,81 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .section{display:none}
 .section.active{display:block;min-height:100%}
 
-/* ── BOARD ── */
-.board-header{padding:14px 22px;display:flex;align-items:center;gap:12px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-wrap:wrap}
-.date-nav{display:flex;align-items:center;gap:6px}
-.date-nav button{width:34px;height:34px;border-radius:50%;border:1px solid var(--bdr2);background:var(--bg);cursor:pointer;font-size:15px;color:var(--txt2);transition:all .15s}
-.date-nav button:hover{border-color:var(--I);color:var(--I);background:var(--Ib)}
-.date-label{font-size:14px;font-weight:600;min-width:220px;text-align:center;letter-spacing:-.005em}
-.today-btn{font-size:11px;color:var(--I);background:var(--Ib);border:1px solid var(--Id);padding:5px 12px;border-radius:20px;cursor:pointer;font-family:var(--f);font-weight:600;letter-spacing:.02em}
-.today-btn:hover{background:var(--I);color:#fff;border-color:var(--I)}
-.view-btn{padding:5px 14px;font-size:11px;font-weight:600;background:transparent;border:none;border-radius:20px;cursor:pointer;color:var(--txt2);font-family:var(--f);transition:all .15s}
-.view-btn.active{background:var(--bg);color:var(--txt);box-shadow:0 1px 3px rgba(15,22,40,.12)}
-
-/* ── HERO DISPATCH SUMMARY ── */
-.dispatch-hero{margin:18px 22px 0;background:var(--hero-grad);border-radius:18px;padding:22px 26px;color:#fff;position:relative;overflow:hidden;box-shadow:var(--shadow-lg)}
-.dispatch-hero::before{content:'';position:absolute;top:-60px;right:-60px;width:240px;height:240px;background:radial-gradient(circle,rgba(122,140,255,.35) 0%,transparent 70%);pointer-events:none}
-.dispatch-hero::after{content:'';position:absolute;bottom:-80px;left:30%;width:280px;height:280px;background:radial-gradient(circle,rgba(59,130,246,.18) 0%,transparent 70%);pointer-events:none}
-.hero-row{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap;position:relative;z-index:1}
-.hero-greeting{flex:1;min-width:240px}
-.hero-eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#a8b1cf;font-weight:600;margin-bottom:4px}
-.hero-title{font-size:22px;font-weight:700;letter-spacing:-.02em;margin-bottom:4px}
-.hero-sub{font-size:13px;color:#a8b1cf;font-weight:500;line-height:1.5}
-.hero-date{font-size:13px;color:#cbd2e8;font-weight:600;background:rgba(255,255,255,.08);padding:7px 14px;border-radius:20px;border:1px solid rgba(255,255,255,.1);display:inline-flex;align-items:center;gap:7px}
-.hero-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:18px;position:relative;z-index:1}
-.hero-stat{background:rgba(255,255,255,.06);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.08);border-radius:13px;padding:14px 16px;cursor:pointer;transition:all .18s}
-.hero-stat:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.18);transform:translateY(-1px)}
-.hero-stat.active{background:rgba(122,140,255,.18);border-color:rgba(122,140,255,.55);box-shadow:0 0 0 3px rgba(122,140,255,.18)}
-.hero-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#a8b1cf;font-weight:600;display:flex;align-items:center;gap:6px}
-.hero-stat-num{font-size:26px;font-weight:700;letter-spacing:-.02em;margin-top:4px;color:#fff;font-variant-numeric:tabular-nums}
-.hero-stat-meta{font-size:11px;color:#a8b1cf;margin-top:2px;font-weight:500}
-.hero-stat.alert .hero-stat-num{color:#fca5a5}
-.hero-stat.alert .hero-stat-label::before{content:'';width:6px;height:6px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px rgba(239,68,68,.6);animation:pulse 1.6s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
-.hero-stat.warn .hero-stat-num{color:#fcd38a}
-.hero-stat.success .hero-stat-num{color:#86efac}
-.hero-stat.bill .hero-stat-num{color:#5eead4}
-
-/* ── FILTER BAR ── */
-.filter-bar{margin:14px 22px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px;background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow)}
-.filter-bar-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600;margin-right:4px}
-.filter-bar select,.filter-bar input{padding:7px 11px;font-size:12px;border:1px solid var(--bdr);border-radius:8px;background:var(--bg2);font-family:var(--f);color:var(--txt);font-weight:500;cursor:pointer;transition:all .15s}
-.filter-bar select:hover,.filter-bar input:hover{border-color:var(--Id);background:var(--bg)}
-.filter-bar select:focus,.filter-bar input:focus{outline:none;border-color:var(--I);background:var(--bg);box-shadow:0 0 0 3px var(--Ib)}
-.filter-clear{padding:6px 12px;font-size:11px;font-weight:600;background:transparent;border:1px dashed var(--bdr2);border-radius:8px;color:var(--txt2);cursor:pointer;font-family:var(--f);margin-left:auto}
-.filter-clear:hover{border-color:var(--R);color:var(--R);border-style:solid}
-.filter-result-count{font-size:11px;color:var(--txt3);font-weight:600}
-
-/* ── DRIVER AVAILABILITY STRIP ── */
-.driver-strip{margin:14px 22px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 14px;background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow)}
-.driver-strip-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600;margin-right:6px}
-.driver-chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px 6px 6px;background:var(--bg2);border:1px solid var(--bdr);border-radius:20px;font-size:12px;font-weight:600;color:var(--txt);transition:all .15s;cursor:pointer}
-.driver-chip:hover{border-color:var(--I);transform:translateY(-1px);box-shadow:var(--shadow)}
-.driver-chip.busy{background:linear-gradient(135deg,#fff7ed,#fff8ed);border-color:var(--Ad)}
-.driver-chip.busy .driver-chip-dot{background:linear-gradient(135deg,#f59e0b,#d97706)}
-.driver-chip.heavy{background:linear-gradient(135deg,#fef2f2,#fff0f0);border-color:var(--Rd)}
-.driver-chip.heavy .driver-chip-dot{background:linear-gradient(135deg,#ef4444,#dc2626)}
-.driver-chip.free{background:linear-gradient(135deg,#ecfdf5,#edfaf4);border-color:var(--Gd)}
-.driver-chip.free .driver-chip-dot{background:linear-gradient(135deg,#22c55e,#16a066)}
-.driver-chip.active{outline:2px solid var(--I);outline-offset:1px}
-.driver-chip-dot{width:22px;height:22px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0}
-.driver-chip-name{font-size:12px}
-.driver-chip-count{font-size:10px;background:rgba(15,22,40,.06);color:var(--txt2);padding:1px 7px;border-radius:10px;font-weight:700}
-.driver-chip.heavy .driver-chip-count{background:rgba(220,38,38,.15);color:#dc2626}
-
-.board{padding:0 0 22px;max-width:100%}
-.board-cols{padding:18px 22px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:16px;max-width:100%}
-.driver-col{background:var(--bg);border-radius:16px;box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:220px;border:1px solid var(--bdr);overflow:hidden;transition:all .18s}
-.driver-col:hover{box-shadow:var(--shadow-md)}
-.driver-col.unassigned-col{background:linear-gradient(180deg,#fff8ed,#fff);border:1.5px dashed var(--Ad)}
-.driver-col-head{padding:13px 16px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#fafbfd,transparent)}
-.driver-col.unassigned-col .driver-col-head{border-bottom-color:var(--Ad);background:transparent}
-.driver-name{font-size:13px;font-weight:700;letter-spacing:-.005em;display:flex;align-items:center;gap:7px}
-.driver-name-avatar{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,var(--I),var(--B));color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;box-shadow:0 1px 3px rgba(79,70,229,.25)}
-.driver-truck{font-size:11px;color:var(--txt3);margin-top:2px;letter-spacing:.02em}
-.driver-load-count{background:var(--Ib);font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;color:var(--I);font-variant-numeric:tabular-nums}
-.driver-load-count.heavy{background:var(--Rb);color:var(--R)}
-.driver-load-count.empty{background:var(--bg2);color:var(--txt3)}
-.driver-col-body{flex:1;padding:11px;display:flex;flex-direction:column;gap:9px;min-height:90px;transition:background .12s}
-.driver-col-body.drop-target{background:var(--Ib);box-shadow:inset 0 0 0 2px var(--I)}
-
-.lcard{background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:12px 13px;cursor:grab;box-shadow:var(--shadow);transition:all .18s;position:relative;overflow:hidden}
-.lcard::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--bdr2);transition:all .18s}
-.lcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd);transform:translateY(-1px)}
-.lcard:hover::before{width:4px}
-.lcard.dragging{opacity:.5;transform:rotate(.5deg)}
-.lcard.submitted{border-color:var(--P);background:var(--Pb)}
-.lcard.submitted::before{background:var(--P)}
-.lcard.is-normal::before{background:var(--B)}
-.lcard.is-active::before{background:var(--A)}
-.lcard.is-completed::before{background:var(--P)}
-.lcard.is-overdue::before{background:var(--R)}
-.lcard.is-partial::before{background:#facc15}
-.lc-driver-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--bdr)}
-.lc-driver{font-size:11px;color:var(--txt2);font-weight:600;display:inline-flex;align-items:center;gap:5px}
-.lc-driver-avatar{width:18px;height:18px;border-radius:50%;background:linear-gradient(135deg,var(--I),var(--B));color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.lc-driver.unassigned{color:var(--A)}
-.lc-driver.unassigned .lc-driver-avatar{background:linear-gradient(135deg,#f59e0b,#d97706)}
-.lc-vendor{font-size:10px;color:var(--txt3);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-.lc-vendor.internal{color:var(--T)}
-.lcard.is-partial{background:linear-gradient(180deg,#fffbeb,#fff);border-color:#fcd34d}
-.lcard.is-partial .lc-po,.mcard.is-partial .mcard-po{color:#a16207}
-.lcard.is-partial .lc-customer,.lcard.is-partial .lc-detail,.mcard.is-partial .mcard-cust,.mcard.is-partial .mcard-mat{color:#854d0e}
-.lc-status.is-partial{background:linear-gradient(135deg,#facc15,#eab308);color:#fff}
-
-/* ── STATUS-COLORED CARDS (Day + Month views) ── */
-.lcard.is-completed,.mcard.is-completed{
-  background:#f3edff;border-color:#c4b5fd;
-}
-.lcard.is-completed .lc-customer,.lcard.is-completed .lc-detail,
-.lcard.is-completed .lc-progress span,
-.mcard.is-completed .mcard-cust,.mcard.is-completed .mcard-mat{color:#4c1d95}
-.lcard.is-completed .lc-po,.mcard.is-completed .mcard-po{color:#6d28d9}
-
-.lcard.is-overdue,.mcard.is-overdue{
-  background:#fde6e6;border-color:#f4a8a8;
-}
-.lcard.is-overdue .lc-customer,.lcard.is-overdue .lc-detail,
-.lcard.is-overdue .lc-progress span,
-.mcard.is-overdue .mcard-cust,.mcard.is-overdue .mcard-mat{color:#7a1a1a}
-.lcard.is-overdue .lc-po,.mcard.is-overdue .mcard-po{color:#a82828}
-
-.lcard.is-active,.mcard.is-active{
-  background:#fff8ed;border-color:#fcd38a;
-}
-.lcard.is-active .lc-po,.mcard.is-active .mcard-po{color:#a86109}
-
-/* Status pills */
-.lc-status.is-completed{background:linear-gradient(135deg,#8b5cf6,#7c3aed);color:#fff;box-shadow:0 1px 3px rgba(124,58,237,.3)}
-.lc-status.is-overdue{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;box-shadow:0 1px 3px rgba(220,38,38,.3)}
-.lc-status.is-active{background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;box-shadow:0 1px 3px rgba(217,119,6,.3)}
-.lc-status.is-normal{background:var(--Ib);color:var(--I);font-weight:700}
-/* Voided: kept on the record as proof, but visibly not live work */
-.lc-status.is-voided{background:#71717a;color:#fff;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-.lcard.is-voided{opacity:.55}
-.lcard.is-voided::before{background:#71717a}
-.lcard.is-voided .lc-customer,.lcard.is-voided .lc-po{text-decoration:line-through}
-.lc-po{font-size:10px;font-weight:700;color:var(--I);letter-spacing:.06em;margin-bottom:4px;text-transform:uppercase}
-.lc-customer{font-size:13.5px;font-weight:700;line-height:1.3;margin-bottom:4px;letter-spacing:-.005em;padding-right:80px}
-.lc-detail{font-size:11.5px;color:var(--txt2);margin-bottom:3px;line-height:1.4;font-weight:500}
-.lc-mat-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;background:linear-gradient(135deg,var(--Ib),var(--Bb));color:var(--I);margin-top:5px;letter-spacing:.02em}
-.lc-progress{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;font-weight:600}
-.lc-progress span{color:var(--txt2);font-variant-numeric:tabular-nums;min-width:32px}
-.lc-progress-bar{flex:1;height:5px;background:var(--bg2);border-radius:4px;overflow:hidden;position:relative}
-.lc-progress-fill{height:100%;background:linear-gradient(90deg,var(--G),#22c55e);transition:width .3s;border-radius:4px;box-shadow:0 0 6px rgba(22,160,102,.3)}
-.lc-status{position:absolute;top:10px;right:10px;font-size:9px;font-weight:700;padding:3px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em}
-.lc-status.pending{background:var(--bg2);color:var(--txt2)}
-.lc-status.submitted{background:linear-gradient(135deg,var(--Pb),#fff);color:var(--P);box-shadow:inset 0 0 0 1px var(--Pd)}
-.lc-status.approved{background:linear-gradient(135deg,var(--Gb),#fff);color:var(--G);box-shadow:inset 0 0 0 1px var(--Gd)}
-.lc-status.rejected{background:linear-gradient(135deg,var(--Rb),#fff);color:var(--R);box-shadow:inset 0 0 0 1px var(--Rd)}
-.lc-moved-pill{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:20px;background:rgba(15,22,40,.06);color:var(--txt2);text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
-
-.empty-col{padding:20px;text-align:center;color:var(--txt3);font-size:11px;font-style:italic}
+/* ── DISPATCH BOARD ── */
+.db-wrap{padding:14px 18px 24px;max-width:1360px;margin:0 auto}
+.db-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.db-eyebrow{font-size:11px;font-weight:800;letter-spacing:.14em;color:var(--txt3)}
+.db-date{font-size:20px;font-weight:800;letter-spacing:-.01em}
+.db-nav{display:flex;align-items:center;gap:6px}
+.db-nav button{min-width:40px;height:40px;border-radius:10px;border:1px solid var(--bdr2);background:var(--bg);font-size:18px;cursor:pointer;color:var(--txt2);font-family:var(--f)}
+.db-nav button:hover{border-color:var(--B);color:var(--B)}
+.db-nav .db-today{font-size:12px;font-weight:700;padding:0 12px;color:var(--B);border-color:var(--Bd)}
+.db-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:8px;margin-bottom:14px}
+.db-tile{background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:11px 10px;text-align:left;cursor:pointer;font-family:var(--f);box-shadow:var(--shadow);color:var(--txt);min-height:44px}
+.db-tile:hover{border-color:var(--Bd)}
+.db-tile .n{font-size:24px;font-weight:800;line-height:1}
+.db-tile .l{font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-top:5px}
+.db-tile .s{font-size:11px;color:var(--txt3);margin-top:3px}
+.db-tile.active{outline:2px solid var(--B);outline-offset:1px}
+.db-tile.alert{border-color:#fca5a5;background:#fef2f2}.db-tile.alert .n{color:#b42318}
+.db-tile.warn{border-color:#fcd34d;background:#fff8ec}.db-tile.warn .n{color:#b45309}
+.db-tile.live .n{color:#b45309}
+.db-tile.bill{border-color:var(--Td);background:var(--Tb)}.db-tile.bill .n{color:var(--T)}
+.db-tile.ok .n{color:var(--G)}
+.db-grid{display:grid;grid-template-columns:minmax(300px,400px) 1fr;gap:16px;align-items:start}
+@media(max-width:1000px){.db-grid{grid-template-columns:1fr}}
+.db-sec{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);margin:4px 0 8px}
+.db-sec-meta{font-weight:600;text-transform:none;letter-spacing:0;color:var(--txt3);text-align:right}
+.db-clear{font-size:11.5px;font-weight:700;text-transform:none;letter-spacing:0;color:var(--B);background:none;border:none;cursor:pointer;font-family:var(--f);padding:4px 0}
+.db-empty{font-size:12px;color:var(--txt3);padding:8px 2px}
+.db-drv{display:grid;grid-template-columns:10px 1fr auto;gap:10px;align-items:start;background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:10px 12px;margin-bottom:8px;box-shadow:var(--shadow)}
+.db-drv.drop-target{outline:2px dashed var(--B);background:var(--Bb)}
+.db-drv-dot{width:10px;height:10px;border-radius:50%;margin-top:6px;background:var(--bdr2)}
+.db-drv.available .db-drv-dot{background:var(--G)}
+.db-drv.assigned .db-drv-dot{background:#2563eb}
+.db-drv.in-progress .db-drv-dot{background:#d97706;box-shadow:0 0 0 3px #fde68a}
+.db-drv.completed .db-drv-dot{background:var(--G)}
+.db-drv.off{opacity:.6}.db-drv.off .db-drv-dot{background:var(--txt3)}
+.db-drv-main{min-width:0}
+.db-drv-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13.5px}
+.db-drv-truck{font-size:12px;color:var(--txt2);font-weight:600}.db-drv-truck i{color:var(--txt3);font-weight:500}
+.db-drv-day{font-size:11px;color:var(--txt3)}
+.db-drv-load{font-size:12.5px;margin-top:4px;cursor:pointer}
+.db-drv-load:hover{text-decoration:underline}
+.db-drv-route{font-size:12px;color:var(--txt2);margin-top:2px}.db-drv-route.muted{color:var(--txt3)}
+.db-drv-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.db-drv-more{font-size:11px;color:var(--txt3);font-weight:700;white-space:nowrap}
+.db-drv-link{font-size:11px;color:var(--B);font-weight:600;white-space:nowrap}
+.db-chip{display:inline-block;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;padding:2px 8px;border-radius:20px;background:var(--bg2);color:var(--txt2)}
+.db-chip.available,.db-chip.completed{background:#dcfce7;color:#0a8a3a}
+.db-chip.assigned{background:#dbeafe;color:#1d4ed8}
+.db-chip.in-progress{background:#fef3c7;color:#b45309}
+.db-chip.off,.db-chip.unavailable{background:var(--bg2);color:var(--txt3)}
+.db-trucks{display:flex;flex-wrap:wrap;gap:6px}
+.db-truck{font-size:11.5px;border:1px solid var(--bdr);border-radius:8px;padding:5px 9px;background:var(--bg)}
+.db-truck.available{border-color:var(--Gd);background:var(--Gb)}
+.db-truck.in-progress{border-color:var(--Ad);background:var(--Ab)}
+.db-truck.assigned{border-color:var(--Bd);background:var(--Bb)}
+.db-truck.unavailable{color:var(--txt3)}
+.db-route{display:flex;gap:8px;align-items:center;font-size:12.5px;margin-top:8px;color:var(--txt);flex-wrap:wrap}
+.db-route-yard{font-weight:700}.db-route-arrow{color:var(--txt3)}
+.db-flag{font-size:12px;font-weight:700;border-radius:8px;padding:6px 10px;margin-top:8px}
+.db-flag.missing{background:#fef2f2;color:#b42318;border:1px solid #fca5a5}
+.db-flag.conflict{background:#fff8ec;color:#b45309;border:1px solid #fcd34d}
+.qa-card.attn{border-color:#fca5a5}
+.qa-card.ready-to-bill{border-left-color:var(--T)}
+.qa-chip.ready-to-bill{background:var(--Tb);color:var(--T)}
+.qa-fact.live{border-color:#fcd34d;background:#fff8ec}
+.qa-card.dragging{opacity:.5}
+.qa-card[draggable="true"]{cursor:grab}
+.lc-progress{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;color:var(--txt2)}
+.lc-progress-bar{flex:1;height:5px;background:var(--bg2);border-radius:3px;overflow:hidden}
+.lc-progress-fill{height:100%;background:var(--G);border-radius:3px}
+.db-day{margin-top:16px}
+.db-day summary{cursor:pointer;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);padding:8px 0;list-style:none}
+.db-day summary::before{content:'▸ ';color:var(--txt3)}
+.db-day[open] summary::before{content:'▾ '}
+.empty-col{padding:20px;text-align:center;color:var(--txt3);font-size:12px}
 
 /* ── PO MODAL ── */
 .modal-bg{position:fixed;inset:0;background:rgba(26,32,53,.5);display:flex;align-items:flex-start;justify-content:center;padding:20px;z-index:200;overflow-y:auto}
@@ -234,6 +159,54 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .modal-close:hover{background:var(--Rb);color:var(--R)}
 .modal-body{padding:18px 20px;display:flex;flex-direction:column;gap:12px;max-height:75vh;overflow-y:auto}
 .modal-foot{padding:14px 20px;border-top:1px solid var(--bdr);background:var(--bg2);display:flex;gap:8px;justify-content:flex-end;border-radius:0 0 var(--rl) var(--rl)}
+.conflict-modal{max-width:460px}
+.conflict-modal .modal-head{border-left:4px solid var(--A);border-radius:var(--rl) 0 0 0}
+.conflict-list{margin:0;padding:0 0 0 18px;font-size:13.5px;line-height:1.45;display:flex;flex-direction:column;gap:6px}
+.conflict-list li::marker{color:var(--A)}
+.conflict-hint{font-size:12.5px;color:var(--txt2);padding:10px 12px;background:var(--bg2);border-radius:var(--r)}
+.conflict-modal .modal-foot .btn{min-height:40px;padding:8px 20px;font-size:13px}
+/* Billing: the state machine strip, amounts, selection total */
+.bill-flow{width:100%;display:flex;align-items:stretch;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.bf-step{flex:1;min-width:140px;text-align:left;background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:9px 11px;cursor:pointer;font-family:var(--f);color:var(--txt);box-shadow:var(--shadow)}
+.bf-step:hover{border-color:var(--Bd)}
+.bf-step.active{outline:2px solid var(--B);outline-offset:1px}
+.bf-step .bf-n{font-size:20px;font-weight:800;line-height:1}
+.bf-step .bf-l{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);margin-top:4px}
+.bf-step .bf-s{font-size:11px;color:var(--txt3);margin-top:3px;line-height:1.3}
+.bf-arrow{align-self:center;color:var(--txt3);font-size:16px}
+.bill-sel{font-size:12.5px;color:var(--txt2);white-space:nowrap}
+.bill-amt{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.bill-rate{font-size:11px;color:var(--txt3)}
+.bill-unpriced{color:var(--A);font-weight:700;font-size:12px}
+.bill-gap-note{color:var(--A);font-weight:700;font-size:11px;margin-top:2px}
+tr.bill-gap td{background:#fffdf5}
+/* Edit PO */
+.pe-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
+@media(max-width:560px){.pe-grid{grid-template-columns:1fr}}
+.pe-frozen{font-size:12.5px;padding:10px 12px;border-radius:var(--r);background:var(--Ab);border:1px solid var(--Ad);color:var(--A)}
+.pe-follow{font-size:12.5px;color:var(--txt2);padding:10px 12px;background:var(--bg2);border-radius:var(--r)}
+.pe-add{border-top:1px solid var(--bdr);padding-top:10px}
+.pe-add summary{cursor:pointer;font-size:12.5px;font-weight:700;color:var(--B)}
+.field input:disabled{background:var(--bg2);color:var(--txt3);cursor:not-allowed}
+/* Approval checklist: ✓ on record, ⚠ missing — on the card and in the dialog */
+.ask-modal{max-width:480px}
+.ask-modal .modal-foot .btn{min-height:40px;padding:8px 20px;font-size:13px}
+.ask-sub{font-size:12.5px;color:var(--txt2)}
+.am-check{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.am-check .chk{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 9px;border-radius:20px;border:1px solid var(--Gd);background:var(--Gb);color:#0a7a3a}
+.am-check .chk.warn{border-color:var(--Ad);background:var(--Ab);color:var(--A)}
+.am-check .chk-label{font-weight:700}
+.am-check .chk-val{color:inherit;opacity:.9}
+.am-check .chk.ok .chk-val:empty{display:none}
+.ask-check{display:flex;flex-direction:column;gap:6px}
+.ask-check .chk{display:grid;grid-template-columns:22px 92px 1fr;align-items:baseline;gap:4px 8px;padding:8px 10px;border-radius:var(--r);border:1px solid var(--Gd);background:var(--Gb);font-size:13px}
+.ask-check .chk.warn{border-color:var(--Ad);background:var(--Ab)}
+.ask-check .chk-ic{font-weight:800;color:var(--G)}.ask-check .chk.warn .chk-ic{color:var(--A)}
+.ask-check .chk-label{font-weight:700}
+.ask-check .chk-val{font-weight:600}
+.ask-check .chk.warn .chk-val{color:var(--A)}
+.ask-check .chk-note{grid-column:2/4;font-size:11.5px;color:var(--txt2)}
+.ask-check .chk.warn .chk-note{color:var(--A);font-weight:600}
 
 .field{display:flex;flex-direction:column;gap:5px}
 .field label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
@@ -647,12 +620,6 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 
 /* Tap-to-assign on a load card — the touch-safe path. Drag-and-drop does not
    fire on iOS/Android, so this is the only way to reassign from a phone. */
-.lc-assign-btn{margin-left:auto;flex-shrink:0;padding:7px 14px;min-height:34px;font-size:11.5px;font-weight:700;
-  border:1.5px solid var(--B);background:var(--Bb,#e7f0ff);color:var(--B);border-radius:20px;cursor:pointer;
-  font-family:var(--f);letter-spacing:.02em;transition:all .15s}
-.lc-assign-btn:hover{background:var(--B);color:#fff}
-.lc-assign-btn:active{transform:scale(.97)}
-@media(max-width:600px){.lc-assign-btn{min-height:44px;padding:10px 18px;font-size:13px}}
 
 /* ── QUICK ASSIGN / TODAY ─────────────────────────────────────────────────
    Built phone-first: a dispatcher standing in a yard must assign a load in
@@ -765,13 +732,9 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand"><img src="/app/logo-sidebar.png" alt="Valley Best Trucking"></div>
     <nav class="sidebar-nav">
-      <button class="nav-item active" data-tab="board" onclick="goTab('board')">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-        <span>Board</span>
-      </button>
-      <button class="nav-item" data-tab="today" onclick="goTab('today')" id="nav-today">
+      <button class="nav-item active" data-tab="today" onclick="goTab('today')" id="nav-today">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-        <span>Quick Assign</span>
+        <span>Dispatch</span>
         <span class="nav-badge" id="today-badge" style="display:none">0</span>
       </button>
       <button class="nav-item" data-tab="map" onclick="goTab('map')" id="nav-map" style="display:none">
@@ -829,17 +792,12 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   <main class="main">
     <header class="topbar">
       <button class="menu-toggle" onclick="toggleMenu()">☰</button>
-      <h1 class="page-title" id="page-title">Board</h1>
+      <h1 class="page-title" id="page-title">Dispatch</h1>
       <div class="topbar-actions" id="topbar-actions"></div>
     </header>
     <div class="content">
-      <!-- BOARD -->
-      <div class="section active" id="sec-board">
-        <div class="board-header" id="board-header"></div>
-        <div class="board" id="board"></div>
-      </div>
-      <!-- QUICK ASSIGN / TODAY -->
-      <div class="section" id="sec-today">
+      <!-- DISPATCH BOARD -->
+      <div class="section active" id="sec-today">
         <div id="today-content"></div>
       </div>
       <!-- PURCHASE ORDERS -->
@@ -1247,13 +1205,8 @@ let me = null, role = 'driver', myTruckId = null, myUsername = '', myDisplayName
 let trucks = [], materials = [], yards = [], pos = [], loads = [];
 let vendors = [], vendorPrices = {};
 let currentVendorTab = null;  // selected vendor in the Vendors screen
-let dayOffset = 0, monthOffset = 0;
-let boardView = 'day';  // 'day' | 'month'
-let currentTab = 'board';
-// Dispatch board filters — applied in renderDayBoard. 'all' / '' means no filter.
-let boardFilters = { driver: '', material: '', customer: '', city: '', status: '', search: '' };
+let currentTab = 'today';
 // "Active" status pulse on the hero summary card; clicking a stat sets this.
-let boardStatusFilter = '';  // '' | 'unassigned' | 'in-progress' | 'pending-approval' | 'ready-to-bill' | 'completed'
 let editingPoId = null;
 let fleet = [], rosterDrivers = [];
 let poAvail = null;        // /api/today for the PO's delivery date: driver + truck availability
@@ -1271,54 +1224,6 @@ const todayStr = () => {
 
 // Card status logic — drives green/red/normal coloring
 // Returns: { kind: 'completed'|'overdue'|'active'|'normal', label: string }
-function getCardStatus(l) {
-  const today = todayStr();
-  const sched = l.deliveryDate || '';
-  const ts = l.timestamps || {};
-
-  // Voided outranks everything. The record is kept as proof but the load does
-  // not count, and it must not sit on the board looking like live work.
-  if (l.voided) return { kind: 'voided', label: 'Voided' };
-
-  // 1. PARTIAL — driver submitted incomplete (some but not all) — YELLOW
-  // This takes priority over "completed" coloring so manager sees it stands out
-  if (l.isPartial) {
-    if (l.approvalStatus === 'approved' || l.billStatus === 'billed') {
-      return { kind: 'partial', label: `Approved partial (${l.loadsDelivered}/${l.loadsAssigned})` };
-    }
-    return { kind: 'partial', label: `Partial (${l.loadsDelivered}/${l.loadsAssigned})` };
-  }
-
-  // 2. Fully completed — purple/green
-  if (l.approvalStatus === 'approved' || l.billStatus === 'billed') {
-    return { kind: 'completed', label: 'Approved' };
-  }
-  if (l.approvalStatus === 'submitted' || ts.completed) {
-    return { kind: 'completed', label: 'Delivered' };
-  }
-
-  // 3. Rejected — re-do it
-  if (l.approvalStatus === 'rejected') {
-    return { kind: 'overdue', label: 'Rejected' };
-  }
-
-  // 4. In progress today
-  if (sched === today && ts.start) {
-    return { kind: 'active', label: 'In progress' };
-  }
-
-  // 5. Future or today not started
-  if (sched === today) {
-    return { kind: 'normal', label: 'Today' };
-  }
-  // Note: removed automatic "overdue" coloring — manager checks board manually
-  return { kind: 'normal', label: 'Scheduled' };
-}
-function getBoardDate() {
-  const d = new Date();
-  d.setDate(d.getDate() + dayOffset);
-  return d;
-}
 // Returns a YYYY-MM-DD string for the given Date in the user's LOCAL calendar.
 // CRITICAL: do NOT use d.toISOString().slice(0,10) — that returns the UTC date,
 // which in US timezones rolls over to "tomorrow" any time after late afternoon
@@ -1508,12 +1413,12 @@ async function init() {
 
 // ── TAB ROUTING ──────────────────────────────────────────────────────────────
 function goTab(tab) {
+  if (tab === 'board') tab = 'today';   // the old Board is the Dispatch board now
   currentTab = tab;
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 
-  if (tab === 'board')    { document.getElementById('sec-board').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch Board'; renderBoard(); }
-  if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = "Today's Dispatch"; renderToday(); }
+  if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch'; renderToday(); }
   if (tab === 'pos')      { document.getElementById('sec-pos').classList.add('active'); document.getElementById('page-title').textContent = 'Purchase Orders'; renderPOsList(); }
   if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
@@ -1531,7 +1436,7 @@ function goTab(tab) {
 
   // Update topbar actions
   const actions = document.getElementById('topbar-actions');
-  if ((role === 'manager' || role === 'admin') && tab === 'board') {
+  if ((role === 'manager' || role === 'admin') && tab === 'today') {
     actions.innerHTML = `<button class="btn primary" onclick="openNewPO()">+ New PO</button>`;
   } else if (role === 'driver') {
     const isDark = document.body.classList.contains('drv-dark');
@@ -1555,434 +1460,20 @@ function toggleMenu() {
   document.getElementById('sidebar').classList.toggle('open');
 }
 
-// ── BOARD (manager) ──────────────────────────────────────────────────────────
-function setBoardView(v) {
-  boardView = v;
-  renderBoard();
-}
-
-function renderBoard() {
-  if (boardView === 'month') return renderMonthBoard();
-  return renderDayBoard();
-}
-
-function renderDayBoard() {
-  const date = getBoardDate();
-  const dateStr = ymd(date);
-  const isToday = dateStr === todayStr();
-  const me = myDisplayName || (myUsername.charAt(0).toUpperCase() + myUsername.slice(1));
-
-  // Header with date nav
-  document.getElementById('board-header').innerHTML = `
-    <div class="date-nav">
-      <button onclick="changeDay(-1)" aria-label="Previous day">‹</button>
-      <span class="date-label">${date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</span>
-      <button onclick="changeDay(1)" aria-label="Next day">›</button>
-    </div>
-    ${!isToday ? `<button class="today-btn" onclick="goToday()">Today</button>` : ''}
-    <div style="margin-left:auto;display:flex;gap:4px;background:var(--bg2);padding:3px;border-radius:20px">
-      <button class="view-btn ${boardView === 'day' ? 'active' : ''}" onclick="setBoardView('day')">Day</button>
-      <button class="view-btn ${boardView === 'month' ? 'active' : ''}" onclick="setBoardView('month')">Month</button>
-    </div>
-  `;
-
-  // All loads scheduled for this day, regardless of filter (used for hero counts)
-  const allDayLoads = loads.filter(l => l.deliveryDate === dateStr && !l.voided);
-
-  // Compute hero stats
-  const stats = computeBoardStats(allDayLoads);
-
-  // Apply filters
-  const filtered = applyBoardFilters(allDayLoads);
-
-  // Build the board layout: HERO → FILTER BAR → DRIVER STRIP → COLUMNS
-  const board = document.getElementById('board');
-  const heroHtml = renderDispatchHero(stats, isToday, date, me);
-  const filterHtml = renderFilterBar(filtered.length, allDayLoads.length);
-  const stripHtml = renderDriverStrip(allDayLoads);
-
-  // Build columns with filtered loads
-  const colHtml = [];
-  trucks.forEach(t => {
-    const myLoads = filtered.filter(l => l.truckId === t.id);
-    const allMyDayLoads = allDayLoads.filter(l => l.truckId === t.id);
-    const reassignableCount = allMyDayLoads.filter(l => !l.locked).length;
-    const initials = (t.label || '?').split(/\s+/).map(s => s.charAt(0)).join('').slice(0,2).toUpperCase();
-    const countCls = allMyDayLoads.length === 0 ? 'empty' : (allMyDayLoads.length >= 5 ? 'heavy' : '');
-    colHtml.push(`
-      <div class="driver-col">
-        <div class="driver-col-head">
-          <div style="flex:1;min-width:0">
-            <div class="driver-name"><span class="driver-name-avatar">${initials}</span>${t.label}</div>
-            <div class="driver-truck">${t.truckNum}${reassignableCount > 0 ? ` · <a onclick="event.stopPropagation();openReassignModal('all-driver','${t.id}')" style="color:var(--I);cursor:pointer;text-decoration:underline;font-weight:600">Reassign all</a>` : ''}</div>
-          </div>
-          <span class="driver-load-count ${countCls}">${allMyDayLoads.length}</span>
-        </div>
-        <div class="driver-col-body" data-truckid="${t.id}"
-          ondragover="event.preventDefault();this.classList.add('drop-target')"
-          ondragleave="this.classList.remove('drop-target')"
-          ondrop="onDrop(event, '${t.id}')">
-          ${myLoads.length ? myLoads.map(l => loadCard(l)).join('') : (allMyDayLoads.length ? '<div class="empty-col">No loads match the current filter</div>' : '<div class="empty-col">No loads</div>')}
-        </div>
-      </div>
-    `);
-  });
-
-  // Unassigned column — always last, always visible (it's the alert column)
-  const unas = filtered.filter(l => !l.truckId || l.truckId === 'unassigned');
-  const allUnas = allDayLoads.filter(l => !l.truckId || l.truckId === 'unassigned');
-  colHtml.push(`
-    <div class="driver-col unassigned-col">
-      <div class="driver-col-head">
-        <div>
-          <div class="driver-name" style="color:var(--A)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</div>
-          <div class="driver-truck">Tap Assign on a load — or drag a card here to unassign</div>
-        </div>
-        <span class="driver-load-count" style="background:var(--Ad);color:var(--A)">${allUnas.length}</span>
-      </div>
-      <div class="driver-col-body" data-truckid=""
-        ondragover="event.preventDefault();this.classList.add('drop-target')"
-        ondragleave="this.classList.remove('drop-target')"
-        ondrop="onDrop(event, '')">
-        ${unas.length ? unas.map(l => loadCard(l)).join('') : (allUnas.length ? '<div class="empty-col">No loads match the current filter</div>' : '<div class="empty-col">No unassigned loads</div>')}
-      </div>
-    </div>
-  `);
-
-  board.innerHTML = `${heroHtml}${filterHtml}${stripHtml}<div class="board-cols">${colHtml.join('')}</div>`;
-  updateApproveBadge();
-}
-
-// Compute counts of each status bucket for the hero summary card.
-function computeBoardStats(dayLoads) {
-  let unassigned = 0, inProgress = 0, pendingApproval = 0, readyToBill = 0, approved = 0, completed = 0, partial = 0;
-  dayLoads.forEach(l => {
-    if (!l.truckId || l.truckId === 'unassigned') unassigned++;
-    if (l.timestamps?.start && !l.timestamps?.completed && l.approvalStatus !== 'approved' && l.approvalStatus !== 'submitted') inProgress++;
-    if (l.approvalStatus === 'submitted') pendingApproval++;
-    if (l.approvalStatus === 'approved' && l.billStatus !== 'billed') readyToBill++;
-    if (l.approvalStatus === 'approved') approved++;
-    if (l.approvalStatus === 'approved' || l.timestamps?.completed) completed++;
-    if (l.isPartial) partial++;
-  });
-  return { total: dayLoads.length, unassigned, inProgress, pendingApproval, readyToBill, approved, completed, partial };
-}
-
-function renderDispatchHero(stats, isToday, date, displayName) {
-  const greet = isToday
-    ? `Welcome back, ${displayName}`
-    : `${date.toLocaleDateString('en-US', { weekday: 'long' })} dispatch`;
-  const sub = isToday
-    ? `Here's what needs your attention today.`
-    : `Schedule for ${date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}.`;
-  const dateLabel = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-
-  const stat = (key, label, num, meta, cls = '') => `
-    <div class="hero-stat ${cls} ${boardStatusFilter === key ? 'active' : ''}" onclick="setBoardStatusFilter('${key}')">
-      <div class="hero-stat-label">${label}</div>
-      <div class="hero-stat-num">${num}</div>
-      <div class="hero-stat-meta">${meta}</div>
-    </div>`;
-
-  return `<div class="dispatch-hero">
-    <div class="hero-row">
-      <div class="hero-greeting">
-        <div class="hero-eyebrow">Dispatch Command Center</div>
-        <div class="hero-title">${greet}</div>
-        <div class="hero-sub">${sub}</div>
-      </div>
-      <div class="hero-date"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ${dateLabel}</div>
-    </div>
-    <div class="hero-stats">
-      ${stat('', 'All Loads', stats.total, `${trucks.length} drivers on shift`)}
-      ${stat('unassigned', 'Unassigned', stats.unassigned, stats.unassigned ? 'Needs assignment' : 'All assigned', stats.unassigned ? 'alert' : '')}
-      ${stat('in-progress', 'In Progress', stats.inProgress, stats.inProgress ? 'On the road' : 'None active', stats.inProgress ? 'warn' : '')}
-      ${stat('pending-approval', 'Pending Approval', stats.pendingApproval, stats.pendingApproval ? 'Awaiting review' : 'All clear', stats.pendingApproval ? 'warn' : '')}
-      ${stat('ready-to-bill', 'Ready to Bill', stats.readyToBill, stats.readyToBill ? 'Approved & locked' : 'Nothing queued', 'bill')}
-      ${stat('completed', 'Completed', stats.completed, stats.completed ? 'Finished today' : 'None yet', 'success')}
-    </div>
-  </div>`;
-}
-
-function renderFilterBar(visible, total) {
-  const customers = [...new Set(pos.map(p => p.customer).filter(Boolean))].sort();
-  const cities = [...new Set(pos.map(p => p.city).filter(Boolean))].sort();
-  const mats = [...new Set(loads.map(l => l.material).filter(Boolean))].sort();
-  const opt = (val, list) => list.map(x => `<option value="${escapeHtml(x)}" ${val === x ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('');
-  const driverOpts = trucks.map(t => `<option value="${t.id}" ${boardFilters.driver === t.id ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('');
-  const hasAny = boardFilters.driver || boardFilters.material || boardFilters.customer || boardFilters.city || boardFilters.search || boardStatusFilter;
-  const visMeta = hasAny ? `${visible} of ${total} loads` : '';
-  return `<div class="filter-bar">
-    <span class="filter-bar-label">Filter</span>
-    <input type="text" placeholder="Search PO / customer / job…" value="${escapeHtml(boardFilters.search || '')}" oninput="setBoardFilter('search', this.value)" style="min-width:180px">
-    <select onchange="setBoardFilter('driver', this.value)">
-      <option value="">All drivers</option>
-      ${driverOpts}
-      <option value="__unassigned__" ${boardFilters.driver === '__unassigned__' ? 'selected' : ''}>Unassigned only</option>
-    </select>
-    <select onchange="setBoardFilter('material', this.value)">
-      <option value="">All materials</option>
-      ${opt(boardFilters.material, mats)}
-    </select>
-    <select onchange="setBoardFilter('customer', this.value)">
-      <option value="">All customers</option>
-      ${opt(boardFilters.customer, customers)}
-    </select>
-    <select onchange="setBoardFilter('city', this.value)">
-      <option value="">All cities</option>
-      ${opt(boardFilters.city, cities)}
-    </select>
-    <span class="filter-result-count">${visMeta}</span>
-    ${hasAny ? `<button class="filter-clear" onclick="clearBoardFilters()">Clear filters</button>` : ''}
-  </div>`;
-}
-
-function renderDriverStrip(allDayLoads) {
-  if (!trucks.length) return '';
-  const chips = trucks.map(t => {
-    const cnt = allDayLoads.filter(l => l.truckId === t.id).length;
-    const cls = cnt === 0 ? 'free' : (cnt >= 5 ? 'heavy' : 'busy');
-    const initials = (t.label || '?').split(/\s+/).map(s => s.charAt(0)).join('').slice(0,2).toUpperCase();
-    const active = boardFilters.driver === t.id ? 'active' : '';
-    return `<button type="button" class="driver-chip ${cls} ${active}" onclick="toggleDriverFilter('${t.id}')" title="${escapeHtml(t.label)} — ${cnt} load${cnt===1?'':'s'}">
-      <span class="driver-chip-dot">${initials}</span>
-      <span class="driver-chip-name">${escapeHtml(t.label)}</span>
-      <span class="driver-chip-count">${cnt}</span>
-    </button>`;
-  }).join('');
-  return `<div class="driver-strip">
-    <span class="driver-strip-label">Driver Availability</span>
-    ${chips}
-  </div>`;
-}
-
-function setBoardFilter(key, value) {
-  boardFilters[key] = value;
-  // Clear hero status filter when driver/material/customer/city changes (treat them as separate axes)
-  renderDayBoard();
-}
-function toggleDriverFilter(truckId) {
-  boardFilters.driver = boardFilters.driver === truckId ? '' : truckId;
-  renderDayBoard();
-}
-function clearBoardFilters() {
-  boardFilters = { driver: '', material: '', customer: '', city: '', status: '', search: '' };
-  boardStatusFilter = '';
-  renderDayBoard();
-}
-function setBoardStatusFilter(key) {
-  boardStatusFilter = (boardStatusFilter === key) ? '' : key;
-  renderDayBoard();
-}
-function applyBoardFilters(dayLoads) {
-  return dayLoads.filter(l => {
-    const po = pos.find(p => p.id === l.poId) || {};
-    if (boardFilters.driver) {
-      if (boardFilters.driver === '__unassigned__') {
-        if (l.truckId && l.truckId !== 'unassigned') return false;
-      } else if (l.truckId !== boardFilters.driver) return false;
-    }
-    if (boardFilters.material && l.material !== boardFilters.material) return false;
-    if (boardFilters.customer && (po.customer || '') !== boardFilters.customer) return false;
-    if (boardFilters.city && (po.city || '') !== boardFilters.city) return false;
-    if (boardFilters.search) {
-      const q = boardFilters.search.toLowerCase();
-      const hay = [po.poNumber, po.customer, po.jobCode, po.address, po.city, l.material, l.driverName].filter(Boolean).join(' ').toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    if (boardStatusFilter) {
-      if (boardStatusFilter === 'unassigned' && (l.truckId && l.truckId !== 'unassigned')) return false;
-      if (boardStatusFilter === 'in-progress' && !(l.timestamps?.start && !l.timestamps?.completed && l.approvalStatus !== 'approved' && l.approvalStatus !== 'submitted')) return false;
-      if (boardStatusFilter === 'pending-approval' && l.approvalStatus !== 'submitted') return false;
-      if (boardStatusFilter === 'ready-to-bill' && !(l.approvalStatus === 'approved' && l.billStatus !== 'billed')) return false;
-      if (boardStatusFilter === 'completed' && !(l.approvalStatus === 'approved' || l.timestamps?.completed)) return false;
-    }
-    return true;
-  });
-}
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
 
-// ── MONTH BOARD ──
-function renderMonthBoard() {
-  const today = new Date();
-  const target = new Date(today.getFullYear(), today.getMonth() + monthOffset, 1);
-  const daysInMonth = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
-  const todStr = todayStr();
-  const monthLabel = target.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-
-  // Header
-  document.getElementById('board-header').innerHTML = `
-    <div class="date-nav">
-      <button onclick="changeMonth(-1)">‹</button>
-      <span class="date-label">${monthLabel}</span>
-      <button onclick="changeMonth(1)">›</button>
-    </div>
-    ${monthOffset !== 0 ? `<button class="today-btn" onclick="goToday()">Today</button>` : ''}
-    <div style="margin-left:auto;display:flex;gap:4px;background:var(--bg2);padding:3px;border-radius:20px">
-      <button class="view-btn ${boardView === 'day' ? 'active' : ''}" onclick="setBoardView('day')">Day</button>
-      <button class="view-btn ${boardView === 'month' ? 'active' : ''}" onclick="setBoardView('month')">Month</button>
-    </div>
-  `;
-
-  let h = '<div class="month-grid" style="padding:18px 22px"><table>';
-  // Header row
-  h += '<thead><tr><th class="day-col">Date</th>';
-  trucks.forEach(t => { h += `<th>${t.label}<div style="font-size:10px;font-weight:400;color:var(--txt3)">${t.truckNum}</div></th>`; });
-  h += '<th style="width:90px;color:var(--A)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</th>';
-  h += '</tr></thead><tbody>';
-
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dt = new Date(target.getFullYear(), target.getMonth(), d);
-    const dateStr = ymd(dt);
-    const dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getDay()];
-    const isToday = dateStr === todStr;
-    const isPast = dateStr < todStr;
-    const dayLoads = loads.filter(l => l.deliveryDate === dateStr && !l.voided);
-    const totalAssigned = dayLoads.reduce((s,l) => s + (Number(l.loadsAssigned)||0), 0);
-    const totalDelivered = dayLoads.reduce((s,l) => s + (Number(l.loadsDelivered)||0), 0);
-    const unas = dayLoads.filter(l => !l.truckId || l.truckId === 'unassigned');
-
-    h += `<tr>`;
-    h += `<td class="day-cell ${isToday ? 'today-cell' : ''} ${isPast && !isToday ? 'past-cell' : ''}" onclick="jumpToDay('${dateStr}')">
-      <span class="day-num">${d}</span>
-      <span class="day-name">${dayName}</span>
-      ${dayLoads.length ? `<div class="day-summary">${totalDelivered}/${totalAssigned}</div>` : ''}
-      ${unas.length ? `<span class="day-warn">${unas.length}</span>` : ''}
-    </td>`;
-
-    trucks.forEach(t => {
-      const myLoads = dayLoads.filter(l => l.truckId === t.id);
-      h += '<td>';
-      if (myLoads.length === 0) h += '<div class="mempty">—</div>';
-      else {
-        myLoads.slice(0, 3).forEach(l => {
-          const po = pos.find(p => p.id === l.poId) || {};
-          const status = getCardStatus(l);
-          h += `<div class="mcard is-${status.kind}" onclick="openLoadDetail('${l.id}')">
-            <div class="mcard-po">${po.poNumber || ''}${po.jobCode ? ` · ${po.jobCode}` : ''}</div>
-            <div class="mcard-cust">${po.customer || ''}</div>
-            <div class="mcard-mat">${l.material}${po.city ? ' · ' + po.city : ''}</div>
-            <div class="mcard-progress">${l.loadsDelivered}/${l.loadsAssigned} loads</div>
-          </div>`;
-        });
-        if (myLoads.length > 3) h += `<div class="mempty" onclick="jumpToDay('${dateStr}')" style="cursor:pointer;color:var(--B)">+${myLoads.length - 3} more</div>`;
-      }
-      h += '</td>';
-    });
-
-    // Unassigned column
-    h += '<td>';
-    if (unas.length === 0) h += '<div class="mempty">—</div>';
-    else {
-      unas.slice(0, 2).forEach(l => {
-        const po = pos.find(p => p.id === l.poId) || {};
-        h += `<div class="mcard unassigned-m" onclick="openLoadDetail('${l.id}')">
-          <div class="mcard-po">${po.poNumber || ''}</div>
-          <div class="mcard-cust">${po.customer || ''}</div>
-          <div class="mcard-mat">${l.material}</div>
-        </div>`;
-      });
-      if (unas.length > 2) h += `<div class="mempty">+${unas.length - 2}</div>`;
-    }
-    h += '</td>';
-    h += '</tr>';
-  }
-  h += '</tbody></table></div>';
-
-  document.getElementById('board').innerHTML = h;
-  updateApproveBadge();
-}
-
-function changeMonth(n) { monthOffset += n; renderBoard(); }
-function jumpToDay(dateStr) {
-  // Set dayOffset to land exactly on dateStr (a YYYY-MM-DD local date string).
-  // Anchor BOTH endpoints at local noon — that way the diff in milliseconds is
-  // an exact integer multiple of 24h (within DST tolerance) and Math.round
-  // doesn't get fooled by a 0.5-day offset like it did when today was anchored
-  // at midnight and target at noon (the old code rounded the wrong way and
-  // landed on the next day).
-  const today = new Date(); today.setHours(12, 0, 0, 0);
-  const target = new Date(dateStr + 'T12:00:00');
-  dayOffset = Math.round((target - today) / 86400000);
-  setBoardView('day');
-}
-
-function loadCard(l) {
-  const po = pos.find(p => p.id === l.poId) || {};
-  const pct = l.loadsAssigned > 0 ? Math.round(l.loadsDelivered / l.loadsAssigned * 100) : 0;
-  const status = getCardStatus(l);
-  const cardCls = `is-${status.kind}`;
-
-  const wasMoved = l.moveHistory && l.moveHistory.length > 0;
-  const lastMove = wasMoved ? l.moveHistory[l.moveHistory.length - 1] : null;
-
-  // Driver chip — initials avatar + name (or Unassigned)
-  let driverHtml;
-  if (l.truckId && l.driverName) {
-    const initials = l.driverName.split(/\s+/).map(s => s.charAt(0)).join('').slice(0,2).toUpperCase();
-    driverHtml = `<span class="lc-driver"><span class="lc-driver-avatar">${initials}</span>${escapeHtml(l.driverName)}</span>`;
-  } else {
-    driverHtml = `<span class="lc-driver unassigned"><span class="lc-driver-avatar">!</span>Unassigned</span>`;
-  }
-
-  // Vendor / pickup yard chip — VBT Yard rendered as INTERNAL
-  // One source: the server's resolvePickupYard, delivered as l.pickup.
-  let vendorHtml = '';
-  if (l.pickup && l.pickup.name) {
-    vendorHtml = `<span class="lc-vendor ${l.pickup.isInternal ? 'internal' : ''}">${escapeHtml(l.pickup.name)}${l.pickup.isActual ? '' : ''}</span>`;
-  }
-
-  // City / address line
-  const pinSvg = `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;display:inline-block;vertical-align:-1px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`;
-  let routeHtml = '';
-  if (po.city || po.address) {
-    routeHtml = `<div class="lc-detail">${pinSvg} ${escapeHtml([po.city, po.address].filter(Boolean).join(' · '))}</div>`;
-  }
-
-  return `<div class="lcard ${cardCls}"
-    draggable="${(role === 'manager' || role === 'admin') && !l.locked ? 'true' : 'false'}"
-    data-loadid="${l.id}"
-    ondragstart="onDragStart(event, '${l.id}')"
-    ondragend="this.classList.remove('dragging')"
-    onclick="openLoadDetail('${l.id}')">
-    <span class="lc-status ${cardCls}">${status.label}</span>
-    <div class="lc-po">${escapeHtml(po.poNumber || '—')}${po.jobCode ? ` · <span style="color:var(--txt3);font-weight:600">${escapeHtml(po.jobCode)}</span>` : ''}</div>
-    <div class="lc-customer">${escapeHtml(po.customer || '')}</div>
-    ${routeHtml}
-    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:5px">
-      <span class="lc-mat-pill">${escapeHtml(l.material)} · ${l.loadsAssigned} load${l.loadsAssigned===1?'':'s'}</span>
-      ${vendorHtml}
-      ${wasMoved ? `<span class="lc-moved-pill" title="Moved from ${fmtDate(lastMove.from)} — ${lastMove.reason}"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:11px;height:11px;display:inline-block;vertical-align:-1px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Moved</span>` : ''}
-    </div>
-    <div class="lc-progress">
-      <span>${l.loadsDelivered}/${l.loadsAssigned}</span>
-      <div class="lc-progress-bar"><div class="lc-progress-fill" style="width:${pct}%"></div></div>
-      <span style="min-width:34px;text-align:right">${pct}%</span>
-    </div>
-    <div class="lc-driver-row">
-      ${driverHtml}
-      ${(role === 'manager' || role === 'admin') && !l.locked
-        ? `<button class="lc-assign-btn" onclick="event.stopPropagation();openReassignModal('single','${l.id}')" title="Assign or change driver">${l.truckId && l.truckId !== 'unassigned' ? 'Reassign' : 'Assign'}</button>`
-        : ''}
-    </div>
-  </div>`;
-}
-
-function changeDay(n) { dayOffset += n; renderBoard(); }
-function goToday() { dayOffset = 0; monthOffset = 0; renderBoard(); }
-
-// ── DRAG & DROP ──────────────────────────────────────────────────────────────
+// ── DRAG A LOAD ONTO A DRIVER ────────────────────────────────────────────────
+// A second way in to the same Quick Assign sheet. Dropping a card never
+// assigns by itself: it opens the sheet with the target driver pre-selected,
+// and nothing is written until Confirm — so a stray touch cannot move a load.
 let dragId = null;
 function onDragStart(e, id) {
   dragId = id;
   e.target.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
 }
-// Dropping a card never assigns by itself. It opens the same Quick Assign
-// sheet as the Assign button, pre-selecting the drop target, and nothing is
-// written until Confirm — so a stray touch on a phone cannot move a load.
 async function onDrop(e, truckId) {
   e.preventDefault();
   e.currentTarget.classList.remove('drop-target');
@@ -2256,17 +1747,17 @@ async function savePO() {
     }));
     if (!validSplits.length) { toast('Add at least one load', 'error'); return; }
     const btn = document.getElementById('po-save'); btn.disabled = true; btn.textContent = 'Saving…';
-    const d = await api('POST', '/api/pos', { po, splits: validSplits });
+    const d = await postAssignment('/api/pos', { po, splits: validSplits }, 'Assign');
     btn.disabled = false; btn.textContent = 'Save PO';
     if (d.ok) {
       toast(`PO ${d.po?.poNumber || ''} created — ${validSplits.length} load assignment${validSplits.length === 1 ? '' : 's'}`, 'success');
       closePO(); await loadAll();
-      if (currentTab === 'today') renderToday(); else if (currentTab === 'pos') renderPOsList(); else renderBoard();
+      if (currentTab === 'today') renderToday(); else if (currentTab === 'pos') renderPOsList();
     } else if (d.duplicate) {
       poNumberState = { value: po.poNumber, exists: true, message: d.error };
       poStep(1); const msg = document.getElementById('po-number-msg'); msg.textContent = d.error; msg.className = 'po-inline bad';
       toast(d.error, 'error');
-    } else toast(d.error || `Save failed (status ${d.status || '?'})`, 'error');
+    } else if (!d.cancelled) toast(d.error || `Save failed (status ${d.status || '?'})`, 'error');
   } catch (e) {
     console.error('[savePO]', e); toast('Could not save PO: ' + (e.message || 'unknown error'), 'error');
     const btn = document.getElementById('po-save'); if (btn) { btn.disabled = false; btn.textContent = 'Save PO'; }
@@ -2602,9 +2093,11 @@ function openLoadDetail(id) {
   let actions = '';
   if (role === 'manager' || role === 'admin') {
     if (!l.locked) {
-      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openReassignModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Reassign Driver</button>`;
+      actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();qaOpenFor('${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Reassign Driver</button>`;
       actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openMoveModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Move Date</button>`;
     }
+    actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openEditPO('${l.poId}')">Edit PO</button>`;
+    actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openNotifySheet('${l.poId}')">Customer updates: ${po.notifications && po.notifications.enabled ? 'On' : 'Off'}</button>`;
     if (!l.approvalStatus || l.approvalStatus === 'pending') {
       actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
     }
@@ -2645,7 +2138,7 @@ function showInfoModal(title, html, actions = '') {
 
 async function deleteLoad(id) {
   const d = await api('DELETE', '/api/loads/' + id);
-  if (d.ok) { document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove(); await loadAll(); renderBoard(); toast('Load deleted', 'success'); }
+  if (d.ok) { document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove(); await loadAll(); refreshCurrentView(); toast('Load deleted', 'success'); }
   else toast(d.error || 'Failed', 'error');
 }
 
@@ -2716,7 +2209,6 @@ function refreshCurrentView() {
   else if (currentTab === 'today') renderToday();
   else if (currentTab === 'approvals') renderApprovals();
   else if (currentTab === 'billing') renderBilling();
-  else renderBoard();
 }
 
 // Delete a PO and every load on it. Use this to clear test POs — the server
@@ -2733,7 +2225,6 @@ async function deletePO(poId, loadCount) {
   toast(`Deleted PO ${po ? po.poNumber : ''}`, 'success');
   if (currentTab === 'pos') renderPOsList();
   else if (currentTab === 'today') renderToday();
-  else renderBoard();
 }
 
 // ── REASSIGN DRIVER ──────────────────────────────────────────────────────────
@@ -2831,23 +2322,28 @@ async function confirmReassign() {
 
   // Update loads in parallel
   document.getElementById('reassign-confirm-btn').disabled = true;
-  let success = 0, failed = 0;
+  let success = 0, failed = 0, leftAlone = 0;
+  const reason = (document.getElementById('reassign-reason')?.value || '').trim();
   for (const id of loadIds) {
-    // Same endpoint as Quick Assign, so the same validation and audit apply.
-    const d = await api('POST', `/api/loads/${id}/assign`, { driverId: reassignTarget || null });
-    if (d.ok) success++; else failed++;
+    // Same endpoint as Quick Assign, so the same validation, conflict check and audit apply.
+    const d = await postAssignment(`/api/loads/${id}/assign`, { driverId: reassignTarget || null }, 'Reassign', reason);
+    if (d.ok) success++;
+    else if (d.cancelled) leftAlone++;                      // the dispatcher chose Cancel in the conflict dialog
+    else { failed++; if (d.error && loadIds.length === 1) toast(d.error, 'error'); }
   }
 
-  if (failed === 0) {
+  if (failed === 0 && leftAlone === 0) {
     const target = newTruck ? newTruck.label : 'Unassigned';
     toast(`Reassigned ${success} load${success !== 1 ? 's' : ''} to ${target}`, 'success');
+  } else if (failed === 0) {
+    if (success) toast(`Reassigned ${success}, left ${leftAlone} as ${leftAlone === 1 ? 'it was' : 'they were'}`, 'success');
   } else {
-    toast(`Reassigned ${success}, ${failed} failed`, failed > 0 ? 'error' : 'success');
+    toast(`Reassigned ${success}, ${failed} failed${leftAlone ? `, ${leftAlone} left as is` : ''}`, 'error');
   }
 
   closeReassign();
   await loadAll();
-  if (currentTab === 'board') renderBoard();
+  refreshCurrentView();
 }
 
 // ── MOVE DATE ────────────────────────────────────────────────────────────────
@@ -2965,15 +2461,17 @@ async function confirmMove() {
     loadId: scope === 'single' ? movePayload.loadId : null,
   };
 
-  const d = await api('POST', '/api/loads/move', payload);
+  // A date move is an assignment on the new date: the same conflict check, the
+  // same Cancel / go-ahead choice.
+  const d = await postAssignment('/api/loads/move', payload, 'Move');
   if (d.ok) {
     let msg = `Moved ${d.moved} load${d.moved !== 1 ? 's' : ''} to ${fmtDate(newDate)}`;
     if (d.skipped > 0) msg += ` (${d.skipped} locked, skipped)`;
     toast(msg, 'success');
     closeMove();
     await loadAll();
-    if (currentTab === 'board') renderBoard();
-  } else {
+    refreshCurrentView();
+  } else if (!d.cancelled) {
     toast(d.error || 'Move failed', 'error');
   }
 }
@@ -3963,6 +3461,7 @@ function renderApprovals() {
           <div class="am-customer">${po.customer}</div>
           <div class="am-detail">${l.material} · <b style="color:${l.isPartial ? 'var(--A)' : 'var(--txt)'}">${l.loadsDelivered}/${l.loadsAssigned} loads${l.isPartial ? ' ⚠ partial' : ''}</b> · ${l.driverName}${l.trailer ? ' · trailer ' + escapeHtml(l.trailer.number) : ''}${(l.pickup && l.pickup.name) ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + escapeHtml(l.pickup.name) : ''}</div>
           ${ticketSummaryHtml(l)}
+          ${approvalChecklistHtml(l.approval, true)}
         </div>
         <div class="am-thumbs">
           ${(() => {
@@ -4024,16 +3523,98 @@ function updateApproveBadge() {
   else { badge.style.display = 'none'; }
 }
 
+// ── APPROVAL: confirm the record, then lock it ──────────────────────────────
+// The checklist comes from the server (load.approval): Driver, Truck, Pickup
+// yard, Ticket, Delivery — ✓ on record, ⚠ missing. Approving with a ⚠ is the
+// manager's call, made here and acknowledged to the server, which records it.
+const CHECK_ICON = { ok: '✓', warn: '⚠' };
+function approvalChecklistHtml(check, compact) {
+  if (!check || !check.items) return '';
+  return `<div class="${compact ? 'am-check' : 'ask-check'}">${check.items.map(i => `
+    <div class="chk ${i.ok ? 'ok' : 'warn'}" title="${escapeAttr(i.note || '')}">
+      <span class="chk-ic">${i.ok ? CHECK_ICON.ok : CHECK_ICON.warn}</span>
+      <span class="chk-label">${escapeHtml(i.label)}</span>
+      <span class="chk-val">${escapeHtml(i.value || (i.ok ? '' : 'missing'))}</span>
+      ${!compact && i.note ? `<span class="chk-note">${escapeHtml(i.note)}</span>` : ''}
+    </div>`).join('')}</div>`;
+}
+// One in-app question with Cancel (default) and one action. Resolves to
+// { go, reason }. Never a browser confirm() or prompt().
+function askDialog({ title, bodyHtml, confirmLabel, confirmClass = 'primary', reason = null }) {
+  return new Promise(resolve => {
+    const old = document.getElementById('ask-modal'); if (old) old.remove();
+    const el = document.createElement('div');
+    el.className = 'modal-bg'; el.id = 'ask-modal'; el.style.zIndex = '500';
+    el.innerHTML = `
+      <div class="modal ask-modal" role="dialog" aria-modal="true" aria-labelledby="ask-title">
+        <div class="modal-head"><h2 id="ask-title">${escapeHtml(title)}</h2><button type="button" class="modal-close" id="ask-x" aria-label="Cancel">&#215;</button></div>
+        <div class="modal-body">${bodyHtml}
+          ${reason ? `<div class="field"><label>${escapeHtml(reason.label)}${reason.required ? '' : ' (optional)'}</label>
+            <input type="text" id="ask-reason" placeholder="${escapeAttr(reason.placeholder || '')}" autocomplete="off"></div>` : ''}
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn ghost" id="ask-cancel">Cancel</button>
+          <button type="button" class="btn ${confirmClass}" id="ask-go" ${reason && reason.required ? 'disabled' : ''}>${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>`;
+    const typed = () => (el.querySelector('#ask-reason')?.value || '').trim();
+    const done = go => { document.removeEventListener('keydown', onKey); el.remove(); resolve({ go, reason: typed() }); };
+    const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); done(false); } };
+    el.querySelector('#ask-x').onclick = () => done(false);
+    el.querySelector('#ask-cancel').onclick = () => done(false);
+    el.querySelector('#ask-go').onclick = () => { if (reason && reason.required && !typed()) return; done(true); };
+    const input = el.querySelector('#ask-reason');
+    if (input) {
+      input.oninput = () => { if (reason.required) el.querySelector('#ask-go').disabled = !typed(); };
+      input.onkeydown = e => { if (e.key === 'Enter' && typed()) { e.preventDefault(); done(true); } };
+    }
+    el.addEventListener('mousedown', e => { if (e.target === el) done(false); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(el);
+    (input && reason.required ? input : el.querySelector('#ask-cancel')).focus();
+  });
+}
+function confirmApproval(l, check) {
+  const po = pos.find(p => p.id === l.poId) || {};
+  const gaps = check ? check.items.filter(i => !i.ok).length : 0;
+  const body = `
+    <div class="ask-sub">PO ${escapeHtml(po.poNumber || '—')} · ${escapeHtml(po.customer || '')} · ${escapeHtml(l.material || '')} · ${escapeHtml(l.driverName || '')}</div>
+    ${approvalChecklistHtml(check, false)}
+    <div class="conflict-hint">${gaps
+      ? `<b>${gaps} item${gaps === 1 ? '' : 's'} missing.</b> You can approve anyway; what was missing is written to the audit log and stays on the load for billing.`
+      : 'Everything is on record. Approving locks the load and moves it to <b>Ready to Bill</b>.'}</div>`;
+  return askDialog({ title: 'Approve this load?', bodyHtml: body, confirmLabel: gaps ? 'Approve anyway' : 'Approve', confirmClass: gaps ? 'primary' : 'success' });
+}
 async function approveLoad(id) {
-  const d = await api('POST', '/api/loads/' + id + '/approve', {});
-  if (d.ok) { toast('Approved & locked', 'success'); await loadAll(); renderApprovals(); updateApproveBadge(); }
-  else toast(d.error || 'Failed', 'error');
+  const l = loads.find(x => x.id === id); if (!l) return;
+  const after = ok => { toast(ok, 'success'); return loadAll().then(() => { renderApprovals(); updateApproveBadge(); }); };
+  let check = l.approval || null;
+  const first = await confirmApproval(l, check);
+  if (!first.go) return;
+  let d = await api('POST', '/api/loads/' + id + '/approve', { acknowledge: !!(check && !check.ready) });
+  if (d.ok) return after((d.approvedWithWarnings || []).length ? 'Approved with noted gaps & locked' : 'Approved & locked');
+  if (d.status === 409 && d.code === 'approval_incomplete') {
+    // The record changed since the page loaded: show the server's checklist and ask again.
+    const again = await confirmApproval(l, d.checklist);
+    if (!again.go) return;
+    d = await api('POST', '/api/loads/' + id + '/approve', { acknowledge: true });
+    if (d.ok) return after('Approved with noted gaps & locked');
+  }
+  toast(d.error || 'Failed', 'error');
 }
 
 async function rejectLoad(id) {
-  const reason = prompt('Reason for rejection?');
-  if (!reason) return;
-  const d = await api('POST', '/api/loads/' + id + '/reject', { reason });
+  const l = loads.find(x => x.id === id); if (!l) return;
+  const po = pos.find(p => p.id === l.poId) || {};
+  const a = await askDialog({
+    title: 'Reject this load?',
+    bodyHtml: `<div class="ask-sub">PO ${escapeHtml(po.poNumber || '—')} · ${escapeHtml(po.customer || '')} · ${escapeHtml(l.driverName || '')}</div>
+               <div class="conflict-hint">The load is unlocked and goes back to the driver with your reason, to fix and resubmit.</div>`,
+    confirmLabel: 'Reject', confirmClass: 'danger',
+    reason: { label: 'Reason', placeholder: 'e.g. ticket photo is unreadable', required: true },
+  });
+  if (!a.go) return;
+  const d = await api('POST', '/api/loads/' + id + '/reject', { reason: a.reason });
   if (d.ok) { toast('Rejected', 'success'); await loadAll(); renderApprovals(); updateApproveBadge(); }
   else toast(d.error || 'Failed', 'error');
 }
@@ -4044,8 +3625,31 @@ let billSelected = new Set();
 let billSubview = 'ready';   // 'ready' | 'batches'
 let billCachedItems = [];    // last server response for client-side filtering
 
+// The billing state machine in one line, with live counts. A load moves left
+// to right and only through its own action (submit, approve, send or mark
+// billed, archive); nothing on this strip changes a state.
+const bfMoney = v => '$' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function billingFlowHtml(active) {
+  const live = (loads || []).filter(l => !l.voided);
+  const n = {
+    submitted: live.filter(l => l.approvalStatus === 'submitted').length,
+    approved:  live.filter(l => l.approvalStatus === 'approved').length,
+    ready:     live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready' && !l.billingBatchId).length,
+    batched:   live.filter(l => l.approvalStatus === 'approved' && l.billStatus !== 'billed' && l.billingBatchId).length,
+    billed:    live.filter(l => l.billStatus === 'billed').length,
+  };
+  const step = (key, label, count, sub, go) => `<button type="button" class="bf-step ${active === key ? 'active' : ''}" onclick="${go}"><div class="bf-n">${count}</div><div class="bf-l">${label}</div><div class="bf-s">${sub}</div></button>`;
+  return `<div class="bill-flow">
+    ${step('submitted', 'Submitted', n.submitted, 'driver finished · review in Approvals', "goTab('approvals')")}<span class="bf-arrow">→</span>
+    ${step('approved', 'Approved', n.approved, 'checked & locked · counts everything to the right', "goTab('approvals')")}<span class="bf-arrow">→</span>
+    ${step('ready', 'Ready to Bill', n.ready, n.batched ? `send to QuickBooks · ${n.batched} on a batch in flight` : 'send to QuickBooks, or mark billed with a reference', "setBillSubview('ready')")}<span class="bf-arrow">→</span>
+    ${step('billed', 'Billed', n.billed, 'invoice on record · undo only by voiding the batch or Unbill with a reason', "goTab('history')")}<span class="bf-arrow">→</span>
+    ${step('archived', 'Archived', '⌁', 'off the board, kept forever · can be unarchived', "goTab('history')")}
+  </div>`;
+}
 function renderBilling() {
   document.getElementById('bill-filters').innerHTML = `
+    ${billingFlowHtml(billSubview === 'batches' ? 'billed' : 'ready')}
     <div style="display:flex;gap:6px;background:var(--bg2);padding:3px;border-radius:20px;margin-right:auto">
       <button class="view-btn ${billSubview === 'ready' ? 'active' : ''}" onclick="setBillSubview('ready')">Ready to Bill</button>
       <button class="view-btn ${billSubview === 'batches' ? 'active' : ''}" onclick="setBillSubview('batches')">Billing Batches</button>
@@ -4089,6 +3693,7 @@ function renderBillReady() {
         ${trucks.map(t => `<option value="${t.id}" ${billFilters.truckId === t.id ? 'selected' : ''}>${t.label}</option>`).join('')}
       </select>
       <span style="flex:1"></span>
+      <span class="bill-sel" id="bill-sel-total"></span>
       <button class="btn ghost" onclick="previewInvoice()" id="preview-bill-btn" disabled>Preview Invoice</button>
       <button class="btn primary" onclick="sendSelectedToQuickBooks()" id="send-qb-btn" disabled>Send to QuickBooks</button>
       <button class="btn ghost" onclick="markBilled()" id="mark-billed-btn" disabled title="Manual: mark billed without QuickBooks (use only if billing outside QB)">Mark Billed (manual)</button>
@@ -4119,13 +3724,16 @@ async function loadBilling() {
     refreshBillButtons();
     return;
   }
+  const totals = d.totals || {};
+  const shownTotal = items.reduce((s, l) => s + (l.priceable ? l.amount : 0), 0);
+  const unpriced = items.filter(l => !l.priceable).length;
   wrap.innerHTML = `<div class="table-scroll"><table class="bill-table">
     <thead><tr>
       <th><input type="checkbox" id="bill-all" onchange="toggleAllBill(this.checked)"></th>
-      <th>PO</th><th>Customer</th><th>City</th><th>Material</th><th>Loads</th><th>Driver</th><th>Date</th><th>Approved</th>
+      <th>PO</th><th>Customer</th><th>City</th><th>Material</th><th>Loads</th><th>Driver</th><th>Date</th><th>Approved</th><th style="text-align:right">Amount</th>
     </tr></thead>
     <tbody>
-      ${items.map(l => `<tr>
+      ${items.map(l => `<tr class="${l.approvalWarnings && l.approvalWarnings.length ? 'bill-gap' : ''}">
         <td><input type="checkbox" data-id="${l.id}" onchange="toggleBillSelect('${l.id}', this.checked)" ${billSelected.has(l.id) ? 'checked' : ''}></td>
         <td style="font-weight:600;color:var(--B)">${l.poNumber}</td>
         <td>${l.customer}</td>
@@ -4134,9 +3742,14 @@ async function loadBilling() {
         <td>${l.loadsDelivered}</td>
         <td>${l.driverName}</td>
         <td>${fmtDate(l.deliveryDate)}</td>
-        <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}</td>
+        <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}${l.approvalWarnings && l.approvalWarnings.length ? `<div class="bill-gap-note" title="${escapeAttr(l.approvalWarnings.join('; '))}">⚠ approved with a gap</div>` : ''}</td>
+        <td class="bill-amt">${l.priceable ? `<b>${bfMoney(l.amount)}</b><div class="bill-rate">${escapeHtml(l.rateLabel || '')}${l.basis === 'actual' ? ' · actual tons' : ''}</div>` : `<span class="bill-unpriced" title="${escapeAttr(l.priceReason || '')}">not priceable</span><div class="bill-rate">${escapeHtml((l.priceReason || '').slice(0, 60))}${(l.priceReason || '').length > 60 ? '…' : ''}</div>`}</td>
       </tr>`).join('')}
     </tbody>
+    <tfoot><tr>
+      <td colspan="9" style="font-weight:700">${items.length} load${items.length === 1 ? '' : 's'} ready to bill${unpriced ? ` · <span class="bill-unpriced">${unpriced} not priceable yet</span>` : ''}${totals.count != null && totals.count !== items.length ? ` <span style="color:var(--txt3);font-weight:500">(${totals.count} in all · ${bfMoney(totals.amount)})</span>` : ''}</td>
+      <td class="bill-amt" id="bill-shown-total"><b>${bfMoney(shownTotal)}</b></td>
+    </tr></tfoot>
   </table></div>`;
   refreshBillButtons();
 }
@@ -4147,6 +3760,11 @@ function refreshBillButtons() {
   set('preview-bill-btn',  n ? `Preview Invoice (${n})` : 'Preview Invoice');
   set('send-qb-btn',       n ? `Send ${n} to QuickBooks` : 'Send to QuickBooks');
   set('mark-billed-btn',   n ? `Mark ${n} Billed (manual)` : 'Mark Billed (manual)');
+  const sel = (billCachedItems || []).filter(l => billSelected.has(l.id));
+  const total = sel.reduce((s, l) => s + (l.priceable ? l.amount : 0), 0);
+  const unpriced = sel.filter(l => !l.priceable).length;
+  const el = document.getElementById('bill-sel-total');
+  if (el) el.innerHTML = n ? `Selected: <b>${n}</b> · <b>${bfMoney(total)}</b>${unpriced ? ` · <span class="bill-unpriced">${unpriced} not priceable</span>` : ''}` : '';
 }
 
 function toggleBillSelect(id, checked) {
@@ -4162,12 +3780,23 @@ function toggleAllBill(checked) {
   refreshBillButtons();
 }
 
+// Manual billing is the exception, so it asks for the invoice reference and
+// says what it does and does not do. Undo is Unbill in History, with a reason.
 async function markBilled() {
   if (!billSelected.size) return;
-  if (!confirm(`Mark ${billSelected.size} load(s) as billed (manual, NOT sent to QuickBooks)?`)) return;
-  const d = await api('POST', '/api/loads/bill', { loadIds: [...billSelected] });
+  const sel = (billCachedItems || []).filter(l => billSelected.has(l.id));
+  const total = sel.reduce((s, l) => s + (l.priceable ? l.amount : 0), 0);
+  const a = await askDialog({
+    title: 'Mark billed outside QuickBooks?',
+    bodyHtml: `<div class="ask-sub">${sel.length} load${sel.length === 1 ? '' : 's'} · ${bfMoney(total)}${sel.some(l => !l.priceable) ? ' · some not priceable' : ''}</div>
+               <div class="conflict-hint">Only for an invoice made <b>outside</b> QuickBooks. The loads move to <b>Billed</b> (and can be archived); nothing is sent anywhere. Undo is <b>Unbill</b> in History, with a reason.</div>`,
+    confirmLabel: 'Mark billed', confirmClass: 'primary',
+    reason: { label: 'Invoice number or reference', placeholder: 'e.g. INV-2041 (paper invoice)', required: true },
+  });
+  if (!a.go) return;
+  const d = await api('POST', '/api/loads/bill', { loadIds: [...billSelected], reference: a.reason });
   if (d.ok) {
-    toast(`Marked ${d.billed} as billed`, 'success');
+    toast(`Marked ${d.billed} as billed · ${a.reason}`, 'success');
     billSelected.clear();
     await loadAll();
     renderBilling();
@@ -4311,6 +3940,9 @@ async function retryBatch(id) {
   // again if the reset was accepted.
   const rt = await api('POST', `/api/billing-batches/${id}/retry`, {});
   if (!rt.ok) { toast(rt.error || 'Retry refused', 'error'); renderBillBatches(); return; }
+  // The interrupted send had already created the invoice: it was found in
+  // QuickBooks and adopted. Nothing to send.
+  if (rt.recovered) { toast(`Invoice ${rt.batch?.qbInvoiceNumber || rt.batch?.qbInvoiceId || ''} was already in QuickBooks — batch marked as sent`, 'success'); await loadAll(); renderBillBatches(); return; }
   const r = await api('POST', `/api/billing-batches/${id}/send`, {});
   if (r.ok) toast('Sent to QuickBooks', 'success'); else toast(r.error || 'Retry failed', 'error');
   renderBillBatches();
@@ -4466,6 +4098,7 @@ function poCard(r) {
       <div class="qa-fact">Jobsite: <b>${p.geo ? `${p.geo.lat.toFixed(5)}, ${p.geo.lng.toFixed(5)}` : 'no coordinates'}</b>${geoLabel(p.geo)}</div>
     </div>
     <div class="qa-actions">
+      <button class="qa-btn" onclick="openEditPO('${p.id}')">Edit PO</button>
       <button class="qa-btn ghost" onclick="setLocationPrompt('po', '${p.id}')">📍 Set jobsite location</button>
       ${r.locked
         ? (r.blocking.length
@@ -4477,59 +4110,330 @@ function poCard(r) {
   </div>`;
 }
 
+// ── EDIT PO ──────────────────────────────────────────────────────────────────
+// The order changes here; the work follows only where it is still operational.
+// The rules are in PO-EDITING.md and enforced by the server; the screen shows
+// what is frozen and what will follow before the dispatcher saves.
+let editPoId = null;
+function poIsFrozen(poId) { return (loads || []).some(l => l.poId === poId && !l.voided && (l.approvalStatus === 'approved' || l.billStatus === 'billed')); }
+function loadIsOperationalUI(l) { return !l.voided && !l.locked && l.approvalStatus !== 'submitted' && l.approvalStatus !== 'approved' && !(l.trips || []).length && !(l.loadsDelivered || 0); }
+function closeEditPO() { const el = document.getElementById('poedit-modal'); if (el) el.remove(); editPoId = null; }
+function openEditPO(poId) {
+  const p = (pos || []).find(x => x.id === poId); if (!p) return toast('PO not found', 'error');
+  closeEditPO(); editPoId = poId;
+  const mine = (loads || []).filter(l => l.poId === poId && !l.voided);
+  const follow = mine.filter(loadIsOperationalUI).length;
+  const frozen = poIsFrozen(poId);
+  const matNames = (materials || []).map(m => typeof m === 'string' ? m : (m.name || m.material || ''));
+  const yardOpts = (vendors || []).filter(v => v.active !== false).map(v => `<option value="${escapeAttr(v.id)}" ${v.id === (p.plannedVendorId || 'vbt') ? 'selected' : ''}>${escapeHtml(v.name)}</option>`).join('');
+  const drvOpts = `<option value="">Unassigned</option>` + (trucks || []).map(d => { const rd = (rosterDrivers || []).find(x => x.id === d.id) || {}; return `<option value="${escapeAttr(d.id)}" ${rd.status === 'off' ? 'disabled' : ''}>${escapeHtml(d.label)}${rd.status === 'off' ? ' (off)' : ''}</option>`; }).join('');
+  const truckOpts = `<option value="">No truck yet</option>` + (fleet || []).filter(t => t.active !== false).map(t => `<option value="${escapeAttr(t.id)}" ${t.status && t.status !== 'available' ? 'disabled' : ''}>${escapeHtml(t.truckNum)}${t.status && t.status !== 'available' ? ' (' + t.status + ')' : ''}</option>`).join('');
+  const f = (id, label, val, extra = '') => `<div class="field"><label>${label}</label><input type="text" id="${id}" value="${escapeAttr(val || '')}" ${extra}></div>`;
+  const dis = frozen ? 'disabled title="Frozen: this PO has approved loads"' : '';
+  const el = document.createElement('div');
+  el.className = 'modal-bg'; el.id = 'poedit-modal';
+  el.innerHTML = `
+    <div class="modal" style="max-width:620px" role="dialog" aria-labelledby="pe-title">
+      <div class="modal-head"><h2 id="pe-title">Edit PO ${escapeHtml(p.poNumber || '')} · ${escapeHtml(p.customer || '')}</h2><button type="button" class="modal-close" onclick="closeEditPO()">&#215;</button></div>
+      <div class="modal-body">
+        ${frozen ? `<div class="pe-frozen">This PO has approved loads. PO number, customer, job and jobsite are <b>frozen</b> — they are on an invoice. The date, planned yard and notes can still change for loads that have not started.</div>` : ''}
+        <div class="pe-grid">
+          ${f('pe-number', 'PO number', p.poNumber, dis)}
+          <div class="field"><label>Customer</label><input type="text" id="pe-customer" list="pe-customers" value="${escapeAttr(p.customer || '')}" ${dis}><datalist id="pe-customers">${(customers || []).map(c => `<option value="${escapeAttr(c.name)}">`).join('')}</datalist></div>
+          ${f('pe-job', 'Job name', p.job, dis)}
+          ${f('pe-jobcode', 'Job code', p.jobCode, dis)}
+          ${f('pe-address', 'Jobsite address', p.address, dis)}
+          ${f('pe-city', 'City', p.city, dis)}
+          <div class="field"><label>Delivery date</label><input type="date" id="pe-date" value="${escapeAttr(p.deliveryDate || '')}"></div>
+          <div class="field"><label>Planned pickup yard</label><select id="pe-yard">${yardOpts}</select></div>
+        </div>
+        <div class="field"><label>Notes</label><textarea id="pe-notes" rows="2">${escapeHtml(p.notes || '')}</textarea></div>
+        <div class="field"><label>Reason for the change (optional)</label><input type="text" id="pe-reason" placeholder="e.g. customer pushed the pour a day"></div>
+        <div class="pe-follow"><b>${mine.length} load${mine.length === 1 ? '' : 's'} on this PO.</b> ${follow} can still follow a date, customer-price or yard change (nothing hauled yet)${mine.length - follow ? `; ${mine.length - follow} keep their date and prices (work started or on record).` : '.'}${p.geo ? ' Changing the address clears the saved jobsite pin.' : ''}</div>
+        <details class="pe-add"><summary>Add a load to this order</summary>
+          <div class="pe-grid" style="margin-top:8px">
+            <div class="field"><label>Driver</label><select id="pe-al-driver" onchange="peDriverChanged(this.value)">${drvOpts}</select></div>
+            <div class="field"><label>Truck</label><select id="pe-al-truck">${truckOpts}</select></div>
+            <div class="field"><label>Material</label><select id="pe-al-material">${matNames.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('')}</select></div>
+            <div class="field"><label>Loads</label><input type="number" id="pe-al-loads" min="1" step="1" value="1"></div>
+            <div class="field"><label>Pickup yard</label><select id="pe-al-yard">${yardOpts}</select></div>
+            <div class="field" style="justify-content:flex-end"><button type="button" class="btn success" id="pe-al-go" onclick="addLoadToPO()">Add load</button></div>
+          </div>
+        </details>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn ghost" onclick="closeEditPO()">Cancel</button>
+        <button type="button" class="btn primary" id="pe-save" onclick="saveEditPO()">Save changes</button>
+      </div>
+    </div>`;
+  el.addEventListener('mousedown', e => { if (e.target === el) closeEditPO(); });
+  document.body.appendChild(el);
+}
+function peDriverChanged(driverId) {
+  const rd = (rosterDrivers || []).find(x => x.id === driverId);
+  const sel = document.getElementById('pe-al-truck'); if (!sel) return;
+  if (rd && rd.defaultTruckId && Array.from(sel.options).some(o => o.value === rd.defaultTruckId && !o.disabled)) sel.value = rd.defaultTruckId;
+}
+function propagationSummary(d, p) {
+  const pr = d.propagation || {}; const parts = [`PO ${d.po?.poNumber || ''} saved`];
+  if (pr.dateMoved?.length) parts.push(`${pr.dateMoved.length} load${pr.dateMoved.length === 1 ? '' : 's'} moved to ${fmtDate(d.po.deliveryDate)}`);
+  if (pr.dateKept?.length) parts.push(`${pr.dateKept.length} kept ${pr.dateKept.length === 1 ? 'its' : 'their'} date (work started or on record)`);
+  if (pr.repriced?.length) parts.push(`${pr.repriced.length} re-priced for ${d.po.customer}`);
+  if (pr.keptPrice?.length) parts.push(`${pr.keptPrice.length} kept a hand-set price`);
+  if (pr.yardChanged?.length) parts.push(`${pr.yardChanged.length} now load at ${d.po.pickup || 'the new yard'}`);
+  if (pr.geoCleared) parts.push('jobsite pin cleared — set it again');
+  return parts.join(' · ');
+}
+async function saveEditPO() {
+  const p = (pos || []).find(x => x.id === editPoId); if (!p) return;
+  const g = id => { const e = document.getElementById(id); return e ? e.value : undefined; };
+  const body = {};
+  const set = (k, v) => { if (v !== undefined && String(v ?? '').trim() !== String(p[k] ?? '').trim()) body[k] = String(v).trim(); };
+  if (!poIsFrozen(p.id)) { set('poNumber', g('pe-number')); set('customer', g('pe-customer')); set('job', g('pe-job')); set('jobCode', g('pe-jobcode')); set('address', g('pe-address')); set('city', g('pe-city')); }
+  set('deliveryDate', g('pe-date')); set('plannedVendorId', g('pe-yard')); set('notes', g('pe-notes'));
+  const reason = (g('pe-reason') || '').trim();
+  if (!Object.keys(body).length) { closeEditPO(); return toast('Nothing changed', ''); }
+  if (reason) body.reason = reason;
+  const btn = document.getElementById('pe-save'); btn.disabled = true; btn.textContent = 'Saving…';
+  // A date change is an assignment on the new date: the same conflict check, the same Cancel / go-ahead choice.
+  const d = await postAssignment(`/api/pos/${p.id}`, body, 'Move', reason, 'PUT');
+  if (!d.ok) { btn.disabled = false; btn.textContent = 'Save changes'; if (!d.cancelled) toast(d.error || 'Save failed', 'error'); return; }
+  closeEditPO();
+  toast(propagationSummary(d, p), 'success');
+  await loadAll(); refreshCurrentView();
+}
+async function addLoadToPO() {
+  const p = (pos || []).find(x => x.id === editPoId); if (!p) return;
+  const g = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+  const body = { truckId: g('pe-al-driver') || null, truckUnitId: g('pe-al-truck') || null, material: g('pe-al-material'), loadsAssigned: Number(g('pe-al-loads')) || 0, vendorId: g('pe-al-yard') || (p.plannedVendorId || 'vbt') };
+  if (!body.material || body.loadsAssigned < 1) return toast('Pick a material and how many loads', 'error');
+  const btn = document.getElementById('pe-al-go'); btn.disabled = true;
+  const d = await postAssignment(`/api/pos/${p.id}/loads`, body, 'Assign', (g('pe-reason') || '').trim());
+  btn.disabled = false;
+  if (!d.ok) { if (!d.cancelled) toast(d.error || 'Could not add the load', 'error'); return; }
+  toast(`Added ${body.loadsAssigned} load${body.loadsAssigned === 1 ? '' : 's'} of ${body.material} — ${d.load.driverName || 'unassigned'}`, 'success');
+  await loadAll(); refreshCurrentView(); openEditPO(p.id);
+}
+
 // ── QUICK ASSIGN / TODAY'S DISPATCH ─────────────────────────────────────────
 // One screen, phone-first: see today, spot the unassigned, assign in seconds.
 let todayData = null;
-let qaFilter = 'all';       // all | unassigned | assigned | in-progress | completed
 let qaPick = null;          // { loadId, driverId, truckUnitId, yardId }
 
 async function renderToday() {
   const wrap = document.getElementById('today-content');
-  if (!todayData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading today…</div>`;
-  const d = await api('GET', '/api/today');
+  if (!todayData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading the board…</div>`;
+  const d = await api('GET', '/api/today' + (dbDate ? '?date=' + encodeURIComponent(dbDate) : ''));
   if (!d.ok) { wrap.innerHTML = `<div style="padding:24px;color:var(--R)">${d.error || 'Failed to load'}</div>`; return; }
   todayData = d;
   paintToday();
 }
 
-function paintToday() {
-  const d = todayData; if (!d) return;
-  const s = d.summary;
-  const tile = (n, label, cls, filter) =>
-    `<div class="qa-stat ${cls || ''}" onclick="qaSetFilter('${filter || 'all'}')" style="cursor:pointer">
-       <div class="n">${n}</div><div class="l">${label}</div></div>`;
+// ── THE DISPATCH BOARD ───────────────────────────────────────────────────────
+// The one screen the office runs the day from. Every status, count and flag
+// comes from /api/today (the same rules the server uses to refuse a
+// conflicting assignment); nothing here recomputes a status. The board can be
+// pointed at another day for planning; the attention row is always about now.
+let dbDate = null;          // YYYY-MM-DD shown on the board; null = today
+let dbFilter = 'all';       // all | <bucket> | missing | conflicts | carried
+let dbFleetOnlyFree = false;
+let dbDayOpen = false;      // the Drivers' day panel (odometers, breaks, freight) stays folded
 
-  const order = { unassigned: 0, 'in-progress': 1, assigned: 2, 'awaiting-approval': 3, completed: 4 };
-  let loads = [...d.loads].sort((a, b) => (order[a.bucket] - order[b.bucket]) || String(a.customer).localeCompare(String(b.customer)));
-  if (qaFilter !== 'all') loads = loads.filter(l => l.bucket === qaFilter);
-
-  document.getElementById('today-content').innerHTML = `
-    <div class="qa-wrap">
-      <div class="qa-stats">
-        ${tile(s.unassigned, 'Unassigned', s.unassigned ? 'alert' : '', 'unassigned')}
-        ${tile(s.assigned, 'Assigned', '', 'assigned')}
-        ${tile(s.inProgress, 'In Progress', '', 'in-progress')}
-        ${tile(s.completed, 'Completed', '', 'completed')}
-        ${tile(s.awaitingApproval, 'Awaiting Approval', s.awaitingApproval ? 'warn' : '', 'awaiting-approval')}
-        ${tile(s.driversAvailable, 'Drivers Free', '', 'all')}
-        ${tile(s.driversWorking, 'Drivers Working', '', 'all')}
-        ${tile(s.jobs, 'Jobs Today', '', 'all')}
-      </div>
-      ${qaFilter !== 'all' ? `<button class="btn ghost" onclick="qaSetFilter('all')">← Showing ${qaFilter.replace('-', ' ')} · show all</button>` : ''}
-      ${shiftsPanel(d.shifts || [])}
-      <div class="qa-sec-title">${loads.length} load${loads.length === 1 ? '' : 's'} · ${d.date}</div>
-      ${loads.length ? loads.map(qaCard).join('') :
-        `<div class="empty-state"><h3>Nothing here</h3><p>No loads match this filter for today.</p></div>`}
-    </div>`;
-  const badge = document.getElementById('today-badge');
-  if (badge) { badge.style.display = s.unassigned ? '' : 'none'; badge.textContent = s.unassigned; }
+function dbGo(deltaDays) {
+  const base = new Date((dbDate || (todayData && todayData.today) || todayStr()) + 'T12:00:00');
+  base.setDate(base.getDate() + deltaDays);
+  dbDate = ymd(base);
+  if (todayData && dbDate === todayData.today) dbDate = null;
+  dbFilter = 'all';
+  renderToday();
+}
+function dbToday() { dbDate = null; dbFilter = 'all'; renderToday(); }
+function dbSetFilter(f) { dbFilter = (dbFilter === f && f !== 'all') ? 'all' : f; paintToday(); }
+// Every tile is an action: it filters the board or opens the workflow it names.
+function dbTile(key) {
+  if (key === 'awaiting-approval') return goTab('approvals');
+  if (key === 'ready-to-bill') return goTab('billing');
+  if (key === 'trucks' || key === 'drivers') {
+    dbFleetOnlyFree = !dbFleetOnlyFree; paintToday();
+    const el = document.getElementById('db-fleet'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  dbSetFilter(key);
 }
 
-function qaSetFilter(f) { qaFilter = f; paintToday(); }
+const DB_BUCKET_LABEL = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In Progress', 'awaiting-approval': 'Awaiting Approval', 'ready-to-bill': 'Ready to Bill', completed: 'Completed' };
+const DB_STATE_LABEL  = { available: 'Available', assigned: 'Assigned', 'in-progress': 'In progress', completed: 'Done', off: 'Off', unavailable: 'In shop' };
+const DB_FILTER_TITLE = { missing: 'Missing information', conflicts: 'Conflicts', carried: 'Unfinished from earlier days' };
+
+function paintToday() {
+  const d = todayData; if (!d) return;
+  const s = d.summary, a = d.attention || {};
+  const dateObj = new Date(d.date + 'T12:00:00');
+  const dateLabel = dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const money = v => '$' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const tile = (key, n, label, cls, sub) =>
+    `<button type="button" class="db-tile ${cls || ''} ${dbFilter === key || ((key === 'trucks' || key === 'drivers') && dbFleetOnlyFree) ? 'active' : ''}" onclick="dbTile('${key}')">
+       <div class="n">${n}</div><div class="l">${label}</div>${sub ? `<div class="s">${sub}</div>` : ''}</button>`;
+
+  // Loads, most urgent first
+  const order = { unassigned: 0, 'in-progress': 1, assigned: 2, 'awaiting-approval': 3, 'ready-to-bill': 4, completed: 5 };
+  let list = [...d.loads].sort((x, y) => (order[x.bucket] - order[y.bucket]) || String(x.customer).localeCompare(String(y.customer)));
+  if (dbFilter === 'missing') list = list.filter(l => l.missing.length);
+  else if (dbFilter === 'conflicts') list = list.filter(l => l.conflicts.length);
+  else if (dbFilter === 'carried') list = [...(d.carriedOver || [])].sort((x, y) => String(x.deliveryDate).localeCompare(String(y.deliveryDate)));
+  else if (dbFilter !== 'all') list = list.filter(l => l.bucket === dbFilter);
+  const listTitle = dbFilter === 'all'
+    ? `${d.loads.length} load${d.loads.length === 1 ? '' : 's'} · ${d.isToday ? 'today' : dateLabel}`
+    : `${list.length} · ${DB_FILTER_TITLE[dbFilter] || DB_BUCKET_LABEL[dbFilter] || dbFilter}`;
+  const emptyText = dbFilter === 'all'
+    ? (d.isToday ? 'No loads scheduled today. Create a PO to put work on the board.' : `Nothing scheduled for ${dateLabel}.`)
+    : 'Nothing in this group right now.';
+
+  let drivers = d.drivers;
+  let trucks = d.trucks;
+  if (dbFleetOnlyFree) { drivers = drivers.filter(x => x.available); trucks = trucks.filter(x => x.available); }
+  const sd = s.drivers || {}, stk = s.trucks || {};
+
+  document.getElementById('today-content').innerHTML = `
+  <div class="db-wrap">
+    <div class="db-head">
+      <div><div class="db-eyebrow">${d.isToday ? 'TODAY' : 'PLANNING'}</div><div class="db-date">${dateLabel}</div></div>
+      <div class="db-nav">
+        <button type="button" onclick="dbGo(-1)" aria-label="Previous day">‹</button>
+        ${d.isToday ? '' : `<button type="button" class="db-today" onclick="dbToday()">Today</button>`}
+        <button type="button" onclick="dbGo(1)" aria-label="Next day">›</button>
+      </div>
+    </div>
+    <div class="db-tiles" id="db-tiles">
+      ${tile('unassigned', a.unassigned, 'Unassigned', a.unassigned ? 'alert' : 'ok', a.unassigned ? 'need a driver' : 'all assigned')}
+      ${tile('in-progress', a.inProgress, 'In Progress', a.inProgress ? 'live' : '', 'hauling now')}
+      ${tile('awaiting-approval', a.awaitingApproval, 'Awaiting Approval', a.awaitingApproval ? 'warn' : '', a.awaitingApproval ? 'review now' : 'nothing waiting')}
+      ${tile('ready-to-bill', a.readyToBill, 'Ready to Bill', a.readyToBill ? 'bill' : '', a.readyToBill ? money(a.readyToBillAmount) : 'nothing queued')}
+      ${tile('missing', a.missingInfo, 'Missing Info', a.missingInfo ? 'alert' : 'ok', a.missingInfo ? 'cannot proceed' : 'nothing missing')}
+      ${a.conflicts ? tile('conflicts', a.conflicts, 'Conflicts', 'alert', 'double-booked') : ''}
+      ${a.carriedOver ? tile('carried', a.carriedOver, 'Carried Over', 'warn', 'unfinished earlier') : ''}
+      ${tile('trucks', a.availableTrucks, 'Trucks Free', '', `of ${d.trucks.length}`)}
+      ${tile('drivers', a.availableDrivers, 'Drivers Free', '', `of ${d.drivers.length}`)}
+    </div>
+    <div class="db-grid">
+      <section class="db-fleet" id="db-fleet">
+        <div class="db-sec"><span>Drivers &amp; Trucks</span>
+          <span class="db-sec-meta">${sd.inProgress || 0} hauling · ${sd.assigned || 0} assigned · ${sd.available || 0} free${sd.completed ? ` · ${sd.completed} done` : ''}${sd.off ? ` · ${sd.off} off` : ''}</span></div>
+        ${dbFleetOnlyFree ? `<button type="button" class="db-clear" onclick="dbFleetOnlyFree=false;paintToday()">Showing free only · show everyone</button>` : ''}
+        ${drivers.length ? drivers.map(dbDriverRow).join('') : `<div class="db-empty">No one is free right now.</div>`}
+        <div class="db-sec" style="margin-top:12px"><span>Trucks</span>
+          <span class="db-sec-meta">${stk.inProgress || 0} hauling · ${stk.assigned || 0} assigned · ${stk.available || 0} free${stk.unavailable ? ` · ${stk.unavailable} in shop` : ''}</span></div>
+        <div class="db-trucks">${trucks.map(t => `<span class="db-truck ${t.state}" title="${escapeAttr(t.driverName ? DB_STATE_LABEL[t.state] + ' · ' + t.driverName : DB_STATE_LABEL[t.state] || t.state)}">
+            <b>${escapeHtml(t.truckNum)}</b> · ${t.driverName ? escapeHtml(t.driverName) : (DB_STATE_LABEL[t.state] || t.state).toLowerCase()}</span>`).join('') || '<span class="db-empty">No trucks free.</span>'}</div>
+      </section>
+      <section class="db-loads" id="db-loads">
+        <div class="db-sec"><span>${listTitle}</span>${dbFilter !== 'all' ? `<button type="button" class="db-clear" onclick="dbSetFilter('all')">Show all</button>` : ''}</div>
+        ${list.length ? list.map(dbLoadCard).join('') : `<div class="empty-state"><h3>Nothing here</h3><p>${emptyText}</p></div>`}
+      </section>
+    </div>
+    ${(d.shifts || []).length ? `<details class="db-day" ${dbDayOpen ? 'open' : ''} ontoggle="dbDayOpen=this.open">
+      <summary>Drivers' day · ${d.shifts.filter(x => x.status === 'open').length} open · odometers, breaks, freight</summary>${shiftsPanel(d.shifts)}</details>` : ''}
+  </div>`;
+
+  // Nav badges follow the attention row, on every repaint.
+  const tb = document.getElementById('today-badge');
+  if (tb) { tb.style.display = a.unassigned ? '' : 'none'; tb.textContent = a.unassigned; }
+  const ab = document.getElementById('approve-badge');
+  if (ab) { ab.textContent = a.awaitingApproval || 0; ab.style.display = a.awaitingApproval ? 'inline-block' : 'none'; }
+}
+
+// One driver: who, state, truck, and the load they are on right now with its
+// pickup → destination and stage. A row accepts a dragged load (opens the
+// same Quick Assign sheet with this driver pre-selected).
+function dbDriverRow(dr) {
+  const can = dr.state !== 'off';
+  const state = DB_STATE_LABEL[dr.state] || dr.state;
+  const truck = dr.truckNum
+    ? `${escapeHtml(dr.truckNum)}${dr.truckIsUsual ? ' <i>(usual)</i>' : ''}`
+    : '<i>no truck</i>';
+  let body;
+  if (dr.currentLoadId) {
+    body = `<div class="db-drv-load" onclick="openLoadDetail('${dr.currentLoadId}')">${escapeHtml(dr.customer)} · PO ${escapeHtml(dr.poNumber || '—')} · <b>${escapeHtml(dr.stage)}</b> · ${escapeHtml(dr.progress)}</div>
+            <div class="db-drv-route">${escapeHtml(dr.pickup || '—')} <span class="db-route-arrow">→</span> ${escapeHtml(dr.destination || '—')}</div>`;
+  } else if (dr.state === 'completed') {
+    body = `<div class="db-drv-route muted">Done for the day · ${dr.loadsToday} load${dr.loadsToday === 1 ? '' : 's'}</div>`;
+  } else if (dr.state === 'off') {
+    body = `<div class="db-drv-route muted">Marked off</div>`;
+  } else {
+    body = `<div class="db-drv-route muted">No load today — drag a load here, or Quick Assign one</div>`;
+  }
+  const more = dr.openLoadIds.length > 1 ? `<span class="db-drv-more">+${dr.openLoadIds.length - 1} more</span>` : '';
+  const moveAll = dr.openLoadIds.length ? `<a class="db-drv-link" href="#" onclick="event.preventDefault();openReassignModal('all-driver','${dr.id}')">move all</a>` : '';
+  return `<div class="db-drv ${dr.state}" data-driverid="${dr.id}" ${can ? `ondragover="event.preventDefault();this.classList.add('drop-target')" ondragleave="this.classList.remove('drop-target')" ondrop="onDrop(event, '${dr.id}')"` : ''}>
+    <div class="db-drv-dot"></div>
+    <div class="db-drv-main">
+      <div class="db-drv-top"><b>${escapeHtml(dr.name)}</b><span class="db-chip ${dr.state}">${state}</span><span class="db-drv-truck">${truck}</span>${dr.dayStartedAt ? `<span class="db-drv-day">day started ${new Date(dr.dayStartedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>` : ''}</div>
+      ${body}
+    </div>
+    <div class="db-drv-side">${more}${moveAll}</div>
+  </div>`;
+}
+
+// One load card: the operational facts and nothing else. Everything further
+// (tickets, tons, GPS, history, notifications) is in Details.
+function dbLoadCard(l) {
+  const label = DB_BUCKET_LABEL[l.bucket] || l.bucket;
+  const pct = l.loadsAssigned ? Math.round((l.loadsDelivered / l.loadsAssigned) * 100) : 0;
+  const carried = !!(todayData && l.deliveryDate && l.deliveryDate !== todayData.date);
+  const office = role === 'manager' || role === 'admin';
+  const flags = [
+    l.missing.length ? `<div class="db-flag missing">Missing: ${l.missing.map(escapeHtml).join(', ')}</div>` : '',
+    ...l.conflicts.map(c => `<div class="db-flag conflict">${escapeHtml(c)}</div>`),
+  ].join('');
+  const assignBtn = l.locked ? '' :
+    `<button class="qa-btn" onclick="${carried ? `qaOpenFor('${l.id}')` : `qaOpen('${l.id}')`}">${l.bucket === 'unassigned' ? 'Quick Assign' : 'Reassign'}</button>`;
+  const nextBtn = l.bucket === 'awaiting-approval' ? `<button class="qa-btn" onclick="goTab('approvals')">Review</button>`
+                : l.bucket === 'ready-to-bill' ? `<button class="qa-btn" onclick="goTab('billing')">Bill</button>` : '';
+  return `<div class="qa-card ${l.bucket} ${flags ? 'attn' : ''}" data-loadid="${l.id}"
+      draggable="${office && !l.locked ? 'true' : 'false'}" ondragstart="onDragStart(event, '${l.id}')" ondragend="this.classList.remove('dragging')">
+    <div class="qa-top">
+      <div>
+        <div class="qa-cust">${escapeHtml(l.customer || '(no customer)')}</div>
+        <div class="qa-sub">PO ${escapeHtml(l.poNumber || '—')}${l.jobName && l.jobName !== l.customer ? ' · ' + escapeHtml(l.jobName) : ''}${l.jobCode ? ' · ' + escapeHtml(l.jobCode) : ''}${carried ? ` · <b style="color:var(--A)">${fmtDate(l.deliveryDate)}</b>` : ''}</div>
+      </div>
+      <span class="qa-chip ${l.bucket}">${label}</span>
+    </div>
+    <div class="db-route"><span class="db-route-yard">${escapeHtml(l.yardName || '—')}</span><span class="db-route-arrow">→</span><span>${escapeHtml(l.destination || '—')}</span></div>
+    <div class="qa-facts">
+      <div class="qa-fact${l.driverName ? '' : ' missing'}">Driver <b>${escapeHtml(l.driverName || 'NONE')}</b></div>
+      <div class="qa-fact${l.truckNum ? '' : (l.driverName ? ' missing' : '')}">${l.truckNum ? `<b>${escapeHtml(l.truckNum)}</b>` : 'Truck <b>NONE</b>'}</div>
+      <div class="qa-fact"><b>${escapeHtml(l.material)}</b> · ${l.loadsDelivered}/${l.loadsAssigned} load${l.loadsAssigned === 1 ? '' : 's'}${l.isPartial ? ' · partial' : ''}</div>
+      ${l.stage ? `<div class="qa-fact live"><b>${escapeHtml(l.stage)}</b></div>` : ''}
+    </div>
+    <div class="lc-progress"><div class="lc-progress-bar"><div class="lc-progress-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>
+    ${flags}
+    <div class="qa-actions">
+      ${assignBtn}${nextBtn}
+      <button class="qa-btn ghost" onclick="openLoadDetail('${l.id}')">Details</button>
+    </div>
+    ${l.locked ? `<div class="qa-sub" style="margin-top:8px">Approved and locked — assignment can no longer change.</div>` : ''}
+  </div>`;
+}
 
 // The drivers' day, from the shift records: who started, on what, odometer,
 // open freight, daily and billable miles once closed. Daily Log and Freight
 // Bill open as print pages rendered from the same records.
+// A day closed by the office left its freight with an office-typed ending
+// odometer and time. Until a manager confirms (or corrects) them here, the
+// freight cannot lock and its hours/miles are not billed.
+async function confirmSegmentEnding(id, currentOdEnd) {
+  const odo = prompt(`Ending odometer for this freight — blank keeps ${currentOdEnd == null ? 'the recorded value' : Number(currentOdEnd).toLocaleString()}:`, '');
+  if (odo === null) return;
+  const reason = prompt('Confirmation note (required) — e.g. "driver confirmed 50,040 at the last drop":');
+  if (!reason || !reason.trim()) return;
+  const body = { reason: reason.trim() };
+  if (odo.trim()) body.odEnd = odo.trim();
+  const r = await api('PUT', `/api/freight-segments/${id}`, body);
+  if (!r.ok) return toast(r.error || 'Could not confirm', 'error');
+  toast(r.segment?.locked ? 'Freight confirmed and locked' : 'Freight ending confirmed', 'success');
+  if (currentTab === 'today') renderToday();
+}
+
 function shiftsPanel(shifts) {
   if (!shifts.length) return '';
   const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
@@ -4548,7 +4452,7 @@ function shiftsPanel(shifts) {
         ${(s.segments || []).filter(x => x.status === 'closed').map(x => `<div class="qa-fact" style="grid-column:1/-1">Freight: <b>${escapeHtml(x.customer)}</b> · ${escapeHtml(x.originName)} → ${escapeHtml(x.destinationLabel)} · ${t(x.timeStart)}–${t(x.timeEnd)} · <b>${x.billableMiles.toLocaleString()} mi</b> · <b>${(x.billableMinutes / 60).toFixed(2)} h</b> · PO ${(x.poNumbers || []).join(', ') || '—'} · ${x.loadIds.length} load record${x.loadIds.length === 1 ? '' : 's'} · ${x.tripCount} trip${x.tripCount === 1 ? '' : 's'}${x.actualTons ? ` · ${x.actualTons.toFixed(2)} t` : ''}
           · <span style="font-weight:700;color:${x.locked ? 'var(--G)' : 'var(--A)'}">${x.locked ? 'locked — all loads approved' : `${x.approvedLoads} of ${x.loadIds.length} approved`}</span>
           ${x.closeReason && x.closeReason !== 'driver' ? ` · <span style="color:var(--R);font-weight:600">closed by office${x.closeReason === 'end-of-day-manager' ? ' at day end — check the ending odometer' : x.closeReason === 'truck-change' ? ' at truck change' : ': ' + escapeHtml(x.closeReason)}</span>` : ''}
-          <a href="/api/freight-segments/${encodeURIComponent(x.id)}/freight-bill" target="_blank">Freight Bill${x.locked ? '' : ' (draft)'}</a></div>`).join('')}
+          <a href="/api/freight-segments/${encodeURIComponent(x.id)}/freight-bill" target="_blank">Freight Bill${x.locked ? '' : ' (draft)'}</a>${x.needsReview ? ` · <a href="#" style="color:var(--A);font-weight:700" onclick="event.preventDefault();confirmSegmentEnding('${x.id}', ${x.odEnd == null ? 'null' : x.odEnd})">Closed by the office — confirm ending</a>` : ''}</div>`).join('')}
       </div>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <a class="btn ghost" style="font-size:12px" href="/api/shifts/${encodeURIComponent(s.id)}/daily-log" target="_blank">Daily Log${s.status === 'open' ? ' (draft)' : ''}</a>
@@ -4574,39 +4478,23 @@ async function mgrCloseSegment(id) {
   toast('Freight segment closed', 'success'); renderToday();
 }
 
-function qaCard(l) {
-  const label = { 'unassigned': 'Unassigned', 'assigned': 'Assigned', 'in-progress': 'In Progress',
-                  'completed': 'Completed', 'awaiting-approval': 'Awaiting Approval' }[l.bucket] || l.bucket;
-  return `<div class="qa-card ${l.bucket}">
-    <div class="qa-top">
-      <div>
-        <div class="qa-cust">${escapeHtml(l.customer || '(no customer)')}</div>
-        <div class="qa-sub">${escapeHtml(l.poNumber)}${l.jobName && l.jobName !== l.customer ? ' · ' + escapeHtml(l.jobName) : ''}${l.city ? ' · ' + escapeHtml(l.city) : ''}</div>
-      </div>
-      <span class="qa-chip ${l.bucket}">${label}</span>
-    </div>
-    <div class="qa-facts">
-      <div class="qa-fact"><b>${escapeHtml(l.material)}</b> · ${l.loadsDelivered}/${l.loadsAssigned} loads</div>
-      <div class="qa-fact">Yard: <b>${escapeHtml(l.yardName)}</b></div>
-      <div class="qa-fact${l.driverName ? '' : ' missing'}">Driver: <b>${escapeHtml(l.driverName || 'NONE')}</b></div>
-      <div class="qa-fact${l.truckNum ? '' : ' missing'}">Truck: <b>${escapeHtml(l.truckNum || 'NONE')}</b></div>
-    </div>
-    <div class="qa-actions">
-      ${l.locked ? '' : `<button class="qa-btn" onclick="qaOpen('${l.id}')">${l.bucket === 'unassigned' ? 'Assign' : 'Reassign'}</button>`}
-      <button class="qa-btn ghost" onclick="openLoadDetail('${l.id}')">Details</button>
-      <button class="qa-btn ghost" style="flex:0 0 auto;padding:0 14px" title="Customer updates: ${l.notifyOn ? 'ON' : 'OFF'}"
-        onclick="openNotifySheet('${l.poId}')">${l.notifyOn ? '&#128276; On' : '&#128276; Off'}</button>
-    </div>
-    ${l.locked ? `<div class="qa-sub" style="margin-top:8px">Approved and locked — assignment can no longer change.</div>` : ''}
-  </div>`;
-}
-
 // ── Assignment sheet: Driver → Truck → Yard → Confirm ───────────────────────
 // Nothing commits until Confirm, so a stray tap can never reassign a load.
 function qaOpen(loadId) {
   const l = todayData.loads.find(x => x.id === loadId); if (!l) return;
   qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId, trailerId: l.trailerId || null };
   qaPaintSheet();
+}
+// The same sheet from anywhere else (the Board), for a load on any date: the
+// availability of drivers, trucks and trailers is fetched for that load's day.
+// One assignment path, so a load can never end up with a driver and no truck.
+async function qaOpenFor(loadId) {
+  const l = loads.find(x => x.id === loadId); if (!l) return;
+  if (l.locked) { toast('This load is approved and locked', 'error'); return; }
+  const d = await api('GET', '/api/today?date=' + encodeURIComponent(l.deliveryDate || ''));
+  if (!d.ok || !(d.loads || []).some(x => x.id === loadId)) { toast(d.error || 'Could not load this day', 'error'); return; }
+  todayData = d;
+  qaOpen(loadId);
 }
 
 function qaPaintSheet() {
@@ -4675,21 +4563,83 @@ function qaPaintSheet() {
 function qaSet(field, val) { qaPick[field] = val; qaPaintSheet(); }
 function qaClose() { const el = document.getElementById('qa-sheet-bg'); if (el) el.remove(); qaPick = null; }
 
+// The server refuses an assignment that collides with work already on the
+// board (driver mid-haul elsewhere, truck on another driver's load) with 409
+// and the exact conflicts. The dispatcher sees them in the app — one dialog,
+// Cancel or go ahead, never a browser confirm() — and a go-ahead is resent
+// with `force` and the reason, so the override lands in the audit log.
+const CONFLICT_TITLE = {
+  'driver-busy': 'Driver Already Assigned', 'truck-busy': 'Truck Already Assigned',
+  'trailer-busy': 'Trailer Already Assigned', 'load-in-progress': 'Load In Progress',
+};
+function conflictTitle(conflicts) {
+  const types = [...new Set(conflicts.map(c => c.type))];
+  return types.length === 1 ? (CONFLICT_TITLE[types[0]] || 'Assignment Conflict') : 'Assignment Conflicts';
+}
+// Resolves to { go, reason }. Cancel is the default (focused, Escape, backdrop).
+function confirmConflicts(r, verb, reason) {
+  if (!(r.status === 409 && Array.isArray(r.conflicts) && r.conflicts.length)) return Promise.resolve({ go: false, reason: '' });
+  return new Promise(resolve => {
+    const old = document.getElementById('conflict-modal'); if (old) old.remove();
+    const el = document.createElement('div');
+    el.className = 'modal-bg'; el.id = 'conflict-modal'; el.style.zIndex = '500';
+    el.innerHTML = `
+      <div class="modal conflict-modal" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
+        <div class="modal-head"><h2 id="conflict-title">${escapeHtml(conflictTitle(r.conflicts))}</h2><button class="modal-close" id="conflict-x" aria-label="Cancel">&#215;</button></div>
+        <div class="modal-body">
+          <ul class="conflict-list">${r.conflicts.map(c => `<li>${escapeHtml(c.message)}</li>`).join('')}</ul>
+          <div class="conflict-hint"><b>Cancel</b> leaves everything as it is. <b>${escapeHtml(verb)}</b> goes ahead anyway; the override and your reason are written to the audit log.</div>
+          <div class="field"><label>Reason (optional)</label><input type="text" id="conflict-reason" placeholder="e.g. Rigo went home sick" value="${escapeAttr(reason || '')}" autocomplete="off"></div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn ghost" id="conflict-cancel">Cancel</button>
+          <button type="button" class="btn primary" id="conflict-go">${escapeHtml(verb)}</button>
+        </div>
+      </div>`;
+    const done = go => {
+      const typed = (el.querySelector('#conflict-reason')?.value || '').trim();
+      document.removeEventListener('keydown', onKey); el.remove();
+      resolve({ go, reason: typed });
+    };
+    const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); done(false); } };
+    el.querySelector('#conflict-x').onclick = () => done(false);
+    el.querySelector('#conflict-cancel').onclick = () => done(false);
+    el.querySelector('#conflict-go').onclick = () => done(true);
+    el.querySelector('#conflict-reason').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); done(true); } };
+    el.addEventListener('mousedown', e => { if (e.target === el) done(false); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(el);
+    el.querySelector('#conflict-cancel').focus();
+  });
+}
+// POST an assignment; on a conflict the dispatcher decides, and a "go ahead"
+// is resent with `force` so the override lands in the audit log. A Cancel
+// comes back as { ok:false, cancelled:true } so callers stay quiet about it.
+async function postAssignment(url, body, verb, reason, method = 'POST') {
+  let d = await api(method, url, body);
+  if (!d.ok && d.status === 409 && Array.isArray(d.conflicts) && d.conflicts.length) {
+    const c = await confirmConflicts(d, verb, reason);
+    if (c.go) d = await api(method, url, { ...body, force: true, reason: c.reason || reason || 'dispatcher confirmed the conflict' });
+    else d = { ...d, cancelled: true };
+  }
+  return d;
+}
+
 async function qaConfirm() {
   const p = qaPick; if (!p) return;
   const btn = document.getElementById('qa-confirm');
   btn.disabled = true; btn.textContent = 'Assigning…';
-  const r = await api('POST', `/api/loads/${p.loadId}/assign`, {
+  const r = await postAssignment(`/api/loads/${p.loadId}/assign`, {
     driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId, trailerId: p.trailerId || null,
-  });
-  if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; return toast(r.error || 'Assign failed', 'error'); }
+  }, 'Reassign');
+  if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; if (!r.cancelled) toast(r.error || 'Assign failed', 'error'); return; }
   const who = r.load.driverName || 'Unassigned';
   const truck = r.truck ? r.truck.truckNum : 'no truck';
   const trailer = r.trailer ? ' + ' + r.trailer.number : '';
   qaClose();
   toast(`${who} → ${truck}${trailer} → ${r.pickup.name}`, 'success');
   await loadAll();
-  if (currentTab === 'today') await renderToday(); else if (currentTab === 'board') renderBoard();
+  if (currentTab === 'today') await renderToday();
 }
 
 // ── CUSTOMER NOTIFICATIONS (per PO) ─────────────────────────────────────────
@@ -4830,7 +4780,6 @@ async function liveCheck(force) {
       await renderToday();
     } else {
       await loadAll();
-      if (currentTab === 'board') renderBoard();
     }
   } catch (e) { /* offline — retry on the next tick */ }
 }
@@ -6431,14 +6380,14 @@ async function renderHistory() {
     const billed = data.billed || [];
     const archive = data.archive || [];
 
-    let h = '<div class="history-wrap">';
+    let h = '<div class="history-wrap">' + billingFlowHtml('billed');
 
     // Section 1: Billed loads ready to archive
     h += `<div class="history-section">
       <div class="history-head">
         <div>
           <h2>Billed Loads (${billed.length})</h2>
-          <p>These loads have been billed. Archiving moves them off the active board into History; every record stays in the database.</p>
+          <p>Billed and waiting to be archived. A load billed through QuickBooks is released only by voiding its batch (Billing → Batches); one marked billed by hand can be <b>unbilled</b> here with a reason. Archiving moves them off the active board; every record stays in the database.</p>
         </div>
         ${billed.length ? `<button class="btn success" onclick="archiveBilledLoads()">Archive billed loads</button>` : ''}
       </div>`;
@@ -6447,9 +6396,14 @@ async function renderHistory() {
       h += '<div class="empty-state" style="padding:30px"><p>No billed loads waiting to archive.</p></div>';
     } else {
       h += `<table class="report-table" style="border-radius:0;box-shadow:none;margin:0">
-        <thead><tr><th>PO</th><th>Customer</th><th>Material</th><th>Loads</th><th>Driver</th><th>Yard</th><th>Date</th><th>Billed</th></tr></thead>
+        <thead><tr><th>PO</th><th>Customer</th><th>Material</th><th>Loads</th><th>Driver</th><th>Yard</th><th>Date</th><th>Billed</th><th>Billed via</th><th></th></tr></thead>
         <tbody>
-        ${billed.map(l => `<tr>
+        ${billed.map(l => {
+          const viaBatch = !!(l.billingBatchId || l.qbInvoiceId);
+          const via = viaBatch
+            ? `QuickBooks${l.qbInvoiceNumber ? ' · invoice ' + escapeHtml(l.qbInvoiceNumber) : ''}<div class="batch-info">batch ${escapeHtml(l.billingBatchId || '')}</div>`
+            : `Manual${l.manualBillRef ? ' · ' + escapeHtml(l.manualBillRef) : ''}<div class="batch-info">${l.billedBy ? 'by ' + escapeHtml(l.billedBy) : 'no reference recorded'}</div>`;
+          return `<tr data-billed-load="${l.id}">
           <td style="font-weight:600;color:var(--B)">${l.poNumber}</td>
           <td>${l.customer}</td>
           <td>${l.material}</td>
@@ -6458,7 +6412,9 @@ async function renderHistory() {
           <td>${(l.pickup && l.pickup.name) || '—'}</td>
           <td>${fmtDate(l.deliveryDate)}</td>
           <td style="font-size:11px;color:var(--txt2)">${l.billedAt ? new Date(l.billedAt).toLocaleDateString() : ''}</td>
-        </tr>`).join('')}
+          <td style="font-size:12px">${via}</td>
+          <td style="text-align:right">${viaBatch ? `<span class="batch-info" title="Void the batch on the Billing → Batches screen to release this load">void the batch to release</span>` : `<button class="btn ghost" style="padding:5px 10px;font-size:12px" onclick="unbillLoad('${l.id}')">Unbill…</button>`}</td>
+        </tr>`; }).join('')}
         </tbody>
       </table>`;
     }
@@ -6469,19 +6425,23 @@ async function renderHistory() {
       <div class="history-head">
         <div>
           <h2>Archive Log</h2>
-          <p>Past archive batches. Archived loads stay in the database and still count in Reports.</p>
+          <p>Past archive batches. Archived loads stay in the database and still count in Reports. Unarchiving brings a batch's loads and POs back onto the active lists exactly as they were — to re-bill after a voided batch, or to correct something.</p>
         </div>
       </div>`;
     if (archive.length === 0) {
       h += '<div class="empty-state" style="padding:30px"><p>No archives yet.</p></div>';
     } else {
       archive.forEach(b => {
-        h += `<div class="archive-batch">
+        const released = (b.loads || []).filter(l => l.billStatus !== 'billed').length;
+        h += `<div class="archive-batch" data-archive-batch="${b.batchId}">
           <div>
             <div style="font-weight:600">${b.poCount} POs · ${b.loadCount} loads</div>
-            <div class="batch-info">${b.batchId} · ${new Date(b.archivedAt).toLocaleString()} · by ${b.archivedBy}</div>
+            <div class="batch-info">${b.batchId} · ${new Date(b.archivedAt).toLocaleString()} · by ${b.archivedBy}${released ? ` · <span style="color:var(--A);font-weight:700">${released} released by a voided batch — unarchive to re-bill</span>` : ''}</div>
           </div>
-          <span class="batch-status synced">${(b.loads || []).length} load record${(b.loads || []).length === 1 ? '' : 's'} kept</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="batch-status synced">${(b.loads || []).length} load record${(b.loads || []).length === 1 ? '' : 's'} kept</span>
+            <button class="btn ghost" style="padding:5px 10px;font-size:12px" onclick="unarchiveBatch('${b.batchId}')">Unarchive…</button>
+          </div>
         </div>`;
       });
     }
@@ -6495,13 +6455,49 @@ async function renderHistory() {
 }
 
 async function archiveBilledLoads() {
-  if (!confirm('Move all billed loads (and POs whose loads are all billed) off the active board into History?\n\nEvery record stays in the database and still counts in Reports. Continue?')) return;
+  const a = await askDialog({
+    title: 'Archive billed loads?',
+    bodyHtml: `<div class="conflict-hint">Every billed load (and every PO whose loads are all billed) moves off the active board into History. Every record stays in the database and still counts in Reports. A load on a QuickBooks batch that has not finished sending stays put. This can be undone with <b>Unarchive</b>.</div>`,
+    confirmLabel: 'Archive', confirmClass: 'success',
+  });
+  if (!a.go) return;
   const d = await api('POST', '/api/history/archive', {});
   if (d.ok) {
-    toast(`Archived ${d.archived.loads} loads in batch ${d.archived.batchId}`, 'success');
+    toast(`Archived ${d.archived.loads} loads in batch ${d.archived.batchId}${d.heldBack ? ` · ${d.heldBack} held back (batch still sending)` : ''}`, 'success');
     await loadAll();
     renderHistory();
   } else toast(d.error || 'Failed to archive', 'error');
+}
+// Undo a manual "Mark Billed": back to Ready to Bill, with the reason on the
+// record. Loads billed through QuickBooks are released only by voiding the batch.
+async function unbillLoad(id) {
+  const l = (loads || []).find(x => x.id === id) || {};
+  const po = (pos || []).find(p => p.id === l.poId) || {};
+  const a = await askDialog({
+    title: 'Unbill this load?',
+    bodyHtml: `<div class="ask-sub">PO ${escapeHtml(po.poNumber || '—')} · ${escapeHtml(po.customer || '')} · ${escapeHtml(l.material || '')} · ${escapeHtml(l.driverName || '')}${l.manualBillRef ? ` · marked billed as ${escapeHtml(l.manualBillRef)}` : ''}</div>
+               <div class="conflict-hint">The load goes back to <b>Ready to Bill</b>. Nothing in QuickBooks changes (it was never sent there). Make sure the outside invoice is cancelled or corrected, or the customer will be billed twice.</div>`,
+    confirmLabel: 'Unbill', confirmClass: 'danger',
+    reason: { label: 'Reason', placeholder: 'e.g. paper invoice INV-2041 was cancelled', required: true },
+  });
+  if (!a.go) return;
+  const d = await api('POST', `/api/loads/${id}/unbill`, { reason: a.reason });
+  if (d.ok) { toast('Back in Ready to Bill', 'success'); await loadAll(); renderHistory(); }
+  else toast(d.error || 'Could not unbill', 'error');
+}
+// Bring an archive batch back: the same POs and loads, exactly as archived.
+async function unarchiveBatch(batchId) {
+  const a = await askDialog({
+    title: 'Unarchive this batch?',
+    bodyHtml: `<div class="ask-sub">${escapeHtml(batchId)}</div>
+               <div class="conflict-hint">Its loads and POs come back onto the active lists exactly as they were archived: billed loads back under Billed Loads, loads released by a voided batch back in <b>Ready to Bill</b>. Nothing is created or lost.</div>`,
+    confirmLabel: 'Unarchive', confirmClass: 'primary',
+    reason: { label: 'Reason', placeholder: 'e.g. re-bill after the voided batch', required: true },
+  });
+  if (!a.go) return;
+  const d = await api('POST', `/api/history/${encodeURIComponent(batchId)}/unarchive`, { reason: a.reason });
+  if (d.ok) { toast(`Restored ${d.restored.loads} load${d.restored.loads === 1 ? '' : 's'} and ${d.restored.pos} PO${d.restored.pos === 1 ? '' : 's'}`, 'success'); await loadAll(); renderHistory(); }
+  else toast(d.error || 'Could not unarchive', 'error');
 }
 
 // ── DRIVERS & TRUCKS (admin only) ────────────────────────────────────────────

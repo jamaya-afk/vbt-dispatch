@@ -393,6 +393,14 @@ function ticketKey(n) { return String(n == null ? '' : n).trim().toUpperCase().r
 function allLoadsWithArchive() {
   return [...store.loads, ...(store.archive || []).flatMap(b => b.loads || [])];
 }
+// Archived loads and POs are full copies inside store.archive[]. Anything that
+// still refers to a load by id after it was archived — a billing batch, a
+// vendor bill, a freight segment, a report — resolves it through here, so
+// archiving never breaks a link.
+function loadsInArchive() { return (store.archive || []).flatMap(b => b.loads || []); }
+function posInArchive()   { return (store.archive || []).flatMap(b => b.pos || []); }
+function findLoadAnywhere(id) { return store.loads.find(l => l.id === id) || loadsInArchive().find(l => l.id === id) || null; }
+function findPoAnywhere(id)   { return store.pos.find(p => p.id === id) || posInArchive().find(p => p.id === id) || null; }
 // Which trip (on which load) already carries this ticket number, if any.
 function findTicketOwner(number, exclude = {}) {
   const k = ticketKey(number); if (!k) return null;
@@ -831,9 +839,64 @@ const persistence = {
   lastSaveAt: '',
   lastError: '',
   degradedSince: '',
+  rollbacks: 0,           // failed saves whose in-memory change was undone (see rollbackStore)
+  lastRollbackAt: '',
 };
 
-async function saveData() {
+// Writes are serialized. Every handler mutates the shared in-memory store
+// and then saves the whole thing; two overlapping saves used to race for the
+// row lock, and the OLDER snapshot could commit last. Now each save waits for
+// the one before it, serializes the store only when its turn comes, and so
+// always writes a superset of what the previous save wrote.
+//
+// `rotatePrev: false` is for background saves (GPS flush, notification log,
+// status reconciliation): they write the store but leave `store_prev` alone,
+// so the one-step undo copy is the state before the last thing a PERSON did,
+// not before the last GPS ping.
+// ── ROLLBACK ─────────────────────────────────────────────────────────────────
+// A handler mutates the store and then saves it. If the save fails, the
+// in-memory change must not outlive the failure: the caller was told "not
+// saved", so the board must not show it and the next unrelated save must not
+// smuggle it onto disk. `lastGoodJson` is the store exactly as it was last
+// written successfully (or as it was loaded at boot); on a failed write the
+// store is put back to it. Because mutating requests run one at a time (the
+// write lock below), the only unsaved change in memory at that moment is the
+// failing request's own.
+//
+// The QuickBooks and vendor-bill send/retry/void routes opt out through the
+// request context: their in-flight state (an invoice QuickBooks has already
+// issued) IS their recovery record and must survive a failed save.
+const { AsyncLocalStorage } = require('async_hooks');
+const requestCtx = new AsyncLocalStorage();
+let lastGoodJson = null;
+function rollbackStore(err) {
+  const ctx = requestCtx.getStore();
+  if ((ctx && ctx.keepOnFailure) || !lastGoodJson) return false;
+  const fresh = JSON.parse(lastGoodJson);
+  for (const k of Object.keys(store)) delete store[k];
+  Object.assign(store, fresh);
+  persistence.rollbacks++;
+  persistence.lastRollbackAt = new Date().toISOString();
+  if (err && !err.userMessage) err.userMessage = 'Unable to save — the database did not accept the write. Your change was not applied; please try again.';
+  console.warn(`[rollback] store restored to the last saved state after a failed write (${err && err.message})`);
+  return true;
+}
+let testSaveFailLeft = null;   // test hook: fail this many saves, then behave again (null = until reset)
+
+let saveChain = Promise.resolve();
+function saveData(opts) {
+  const run = () => writeStore(opts || {});
+  const p = saveChain.then(run, run);
+  saveChain = p.catch(() => {});
+  return p;
+}
+// Test hook only (VBT_TEST_HOOKS=1, never production): 'fail' makes the next
+// saves throw a database-style error, to prove handlers roll back and answer
+// honestly when the write does not happen.
+let testSaveMode = 'ok';
+let testSaveSkip = 0;   // 'fail' after this many successful saves (0 = immediately)
+
+async function writeStore({ rotatePrev = true } = {}) {
   // The single most important line in this file. If the store was never
   // successfully loaded, whatever is in memory is seed data or nothing, and
   // writing it would overwrite the company's real records.
@@ -842,6 +905,15 @@ async function saveData() {
     persistence.lastSaveOk = false;
     persistence.lastError = msg;
     throw new Error(msg);
+  }
+  if (testSaveMode === 'fail' && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD && testSaveSkip-- <= 0) {
+    if (testSaveFailLeft != null && --testSaveFailLeft <= 0) { testSaveMode = 'ok'; testSaveFailLeft = null; }
+    const e = new Error('test hook: simulated database write failure');
+    e.code = 'ECONNRESET';
+    persistence.lastSaveOk = false;
+    persistence.lastError = e.message;
+    rollbackStore(e);
+    throw e;
   }
   const j = JSON.stringify(store);
   if (pg) {
@@ -853,7 +925,7 @@ async function saveData() {
       const client = await pg.connect();
       try {
         await client.query('BEGIN');
-        await client.query(`
+        if (rotatePrev) await client.query(`
           INSERT INTO dispatch_data(key, value, updated_at)
           SELECT 'store_prev', value, now() FROM dispatch_data WHERE key = 'store'
           ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
@@ -873,6 +945,7 @@ async function saveData() {
       persistence.lastSaveAt = new Date().toISOString();
       persistence.lastError = '';
       persistence.degradedSince = '';
+      lastGoodJson = j;
       return;
     } catch (e) {
       console.error('PG write error:', e.message);
@@ -881,17 +954,24 @@ async function saveData() {
       if (!persistence.degradedSince) persistence.degradedSince = new Date().toISOString();
       // Never fall back to local disk when Postgres is the configured store —
       // a file write would look like success and vanish on the next deploy.
+      rollbackStore(e);
       throw e;
     }
   }
   {
+    // File mode (dev only). A failed write is a failed save here too, so
+    // development behaves like production: the handler answers with an error
+    // instead of pretending the change was recorded.
     try {
       fs.writeFileSync(DATA_FILE, j);
       persistence.lastSaveOk = true;
       persistence.lastSaveAt = new Date().toISOString();
+      lastGoodJson = j;
     } catch (e) {
       persistence.lastSaveOk = false;
       persistence.lastError = e.message;
+      rollbackStore(e);
+      throw e;
     }
   }
 }
@@ -1164,12 +1244,21 @@ function normalizeStore() {
   store.billingBatches.forEach(b => {
     if (b.syncStatus === 'syncing') {
       b.syncStatus = 'failed';
-      b.errorMessage = 'Send was interrupted by a server restart. Check QuickBooks for an invoice for this batch before retrying.';
+      b.mayExistInQuickBooks = !b.qbInvoiceId;
+      b.errorMessage = 'Send was interrupted by a server restart. The invoice may or may not exist in QuickBooks; Retry checks there before creating one.';
       b.syncingSince = '';
     }
   });
   if (!Array.isArray(store.qbSyncLog))      store.qbSyncLog = [];
   if (!Array.isArray(store.vendorBills))    store.vendorBills = [];
+  store.vendorBills.forEach(b => {
+    if (b.syncStatus === 'syncing') {
+      b.syncStatus = 'failed';
+      b.mayExistInQuickBooks = !b.qbBillId;
+      b.errorMessage = 'Send was interrupted by a server restart. The bill may or may not exist in QuickBooks; Retry checks there before creating one.';
+      b.syncingSince = '';
+    }
+  });
 
   // Backfill load fields used by billing batches
   store.loads.forEach(l => {
@@ -1354,7 +1443,7 @@ function notifyLoadEvent(load, po, eventKey, opts = {}) {
             status: r.sent ? 'sent' : r.dryRun ? 'dry-run' : 'failed',
             reason: r.error || '', messageId: r.messageId || '',
           });
-          return saveData();
+          return saveData({ rotatePrev: false });
         })
         .catch(e => {
           logNotification({ ...base, to, subject, status: 'failed', reason: e.message });
@@ -1455,7 +1544,9 @@ async function applyLocationRequest(rec, body, user, addressText) {
 function withPickup(l) {
   const po = store.pos.find(p => p.id === l.poId) || {};
   const segs = segmentsForLoad(l).map(s => { const p = segmentPublic(s); return { id: p.id, customer: p.customer, originName: p.originName, destinationLabel: p.destinationLabel, status: p.status, locked: p.locked, timeStart: p.timeStart, timeEnd: p.timeEnd, odStart: p.odStart, odEnd: p.odEnd, billableMiles: p.billableMiles, billableHours: p.billableHours, tripCount: p.tripCount, loadIds: p.loadIds }; });
-  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs };
+  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs,
+    // The approval checklist rides along only while a load waits for approval.
+    ...(l.approvalStatus === 'submitted' ? { approval: approvalChecklist(l) } : {}) };
 }
 
 function resolveVendorRate(vendorId, material) {
@@ -1573,6 +1664,10 @@ function revenueDetail(load) {
       const field = MEASURED_UNITS[unit];
       const open = segs.find(s => s.status === 'open');
       if (open) return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${open.id} (${open.customer}) is still open — its ${field} are not final yet` };
+      // An ending typed by the office when it closed the driver's day is not
+      // billable until a manager has confirmed or corrected it.
+      const review = segs.find(s => s.needsReview);
+      if (review) return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${review.id} (${review.customer}) was closed by the office for the driver — confirm its ending time and odometer (with a reason) before its ${field} are billed` };
       let measure = 0; const billedWith = [];
       for (const s of segs) {
         const p = segmentPublic(s);
@@ -1589,7 +1684,7 @@ function revenueDetail(load) {
   const d = computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
   d.basis = 'planned';
   if (d.unit !== 'ton') return d;
-  const po = store.pos.find(p => p.id === load.poId) || {};
+  const po = findPoAnywhere(load.poId) || {};
   if (customerBillingBasis(po.customer) !== 'actual') return d;
   const tons = loadTons(load);
   d.basis = 'actual';
@@ -1603,8 +1698,89 @@ function revenueDetail(load) {
   }
   return { ...d, amount: d.rate * tons.actualTons, quantity: tons.actualTons, unconfigured: false, reason: '' };
 }
+// Material cost of a load, one line per (yard, unit, rate). The yard the driver
+// ACTUALLY loaded at decides the vendor, trip by trip — never the planned one.
+// The rate is the one fixed at the scale when the driver arrived
+// (trip.vendorRate). Trips recorded before that snapshot existed use the load's
+// planned rate when the yard matches the plan, and the vendor's price on file
+// when it does not. Loads with no completed trips (legacy, or counted by hand)
+// fall back to the load-level snapshot exactly as before.
+//
+// An external yard with no price is reported as NOT priceable, never as $0:
+// a $0 vendor bill is a wrong number, not a free load.
+//
+//   [{ yardId, yardName, internal, material, unit, rate, isDefault,
+//      loads, tripNums, amount, quantity, unconfigured, reason }]
+function loadCostLines(load, { unbilledOnly = false } = {}) {
+  const po = findPoAnywhere(load.poId) || {};
+  const material = load.material;
+  const plannedId = load.vendorId || po.plannedVendorId || 'vbt';
+  const nameOf = id => ((store.vendors || []).find(v => v.id === id) || {}).name || (isInternalYardId(id) ? 'VBT Yard' : String(id));
+  const lines = new Map();
+  const add = ({ yardId, rate, unit, isDefault, count, tripNum, extra }) => {
+    const internal = isInternalYardId(yardId);
+    const r = internal ? 0 : (Number(rate) || 0);
+    const u = unitKey(unit || 'ton');
+    const key = `${yardId}|${u}|${r}`;
+    if (!lines.has(key)) lines.set(key, { yardId, yardName: nameOf(yardId), internal, material, unit: u, rate: r, isDefault: !!isDefault, loads: 0, tripNums: [], extraLoads: 0, amount: 0, quantity: 0, unconfigured: false, reason: '' });
+    const ln = lines.get(key);
+    ln.loads += count;
+    if (tripNum != null) ln.tripNums.push(tripNum);
+    if (extra) ln.extraLoads += count;   // hand-counted loads with no trip record behind them
+    const d = computeAmount(r, u, count, material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
+    if (d.unconfigured) { ln.unconfigured = true; ln.reason = ln.reason || d.reason; }
+    else if (!internal && r <= 0 && count > 0) { ln.unconfigured = true; ln.reason = ln.reason || `no price on file for ${material} at ${ln.yardName}`; }
+    else { ln.amount += d.amount; ln.quantity += d.quantity; }
+  };
+  const unit = load.vendorUnit || 'ton';
+  const done = (load.trips || []).filter(t => t.timestamps && t.timestamps.completed);
+  // A load-level claim (a bill created before trips were tracked one by one,
+  // or a legacy load with no trip records) covers the whole load — and its
+  // cost stays exactly what that bill charged (planned yard, planned rate),
+  // so history does not move underneath a bill that was already paid.
+  if (unbilledOnly && load.vendorBillId) return [];
+  if (!done.length || MEASURED_UNITS[unitKey(unit)] || load.vendorBillId) {
+    add({ yardId: (resolvePickupYard(load, po) || {}).id || plannedId, rate: load.vendorRate, unit, isDefault: load.vendorRateIsDefault, count: Number(load.loadsDelivered) || 0 });
+    return [...lines.values()];
+  }
+  // The delivered count is the record (a manager may have corrected it down);
+  // when it is below the number of completed trips, only that many trips are
+  // costed, in order, so cost and revenue always describe the same loads.
+  const counted = done.slice(0, Math.min(done.length, Math.max(0, Number(load.loadsDelivered) || 0)));
+  for (const t of counted) {
+    if (unbilledOnly && t.vendorBillId) continue;
+    const yardId = t.actualYardId || plannedId;
+    let rate, u, isDefault;
+    // A real price fixed at the scale stays fixed (a later price-list change
+    // never re-prices old hauls). A snapshot that was only a default or a
+    // missing price is a placeholder, not a price: it is resolved live, so
+    // the office can add the vendor's price afterwards and bill correctly.
+    const realSnapshot = t.vendorRate != null && !t.vendorRateIsDefault && (Number(t.vendorRate) > 0 || isInternalYardId(yardId));
+    if (realSnapshot) { rate = t.vendorRate; u = t.vendorUnit || unit; isDefault = false; }
+    else if (t.vendorRate == null && yardId === plannedId) { rate = load.vendorRate; u = unit; isDefault = load.vendorRateIsDefault; }
+    else { const vr = resolveVendorRate(yardId, material); rate = vr.price; u = vr.unit; isDefault = vr.isDefault; }
+    add({ yardId, rate, unit: u, isDefault, count: 1, tripNum: t.tripNum });
+  }
+  // A hand-counted delivered total above the recorded trips (older loads, an
+  // "incomplete" submission) is costed at the planned yard and rate.
+  const extra = Math.max(0, (Number(load.loadsDelivered) || 0) - done.length);
+  if (extra && !(unbilledOnly && load.vendorBillExtraId)) add({ yardId: plannedId, rate: load.vendorRate, unit, isDefault: load.vendorRateIsDefault, count: extra, extra: true });
+  return [...lines.values()];
+}
 function costDetail(load) {
-  return computeAmount(load.vendorRate, load.vendorUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
+  const lines = loadCostLines(load);
+  const unit = unitKey(load.vendorUnit || 'ton');
+  const bad = lines.find(ln => ln.unconfigured);
+  const amount = lines.reduce((s, ln) => s + ln.amount, 0);
+  const quantity = lines.reduce((s, ln) => s + ln.quantity, 0);
+  return {
+    unit, rate: Number(load.vendorRate) || 0, delivered: Number(load.loadsDelivered) || 0,
+    amount: bad ? null : Math.round(amount * 100) / 100,
+    quantity: bad ? null : quantity,
+    unconfigured: !!bad, reason: bad ? bad.reason : '',
+    qtyPerLoad: qtyPerLoad(unit, load.material),
+    lines,
+  };
 }
 
 // Back-compat numeric wrappers. An unconfigured unit yields 0 rather than a
@@ -1716,6 +1892,8 @@ app.get('/healthz', async (req, res) => {
     lastSaveAt: persistence.lastSaveAt,
     lastError: persistence.lastError,
     degradedSince: persistence.degradedSince,
+    rollbacks: persistence.rollbacks,
+    lastRollbackAt: persistence.lastRollbackAt,
   },
   fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
   // merged in from the second /healthz the branch merge left behind — Express
@@ -1763,6 +1941,31 @@ app.use('/api', (req, res, next) => {
   });
 });
 
+// ── WRITE LOCK ───────────────────────────────────────────────────────────────
+// One dispatch write at a time. Every mutating /api request holds this lock
+// for its whole life (handler and save), so when a failed save rolls the store
+// back to the last persisted state (rollbackStore), no other request's unsaved
+// change can be swept away with it. Reads never wait. For a five-truck fleet
+// the wait is milliseconds; a hung handler releases after 30 s regardless.
+//
+// Exempt on purpose: the QuickBooks and vendor-bill send/retry/void routes
+// (they talk to QuickBooks for seconds, must not stall the drivers' taps, and
+// keep their in-flight state on a failed save — it is their recovery record),
+// GPS pings, the QuickBooks connection routes and the test hooks.
+const WRITE_LOCK_EXEMPT = /^\/api\/(billing-batches\/[^/]+\/(send|retry|void)|vendor-bills\/[^/]+\/(send|retry|void)|driver-location|quickbooks\/|_test\/)/;
+let writeLockTail = Promise.resolve();
+app.use('/api', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  if (WRITE_LOCK_EXEMPT.test(req.originalUrl.split('?')[0])) return requestCtx.run({ keepOnFailure: true }, next);
+  let release; const held = new Promise(r => { release = r; });
+  const wait = writeLockTail; writeLockTail = wait.then(() => held);
+  wait.then(() => {
+    const timer = setTimeout(release, 30000);
+    res.once('close', () => { clearTimeout(timer); release(); });
+    requestCtx.run({ keepOnFailure: false }, next);
+  });
+});
+
 // ── BACKUP / RESTORE (admin) ─────────────────────────────────────────────────
 // store_prev = the value before the most recent save; store_boot = the value
 // when this process last started. Restoring first copies the current row to
@@ -1791,30 +1994,60 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   // Fake QuickBooks: replaces the qb module's network calls so the billing
   // state machine (concurrency, failure, retry, void) can be exercised
   // without Intuit. `mode` = ok | fail | slow.
-  const fakeQb = { mode: 'ok', delayMs: 0, invoicesCreated: 0, invoicesVoided: 0, invoices: [] };
+  // Modes (invoices: `mode`, bills: `billMode`):
+  //   ok      — answers normally
+  //   slow    — answers after delayMs
+  //   fail    — QuickBooks refuses (an HTTP 400 style error; nothing created)
+  //   timeout — no answer, nothing created (the request never reached Intuit)
+  //   lost    — no answer, but the entity WAS created (the response was lost)
+  const fakeQb = { mode: 'ok', billMode: 'ok', delayMs: 0, invoicesCreated: 0, invoicesVoided: 0, invoices: [], billsCreated: 0, billsDeleted: 0, bills: [] };
   const wait = ms => new Promise(r => setTimeout(r, ms));
+  const noAnswer = what => { const e = new Error(`Fake QuickBooks: no answer while creating ${what} (socket hang up)`); e.uncertain = true; e.timeout = true; return e; };
   app.post('/api/_test/qb-fake', reqMgr, async (req, res) => {
-    Object.assign(fakeQb, { mode: req.body?.mode || 'ok', delayMs: Number(req.body?.delayMs || 0) });
+    Object.assign(fakeQb, { mode: req.body?.mode || 'ok', billMode: req.body?.billMode || 'ok', delayMs: Number(req.body?.delayMs || 0) });
     if (req.body?.connected !== false) {
       store.qbConnection = { ...(store.qbConnection || {}), realmId: 'test-realm', status: 'connected', companyName: 'Fake QB', connectedAt: new Date().toISOString() };
     } else if (store.qbConnection) {
       store.qbConnection.status = 'disconnected';
     }
+    // The fake connection lives on the store like the real one, so a rollback
+    // after a simulated failed save does not silently disconnect the tests.
+    try { await saveData({ rotatePrev: false }); } catch {}
     qb.findOrCreateCustomer = async (conn, c) => ({ customer: { Id: 'CUST-' + (c.name || 'x').replace(/\W/g, ''), DisplayName: c.name }, created: false });
+    qb.findOrCreateVendor = async (conn, v) => ({ vendor: { Id: 'VEND-' + (v.name || 'x').replace(/\W/g, ''), DisplayName: v.name }, created: false });
     qb.createInvoice = async (conn, args) => {
       if (fakeQb.mode === 'slow') await wait(fakeQb.delayMs || 1500);
       if (fakeQb.mode === 'fail') { const e = new Error('Fake QuickBooks: invoice rejected'); e.statusCode = 400; throw e; }
+      if (fakeQb.mode === 'timeout') throw noAnswer('an invoice');
       fakeQb.invoicesCreated++;
-      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: String(1000 + fakeQb.invoicesCreated), memo: args.memo, lines: args.lines, privateNote: args.privateNote };
+      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: args.docNumber || String(1000 + fakeQb.invoicesCreated), memo: args.memo, lines: args.lines, PrivateNote: args.privateNote, CustomerRef: { value: String(args.qbCustomerId) } };
       fakeQb.invoices.push(inv);
+      if (fakeQb.mode === 'lost') throw noAnswer('an invoice');
       return inv;
     };
+    qb.findInvoiceForBatch = async (conn, { batchId }) => fakeQb.invoices.find(i => String(i.PrivateNote || '').includes(`batch ${batchId}`)) || null;
+    qb.getEntity = async (conn, type, id) => (type === 'Invoice' ? fakeQb.invoices : type === 'Bill' ? fakeQb.bills : []).find(x => x.Id === id) || null;
     qb.voidInvoice = async (conn, id) => {
       if (fakeQb.mode === 'fail') throw new Error('Fake QuickBooks: void rejected');
       fakeQb.invoicesVoided++;
       return { Id: id, status: 'Voided' };
     };
-    qb.createBill = async () => ({ Id: 'BILL-1' });
+    qb.createBill = async (conn, args) => {
+      if (fakeQb.billMode === 'slow') await wait(fakeQb.delayMs || 1500);
+      if (fakeQb.billMode === 'fail') { const e = new Error('Fake QuickBooks: bill rejected'); e.statusCode = 400; throw e; }
+      if (fakeQb.billMode === 'timeout') throw noAnswer('a bill');
+      fakeQb.billsCreated++;
+      const bill = { Id: 'BILL-' + fakeQb.billsCreated, DocNumber: args.docNumber || '', lines: args.lines, PrivateNote: args.memo };
+      fakeQb.bills.push(bill);
+      if (fakeQb.billMode === 'lost') throw noAnswer('a bill');
+      return bill;
+    };
+    qb.findBillByDocNumber = async (conn, docNumber) => fakeQb.bills.find(b => b.DocNumber === docNumber) || null;
+    qb.deleteBill = async (conn, id) => {
+      if (fakeQb.billMode === 'fail') throw new Error('Fake QuickBooks: delete rejected');
+      fakeQb.billsDeleted++;
+      return { Id: id, status: 'Deleted' };
+    };
     res.json({ ok: true, fakeQb });
   });
   app.get('/api/_test/qb-fake', reqMgr, (req, res) => res.json(fakeQb));
@@ -1834,6 +2067,8 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     res.json({ ok: true, at: loc.at });
   });
   app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
+  // 'fail' makes every save throw until set back to 'ok'.
+  app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft }); });
   app.get('/api/_test/today', (req, res) => res.json({ tz: OPERATING_TZ, today: todayStrAt(req.query.at ? new Date(String(req.query.at)) : new Date()) }));
   app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
   app.get('/api/_test/async-reject', (req, res) => Promise.reject(new Error('test: rejected promise')));
@@ -2117,7 +2352,7 @@ app.post('/api/driver-location', reqAuth, async (req, res) => {
   // every ping would write megabytes to Postgres every few seconds across
   // five trucks, so location-only changes are flushed at most every 5 min
   // (any other save carries them along anyway).
-  if (now - lastLocationFlush > 5 * 60 * 1000) { lastLocationFlush = now; await saveData(); }
+  if (now - lastLocationFlush > 5 * 60 * 1000) { lastLocationFlush = now; await saveData({ rotatePrev: false }); }
   res.json({ accepted: true });
 });
 let lastLocationFlush = 0;
@@ -2325,7 +2560,7 @@ app.get('/api/data', reqAuth, async (req, res) => {
     const fixed = reconcilePoStatuses();
     if (fixed.length) {
       console.log(`[/api/data] Reconciled ${fixed.length} stale POs`);
-      await saveData();
+      await saveData({ rotatePrev: false });
     }
   }
   // Build "yards" view (just the active vendors with name + location, for the driver yard picker)
@@ -2511,6 +2746,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   // the master; if it doesn't exist, auto-add it so the master stays in sync.
   if (!Array.isArray(store.customers)) store.customers = [];
   let resolvedCustomer = String(po.customer || '').trim();
+  let autoAddedCustomerId = null;   // rolled back with the PO if the save fails
   if (po.customerId) {
     const c = store.customers.find(x => x.id === po.customerId);
     if (c) resolvedCustomer = c.name;
@@ -2529,6 +2765,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
         active: true, createdAt: new Date().toISOString(),
       };
       store.customers.push(newCust);
+      autoAddedCustomerId = newCust.id;
       console.log(`[create-PO] Auto-added customer to master: "${resolvedCustomer}"`);
     }
   }
@@ -2543,6 +2780,31 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   for (const sp of (splits || [])) {
     if (sp.truckUnitId && !(store.trucks || []).some(t => t.id === sp.truckUnitId)) return res.status(400).json({ error: `Unknown truck "${sp.truckUnitId}"` });
     if (sp.truckId && !driverRoster().some(d => d.id === sp.truckId)) return res.status(400).json({ error: `Unknown or inactive driver "${sp.truckId}"` });
+  }
+  // The same rules as Quick Assign. An off-duty driver or a truck in the shop
+  // is refused outright. A conflict with work already on the board that day
+  // (a driver mid-haul, a truck on another driver's load, the same truck on
+  // two drivers in this PO) is reported and needs `force` to go ahead.
+  const conflicts = [];
+  const pseudo = [];
+  for (const [i, sp] of (splits || []).entries()) {
+    if (!sp.material || !sp.loadsAssigned) continue;
+    const rd = sp.truckId ? rosterDriver(sp.truckId) : null;
+    if (rd && rd.status === 'off') return res.status(400).json({ error: `${rd.name} is marked off today` });
+    const tk = sp.truckUnitId ? (store.trucks || []).find(t => t.id === sp.truckUnitId) : null;
+    if (tk && (tk.active === false || tk.status === 'maintenance' || tk.status === 'out-of-service')) return res.status(400).json({ error: `${tk.truckNum} is ${tk.active === false ? 'deactivated' : tk.status}` });
+    const probe = { id: `load assignment ${i + 1} of this PO`, poId: '__new__', deliveryDate: po.deliveryDate, truckId: sp.truckId || null, truckUnitId: sp.truckUnitId || null, trailerId: sp.trailerId || null,
+                    driverName: (driverRoster().find(d => d.id === sp.truckId) || {}).label || '', trips: [], approvalStatus: 'pending', voided: false };
+    const blank = { ...probe, truckId: null, truckUnitId: null, trailerId: null, driverName: '' };
+    assignmentConflicts(blank, { driverId: sp.truckId || undefined, truckUnitId: sp.truckUnitId || undefined, trailerId: sp.trailerId || undefined }, { extraLoads: pseudo, skipDriverBusy: true })
+      .forEach(c => conflicts.push({ ...c, split: i }));
+    pseudo.push(probe);
+  }
+  if (conflicts.length && req.body.force !== true) {
+    console.warn(`[create-PO] assignment conflict refused (409): ${conflicts.map(c => c.message).join(' ')}`);
+    // Nothing was created — including the customer this PO would have added.
+    if (autoAddedCustomerId) store.customers = store.customers.filter(c => c.id !== autoAddedCustomerId);
+    return res.status(409).json({ error: conflicts.map(c => c.message).join(' '), code: 'assignment_conflict', conflicts });
   }
   // Same jobsite as an earlier PO: inherit its saved coordinates (never guessed).
   let inheritedGeo;
@@ -2586,68 +2848,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       console.log(`[create-PO] SKIPPING split — missing material or loadsAssigned:`, JSON.stringify(s));
       return;
     }
-    const truck = driverRoster().find(t => t.id === s.truckId);   // DRIVER, not vehicle
-    const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
-    const trailer = s.trailerId ? (store.trailers || []).find(t => t.id === s.trailerId && t.active !== false) : null;
-    console.log(`[create-PO] Creating load: truckId="${s.truckId}", material="${s.material}", loads=${s.loadsAssigned}, driver="${truck?.label || '(unassigned)'}", vendor="${vendor?.name || '(none)'}"`);
-
-    // Pricing snapshots — locked at PO creation
-    let customerRate = { price: 25, unit: 'ton', isDefault: true };
-    let vendorRate   = { price: 22, unit: 'ton', isDefault: true, isInternal: false };
-    try {
-      customerRate = resolveCustomerRate(newPo.customer, s.material);
-      vendorRate   = resolveVendorRate(s.vendorId, s.material);
-    } catch (e) {
-      console.warn('[create-PO] price resolution failed, using fallback defaults:', e.message);
-    }
-
-    const newLoad = {
-      id: 'LOAD-' + store.nextLoadId++,
-      poId: newPo.id,
-      material: s.material,
-      vendorId: s.vendorId || null,
-      vendorName: vendor?.name || '',
-      unit: s.unit || customerRate.unit || 'ton',
-      pricePerUnit: vendorRate.price,
-      loadsAssigned: Number(s.loadsAssigned) || 0,
-      loadsDelivered: 0,
-      truckId: s.truckId || null,               // legacy name: this is the DRIVER
-      driverName: truck?.label || '',
-      // Vehicle, chosen independently of the driver. Deliberately NOT defaulted
-      // to that driver's historical truck — a driver can run a different truck
-      // any day, and silently assuming one would put the wrong truck number in
-      // front of the driver. Unset until the dispatcher picks.
-      truckUnitId: s.truckUnitId || null,
-      trailerId: trailer ? trailer.id : null,
-      deliveryDate: newPo.deliveryDate,
-      status: s.truckId ? 'active' : 'unassigned',
-      timestamps: {},
-      trips: [],
-      gps: {},
-      pod: { signedBy: '', signature: '', signedAt: '' },
-      ticketImage: '',
-      ticketImageAt: '',
-      approvalStatus: 'pending',
-      submittedAt: '',
-      approvedAt: '',
-      approvedBy: '',
-      rejectReason: '',
-      billStatus: 'not-ready',
-      billedAt: '',
-      locked: false,
-      voided: false,
-      notes: '',
-      // Pricing snapshots
-      tonsPerLoad: qtyPerLoad('ton', s.material),
-      customerRate: customerRate.price,
-      customerUnit: customerRate.unit,
-      customerRateIsDefault: customerRate.isDefault,
-      vendorRate: vendorRate.price,
-      vendorUnit: vendorRate.unit,
-      vendorRateIsDefault: vendorRate.isDefault,
-      vendorIsInternal: vendorRate.isInternal || false,
-    };
-    store.loads.push(newLoad);
+    store.loads.push(makeLoadForPo(newPo, s));
   });
 
   // Audit logging is best-effort — never let it block PO/load creation
@@ -2657,6 +2858,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
       customer: newPo.customer,
       deliveryDate: newPo.deliveryDate,
       loadCount: store.loads.filter(l => l.poId === newPo.id).length,
+      ...(conflicts.length ? { conflictsOverridden: { types: conflicts.map(c => c.type), reason: String(req.body.reason || '').trim() } } : {}),
     });
   } catch (e) {
     console.error('[create-PO] audit log failed (non-fatal):', e.message);
@@ -2665,11 +2867,23 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   try {
     await saveData();
   } catch (e) {
-    console.error('[create-PO] saveData failed:', e.message);
+    // A PO is on record only once it is in the database. Roll the in-memory
+    // copy back so the board cannot show a PO that would vanish on the next
+    // restart, then answer with the real failure instead of success.
+    console.error('[create-PO] saveData failed — rolling back:', e.message);
+    store.pos = store.pos.filter(p => p.id !== newPo.id);
+    store.loads = store.loads.filter(l => l.poId !== newPo.id);
+    if (autoAddedCustomerId) store.customers = store.customers.filter(c => c.id !== autoAddedCustomerId);
+    store.auditLog = (store.auditLog || []).filter(a => !(a.action === 'created-po' && a.target === newPo.id));
+    throw e;
   }
   console.log(`[create-PO] DONE. Total POs: ${store.pos.length}, total loads: ${store.loads.length}`);
   res.json({ success: true, po: newPo });
   } catch (err) {
+    // A database failure goes to the error middleware: 503 with a reference
+    // id, the same answer every other route gives — but saying plainly that
+    // nothing was created, since the PO was rolled back above.
+    if (isDbError(err)) { err.userMessage = 'Unable to save — the database did not accept the write. Nothing was created; please try again.'; throw err; }
     console.error('[create-PO] CRASH:', err);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Failed to create PO: ' + (err.message || 'unknown error') });
@@ -2677,38 +2891,245 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   }
 });
 
+// One load on an order, from a New PO form split or an Add-load request: the
+// driver (legacy field truckId), the vehicle, the trailer, the yard, and the
+// customer and vendor prices in force right now, snapshotted onto the load.
+function makeLoadForPo(po, s) {
+  const truck = driverRoster().find(t => t.id === s.truckId);   // DRIVER, not vehicle
+  const vendor = s.vendorId ? store.vendors.find(v => v.id === s.vendorId) : null;
+  const trailer = s.trailerId ? (store.trailers || []).find(t => t.id === s.trailerId && t.active !== false) : null;
+  let customerRate = { price: 25, unit: 'ton', isDefault: true };
+  let vendorRate   = { price: 22, unit: 'ton', isDefault: true, isInternal: false };
+  try {
+    customerRate = resolveCustomerRate(po.customer, s.material);
+    vendorRate   = resolveVendorRate(s.vendorId, s.material);
+  } catch (e) {
+    console.warn('[make-load] price resolution failed, using fallback defaults:', e.message);
+  }
+  return {
+    id: 'LOAD-' + store.nextLoadId++,
+    poId: po.id,
+    material: s.material,
+    vendorId: s.vendorId || null,
+    vendorName: vendor?.name || '',
+    unit: s.unit || customerRate.unit || 'ton',
+    pricePerUnit: vendorRate.price,
+    loadsAssigned: Number(s.loadsAssigned) || 0,
+    loadsDelivered: 0,
+    truckId: s.truckId || null,               // legacy name: this is the DRIVER
+    driverName: truck?.label || '',
+    // Vehicle, chosen independently of the driver. Deliberately NOT defaulted
+    // to that driver's historical truck — a driver can run a different truck
+    // any day, and silently assuming one would put the wrong truck number in
+    // front of the driver. Unset until the dispatcher picks.
+    truckUnitId: s.truckUnitId || null,
+    trailerId: trailer ? trailer.id : null,
+    deliveryDate: po.deliveryDate,
+    status: s.truckId ? 'active' : 'unassigned',
+    timestamps: {},
+    trips: [],
+    gps: {},
+    pod: { signedBy: '', signature: '', signedAt: '' },
+    ticketImage: '',
+    ticketImageAt: '',
+    approvalStatus: 'pending',
+    submittedAt: '',
+    approvedAt: '',
+    approvedBy: '',
+    rejectReason: '',
+    billStatus: 'not-ready',
+    billedAt: '',
+    locked: false,
+    voided: false,
+    notes: '',
+    // Pricing snapshots
+    tonsPerLoad: qtyPerLoad('ton', s.material),
+    customerRate: customerRate.price,
+    customerUnit: customerRate.unit,
+    customerRateIsDefault: customerRate.isDefault,
+    vendorRate: vendorRate.price,
+    vendorUnit: vendorRate.unit,
+    vendorRateIsDefault: vendorRate.isDefault,
+    vendorIsInternal: vendorRate.isInternal || false,
+  };
+}
+// A PO's materials and status are derived from its loads, never edited.
+function poMaterialsFromLoads(poId) {
+  const counts = {};
+  store.loads.filter(l => l.poId === poId && !l.voided).forEach(l => { counts[l.material] = (counts[l.material] || 0) + (Number(l.loadsAssigned) || 0); });
+  return Object.keys(counts).map(m => ({ material: m, totalLoads: counts[m] }));
+}
+function poStatusFromLoads(po) {
+  const linked = store.loads.filter(l => l.poId === po.id && !l.voided);
+  const allDone = linked.length > 0 && linked.every(l => l.status === 'completed' || l.approvalStatus === 'approved' || l.billStatus === 'billed');
+  return allDone ? 'completed' : (po.deliveryDate > todayStr() ? 'scheduled' : 'active');
+}
+
 // ── API: UPDATE PO ──────────────────────────────────────────────────────────
+// The rules are written down in PO-EDITING.md. The PO is the order; loads are
+// the work. A change to the order follows through to loads that are still
+// OPERATIONAL (pending or rejected, not locked, no trip started, nothing
+// delivered). Loads with a field record — a trip, a delivery, a submission,
+// an approval, an invoice — are HISTORY and keep the facts they were done
+// under. Once any load is approved or billed, the fields that identify the
+// order on an invoice are frozen. Nothing changes until every check passes.
+const PO_EDITABLE = ['poNumber', 'customer', 'customerId', 'job', 'jobCode', 'address', 'city', 'deliveryDate', 'plannedVendorId', 'notes', 'reason', 'force'];
+const PO_INVOICE_FIELDS = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'];
+function loadIsOperational(l) {
+  return !l.voided && !l.locked && l.approvalStatus !== 'submitted' && l.approvalStatus !== 'approved'
+    && !(l.trips || []).length && !(Number(l.loadsDelivered) || 0);
+}
 app.put('/api/pos/:id', reqMgr, async (req, res) => {
   const idx = store.pos.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const old = store.pos[idx];
-  // Once any load on this PO is approved, the fields that identify the PO on
-  // an invoice are frozen — otherwise approved work could be re-labelled to
-  // another customer or PO number after the fact.
-  const hasApproved = store.loads.some(l => l.poId === old.id && l.approvalStatus === 'approved');
+  const body = req.body || {};
+  const unknown = Object.keys(body).filter(k => !PO_EDITABLE.includes(k));
+  if (unknown.length) return res.status(400).json({ error: `These fields cannot be changed through a PO update: ${unknown.join(', ')}. Status and materials follow the loads; jobsite coordinates and customer updates have their own actions.`, rejectedFields: unknown });
+
+  // The customer, resolved as on creation: canonical spelling from the master,
+  // a new name added to it (only once the whole edit is accepted).
+  let customer = old.customer, autoAddedCustomerId = null;
+  if (body.customerId || body.customer !== undefined) {
+    if (!Array.isArray(store.customers)) store.customers = [];
+    const byId = body.customerId ? store.customers.find(c => c.id === body.customerId) : null;
+    const typed = String(body.customer ?? '').trim();
+    if (byId) customer = byId.name;
+    else {
+      if (!typed) return res.status(400).json({ error: 'Customer cannot be blank' });
+      const existing = store.customers.find(c => String(c.name || '').toLowerCase().trim() === typed.toLowerCase());
+      if (existing) customer = existing.name;
+      else { customer = typed; autoAddedCustomerId = 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000); }
+    }
+  }
+  const next = { ...old, customer };
+  for (const k of ['job', 'jobCode', 'address', 'city', 'notes', 'deliveryDate', 'plannedVendorId']) if (body[k] !== undefined) next[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
+  if (body.poNumber !== undefined) next.poNumber = String(body.poNumber).trim();
+  if (customer !== old.customer && body.job === undefined && (old.job || '') === (old.customer || '')) next.job = customer;   // a job name that mirrored the customer follows it
+  if (body.deliveryDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(body.deliveryDate))) return res.status(400).json({ error: 'Delivery date must be YYYY-MM-DD' });
+  let newYard = null;
+  if (body.plannedVendorId !== undefined) {
+    newYard = store.vendors.find(v => v.id === body.plannedVendorId && v.active !== false);
+    if (!newYard) return res.status(400).json({ error: 'Unknown pickup yard' });
+    next.pickup = newYard.name;
+  }
+  const changed = k => String(next[k] ?? '') !== String(old[k] ?? '');
+  const mine = store.loads.filter(l => l.poId === old.id && !l.voided);
+  const hasApproved = store.loads.some(l => l.poId === old.id && (l.approvalStatus === 'approved' || l.billStatus === 'billed'));
   if (hasApproved) {
-    const frozen = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'].filter(k => k in req.body && req.body[k] !== old[k]);
+    const frozen = PO_INVOICE_FIELDS.filter(changed);
     if (frozen.length) return res.status(403).json({ error: `This PO has approved loads; ${frozen.join(', ')} cannot change.`, frozenFields: frozen });
   }
-  if (req.body.poNumber !== undefined && poNumberKey(req.body.poNumber) !== poNumberKey(old.poNumber)) {
-    if (!String(req.body.poNumber).trim()) return res.status(400).json({ error: 'PO number cannot be blank' });
-    if (findPoByNumber(req.body.poNumber, old.id)) return res.status(409).json({ error: duplicatePoMessage(req.body.poNumber), duplicate: true });
+  if (changed('poNumber')) {
+    if (!next.poNumber) return res.status(400).json({ error: 'PO number cannot be blank' });
+    if (findPoByNumber(next.poNumber, old.id)) return res.status(409).json({ error: duplicatePoMessage(next.poNumber), duplicate: true });
   }
-  // Coordinates change only through /location, never through a generic update.
-  const { geo: _ignoredGeo, ...poBody } = req.body || {};
-  const updated = { ...old, ...poBody, id: old.id, createdAt: old.createdAt };
-  store.pos[idx] = updated;
-  // If delivery date changed, sync to all linked loads
-  if (req.body.deliveryDate && req.body.deliveryDate !== old.deliveryDate) {
-    store.loads.filter(l => l.poId === old.id && !l.locked).forEach(l => l.deliveryDate = req.body.deliveryDate);
+  const operational = mine.filter(loadIsOperational);
+
+  // Date: operational loads follow; work in progress and history keep theirs.
+  // A truck or trailer already on another driver's load on the new date is a
+  // conflict — shown in the app, Cancel or go ahead (audited).
+  const dateMoved = changed('deliveryDate') ? operational : [];
+  const dateKept  = changed('deliveryDate') ? mine.filter(l => !loadIsOperational(l)).map(l => l.id) : [];
+  const conflicts = [];
+  for (const l of dateMoved) assignmentConflicts({ ...l, deliveryDate: next.deliveryDate }, { truckUnitId: l.truckUnitId || undefined, trailerId: l.trailerId || undefined }).forEach(c => conflicts.push(c));
+  if (conflicts.length && body.force !== true) {
+    return res.status(409).json({ error: conflicts.map(c => c.message).join(' '), code: 'assignment_conflict', conflicts });
   }
-  logAction(req.session.user, 'updated-po', updated.id, {
-    poNumber: updated.poNumber,
-    changes: Object.keys(req.body),
-    dateChanged: req.body.deliveryDate && req.body.deliveryDate !== old.deliveryDate,
-  });
+  // Customer: operational loads still on the old customer's list rate are
+  // re-priced from the new customer's; a hand-set rate stays.
+  const repriced = [], keptPrice = [], priceChanges = new Map();
+  if (changed('customer')) {
+    for (const l of operational) {
+      const was = resolveCustomerRate(old.customer, l.material);
+      if (Number(l.customerRate) === was.price && (l.customerUnit || 'ton') === was.unit) { priceChanges.set(l.id, resolveCustomerRate(customer, l.material)); repriced.push(l.id); }
+      else keptPrice.push(l.id);
+    }
+  }
+  // Planned yard: operational loads that were following the plan follow it
+  // again, re-priced with that vendor's rate. An explicit yard stays; a yard
+  // a driver already loaded at is a fact (such loads are not operational).
+  const yardChanged = [];
+  if (newYard && changed('plannedVendorId')) {
+    for (const l of operational) if ((l.vendorId || old.plannedVendorId || 'vbt') === (old.plannedVendorId || 'vbt')) yardChanged.push(l.id);
+  }
+  const geoCleared = !!(old.geo && (changed('address') || changed('city')));
+
+  // ── Every check passed: apply ──
+  const now = new Date().toISOString(), by = req.session.user.username;
+  const reason = String(body.reason || '').trim();
+  if (autoAddedCustomerId) store.customers.push({ id: autoAddedCustomerId, name: customer, code: '', address: next.address || '', city: next.city || '', phone: '', email: '', notes: '', active: true, createdAt: now });
+  for (const l of dateMoved) {
+    if (!l.originalScheduledDate) l.originalScheduledDate = l.deliveryDate;
+    l.moveHistory = l.moveHistory || [];
+    l.moveHistory.push({ from: l.deliveryDate, to: next.deliveryDate, reason: reason || 'PO date changed', movedBy: by, movedAt: now, scope: 'po-edit' });
+    l.deliveryDate = next.deliveryDate;
+  }
+  for (const [id, rate] of priceChanges) { const l = mine.find(x => x.id === id); l.customerRate = rate.price; l.customerUnit = rate.unit; l.customerRateIsDefault = rate.isDefault; }
+  for (const id of yardChanged) {
+    const l = mine.find(x => x.id === id);
+    const vr = resolveVendorRate(newYard.id, l.material);
+    l.vendorId = newYard.id; l.vendorName = newYard.name; l.actualYardId = null; l.actualYardName = '';
+    l.vendorRate = vr.price; l.vendorUnit = vr.unit; l.vendorRateIsDefault = vr.isDefault; l.vendorIsInternal = !!vr.isInternal; l.pricePerUnit = vr.price;
+  }
+  if (changed('deliveryDate')) {
+    if (!next.originalDeliveryDate) next.originalDeliveryDate = old.deliveryDate;
+    next.poMoveHistory = [...(old.poMoveHistory || []), { from: old.deliveryDate, to: next.deliveryDate, reason: reason || 'PO date changed', movedBy: by, movedAt: now }];
+  }
+  if (geoCleared) delete next.geo;   // the saved pin described the old address
+  next.id = old.id; next.createdAt = old.createdAt;
+  store.pos[idx] = next;
+  next.status = poStatusFromLoads(next);
+  next.materials = poMaterialsFromLoads(next.id);
+  const fields = {};
+  for (const k of ['poNumber', 'customer', 'job', 'jobCode', 'address', 'city', 'deliveryDate', 'plannedVendorId', 'notes']) if (changed(k)) fields[k] = { from: old[k] ?? '', to: next[k] ?? '' };
+  const propagation = { dateMoved: dateMoved.map(l => l.id), dateKept, repriced, keptPrice, yardChanged, geoCleared,
+    ...(conflicts.length ? { conflictsOverridden: { types: conflicts.map(c => c.type), reason } } : {}) };
+  logAction(req.session.user, 'updated-po', next.id, { poNumber: next.poNumber, changes: Object.keys(fields), fields, propagation });
   await saveData();
-  res.json({ success: true, po: updated });
+  res.json({ success: true, po: next, propagation });
+});
+
+// ── API: ADD A LOAD TO AN ORDER ─────────────────────────────────────────────
+// "They need two more loads" is an edit to the order, not a new PO. The same
+// validation, price snapshot and conflict rules as the New PO form apply, and
+// nothing already on the PO changes. (PO-EDITING.md)
+app.post('/api/pos/:id/loads', reqMgr, async (req, res) => {
+  const po = store.pos.find(p => p.id === req.params.id);
+  if (!po) return res.status(404).json({ error: 'Not found' });
+  const s = req.body || {};
+  if (!s.material || !(Number(s.loadsAssigned) > 0)) return res.status(400).json({ error: 'Material and number of loads are required' });
+  if (s.truckUnitId && !(store.trucks || []).some(t => t.id === s.truckUnitId)) return res.status(400).json({ error: `Unknown truck "${s.truckUnitId}"` });
+  if (s.truckId && !driverRoster().some(d => d.id === s.truckId)) return res.status(400).json({ error: `Unknown or inactive driver "${s.truckId}"` });
+  if (s.vendorId && !store.vendors.some(v => v.id === s.vendorId)) return res.status(400).json({ error: 'Unknown pickup yard' });
+  const rd = s.truckId ? rosterDriver(s.truckId) : null;
+  if (rd && rd.status === 'off') return res.status(400).json({ error: `${rd.name} is marked off today` });
+  const tk = s.truckUnitId ? (store.trucks || []).find(t => t.id === s.truckUnitId) : null;
+  if (tk && (tk.active === false || tk.status === 'maintenance' || tk.status === 'out-of-service')) return res.status(400).json({ error: `${tk.truckNum} is ${tk.active === false ? 'deactivated' : tk.status}` });
+  const blank = { id: 'the new load', poId: po.id, deliveryDate: po.deliveryDate, truckId: null, truckUnitId: null, trailerId: null, driverName: '', trips: [], approvalStatus: 'pending', voided: false };
+  const conflicts = assignmentConflicts(blank, { driverId: s.truckId || undefined, truckUnitId: s.truckUnitId || undefined, trailerId: s.trailerId || undefined }, { skipDriverBusy: true });
+  if (conflicts.length && s.force !== true) return res.status(409).json({ error: conflicts.map(c => c.message).join(' '), code: 'assignment_conflict', conflicts });
+
+  const load = makeLoadForPo(po, { ...s, vendorId: s.vendorId || po.plannedVendorId || 'vbt' });
+  const before = { status: po.status, materials: po.materials };
+  store.loads.push(load);
+  po.materials = poMaterialsFromLoads(po.id);
+  po.status = poStatusFromLoads(po);                      // a completed order with new work is open again
+  logAction(req.session.user, 'added-load', load.id, {
+    poNumber: po.poNumber, customer: po.customer, material: load.material, loadsAssigned: load.loadsAssigned,
+    driver: load.driverName, truck: (getTruckForLoad(load) || {}).truckNum || '', yard: load.vendorName,
+    ...(conflicts.length ? { conflictsOverridden: { types: conflicts.map(c => c.type), reason: String(s.reason || '').trim() } } : {}),
+  });
+  try { await saveData(); }
+  catch (e) {
+    // On record only once saved — the same promise the New PO form makes.
+    store.loads = store.loads.filter(l => l.id !== load.id);
+    po.materials = before.materials; po.status = before.status;
+    store.auditLog = (store.auditLog || []).filter(a => !(a.action === 'added-load' && a.target === load.id));
+    if (isDbError(e)) e.userMessage = 'Unable to save — the database did not accept the write. Nothing was added; please try again.';
+    throw e;
+  }
+  res.json({ success: true, load, po });
 });
 
 // ── API: SAVED LOCATIONS (office only) ──────────────────────────────────────
@@ -2735,21 +3156,36 @@ app.put('/api/vendors/:id/location', reqMgr, (req, res) => locationHandler('vend
 app.put('/api/pos/:id/location',     reqMgr, (req, res) => locationHandler('po', req, res));
 
 // ── API: DELETE PO ──────────────────────────────────────────────────────────
+// Field evidence is never deleted. Anything a driver recorded on the road —
+// a delivered trip, a scale ticket, a customer signature — or work that is
+// waiting for approval, approved, or billed, is corrected by VOIDING (kept,
+// not counted), never by removing the record. A load that was merely
+// assigned, or whose trip was started by mistake with nothing recorded, may
+// still be deleted.
+function loadHasFieldRecord(l) {
+  if (l.approvalStatus === 'approved' || l.approvalStatus === 'submitted') return true;
+  if (l.billingBatchId || l.qbInvoiceId || l.vendorBillId || (l.vendorBillIds || []).length) return true;
+  if ((Number(l.loadsDelivered) || 0) > 0) return true;
+  if ((l.trips || []).some(t => t.ticket || (t.timestamps && t.timestamps.completed))) return true;
+  if (l.pod && (l.pod.signature || l.pod.signatureUrl)) return true;
+  return false;
+}
+function fieldRecordMessage(count, what) {
+  return `Cannot delete — ${count} load${count === 1 ? '' : 's'} ${what} ${count === 1 ? 'has' : 'have'} delivered work, a ticket, a signature, or ${count === 1 ? 'is' : 'are'} awaiting approval or billed. `
+       + 'Deliveries are kept as history: void the load instead (it stops counting, the evidence stays).';
+}
+
 app.delete('/api/pos/:id', reqMgr, async (req, res) => {
   const idx = store.pos.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  // Deleting a PO deletes its loads. Approved work — voided or not — is
-  // historical evidence (ticket, signature, GPS, who approved it) and is
-  // never deleted; neither is anything that has reached a billing batch.
-  // Voided ≠ deleted: a voided approved load stays on the record.
+  // Deleting a PO deletes its loads, so nothing with a field record may be
+  // on it. Voided ≠ deleted: a voided approved load stays on the record.
   const linked = store.loads.filter(l => l.poId === req.params.id);
-  const blocking = linked.filter(l => l.approvalStatus === 'approved' || l.billingBatchId || l.qbInvoiceId);
+  const blocking = linked.filter(loadHasFieldRecord);
   if (blocking.length) {
     const voidedCount = blocking.filter(l => l.voided).length;
     return res.status(403).json({
-      error: `Cannot delete — ${blocking.length} approved load${blocking.length === 1 ? '' : 's'} on this PO`
-           + (voidedCount ? ` (${voidedCount} voided)` : '')
-           + '. Approved deliveries are kept as history even after voiding; this PO stays on record.',
+      error: fieldRecordMessage(blocking.length, 'on this PO') + (voidedCount ? ` (${voidedCount} already voided — they stay as history.)` : ''),
       blockingLoadIds: blocking.map(l => l.id),
     });
   }
@@ -2783,11 +3219,15 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
 
   if (u.role === 'driver') {
     if (l.truckId !== u.truckId) return res.status(403).json({ error: 'Not your load' });
-    // Drivers can only update progress/timestamps/pod/ticket
+    // Drivers attach the signature, the ticket photo and notes here. Progress
+    // (delivered count, timestamps, GPS) comes ONLY from the trip steps — the
+    // state machine is the record, so a direct write is refused, not ignored.
+    const progressFields = ['loadsDelivered', 'timestamps', 'isoStamps', 'gps', 'trips', 'isPartial', 'allTripsDone', 'actualYardId', 'actualYardName'];
+    const attempted = progressFields.filter(k => req.body[k] !== undefined);
+    if (attempted.length) {
+      return res.status(400).json({ error: `Progress is recorded through the trip steps (Start, Arrived, Loaded, Complete); ${attempted.join(', ')} cannot be set directly.`, protectedFields: attempted });
+    }
     const allowed = {};
-    if (req.body.loadsDelivered !== undefined) allowed.loadsDelivered = Number(req.body.loadsDelivered);
-    if (req.body.timestamps) allowed.timestamps = { ...l.timestamps, ...req.body.timestamps };
-    if (req.body.gps)        allowed.gps        = { ...l.gps, ...req.body.gps };
     if (req.body.pod)        allowed.pod        = { ...l.pod, ...req.body.pod };
     if (req.body.ticketImage){ allowed.ticketImage = req.body.ticketImage; allowed.ticketImageAt = new Date().toISOString(); }
     if (req.body.ticketImageUrl){ allowed.ticketImageUrl = req.body.ticketImageUrl; allowed.ticketImageAt = new Date().toISOString(); allowed.ticketImage = ''; /* clear legacy base64 */ }
@@ -2854,11 +3294,11 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
 app.delete('/api/loads/:id', reqMgr, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  if (store.loads[idx].approvalStatus === 'approved') {
-    return res.status(403).json({ error: 'Approved loads cannot be deleted (void instead)' });
-  }
   if (store.loads[idx].billingBatchId || store.loads[idx].qbInvoiceId) {
     return res.status(403).json({ error: 'Load is in a billing batch — void the batch instead of deleting' });
+  }
+  if (loadHasFieldRecord(store.loads[idx])) {
+    return res.status(403).json({ error: 'Cannot delete — this load has delivered work, a ticket, a signature, or is awaiting approval. Deliveries are kept as history: void the load instead (it stops counting, the evidence stays).' });
   }
   const deleted = store.loads[idx];
   store.loads.splice(idx, 1);
@@ -2958,8 +3398,16 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const tripIdx = activeTripIdx(l);
   let trip = l.trips[tripIdx];
   if (!trip && action === 'start-trip') {
-    // Starting a fresh trip — create it
-    trip = { tripNum: tripIdx + 1, timestamps: {}, isoStamps: {}, gps: {} };
+    // Starting a fresh trip — create it. Who drove it and on what is stamped
+    // here, once, so a later reassignment of the load can never re-attribute
+    // hauls that were already done by someone else.
+    const truckOnLoad = getTruckForLoad(l);
+    trip = {
+      tripNum: tripIdx + 1, timestamps: {}, isoStamps: {}, gps: {},
+      driverId: l.truckId || null, driverName: l.driverName || '',
+      truckUnitId: l.truckUnitId || null, truckNum: truckOnLoad ? truckOnLoad.truckNum : '',
+      trailerId: l.trailerId || null,
+    };
     l.trips[tripIdx] = trip;
     // If this is trip ≥ 2, reset top-level intermediate stamps so the step
     // tracker shows the new trip from a clean state. The previous trip's
@@ -2990,6 +3438,9 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   };
 
   if (action === 'start-trip') {
+    // A second tap while the first is still in flight must not move the
+    // recorded start time (or its GPS fix) to the later tap.
+    if (trip.timestamps?.start) return res.status(400).json({ error: `Trip ${trip.tripNum} is already started` });
     stampBoth('start');
   } else if (action === 'arrived-pickup') {
     if (!trip.timestamps?.start) return res.status(400).json({ error: 'Must start trip first' });
@@ -3014,6 +3465,12 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
       // yard each trip used (a driver could rotate yards across trips).
       trip.actualYardId   = yard.id;
       trip.actualYardName = yard.name;
+      // Cost follows the actual yard. The vendor rate for THIS trip is fixed
+      // here, at the scale, from the yard the driver really used — a planned
+      // VBT pickup that turns into a Vulcan pickup is costed at Vulcan's price.
+      const vr = resolveVendorRate(yard.id, l.material);
+      trip.vendorRate = vr.price; trip.vendorUnit = vr.unit || 'ton';
+      trip.vendorRateIsDefault = !!vr.isDefault; trip.vendorIsInternal = !!vr.isInternal;
     }
     if (dec.join) {
       joinSegment(dec.join, l, yard);
@@ -3047,6 +3504,7 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'loaded', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'arrived-jobsite') {
     if (!trip.timestamps?.loadedAt) return res.status(400).json({ error: 'Must mark loaded / leaving yard first' });
+    if (trip.timestamps?.arrivedJobsite) return res.status(400).json({ error: 'Already marked arrived at the job site' });
     stampBoth('arrivedJobsite');
     notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'arrivedJobsite', { user: u.username, trip, loadNum: (l.loadsDelivered || 0) + 1 });
   } else if (action === 'trip-complete') {
@@ -3218,7 +3676,7 @@ function segmentsForLoad(l) { return (store.freightSegments || []).filter(x => (
 function segmentTrips(seg) {
   const out = [];
   for (const lid of seg.loadIds || []) {
-    const l = store.loads.find(x => x.id === lid); if (!l) continue;
+    const l = findLoadAnywhere(lid); if (!l) continue;
     for (const t of (l.trips || [])) if (t.freightSegmentId === seg.id) out.push({ load: l, trip: t });
   }
   return out;
@@ -3228,7 +3686,11 @@ function segmentTrips(seg) {
 // exactly like a load's own lock.
 function segmentLocked(seg) {
   if (seg.status !== 'closed') return false;
-  const loads = (seg.loadIds || []).map(id => store.loads.find(l => l.id === id)).filter(Boolean);
+  // Closed by the office on the driver's behalf (a forgotten End day): the
+  // ending time and odometer are the office's, not the driver's, so the
+  // segment waits for a manager to confirm or correct them before it locks.
+  if (seg.needsReview) return false;
+  const loads = (seg.loadIds || []).map(findLoadAnywhere).filter(Boolean);
   // A voided load means a correction is under way: the segment opens for
   // correction with it, and locks again when the load is restored or re-run.
   return loads.length > 0 && loads.every(l => l.approvalStatus === 'approved' && !l.voided);
@@ -3236,7 +3698,7 @@ function segmentLocked(seg) {
 function segmentPublic(seg) {
   if (!seg) return null;
   const trips = segmentTrips(seg);
-  const loads = (seg.loadIds || []).map(id => store.loads.find(l => l.id === id)).filter(Boolean);
+  const loads = (seg.loadIds || []).map(findLoadAnywhere).filter(Boolean);
   const tons = loads.reduce((acc, l) => { const t = loadTons(l); acc.actual += t.actualTons; acc.planned += t.plannedTons || 0; return acc; }, { actual: 0, planned: 0 });
   const tripTons = trips.reduce((s, x) => s + (x.trip.ticket && x.trip.ticket.netTons != null ? Number(x.trip.ticket.netTons) : 0), 0);
   const billableMinutes = seg.timeEnd ? Math.max(0, Math.round((Date.parse(seg.timeEnd) - Date.parse(seg.timeStart)) / 60000)) : null;
@@ -3252,7 +3714,7 @@ function segmentPublic(seg) {
     loadActualTons: Math.round(tons.actual * 100) / 100,
     plannedTons: Math.round(tons.planned * 100) / 100,
     ticketNumbers: trips.map(x => x.trip.ticket && x.trip.ticket.number).filter(Boolean),
-    poNumbers: [...new Set(loads.map(l => (store.pos.find(p => p.id === l.poId) || {}).poNumber).filter(Boolean))],
+    poNumbers: [...new Set(loads.map(l => (findPoAnywhere(l.poId) || {}).poNumber).filter(Boolean))],
     locked: segmentLocked(seg),
     approvedLoads: loads.filter(l => l.approvalStatus === 'approved' && !l.voided).length,
   };
@@ -3268,6 +3730,9 @@ function validateSegmentWindow(shift, seg, { odStart, odEnd }, excludeId) {
   if (odEnd != null && odEnd < odStart) return `The ending odometer (${odEnd.toLocaleString()}) cannot be below the starting odometer (${odStart.toLocaleString()})`;
   for (const other of segmentsForShift(shift)) {
     if (other.id === (excludeId || seg.id) || other.odEnd == null) continue;
+    // Odometers are per vehicle: after a truck change, the new truck's
+    // readings have nothing to do with the freight closed on the old one.
+    if (other.truckId && seg.truckId && other.truckId !== seg.truckId) continue;
     const a = odStart, z = odEnd == null ? odStart : odEnd;
     if (a < other.odEnd && z > other.odStart) return `Overlaps the ${other.customer} freight (${other.odStart.toLocaleString()} → ${other.odEnd.toLocaleString()})`;
     if (odEnd == null && a < other.odEnd) return `Odometer ${a.toLocaleString()} is inside the closed ${other.customer} freight (${other.odStart.toLocaleString()} → ${other.odEnd.toLocaleString()})`;
@@ -3332,7 +3797,7 @@ function segmentDecision(u, l, po, yard, body) {
   // repositioning, inside the day's miles only. No segment, no odometer.
   if (yard && isInternalYardId(yard.id)) return { none: true, internal: true };
   const odo = parseOdometer(body.odometer);
-  const floor = Math.max(currentOdometerFloor(shift), ...segmentsForShift(shift).filter(x => x.odEnd != null).map(x => x.odEnd));
+  const floor = Math.max(currentOdometerFloor(shift), ...segmentsForShift(shift).filter(x => x.odEnd != null && x.truckId === shift.truckId).map(x => x.odEnd));
   // A request for one more input, not a refusal: answered 200 with success:false
   // so the phone's console stays clean and the app opens the odometer prompt.
   if (odo == null) return { status: 200, code: 'odometer_required', error: `Starting freight for ${po.customer}: ${yard ? yard.name : 'pickup'} → ${destinationLabelOf(po)}. Enter the odometer reading now.`, preview: { customer: po.customer, originName: yard ? yard.name : '', destinationLabel: destinationLabelOf(po), floor, truckNum: shift.truckNum } };
@@ -3413,7 +3878,10 @@ app.put('/api/freight-segments/:id', reqMgr, async (req, res) => {
   if (bad) return res.status(400).json({ error: bad });
   seg.edits.push({ at: new Date().toISOString(), by: req.session.user.username, type: 'edit', reason, before: { odStart: seg.odStart, odEnd: seg.odEnd, timeStart: seg.timeStart, timeEnd: seg.timeEnd }, after: next });
   Object.assign(seg, next);
-  logAction(req.session.user, 'edited-freight-segment', seg.id, { customer: seg.customer, reason, after: next });
+  // A manager edit with a reason is the review an office-closed segment waits for.
+  const reviewed = !!seg.needsReview;
+  if (reviewed) { seg.reviewedAt = new Date().toISOString(); seg.reviewedBy = req.session.user.username; seg.needsReview = null; }
+  logAction(req.session.user, 'edited-freight-segment', seg.id, { customer: seg.customer, reason, after: next, reviewed });
   await saveData();
   res.json({ success: true, segment: segmentPublic(seg) });
 });
@@ -3426,11 +3894,11 @@ app.get('/api/freight-segments/:id/freight-bill', reqAuth, (req, res) => {
   const trips = segmentTrips(seg);
   const kv = (k, v) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(v == null || v === '' ? '—' : v)}</div></div>`;
   const rows = trips.map(({ load, trip }, i) => {
-    const po = store.pos.find(x => x.id === load.poId) || {};
+    const po = findPoAnywhere(load.poId) || {};
     const ts = trip.timestamps || {};
     return `<tr><td>${i + 1}</td><td>${esc(po.poNumber || '')}</td><td>${esc(load.material)}</td><td>${esc(trip.actualYardName || seg.originName)}</td><td>${esc(trip.ticket ? trip.ticket.number : '—')}${trip.ticket && trip.ticket.source === 'vbt' ? ' <small>(VBT)</small>' : ''}</td><td class="r">${trip.ticket && trip.ticket.netTons != null ? Number(trip.ticket.netTons).toFixed(2) : '—'}</td><td>${esc(ts.arrivedPickup || '')}</td><td>${esc(ts.loadedAt || '')}</td><td>${esc(ts.arrivedJobsite || '')}</td><td>${esc(ts.completed || '')}</td></tr>`;
   }).join('');
-  const body = `<h1>Freight Bill / Log</h1><div class="sub">${esc(seg.date)} · <span class="stamp ${p.locked ? 'final' : 'draft'}">${p.locked ? 'FINAL — all loads approved' : (seg.status === 'open' ? 'DRAFT — freight still open' : 'DRAFT — awaiting approval')}</span></div>
+  const body = `<h1>Freight Bill / Log</h1><div class="sub">${esc(seg.date)} · <span class="stamp ${p.locked ? 'final' : 'draft'}">${p.locked ? 'FINAL — all loads approved' : (seg.status === 'open' ? 'DRAFT — freight still open' : seg.needsReview ? 'DRAFT — closed by the office, awaiting review' : 'DRAFT — awaiting approval')}</span></div>
   <div class="grid">${kv('Customer', seg.customer)}${kv('PO', p.poNumbers.join(', '))}${kv('Origin', seg.originName + (seg.originYards.length > 1 ? ` (+ ${seg.originYards.slice(1).map(y => y.name).join(', ')})` : ''))}${kv('Destination', seg.destination.label)}
     ${kv('Driver', seg.driverName)}${kv('Truck', seg.truckNum)}${kv('Trailer', seg.trailerNum)}
     ${kv('Time start', fmtClock(seg.timeStart))}${kv('Time end', seg.timeEnd ? fmtClock(seg.timeEnd) : 'open')}${kv('Total hours', p.billableHours == null ? null : p.billableHours.toFixed(2))}
@@ -3624,6 +4092,12 @@ async function endShift(s, { odometer, by, reason, signature, forced }) {
   if (openSeg && forced) {
     const closed = await closeOpenSegmentForShift(s, { odometer: odo, by, reason: 'end-of-day-manager', at: now });
     if (closed && closed.error) return { error: closed.error };
+    // The office typed this ending; the driver never confirmed it. Flag the
+    // segment so it cannot lock (and its Freight Bill cannot go FINAL) until a
+    // manager reviews the window with a reason.
+    if (closed && !closed.error) {
+      closed.needsReview = { at: now, by: by.username, reason: reason || 'closed by manager', note: 'Ending time and odometer were entered by the office when the day was closed for the driver. Review or correct them, then confirm with a reason.' };
+    }
   }
   (s.breaks || []).forEach(b => { if (!b.endAt) b.endAt = now; });
   if (signature) { const sig = await storeSignature(signature, 'shift'); if (!sig.error) { s.endSignatureUrl = sig.url; s.endSignature = sig.inline; } }
@@ -3753,11 +4227,62 @@ app.put('/api/loads/:id/trips/:tripNum/ticket', reqAuth, async (req, res) => {
 });
 
 // ── API: MANAGER APPROVALS ──────────────────────────────────────────────────
+// ── APPROVAL CHECKLIST ───────────────────────────────────────────────────────
+// What the office confirms before a load is approved and locked for billing:
+// who hauled it, on which truck, from which yard, the ticket(s), and the
+// delivery (count and signature). Every item is a fact from the record, never
+// an assumption. A ⚠ item does not stop the manager: approving with it is a
+// decision, taken in the app (acknowledge: true) and written to the audit log
+// and onto the load, so billing can see what was known to be missing.
+function approvalChecklist(l) {
+  const po = findPoAnywhere(l.poId) || {};
+  const truck = getTruckForLoad(l);
+  const pickup = resolvePickupYard(l, po);
+  const trips = l.trips || [];
+  const yardIds = [...new Set(trips.filter(t => t.actualYardId).map(t => t.actualYardId))];
+  const yardName = id => (store.vendors.find(v => v.id === id) || {}).name || id;
+  const tons = loadTons(l);
+  const pod = l.pod || {};
+  const delivered = Number(l.loadsDelivered) || 0;
+  const hasDriver = !!(l.truckId && l.truckId !== 'unassigned');
+  const items = [];
+  items.push({ key: 'driver', label: 'Driver', ok: hasDriver, value: l.driverName || (hasDriver ? l.truckId : ''),
+    note: !hasDriver ? 'no driver on this load' : (l.reassignHistory || []).length ? `handed over ${l.reassignHistory.length}× — each trip keeps its own driver` : '' });
+  items.push({ key: 'truck', label: 'Truck', ok: !!truck, value: truck ? truck.truckNum : '', note: truck ? '' : 'no truck recorded on this load' });
+  items.push({ key: 'pickup', label: 'Pickup yard', ok: true,
+    value: yardIds.length === 1 ? yardName(yardIds[0]) : yardIds.length > 1 ? yardIds.map(yardName).join(' + ') : pickup.name,
+    note: yardIds.length ? 'confirmed at the scale' : trips.length ? 'planned yard — arrival was never confirmed' : 'planned yard' });
+  const ticketProblems = [];
+  if (!l.ticketImage && !l.ticketImageUrl) ticketProblems.push('no ticket photo');
+  if (tons.missingTickets.length) ticketProblems.push(`no ticket on trip ${tons.missingTickets.join(', ')}`);
+  if (customerBillingBasis(po.customer) === 'actual' && delivered > 0 && !tons.actualComplete)
+    ticketProblems.push(`${po.customer} is billed on actual tons and ${Math.max(1, delivered - tons.ticketsWithTons)} ticket(s) have no tons`);
+  items.push({ key: 'ticket', label: 'Ticket', ok: !ticketProblems.length,
+    value: tons.tickets ? `${tons.tickets} ticket${tons.tickets === 1 ? '' : 's'}${tons.ticketsWithTons ? ` · ${tons.actualTons} t` : ''}` : ((l.ticketImage || l.ticketImageUrl) ? 'photo on file' : ''),
+    note: ticketProblems.join('; ') || (tons.plannedTons != null ? `planned ${tons.plannedTons} t${tons.ticketsWithTons ? `, actual ${tons.actualTons} t` : ''}` : '') });
+  const signed = !!(pod.signedBy && (pod.signature || pod.signatureUrl));
+  const deliveryProblems = [];
+  if (!delivered) deliveryProblems.push('nothing delivered');
+  if (!signed) deliveryProblems.push('no customer signature');
+  items.push({ key: 'delivery', label: 'Delivery', ok: !deliveryProblems.length,
+    value: `${delivered}/${l.loadsAssigned} load${l.loadsAssigned === 1 ? '' : 's'}${l.isPartial ? ' (partial)' : ''}${signed ? ` · signed by ${pod.signedBy}` : ''}`,
+    note: deliveryProblems.join('; ') || (l.isPartial ? 'submitted as incomplete by the driver' : '') });
+  const warnings = items.filter(i => !i.ok).map(i => `${i.label}: ${i.note}`);
+  return { items, warnings, ready: !warnings.length };
+}
+
 app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const l = store.loads[idx];
   if (l.approvalStatus !== 'submitted') return res.status(400).json({ error: 'Load not submitted for approval' });
+  // The checklist is confirmed in the app; a load with a ⚠ item is approved
+  // only with an explicit acknowledgement, and what was missing is recorded.
+  const check = approvalChecklist(l);
+  if (!check.ready && req.body?.acknowledge !== true) {
+    return res.status(409).json({ error: `This load is not complete — ${check.warnings.join('; ')}.`, code: 'approval_incomplete', checklist: check });
+  }
+  if (!check.ready) l.approvalWarnings = check.warnings;
   l.approvalStatus = 'approved';
   l.approvedAt     = new Date().toISOString();
   l.approvedBy     = req.session.user.displayName || req.session.user.username;
@@ -3786,9 +4311,10 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
     actualTons:  tons.actualTons,
     tickets:     tons.ticketNumbers,
     missingTickets: tons.missingTickets,
+    ...(check.ready ? {} : { approvedWithWarnings: check.warnings }),
   });
   await saveData();
-  res.json({ success: true });
+  res.json({ success: true, approvedWithWarnings: check.ready ? [] : check.warnings });
 });
 
 app.post('/api/loads/:id/reject', reqMgr, async (req, res) => {
@@ -3844,12 +4370,17 @@ app.post('/api/loads/:id/void', reqMgr, async (req, res) => {
   l.voidedAt   = new Date().toISOString();
   l.voidedBy   = req.session.user.displayName || req.session.user.username;
   l.voidReason = reason;
+  // Remember what the billing state was, so restoring the load puts it back
+  // exactly there. A load marked billed by hand must never come back as
+  // "ready" — that is how the same delivery gets invoiced twice.
+  l.billStatusBeforeVoid = l.billStatus || 'not-ready';
   l.billStatus = 'voided';   // out of Ready to Bill; approvalStatus is left as history
 
   logAction(req.session.user, 'voided-load', l.id, {
     poNumber: po.poNumber || '', customer: po.customer || '',
     material: l.material, driver: l.driverName,
     delivered: l.loadsDelivered, wasApproved: l.approvalStatus === 'approved',
+    wasBilled: l.billStatusBeforeVoid === 'billed',
     reason,
   });
   await saveData();
@@ -3864,7 +4395,11 @@ app.post('/api/loads/:id/unvoid', reqMgr, async (req, res) => {
   if (!l.voided) return res.status(400).json({ error: 'This load is not voided' });
 
   l.voided = false;
-  l.billStatus = l.approvalStatus === 'approved' ? 'ready' : 'not-ready';
+  // Back to the billing state it had before the void. Approved-and-unbilled
+  // returns to Ready to Bill; a load that was already billed stays billed.
+  const before = l.billStatusBeforeVoid;
+  l.billStatus = before === 'billed' ? 'billed' : (l.approvalStatus === 'approved' ? 'ready' : 'not-ready');
+  delete l.billStatusBeforeVoid;
   const prior = l.voidReason;
   l.unvoidedAt = new Date().toISOString();
   l.unvoidedBy = req.session.user.displayName || req.session.user.username;
@@ -3872,7 +4407,7 @@ app.post('/api/loads/:id/unvoid', reqMgr, async (req, res) => {
   l.voidedAt = '';
   l.voidedBy = '';
 
-  logAction(req.session.user, 'unvoided-load', l.id, { previousReason: prior });
+  logAction(req.session.user, 'unvoided-load', l.id, { previousReason: prior, billStatus: l.billStatus });
   await saveData();
   res.json({ success: true, load: l });
 });
@@ -3885,16 +4420,25 @@ app.get('/api/ready-to-bill', reqMgr, (req, res) => {
   if (filters.material) items = items.filter(l => l.material === filters.material);
   if (filters.truckId)  items = items.filter(l => l.truckId === filters.truckId);
   if (filters.poId)     items = items.filter(l => l.poId === filters.poId);
-  // Enrich with PO data
+  // Enrich with PO data and what each load is worth as it stands — priced by
+  // the same engine that prices the invoice, so the screen and QuickBooks agree.
   const enriched = items.map(l => {
     const po = store.pos.find(p => p.id === l.poId) || {};
-    return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address };
+    const r = revenueDetail(l);
+    const priceable = r.amount != null && !r.unconfigured;
+    return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address,
+      amount: priceable ? Math.round(r.amount * 100) / 100 : null, priceable,
+      priceReason: priceable ? '' : (r.reason || 'not priceable yet'), basis: r.basis || 'planned', rateLabel: `$${r.rate}/${r.unit}` };
   });
-  res.json({ items: enriched });
+  const priced = enriched.filter(x => x.priceable);
+  res.json({ items: enriched, totals: { count: enriched.length, amount: Math.round(priced.reduce((s, x) => s + x.amount, 0) * 100) / 100, priced: priced.length, unpriced: enriched.length - priced.length } });
 });
 
 app.post('/api/loads/bill', reqMgr, async (req, res) => {
   const ids = req.body.loadIds || [];
+  // The invoice made outside QuickBooks, so the record says where the money
+  // went. The screen requires it; the API keeps it optional for older callers.
+  const reference = String(req.body.reference || '').trim();
   let count = 0;
   const billedIds = [];
   const skipped = [];
@@ -3906,6 +4450,8 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
     if (l.billingBatchId || l.qbInvoiceId) { skipped.push(l.id); return; }
     l.billStatus = 'billed';
     l.billedAt   = new Date().toISOString();
+    l.billedBy   = req.session.user.username;
+    l.manualBillRef = reference;
     billedIds.push(l.id);
     count++;
   });
@@ -3919,10 +4465,41 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
     logAction(req.session.user, 'marked-billed', '', {
       count,
       loadIds: billedIds,
+      reference,
     });
   }
   await saveData();
   res.json({ success: true, billed: count });
+});
+
+// ── API: UNBILL (manual billing only) ───────────────────────────────────────
+// The reverse of "Mark Billed (manual)", for a load that was marked billed by
+// hand and never reached QuickBooks: it goes back to Ready to Bill with the
+// reason on the record. A load on a billing batch or with an invoice is never
+// unbilled here — voiding the batch is the one way to release it, so the
+// invoice in QuickBooks and the load can never disagree. There is no button
+// that re-bills anything silently.
+app.post('/api/loads/:id/unbill', reqMgr, async (req, res) => {
+  const l = store.loads.find(x => x.id === req.params.id);
+  if (!l) {
+    const archived = findLoadAnywhere(req.params.id);
+    return res.status(archived ? 400 : 404).json({ error: archived ? 'This load is archived. Unarchive its batch first, then unbill it.' : 'Load not found' });
+  }
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to unbill' });
+  if (l.billStatus !== 'billed') return res.status(400).json({ error: 'This load is not billed' });
+  if (l.billingBatchId || l.qbInvoiceId) {
+    return res.status(409).json({
+      error: `This load was billed through batch ${l.billingBatchId || ''}${l.qbInvoiceNumber ? ` (invoice ${l.qbInvoiceNumber})` : ''}. Void the batch to release it — the invoice and the load must never disagree.`,
+      code: 'billed_by_batch', billingBatchId: l.billingBatchId || null,
+    });
+  }
+  const was = { billedAt: l.billedAt || '', billedBy: l.billedBy || '', reference: l.manualBillRef || '' };
+  l.billStatus = 'ready'; l.billedAt = ''; l.billedBy = ''; l.manualBillRef = '';
+  l.billHistory = [...(l.billHistory || []), { action: 'unbilled', at: new Date().toISOString(), by: req.session.user.username, reason, ...was }];
+  logAction(req.session.user, 'unbilled-load', l.id, { reason, ...was });
+  await saveData();
+  res.json({ success: true, load: l });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4287,8 +4864,9 @@ app.get('/api/billing-batches', reqMgr, (req, res) => {
 app.get('/api/billing-batches/:id', reqMgr, (req, res) => {
   const b = store.billingBatches.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Batch not found' });
-  // Enrich with load detail so the UI can show full ticket/signature URLs
-  const loads = b.loadIds.map(lid => store.loads.find(l => l.id === lid)).filter(Boolean).map(l => ({
+  // Enrich with load detail so the UI can show full ticket/signature URLs.
+  // Archived loads still belong to their batch.
+  const loads = b.loadIds.map(findLoadAnywhere).filter(Boolean).map(l => ({
     id: l.id,
     deliveryDate: l.deliveryDate,
     material: l.material,
@@ -4301,6 +4879,32 @@ app.get('/api/billing-batches/:id', reqMgr, (req, res) => {
   }));
   res.json({ batch: b, loads });
 });
+
+// Write a QuickBooks invoice back onto the batch and each of its loads. Used
+// by a normal send and by a retry that found the invoice QuickBooks created
+// during an interrupted send.
+function recordInvoiceOnBatch(b, invoice, user) {
+  b.qbInvoiceId = invoice.Id;
+  b.qbInvoiceNumber = invoice.DocNumber || '';
+  b.qbDocNumber = invoice.DocNumber || '';
+  b.sentAt = new Date().toISOString();
+  b.sentBy = user;
+  b.syncStatus = 'sent_to_quickbooks';
+  b.syncingSince = '';
+  b.mayExistInQuickBooks = false;
+  b.errorMessage = '';
+  for (const lid of b.loadIds) {
+    const l = findLoadAnywhere(lid);
+    if (l) {
+      l.qbInvoiceId = invoice.Id;
+      l.qbInvoiceNumber = invoice.DocNumber || '';
+      l.sentToQuickBooksAt = b.sentAt;
+      l.billStatus = 'billed';
+      l.billedAt = b.sentAt;
+    }
+  }
+  if (store.qbConnection) store.qbConnection.lastSyncAt = b.sentAt;
+}
 
 // Send a batch to QuickBooks: ensures customer exists, creates invoice, attaches
 // ticket photos + signatures, writes IDs back to the batch and each load.
@@ -4382,13 +4986,7 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
       txnDate: b.deliveryEnd || b.deliveryStart || undefined,
     });
     if (!invoice?.Id) throw new Error('QuickBooks did not return an invoice ID');
-    b.qbInvoiceId = invoice.Id;
-    b.qbInvoiceNumber = invoice.DocNumber || '';
-    b.qbDocNumber = invoice.DocNumber || '';
-    b.sentAt = new Date().toISOString();
-    b.sentBy = user;
-    b.syncStatus = 'sent_to_quickbooks';
-    b.syncingSince = '';
+    recordInvoiceOnBatch(b, invoice, user);
 
     logQbSync({
       actionType: 'create_invoice',
@@ -4400,19 +4998,7 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
       user,
     });
 
-    // 4. Mark loads as sent
-    for (const lid of b.loadIds) {
-      const l = store.loads.find(x => x.id === lid);
-      if (l) {
-        l.qbInvoiceId = invoice.Id;
-        l.qbInvoiceNumber = invoice.DocNumber || '';
-        l.sentToQuickBooksAt = b.sentAt;
-        l.billStatus = 'billed';
-        l.billedAt = b.sentAt;
-      }
-    }
-    conn.lastSyncAt = b.sentAt;
-
+    // 4. Loads were marked billed by recordInvoiceOnBatch above.
     // Save before attempting attachments — if attachments fail we still have a valid invoice.
     await saveData();
 
@@ -4469,9 +5055,15 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
     console.error('[qb send]', e);
     b.syncStatus = 'failed';
     b.syncingSince = '';
+    // No answer from QuickBooks (timeout, dropped connection) is not the same
+    // as a refusal: the invoice may have been created on Intuit's side. The
+    // batch remembers that, and Retry looks the invoice up before creating one.
+    b.mayExistInQuickBooks = !b.qbInvoiceId && !!e.uncertain;
     b.errorMessage = b.qbInvoiceId
       ? `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} was created in QuickBooks but finishing the batch failed: ${e.message}. Do not resend; void the batch to correct it.`
-      : e.message;
+      : b.mayExistInQuickBooks
+        ? `QuickBooks did not answer (${e.message}). The invoice may or may not have been created. Retry checks QuickBooks for it before creating another.`
+        : e.message;
     if (store.qbConnection) store.qbConnection.lastError = e.message;
     logQbSync({
       actionType: 'create_invoice',
@@ -4534,8 +5126,10 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
 
   // Free the loads so a corrected batch can be created. Loads themselves are
   // NOT deleted — they keep their approved/locked status and full audit trail.
+  // An archived load is released too (in its archive copy), so the record
+  // never says "billed" against an invoice that no longer exists.
   for (const lid of b.loadIds) {
-    const l = store.loads.find(x => x.id === lid);
+    const l = findLoadAnywhere(lid);
     if (l) {
       l.billingBatchId = '';
       l.billStatus = 'ready';     // back to ready-to-bill so a corrected batch can pick it up
@@ -4555,8 +5149,47 @@ app.post('/api/billing-batches/:id/retry', reqMgr, async (req, res) => {
   const b = store.billingBatches.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Batch not found' });
   if (b.syncStatus !== 'failed') return res.status(400).json({ error: 'Only failed batches can be retried' });
+  const user = req.session.user.username;
   if (b.qbInvoiceId) {
-    return res.status(409).json({ error: `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} already exists in QuickBooks for this batch. Retrying would create a second one; void the batch instead.` });
+    // The invoice exists; the batch failed AFTER it was created (the save or
+    // an attachment step). Confirm it is in QuickBooks and mark the batch
+    // sent — never a second invoice, never a batch stuck between states.
+    const conn = store.qbConnection;
+    if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} exists for this batch, but QuickBooks is not connected to confirm it. Reconnect QuickBooks, then retry.` });
+    let inv = null;
+    try { inv = await qb.getEntity(conn, 'Invoice', b.qbInvoiceId); }
+    catch (e) { return res.status(502).json({ error: `Could not confirm invoice ${b.qbInvoiceNumber || b.qbInvoiceId} in QuickBooks: ${e.message}. Nothing changed; retry in a moment.` }); }
+    if (!inv) return res.status(409).json({ error: `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} is recorded on this batch but QuickBooks does not have it. Void the batch (stating it was already voided in QuickBooks) and bill again.` });
+    recordInvoiceOnBatch(b, inv, user);
+    logQbSync({ actionType: 'recover_invoice', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Invoice', qbEntityId: inv.Id, requestSummary: `Confirmed invoice ${inv.DocNumber || inv.Id} in QuickBooks after an interrupted send; batch marked sent. Ticket and signature attachments were not uploaded — add them in QuickBooks if needed.`, user });
+    logAction(req.session.user, 'recovered-billing-batch', b.id, { invoiceId: inv.Id, invoiceNumber: inv.DocNumber || '' });
+    await saveData();
+    return res.json({ success: true, recovered: true, batch: b });
+  }
+  // The failed send got no answer from QuickBooks (or the process restarted
+  // mid-send): look the invoice up there first. Found → adopt it, mark the
+  // loads billed, and nothing is re-created. Not found → safe to send again.
+  if (b.mayExistInQuickBooks) {
+    const conn = store.qbConnection;
+    if (!conn?.realmId || conn.status !== 'connected') {
+      return res.status(400).json({ error: 'QuickBooks is not connected, so it cannot be checked for an invoice from the interrupted send. Reconnect QuickBooks, then retry.' });
+    }
+    let found = null;
+    try {
+      found = await qb.findInvoiceForBatch(conn, { docNumber: b.poNumber ? String(b.poNumber).slice(0, 21) : '', batchId: b.id, qbCustomerId: b.qbCustomerId });
+    } catch (e) {
+      logQbSync({ actionType: 'find_invoice', relatedBatchId: b.id, responseStatus: 'error', errorMessage: e.message, user });
+      return res.status(502).json({ error: `Could not check QuickBooks for an existing invoice: ${e.message}. Nothing was sent; retry in a moment.` });
+    }
+    if (found) {
+      recordInvoiceOnBatch(b, found, user);
+      logQbSync({ actionType: 'recover_invoice', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Invoice', qbEntityId: found.Id, requestSummary: `Found invoice ${found.DocNumber || found.Id} in QuickBooks from the interrupted send; batch marked sent, nothing re-created. Ticket and signature attachments were not uploaded — add them in QuickBooks if needed.`, user });
+      logAction(req.session.user, 'recovered-billing-batch', b.id, { invoiceId: found.Id, invoiceNumber: found.DocNumber || '' });
+      await saveData();
+      return res.json({ success: true, recovered: true, batch: b });
+    }
+    b.mayExistInQuickBooks = false;
+    logQbSync({ actionType: 'find_invoice', relatedBatchId: b.id, requestSummary: 'No invoice found in QuickBooks for the interrupted send; safe to create', user });
   }
   // Reset so the client can POST /send again.
   b.syncStatus = 'ready_to_bill';
@@ -4564,68 +5197,95 @@ app.post('/api/billing-batches/:id/retry', reqMgr, async (req, res) => {
   b.syncingSince = '';
   logAction(req.session.user, 'retry-billing-batch', b.id, {});
   await saveData();
-  // Re-issue a request to /send by calling the handler directly is tricky; the
-  // simpler approach is to have the client POST to /send after /retry. So just
-  // confirm reset and let the client trigger /send.
+  // The client POSTs /send after /retry; the reset is confirmed here.
   res.json({ success: true, batch: b });
 });
 
 // ── VENDOR BILLS (PAYABLES) ─────────────────────────────────────────────────
+// One bill per vendor, built from what was ACTUALLY loaded at that vendor's
+// yard: cost lines come from loadCostLines(), trip by trip, so a load whose
+// trips rotated between yards is billed to each yard for its own trips. Each
+// trip is claimed by the bill that includes it (trip.vendorBillId), so the
+// same haul can never be billed to a vendor twice.
 function buildVendorBillGroups(loadIds) {
   const out = new Map();
   for (const id of loadIds) {
-    const l = store.loads.find(x => x.id === id);
+    const l = findLoadAnywhere(id);          // archived loads are still owed to their vendor
     if (!l) continue;
     if (l.approvalStatus !== 'approved') continue;
     if (l.voided) continue;
-    if (l.vendorBillId) continue;  // already in a bill
-    const vendorId = resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).id;
-    if (!vendorId || vendorId === 'vbt') continue;  // skip internal yard
-    const v = store.vendors.find(x => x.id === vendorId);
-    if (!v) continue;
-    const key = vendorId;
-    if (!out.has(key)) out.set(key, { vendorId, vendor: v, loads: [] });
-    out.get(key).loads.push(l);
+    for (const ln of loadCostLines(l, { unbilledOnly: true })) {
+      if (ln.internal || !ln.yardId) continue;            // our own yard: no vendor to pay
+      const v = store.vendors.find(x => x.id === ln.yardId);
+      if (!v) continue;
+      // A default rate is an estimate, not the vendor's price. It may show on
+      // Material Costs as an estimate, but it never goes on a bill: the office
+      // adds the vendor's price, and the bill is built from that.
+      if (ln.isDefault && !ln.unconfigured) { ln.unconfigured = true; ln.reason = `no ${v.name} price on file for ${ln.material} — add it under Vendors & Prices, then bill`; }
+      if (!out.has(v.id)) out.set(v.id, { vendorId: v.id, vendor: v, lines: new Map(), loadIds: [], tripRefs: [], dates: [], unconfigured: false, reasons: [] });
+      const g = out.get(v.id);
+      if (!g.loadIds.includes(l.id)) g.loadIds.push(l.id);
+      g.dates.push(l.deliveryDate);
+      // What this bill claims: each recorded trip, the hand-counted remainder
+      // ('extra'), or the whole load when there are no trip records at all.
+      const refs = ln.tripNums.map(n => ({ loadId: l.id, tripNum: n }));
+      if (ln.extraLoads) refs.push({ loadId: l.id, tripNum: 'extra' });
+      if (!refs.length) refs.push({ loadId: l.id, tripNum: null });
+      g.tripRefs.push(...refs);
+      const lk = `${ln.material}|${ln.unit}|${ln.rate}`;
+      if (!g.lines.has(lk)) g.lines.set(lk, { material: ln.material, unit: ln.unit, rate: ln.rate, isDefault: false, loads: 0, tons: 0, amount: 0, loadIds: [], tripRefs: [], unconfigured: false, reasons: [] });
+      const gl = g.lines.get(lk);
+      gl.loads += ln.loads;
+      gl.amount += ln.amount;
+      gl.tons += ln.unit === 'ton' ? ln.quantity : 0;
+      if (!gl.loadIds.includes(l.id)) gl.loadIds.push(l.id);
+      gl.tripRefs.push(...refs);
+      if (ln.isDefault) gl.isDefault = true;
+      if (ln.unconfigured) {
+        gl.unconfigured = true; g.unconfigured = true;
+        if (!gl.reasons.includes(ln.reason)) gl.reasons.push(ln.reason);
+        if (!g.reasons.includes(ln.reason)) g.reasons.push(ln.reason);
+      }
+    }
   }
   const groups = [];
   for (const g of out.values()) {
-    const dates = g.loads.map(l => l.deliveryDate).filter(Boolean).sort();
-    const lineMap = new Map();
-    let total = 0;
-    const loadIds = [];
-    for (const l of g.loads) {
-      loadIds.push(l.id);
-      const costD = costDetail(l);
-      const cost = costD.amount == null ? 0 : costD.amount;
-      total += cost;
-      const lk = `${l.material}|${costD.unit}|${l.vendorRate || 0}`;
-      if (!lineMap.has(lk)) {
-        lineMap.set(lk, { material: l.material, unit: costD.unit, rate: Number(l.vendorRate) || 0, loads: 0, tons: 0, amount: 0, loadIds: [], unconfigured: false, reasons: [] });
-      }
-      const ln = lineMap.get(lk);
-      ln.loads += Number(l.loadsDelivered) || 0;
-      ln.tons  += (costD.unit === 'ton' && costD.qtyPerLoad != null) ? costD.qtyPerLoad * (Number(l.loadsDelivered) || 0) : 0;
-      ln.amount += cost;
-      ln.loadIds.push(l.id);
-      if (costD.unconfigured) { ln.unconfigured = true; if (!ln.reasons.includes(costD.reason)) ln.reasons.push(costD.reason); }
-    }
-    const lineItems = [...lineMap.values()].map(ln => ({
+    const dates = g.dates.filter(Boolean).sort();
+    const lineItems = [...g.lines.values()].map(ln => ({
       ...ln,
-      description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}` + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/${ln.unit})`) + (ln.unconfigured ? ' [NOT PRICEABLE]' : ''),
+      description: `${ln.material} — ${ln.loads} load${ln.loads === 1 ? '' : 's'}`
+        + (ln.unit === 'ton' ? ` (${ln.tons.toFixed(2)} ton @ $${ln.rate}/ton)` : ` (@ $${ln.rate}/${ln.unit})`)
+        + (ln.isDefault ? ` [default rate — no ${g.vendor.name} price on file for ${ln.material}]` : '')
+        + (ln.unconfigured ? ' [NOT PRICEABLE]' : ''),
     }));
     groups.push({
-      unconfigured: lineItems.some(ln => ln.unconfigured),
-      unconfiguredReasons: [...new Set(lineItems.flatMap(ln => ln.reasons || []))],
+      unconfigured: g.unconfigured,
+      unconfiguredReasons: g.reasons,
       vendorId: g.vendorId,
       vendorName: g.vendor.name,
       deliveryStart: dates[0] || '',
       deliveryEnd: dates[dates.length - 1] || '',
-      loadIds,
-      totalAmount: total,
+      loadIds: g.loadIds,
+      tripRefs: g.tripRefs,
+      totalAmount: lineItems.reduce((s, ln) => s + ln.amount, 0),
       lineItems,
     });
   }
   return groups;
+}
+// Claim (or release) the trips a bill covers. Bills created before trips were
+// tracked individually claim the whole load, exactly as they always did.
+function claimVendorBillRefs(bill, claim) {
+  const refs = (bill.tripRefs || []).length ? bill.tripRefs : (bill.loadIds || []).map(loadId => ({ loadId, tripNum: null }));
+  for (const ref of refs) {
+    const l = findLoadAnywhere(ref.loadId); if (!l) continue;
+    if (ref.tripNum == null) l.vendorBillId = claim ? bill.id : '';
+    else if (ref.tripNum === 'extra') l.vendorBillExtraId = claim ? bill.id : '';
+    else { const t = (l.trips || []).find(x => Number(x.tripNum) === Number(ref.tripNum)); if (t) t.vendorBillId = claim ? bill.id : ''; }
+    const ids = new Set(l.vendorBillIds || []);
+    if (claim) ids.add(bill.id); else ids.delete(bill.id);
+    l.vendorBillIds = [...ids];
+  }
 }
 
 app.post('/api/vendor-bills/preview', reqMgr, (req, res) => {
@@ -4641,7 +5301,7 @@ app.post('/api/vendor-bills', reqMgr, async (req, res) => {
   const groups = buildVendorBillGroups(ids);
   if (!groups.length) return res.status(400).json({ error: 'No eligible vendor costs' });
   const bad = groups.filter(g => g.unconfigured);
-  if (bad.length) return res.status(400).json({ error: 'Some loads cannot be costed yet: ' + [...new Set(bad.flatMap(g => g.unconfiguredReasons))].join('; ') });
+  if (bad.length) return res.status(400).json({ error: 'Some loads cannot be costed yet, so no bill was created: ' + [...new Set(bad.flatMap(g => g.unconfiguredReasons))].join('; ') + '. Add the vendor price, then bill again.' });
   const created = [];
   const now = new Date().toISOString();
   for (const g of groups) {
@@ -4652,20 +5312,20 @@ app.post('/api/vendor-bills', reqMgr, async (req, res) => {
       deliveryStart: g.deliveryStart,
       deliveryEnd: g.deliveryEnd,
       loadIds: g.loadIds,
+      tripRefs: g.tripRefs,
       totalAmount: g.totalAmount,
       lineItems: g.lineItems,
       qbVendorId: '', qbBillId: '', qbDocNumber: '',
       syncStatus: 'ready',
       errorMessage: '',
+      mayExistInQuickBooks: false,
       createdAt: now,
       createdBy: req.session.user.username,
       sentAt: '', sentBy: '',
+      voidedAt: '', voidedBy: '', voidReason: '',
     };
     store.vendorBills.push(bill);
-    for (const lid of g.loadIds) {
-      const l = store.loads.find(x => x.id === lid);
-      if (l) l.vendorBillId = bill.id;
-    }
+    claimVendorBillRefs(bill, true);
     created.push(bill);
   }
   logAction(req.session.user, 'created-vendor-bills', '', { count: created.length, billIds: created.map(b => b.id) });
@@ -4683,14 +5343,36 @@ app.get('/api/vendor-bills', reqMgr, (req, res) => {
   res.json({ items });
 });
 
+// Write a QuickBooks Bill back onto the vendor bill and its loads.
+function recordQbBill(b, bill, user) {
+  b.qbBillId = bill.Id;
+  b.qbDocNumber = bill.DocNumber || '';
+  b.syncStatus = 'sent';
+  b.mayExistInQuickBooks = false;
+  b.errorMessage = '';
+  b.sentAt = new Date().toISOString();
+  b.sentBy = user;
+  for (const lid of b.loadIds) {
+    const l = findLoadAnywhere(lid);
+    if (l) l.qbBillId = bill.Id;
+  }
+}
+
 app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
   const b = store.vendorBills.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Bill not found' });
-  if (b.syncStatus === 'sent' && b.qbBillId) return res.status(400).json({ error: 'Already sent' });
+  // Same guards as an invoice batch, checked before the first await so two
+  // clicks on Send cannot both pass: a bill that already exists in QuickBooks
+  // is never re-sent, whatever its status says; one mid-send is left alone.
+  if (b.qbBillId) return res.status(400).json({ error: `Already sent (QuickBooks bill ${b.qbDocNumber || b.qbBillId}). Void it to correct it.` });
+  if (b.syncStatus === 'syncing') return res.status(409).json({ error: 'This bill is already being sent to QuickBooks. Wait for it to finish.', bill: b });
+  if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Cannot send a voided bill' });
+  if (b.syncStatus === 'failed') return res.status(400).json({ error: 'This bill failed earlier. Use Retry, which checks QuickBooks first.', bill: b });
+  if ((b.lineItems || []).some(ln => ln.unconfigured || ln.amount == null)) return res.status(400).json({ error: 'This bill has a line that could not be priced. It will not be sent as $0; void it, add the vendor price, and bill again.' });
   const conn = store.qbConnection;
   if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks not connected' });
   const user = req.session.user.username;
-  b.syncStatus = 'syncing'; b.errorMessage = ''; await saveData();
+  b.syncStatus = 'syncing'; b.syncingSince = new Date().toISOString(); b.errorMessage = ''; await saveData();
   try {
     const localVendor = store.vendors.find(v => v.id === b.vendorId);
     let qbVendorId = localVendor?.qbVendorId || '';
@@ -4712,15 +5394,8 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
       txnDate: b.deliveryEnd || b.deliveryStart || undefined,
     });
     if (!bill?.Id) throw new Error('QuickBooks did not return a bill ID');
-    b.qbBillId = bill.Id;
-    b.qbDocNumber = bill.DocNumber || '';
-    b.syncStatus = 'sent';
-    b.sentAt = new Date().toISOString();
-    b.sentBy = user;
-    for (const lid of b.loadIds) {
-      const l = store.loads.find(x => x.id === lid);
-      if (l) l.qbBillId = bill.Id;
-    }
+    recordQbBill(b, bill, user);
+    b.syncingSince = '';
     logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Bill', qbEntityId: bill.Id, requestSummary: `Bill for ${b.vendorName} — $${b.totalAmount.toFixed(2)}`, user });
     logAction(req.session.user, 'sent-vendor-bill', b.id, { qbBillId: bill.Id, vendor: b.vendorName, amount: b.totalAmount });
     await saveData();
@@ -4728,13 +5403,93 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
   } catch (e) {
     console.error('[vendor bill send]', e);
     b.syncStatus = 'failed';
-    b.errorMessage = e.message;
+    b.syncingSince = '';
+    // No answer from QuickBooks is not the same as a refusal: the bill may
+    // have been created. Retry looks it up by our document number first.
+    b.mayExistInQuickBooks = !!e.uncertain;
+    b.errorMessage = b.mayExistInQuickBooks
+      ? `QuickBooks did not answer (${e.message}). The bill may or may not have been created. Retry checks QuickBooks for it before creating another.`
+      : e.message;
     logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, responseStatus: 'error', errorMessage: e.message, statusCode: e.statusCode || 0, user });
     await saveData();
     res.status(500).json({ error: e.message, bill: b });
   }
 });
 
+// Retry a failed bill. When the failed send got no answer from QuickBooks the
+// bill is looked up there by our document number: found → adopted, never
+// re-created; not found → the bill goes back to ready and the client sends.
+app.post('/api/vendor-bills/:id/retry', reqMgr, async (req, res) => {
+  const b = store.vendorBills.find(x => x.id === req.params.id);
+  if (!b) return res.status(404).json({ error: 'Bill not found' });
+  if (b.syncStatus !== 'failed') return res.status(400).json({ error: 'Only failed bills can be retried' });
+  if (b.qbBillId) return res.status(409).json({ error: `Bill ${b.qbDocNumber || b.qbBillId} already exists in QuickBooks for this vendor bill. Retrying would create a second one; void it instead.` });
+  const user = req.session.user.username;
+  if (b.mayExistInQuickBooks) {
+    const conn = store.qbConnection;
+    if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks is not connected, so it cannot be checked for a bill from the interrupted send. Reconnect QuickBooks, then retry.' });
+    let found = null;
+    try { found = await qb.findBillByDocNumber(conn, b.id.slice(0, 21)); }
+    catch (e) {
+      logQbSync({ actionType: 'find_bill', relatedBatchId: b.id, responseStatus: 'error', errorMessage: e.message, user });
+      return res.status(502).json({ error: `Could not check QuickBooks for an existing bill: ${e.message}. Nothing was sent; retry in a moment.` });
+    }
+    if (found) {
+      recordQbBill(b, found, user);
+      logQbSync({ actionType: 'recover_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Bill', qbEntityId: found.Id, requestSummary: `Found bill ${found.DocNumber || found.Id} in QuickBooks from the interrupted send; marked sent, nothing re-created`, user });
+      logAction(req.session.user, 'recovered-vendor-bill', b.id, { qbBillId: found.Id });
+      await saveData();
+      return res.json({ success: true, recovered: true, bill: b });
+    }
+    b.mayExistInQuickBooks = false;
+    logQbSync({ actionType: 'find_bill', relatedBatchId: b.id, requestSummary: 'No bill found in QuickBooks for the interrupted send; safe to create', user });
+  }
+  b.syncStatus = 'ready';
+  b.errorMessage = '';
+  b.syncingSince = '';
+  logAction(req.session.user, 'retry-vendor-bill', b.id, {});
+  await saveData();
+  res.json({ success: true, bill: b });
+});
+
+// Void a vendor bill: releases its trips so a corrected bill can be built.
+// A bill that exists in QuickBooks is deleted there first (QuickBooks has no
+// "void" for bills), or the operator states it was already removed by hand.
+app.post('/api/vendor-bills/:id/void', reqMgr, async (req, res) => {
+  const b = store.vendorBills.find(x => x.id === req.params.id);
+  if (!b) return res.status(404).json({ error: 'Bill not found' });
+  if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Already voided' });
+  if (b.syncStatus === 'syncing') return res.status(409).json({ error: 'This bill is being sent right now. Wait for it to finish, then void it.' });
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Reason required' });
+  const user = req.session.user.username;
+  let qbDeleted = false;
+  if (b.qbBillId) {
+    if (req.body?.alreadyDeletedInQuickBooks === true) {
+      logQbSync({ actionType: 'delete_bill', relatedBatchId: b.id, qbEntityType: 'Bill', qbEntityId: b.qbBillId, requestSummary: `Operator states bill was removed in QuickBooks manually: ${reason}`, user });
+    } else {
+      const conn = store.qbConnection;
+      if (!conn || conn.status !== 'connected') return res.status(409).json({ error: `QuickBooks bill ${b.qbDocNumber || b.qbBillId} exists for this vendor bill and QuickBooks is not connected. Reconnect QuickBooks so it can be removed, or remove it there yourself and void with "already removed in QuickBooks".`, qbBillId: b.qbBillId });
+      try {
+        await qb.deleteBill(conn, b.qbBillId);
+        qbDeleted = true;
+        logQbSync({ actionType: 'delete_bill', relatedBatchId: b.id, qbEntityType: 'Bill', qbEntityId: b.qbBillId, requestSummary: reason, user });
+      } catch (e) {
+        logQbSync({ actionType: 'delete_bill', relatedBatchId: b.id, qbEntityType: 'Bill', qbEntityId: b.qbBillId, responseStatus: 'error', errorMessage: e.message, user });
+        return res.status(502).json({ error: `Failed to remove the bill in QuickBooks: ${e.message}. The vendor bill and its loads are unchanged.` });
+      }
+    }
+  }
+  b.syncStatus = 'voided';
+  b.voidedAt = new Date().toISOString();
+  b.voidedBy = user;
+  b.voidReason = reason;
+  claimVendorBillRefs(b, false);
+  for (const lid of b.loadIds) { const l = findLoadAnywhere(lid); if (l && b.qbBillId && l.qbBillId === b.qbBillId) l.qbBillId = ''; }
+  logAction(req.session.user, 'voided-vendor-bill', b.id, { reason, qbDeleted, manualQbDelete: req.body?.alreadyDeletedInQuickBooks === true, vendor: b.vendorName, loads: b.loadIds.length });
+  await saveData();
+  res.json({ success: true, bill: b, qbDeleted });
+});
 // ── QB SYNC LOG ─────────────────────────────────────────────────────────────
 app.get('/api/qb-sync-log', reqMgr, (req, res) => {
   const f = req.query || {};
@@ -4792,6 +5547,19 @@ app.post('/api/loads/move', reqMgr, async (req, res) => {
 
   if (!movable.length) return res.status(400).json({ error: 'All eligible loads are locked (approved or billed)' });
 
+  // The same rules as assignment: a load mid-haul does not change dates, and a
+  // truck or trailer already on another driver's load on the new date is a
+  // conflict — reported, and overridden only with `force` (audited).
+  const conflicts = [];
+  for (const l of movable) {
+    const open = openTripOf(l);
+    if (open) conflicts.push({ type: 'load-in-progress', loadId: l.id, message: `${l.driverName || l.truckId} is mid-haul on ${l.id} (trip ${open.tripNum} of ${l.loadsAssigned}); finish or reassign it before moving its date.` });
+    assignmentConflicts({ ...l, deliveryDate: newDate }, { truckUnitId: l.truckUnitId || undefined, trailerId: l.trailerId || undefined }).forEach(c => conflicts.push(c));
+  }
+  if (conflicts.length && req.body.force !== true) {
+    return res.status(409).json({ error: conflicts.map(c => c.message).join(' '), code: 'assignment_conflict', conflicts });
+  }
+
   const movedAt = new Date().toISOString();
   const movedBy = req.session.user.username;
 
@@ -4833,6 +5601,7 @@ app.post('/api/loads/move', reqMgr, async (req, res) => {
     customer:  targetPo?.customer || '',
     moved:     movable.length,
     skipped,
+    ...(conflicts.length ? { conflictsOverridden: conflicts.map(c => c.type) } : {}),
   });
 
   await saveData();
@@ -5761,19 +6530,27 @@ app.get('/api/profitability', reqMgr, (req, res) => {
       byJobCode[jcKey].margin  += margin;
     }
 
-    // By vendor (where the cost goes — payables)
-    const vId = resolvePickupYard(l, po).id;
-    if (vId) {
+    // By vendor (where the cost goes — payables): one share per yard the
+    // load's trips were actually loaded at, the same split Material Costs and
+    // the vendor bills use, so the three never disagree about a yard.
+    const vId = resolvePickupYard(l, po).id;   // the load's current pickup yard, for the per-load lists below
+    const costLines = (costD.lines && costD.lines.length) ? costD.lines : [{ yardId: vId, loads: Number(l.loadsDelivered) || 0, amount: cost }];
+    const lineLoads = costLines.reduce((s, ln) => s + (Number(ln.loads) || 0), 0) || 1;
+    for (const ln of costLines) {
+      const vId = ln.yardId;
+      if (!vId) continue;
       const v = store.vendors.find(x => x.id === vId);
       if (!byVendor[vId]) byVendor[vId] = {
         name: v?.name || vId,
         isInternal: vId === 'vbt',
         loads: 0, revenue: 0, cost: 0, margin: 0
       };
-      byVendor[vId].loads   += Number(l.loadsDelivered) || 0;
-      byVendor[vId].revenue += rev;
-      byVendor[vId].cost    += cost;
-      byVendor[vId].margin  += margin;
+      const share  = (Number(ln.loads) || 0) / lineLoads;
+      const lnCost = costD.unconfigured ? 0 : (Number(ln.amount) || 0);
+      byVendor[vId].loads   += Number(ln.loads) || 0;
+      byVendor[vId].revenue += rev * share;
+      byVendor[vId].cost    += lnCost;
+      byVendor[vId].margin  += rev * share - lnCost;
     }
 
     // Individual load entry (for top/bottom load lists)
@@ -5842,56 +6619,41 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
   // Filter by month if supplied (YYYY-MM), otherwise all-time
   const monthFilter = req.query.month || '';
 
-  // We use the ACTUAL pickup yard (where the driver said they went) as the cost source.
-  // If the driver hasn't arrived yet, fall back to the PO's planned vendor.
-  const eligible = store.loads.filter(l => {
+  // Cost is attributed to the yard each trip was ACTUALLY loaded at, from the
+  // same cost lines that build vendor bills and Profitability, so the three
+  // screens can never disagree. Archived loads count: archiving moves a load
+  // off the board, not out of the company's history.
+  const allLoads = [...store.loads, ...loadsInArchive()];
+  const eligible = allLoads.filter(l => {
     if (l.voided) return false;
     if (monthFilter && !(l.deliveryDate || '').startsWith(monthFilter)) return false;
     return true;
   });
 
-  // Build per-vendor totals
   const byVendor = {};   // { vendorId: { name, totalLoads, totalCost, byMaterial: { mat: { loads, cost } } } }
-
   eligible.forEach(l => {
-    // Determine which vendor this load was picked up from
-    const vendorId = resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).id;
-    if (!vendorId) return;
-    if (vendorId === 'vbt') return;  // VBT Yard = internal, no cost
-
-    const v = store.vendors.find(x => x.id === vendorId);
-    if (!v) return;
-
-    if (!byVendor[vendorId]) {
-      byVendor[vendorId] = { name: v.name, location: v.location, totalLoads: 0, totalCost: 0, byMaterial: {} };
+    if ((Number(l.loadsDelivered) || 0) === 0) return;  // only count loads actually delivered (so cost is real)
+    for (const ln of loadCostLines(l)) {
+      if (ln.internal || !ln.yardId) continue;  // VBT Yard = internal, no cost
+      const v = store.vendors.find(x => x.id === ln.yardId);
+      if (!v) continue;
+      if (!byVendor[ln.yardId]) byVendor[ln.yardId] = { name: v.name, location: v.location, totalLoads: 0, totalCost: 0, byMaterial: {} };
+      const bv = byVendor[ln.yardId];
+      bv.totalLoads += ln.loads;
+      bv.totalCost  += ln.amount;
+      if (ln.unconfigured) {
+        bv.unconfigured = true;
+        bv.unconfiguredUnits = [...new Set([...(bv.unconfiguredUnits || []), ln.unit])];
+      }
+      if (!bv.byMaterial[l.material]) bv.byMaterial[l.material] = { loads: 0, cost: 0, unit: ln.unit, unitPrice: ln.rate, unconfigured: false };
+      bv.byMaterial[l.material].loads += ln.loads;
+      bv.byMaterial[l.material].cost  += ln.amount;
+      if (ln.unconfigured) bv.byMaterial[l.material].unconfigured = true;
     }
-    const delivered = Number(l.loadsDelivered) || 0;
-    if (delivered === 0) return;  // only count loads actually delivered (so cost is real)
-
-    // Use the SAME costing function as /api/profitability. These two screens
-    // previously ran different formulas and reported the same load 25x apart.
-    const det = costDetail(l);
-    const unitPrice = det.rate;
-    const unit = det.unit;
-    const cost = det.amount == null ? 0 : det.amount;
-
-    byVendor[vendorId].totalLoads += delivered;
-    byVendor[vendorId].totalCost  += cost;
-    if (det.unconfigured) {
-      byVendor[vendorId].unconfigured = true;
-      byVendor[vendorId].unconfiguredUnits = [...new Set([...(byVendor[vendorId].unconfiguredUnits || []), unit])];
-    }
-
-    if (!byVendor[vendorId].byMaterial[l.material]) {
-      byVendor[vendorId].byMaterial[l.material] = { loads: 0, cost: 0, unit, unitPrice, unconfigured: false };
-    }
-    byVendor[vendorId].byMaterial[l.material].loads += delivered;
-    byVendor[vendorId].byMaterial[l.material].cost  += cost;
-    if (det.unconfigured) byVendor[vendorId].byMaterial[l.material].unconfigured = true;
   });
 
   // List of available months (for filter dropdown)
-  const months = [...new Set(store.loads.map(l => (l.deliveryDate || '').slice(0, 7)).filter(Boolean))].sort().reverse();
+  const months = [...new Set(allLoads.map(l => (l.deliveryDate || '').slice(0, 7)).filter(Boolean))].sort().reverse();
 
   // Grand total
   const grandTotal = Object.values(byVendor).reduce((s, v) => s + v.totalCost, 0);
@@ -5905,7 +6667,6 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
     grandLoads
   });
 });
-
 // ── PO STATUS RECONCILIATION ─────────────────────────────────────────────────
 // Walks through every PO and corrects its status based on the actual state of its loads.
 // Returns the list of POs that got fixed.
@@ -5942,13 +6703,18 @@ app.get('/api/reports', reqMgr, async (req, res) => {
   const fixed = reconcilePoStatuses();
   if (fixed.length) {
     console.log(`[reports] Reconciled ${fixed.length} stale PO statuses:`, fixed);
-    await saveData();
+    await saveData({ rotatePrev: false });
   }
+
+  // Live + archived: archiving moves billed loads off the board, not out of
+  // the company's history, so the numbers here do not drop when it happens.
+  const allLoads = [...store.loads, ...loadsInArchive()];
+  const allPos   = [...store.pos, ...posInArchive()];
 
   // Driver performance
   const driverStats = {};
   driverRoster().forEach(t => {
-    const tLoads = store.loads.filter(l => l.truckId === t.id && !l.voided);
+    const tLoads = allLoads.filter(l => l.truckId === t.id && !l.voided);
     driverStats[t.id] = {
       label: t.label,
       truckNum: t.truckNum,
@@ -5961,17 +6727,17 @@ app.get('/api/reports', reqMgr, async (req, res) => {
 
   // Customer volume
   const custStats = {};
-  store.pos.forEach(p => {
+  allPos.forEach(p => {
     if (!custStats[p.customer]) custStats[p.customer] = { pos: 0, loads: 0, delivered: 0 };
     custStats[p.customer].pos++;
-    const pLoads = store.loads.filter(l => l.poId === p.id);
+    const pLoads = allLoads.filter(l => l.poId === p.id);
     custStats[p.customer].loads     += pLoads.reduce((s, l) => s + (Number(l.loadsAssigned) || 0), 0);
     custStats[p.customer].delivered += pLoads.reduce((s, l) => s + (Number(l.loadsDelivered) || 0), 0);
   });
 
   // Material breakdown
   const matStats = {};
-  store.loads.forEach(l => {
+  allLoads.forEach(l => {
     if (l.voided) return;
     if (!matStats[l.material]) matStats[l.material] = { ordered: 0, delivered: 0 };
     matStats[l.material].ordered   += Number(l.loadsAssigned) || 0;
@@ -5988,7 +6754,7 @@ app.get('/api/reports', reqMgr, async (req, res) => {
     wEnd.setDate(wStart.getDate() + 6);
     const wStartStr = wStart.toISOString().slice(0, 10);
     const wEndStr   = wEnd.toISOString().slice(0, 10);
-    const wLoads = store.loads.filter(l => l.deliveryDate >= wStartStr && l.deliveryDate <= wEndStr);
+    const wLoads = allLoads.filter(l => !l.voided && l.deliveryDate >= wStartStr && l.deliveryDate <= wEndStr);
     weeks.push({
       label: wStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
       ordered:   wLoads.reduce((s, l) => s + (Number(l.loadsAssigned) || 0), 0),
@@ -5997,7 +6763,7 @@ app.get('/api/reports', reqMgr, async (req, res) => {
   }
 
   // Totals
-  const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided);
+  const billed = allLoads.filter(l => l.billStatus === 'billed' && !l.voided);
   const ready  = store.loads.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready' && !l.voided);
 
   res.json({
@@ -6005,7 +6771,7 @@ app.get('/api/reports', reqMgr, async (req, res) => {
     totals: {
       activePOs:    store.pos.filter(p => p.status === 'active').length,
       scheduledPOs: store.pos.filter(p => p.status === 'scheduled').length,
-      totalLoads:   store.loads.filter(l => !l.voided).length,
+      totalLoads:   allLoads.filter(l => !l.voided).length,
       readyToBill:  ready.length,
       billedThisMonth: billed.filter(l => (l.billedAt || '').startsWith(new Date().toISOString().slice(0, 7))).length,
     }
@@ -6031,14 +6797,20 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
   // Archiving moves billed loads (and POs whose loads are all billed) out of
   // the active lists into store.archive[] — full copies, in Postgres, the
   // single source of truth. Nothing leaves the database.
-  const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided);
-  if (!billed.length) return res.status(400).json({ error: 'No billed loads to archive' });
+  // A load on a billing batch is archived only once that batch has actually
+  // reached QuickBooks. One still 'syncing', 'failed' or waiting to be sent
+  // stays live, where the batch screens can still act on it.
+  const batchById = new Map((store.billingBatches || []).map(b => [b.id, b]));
+  const batchSettled = l => !l.billingBatchId || (batchById.get(l.billingBatchId) || {}).syncStatus === 'sent_to_quickbooks';
+  const billed = store.loads.filter(l => l.billStatus === 'billed' && !l.voided && batchSettled(l));
+  const heldBack = store.loads.filter(l => l.billStatus === 'billed' && !l.voided && !batchSettled(l)).length;
+  if (!billed.length) return res.status(400).json({ error: heldBack ? `No loads to archive yet — ${heldBack} billed load${heldBack === 1 ? ' is' : 's are'} on a batch that has not finished sending to QuickBooks.` : 'No billed loads to archive' });
 
   const billedPoIds = new Set(billed.map(l => l.poId));
   // Only archive POs whose ALL loads are billed (otherwise leave the PO active)
   const fullyBilledPos = [...billedPoIds].filter(pid => {
     const all = store.loads.filter(l => l.poId === pid && !l.voided);
-    return all.length > 0 && all.every(l => l.billStatus === 'billed');
+    return all.length > 0 && all.every(l => l.billStatus === 'billed' && batchSettled(l));
   });
   const archivedPos = store.pos.filter(p => fullyBilledPos.includes(p.id));
 
@@ -6065,7 +6837,33 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
   store.pos   = store.pos.filter(p => !fullyBilledPos.includes(p.id));
 
   await saveData();
-  res.json({ success: true, archived: { pos: archivedPos.length, loads: billed.length, batchId } });
+  res.json({ success: true, archived: { pos: archivedPos.length, loads: billed.length, batchId }, heldBack });
+});
+
+// Unarchive one batch: its POs and loads come back onto the active lists
+// exactly as they were archived — to re-bill after a voided batch, or to
+// correct something after the fact. Nothing is created or lost: the same
+// records move back, the archive entry is removed, and the move is audited
+// with its reason.
+app.post('/api/history/:batchId/unarchive', reqMgr, async (req, res) => {
+  const idx = (store.archive || []).findIndex(b => b.batchId === req.params.batchId);
+  if (idx === -1) return res.status(404).json({ error: 'Archive batch not found' });
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to unarchive' });
+  const b = store.archive[idx];
+  const liveLoadIds = new Set(store.loads.map(l => l.id)), livePoIds = new Set(store.pos.map(p => p.id));
+  const loads = (b.loads || []).filter(l => !liveLoadIds.has(l.id));
+  const pos = (b.pos || []).filter(p => !livePoIds.has(p.id));
+  // A load comes back onto its PO: the PO is still live (it kept unbilled
+  // loads) or it comes back in this same batch.
+  const orphan = loads.filter(l => !livePoIds.has(l.poId) && !pos.some(p => p.id === l.poId));
+  if (orphan.length) return res.status(409).json({ error: `${orphan.length} load(s) in this batch belong to a PO that sits in another archive batch; unarchive that batch first.`, loadIds: orphan.map(l => l.id) });
+  store.loads.push(...loads);
+  store.pos.push(...pos);
+  store.archive.splice(idx, 1);
+  logAction(req.session.user, 'unarchived-batch', b.batchId, { reason, poCount: pos.length, loadCount: loads.length, archivedAt: b.archivedAt, archivedBy: b.archivedBy });
+  await saveData();
+  res.json({ success: true, restored: { pos: pos.length, loads: loads.length }, batchId: b.batchId });
 });
 
 // ── CREDENTIAL FILE GUARD ────────────────────────────────────────────────────
@@ -6087,7 +6885,7 @@ function dispatchFingerprint(loads) {
   const parts = loads.map(l => [
     l.id, l.truckId || '-', l.truckUnitId || '-', l.vendorId || '-',
     l.actualYardId || '-', l.loadsAssigned, l.loadsDelivered,
-    l.status, l.approvalStatus, l.deliveryDate,
+    l.status, l.approvalStatus, l.billStatus || '-', l.deliveryDate,
     (l.trips || []).length,
   ].join(':'));
   parts.sort();
@@ -6097,9 +6895,11 @@ function dispatchFingerprint(loads) {
 app.get('/api/dispatch-version', reqAuth, (req, res) => {
   const u = req.session.user;
   const today = todayStr();
-  const scope = u.role === 'driver'
-    ? driverWorkdayLoads(u)
-    : store.loads.filter(l => !l.voided && l.deliveryDate === today);
+  if (u.role !== 'driver') {
+    const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === today);
+    return res.json({ version: officeFingerprint(today), count: dayLoads.length, at: new Date().toISOString() });
+  }
+  const scope = driverWorkdayLoads(u);
   res.json({ version: dispatchFingerprint(scope), count: scope.length, at: new Date().toISOString() });
 });
 
@@ -6113,70 +6913,148 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
 
 // ── TODAY BOARD — everything Quick Assign needs in ONE call ─────────────────
 // The dispatcher must never wait on several round trips to assign a load.
-app.get('/api/today', reqMgr, (req, res) => {
-  const day = req.query.date || todayStr();
-  const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
-
-  const bucketOf = (l) => {
-    if (l.approvalStatus === 'approved') return 'completed';
-    if (l.approvalStatus === 'submitted') return 'awaiting-approval';
-    if (!l.truckId || l.truckId === 'unassigned') return 'unassigned';
-    if ((l.loadsDelivered || 0) > 0 || (l.trips || []).length > 0) return 'in-progress';
-    return 'assigned';
+// ── THE DISPATCH BOARD ───────────────────────────────────────────────────────
+// One answer to "what is happening with my trucks right now". Every status the
+// office sees is computed here, once, with the same rule the assignment
+// conflict check uses (loadHoldsResources). The screen never recomputes one.
+//
+//   Loads:   unassigned → assigned → in-progress → awaiting-approval →
+//            ready-to-bill → completed (approved and billed)
+//   Drivers: available · assigned · in-progress · completed (worked today,
+//            done) · off
+//   Trucks:  available · assigned · in-progress · unavailable (shop)
+const BOARD_STAGE_LABEL = { toYard: 'Going to yard', atYard: 'At yard', enRoute: 'Loaded / en route', atJobsite: 'At jobsite', returning: 'Returning', completed: 'Done', assigned: 'Assigned', available: 'Available' };
+function boardBucket(l) {
+  if (l.approvalStatus === 'approved') return l.billStatus === 'billed' ? 'completed' : 'ready-to-bill';
+  if (l.approvalStatus === 'submitted') return 'awaiting-approval';
+  if (!l.truckId || l.truckId === 'unassigned') return 'unassigned';
+  if ((l.loadsDelivered || 0) > 0 || (l.trips || []).length > 0) return 'in-progress';
+  return 'assigned';
+}
+// Where the driver is on the current trip, in the words the Fleet Map uses.
+function boardStage(l) {
+  const trips = l.trips || [];
+  const idx = activeTripIdx(l);
+  const trip = trips[idx] || (idx > 0 ? trips[idx - 1] : null);
+  const remains = (l.loadsDelivered || 0) < (l.loadsAssigned || 0) && l.approvalStatus !== 'submitted';
+  const wf = fleetWorkflowStatus({ load: l, trip, workRemains: remains, hadWorkToday: true });
+  return { key: wf.key, label: BOARD_STAGE_LABEL[wf.key] || wf.key, since: wf.since };
+}
+// What a load still needs before it can proceed, or be approved — plain words.
+function boardMissing(l, pickup, truck) {
+  const b = boardBucket(l);
+  if (b === 'completed' || b === 'ready-to-bill') return [];
+  if (b === 'awaiting-approval') return approvalChecklist(l).warnings;   // the same rule the approval dialog shows
+  const out = [];
+  if (!l.truckId || l.truckId === 'unassigned') out.push('driver');
+  if (l.truckId && l.truckId !== 'unassigned' && !truck) out.push('truck');
+  if (!pickup || !pickup.id) out.push('pickup yard');
+  return out;
+}
+// One load as the board shows it. `holding` is the day's live work, for the
+// double-booking check (same truck or trailer under two drivers).
+function boardLoadRow(l, holding) {
+  const po = findPoAnywhere(l.poId) || {};
+  const pickup = resolvePickupYard(l, po);
+  const truck = getTruckForLoad(l);
+  const trailer = getTrailerForLoad(l);
+  const bucket = boardBucket(l);
+  const stage = bucket === 'in-progress' ? boardStage(l) : null;
+  const conflicts = [];
+  if (loadHoldsResources(l) && l.truckId) {
+    for (const o of holding) {
+      if (o.id === l.id || !o.truckId || o.truckId === l.truckId) continue;
+      if (l.truckUnitId && o.truckUnitId === l.truckUnitId) conflicts.push(`${truck ? truck.truckNum : 'This truck'} is also on ${o.driverName || o.truckId}'s load ${o.id}`);
+      if (l.trailerId && o.trailerId === l.trailerId) conflicts.push(`Trailer ${trailer ? trailer.number : ''} is also on ${o.driverName || o.truckId}'s load ${o.id}`);
+    }
+  }
+  const tons = loadTons(l);
+  return {
+    id: l.id, bucket, poId: l.poId, deliveryDate: l.deliveryDate,
+    notifyOn: !!po.notifications?.enabled,
+    poNumber: po.poNumber || '', customer: po.customer || '',
+    jobName: po.job || po.customer || '', jobCode: po.jobCode || '',
+    address: po.address || '', city: po.city || '',
+    destination: [po.address, po.city].filter(Boolean).join(', '),
+    material: l.material,
+    loadsAssigned: l.loadsAssigned, loadsDelivered: l.loadsDelivered || 0,
+    driverId: l.truckId || null, driverName: l.driverName || '',
+    truckUnitId: l.truckUnitId || null, truckNum: truck ? truck.truckNum : '',
+    trailerId: l.trailerId || null, trailerNum: trailer ? trailer.number : '',
+    yardId: pickup.id, yardName: pickup.name, yardIsActual: !!pickup.isActual,
+    locked: !!l.locked, approvalStatus: l.approvalStatus, billStatus: l.billStatus || '',
+    isPartial: !!l.isPartial,
+    stage: stage ? stage.label : '', stageKey: stage ? stage.key : '', stageSince: stage ? stage.since : null,
+    missing: boardMissing(l, pickup, truck),
+    conflicts,
+    missingTicket: !l.ticketImage && !l.ticketImageUrl,
+    tons: { plannedTons: tons.plannedTons, actualTons: tons.actualTons, tickets: tons.tickets, missingTickets: tons.missingTickets },
   };
+}
+// The office's live-refresh fingerprint: the day's loads plus everything the
+// attention row shows (submitted and ready-to-bill counts, the drivers' open
+// days), so the board refreshes when any of them change and only then.
+function officeFingerprint(day) {
+  const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
+  const live = store.loads.filter(l => !l.voided);
+  const extra = [
+    'sub:' + live.filter(l => l.approvalStatus === 'submitted').length,
+    'rtb:' + live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready').length,
+    'sh:' + (store.shifts || []).filter(s => s.status === 'open').map(s => s.id + ':' + (s.truckId || '')).sort().join(','),
+  ].join('|');
+  return require('crypto').createHash('sha1').update(dispatchFingerprint(dayLoads) + '#' + extra).digest('hex').slice(0, 16);
+}
 
-  const loads = dayLoads.map(l => {
-    const po = store.pos.find(p => p.id === l.poId) || {};
-    const pickup = resolvePickupYard(l, po);
-    const truck = getTruckForLoad(l);
+app.get('/api/today', reqMgr, (req, res) => {
+  const today = todayStr();
+  const day = req.query.date || today;
+  const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
+  const holding = dayLoads.filter(loadHoldsResources);
+  const loads = dayLoads.map(l => boardLoadRow(l, holding));
+
+  // Drivers: their state comes from the loads that hold them today, plus what
+  // they are doing right now and on which truck.
+  const drivers = (store.drivers || []).filter(d => d.active).map(d => {
+    const mine = dayLoads.filter(l => l.truckId === d.id);
+    const held = mine.filter(loadHoldsResources);
+    const current = held.find(loadMidTrip) || held[0] || null;
+    const state = d.status === 'off' ? 'off' : held.some(loadMidTrip) ? 'in-progress' : held.length ? 'assigned' : mine.length ? 'completed' : 'available';
+    const shift = openShiftFor(d.id);
+    const truck = current ? getTruckForLoad(current) : (shift ? (store.trucks || []).find(t => t.id === shift.truckId) : null);
+    const usual = !truck && d.defaultTruckId ? (store.trucks || []).find(t => t.id === d.defaultTruckId) : null;
+    const row = current ? loads.find(x => x.id === current.id) : null;
     return {
-      id: l.id,
-      bucket: bucketOf(l),
-      poId: l.poId,
-      notifyOn: !!po.notifications?.enabled,
-      poNumber: po.poNumber || '', customer: po.customer || '',
-      jobName: po.job || po.customer || '', jobCode: po.jobCode || '',
-      address: po.address || '', city: po.city || '',
-      material: l.material,
-      loadsAssigned: l.loadsAssigned, loadsDelivered: l.loadsDelivered || 0,
-      driverId: l.truckId || null, driverName: l.driverName || '',
-      truckUnitId: l.truckUnitId || null, truckNum: truck ? truck.truckNum : '',
-      trailerId: l.trailerId || null, trailerNum: (getTrailerForLoad(l) || {}).number || '',
-      yardId: pickup.id, yardName: pickup.name,
-      locked: !!l.locked,
-      approvalStatus: l.approvalStatus,
-      missingTicket: !l.ticketImage && !l.ticketImageUrl,
-      tons: (() => { const t = loadTons(l); return { plannedTons: t.plannedTons, actualTons: t.actualTons, tickets: t.tickets, missingTickets: t.missingTickets }; })(),
+      id: d.id, name: d.name, status: d.status, state,
+      openLoadIds: held.map(l => l.id),
+      loadsToday: mine.length,
+      available: held.length === 0 && d.status !== 'off',
+      lastSeen: (store.driverLocations || {})[d.id] || null,
+      truckUnitId: truck ? truck.id : (usual ? usual.id : null),
+      truckNum: truck ? truck.truckNum : (usual ? usual.truckNum : ''),
+      truckIsUsual: !truck && !!usual,
+      dayStartedAt: shift ? shift.startAt : null,
+      currentLoadId: current ? current.id : null,
+      stage: row ? (row.stage || 'Assigned') : (state === 'completed' ? 'Done for the day' : state === 'off' ? 'Off' : 'Available'),
+      customer: row ? row.customer : '', poNumber: row ? row.poNumber : '',
+      pickup: row ? row.yardName : '', destination: row ? row.destination : '',
+      progress: row ? `${row.loadsDelivered}/${row.loadsAssigned}` : '',
     };
   });
 
-  // Driver availability, derived from today's actual work
-  const busyBy = new Map();
-  dayLoads.forEach(l => {
-    if (!l.truckId || l.approvalStatus === 'approved') return;
-    if (!busyBy.has(l.truckId)) busyBy.set(l.truckId, []);
-    busyBy.get(l.truckId).push(l.id);
+  const truckLoad = new Map();
+  holding.forEach(l => { if (l.truckUnitId) truckLoad.set(l.truckUnitId, l); });
+  const trucks = (store.trucks || []).filter(t => t.active).map(t => {
+    const l = truckLoad.get(t.id) || null;
+    const unavailable = t.status === 'maintenance' || t.status === 'out-of-service';
+    const state = unavailable ? 'unavailable' : l ? (loadMidTrip(l) ? 'in-progress' : 'assigned') : 'available';
+    return {
+      id: t.id, truckNum: t.truckNum, type: t.type, status: t.status, state,
+      inUseOnLoadId: l ? l.id : null, driverName: l ? (l.driverName || '') : '',
+      available: !l && t.status === 'available',
+    };
   });
-  const drivers = (store.drivers || []).filter(d => d.active).map(d => ({
-    id: d.id, name: d.name, status: d.status,
-    openLoadIds: busyBy.get(d.id) || [],
-    available: (busyBy.get(d.id) || []).length === 0 && d.status !== 'off',
-    lastSeen: (store.driverLocations || {})[d.id] || null,
-  }));
-
-  const truckBusy = new Map();
-  dayLoads.forEach(l => {
-    if (l.truckUnitId && l.approvalStatus !== 'approved') truckBusy.set(l.truckUnitId, l.id);
-  });
-  const trucks = (store.trucks || []).filter(t => t.active).map(t => ({
-    id: t.id, truckNum: t.truckNum, type: t.type, status: t.status,
-    inUseOnLoadId: truckBusy.get(t.id) || null,
-    available: !truckBusy.has(t.id) && t.status === 'available',
-  }));
   const trailerBusy = new Map();
-  dayLoads.forEach(l => {
-    if (l.trailerId && l.approvalStatus !== 'approved') trailerBusy.set(l.trailerId, l.id);
-  });
+  holding.forEach(l => { if (l.trailerId) trailerBusy.set(l.trailerId, l.id); });
   const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({
     id: t.id, number: t.number, type: t.type || '', status: t.status || 'available',
     defaultTruckId: t.defaultTruckId || null,
@@ -6184,11 +7062,21 @@ app.get('/api/today', reqMgr, (req, res) => {
     available: !trailerBusy.has(t.id) && (t.status || 'available') === 'available',
   }));
 
-  const count = (b) => loads.filter(l => l.bucket === b).length;
+  // Attention: what needs a person, wherever it sits on the calendar.
+  const live = store.loads.filter(l => !l.voided);
+  const submittedAll = live.filter(l => l.approvalStatus === 'submitted');
+  const readyAll = live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready');
+  const readyAmount = Math.round(readyAll.reduce((s, l) => { const r = revenueDetail(l); return s + (r.amount == null ? 0 : r.amount); }, 0) * 100) / 100;
+  const carried = live.filter(l => l.deliveryDate && l.deliveryDate < today && l.approvalStatus !== 'approved' && l.approvalStatus !== 'submitted');
+
+  const count = b => loads.filter(l => l.bucket === b).length;
+  const st = (arr, s) => arr.filter(x => x.state === s).length;
   res.json({
-    date: day,
-    version: dispatchFingerprint(dayLoads),
+    date: day, today, isToday: day === today,
+    version: officeFingerprint(day),
     loads, drivers, trucks, trailers,
+    // Unfinished work from earlier days, shown when the office asks for it.
+    carriedOver: carried.map(l => boardLoadRow(l, [])),
     // The drivers' day: shifts dated today (open or closed) plus any still-open
     // shift from an earlier date, which the office must see and close.
     shifts: (store.shifts || []).filter(s => s.date === day || s.status === 'open').map(shiftPublic),
@@ -6199,11 +7087,26 @@ app.get('/api/today', reqMgr, (req, res) => {
       unassigned: count('unassigned'),
       assigned: count('assigned'),
       inProgress: count('in-progress'),
-      completed: count('completed'),
       awaitingApproval: count('awaiting-approval'),
+      readyToBill: count('ready-to-bill'),
+      completed: count('completed'),
       driversWorking: drivers.filter(d => d.openLoadIds.length > 0).length,
       driversAvailable: drivers.filter(d => d.available).length,
       missingTicket: loads.filter(l => l.missingTicket && l.bucket === 'awaiting-approval').length,
+      drivers: { available: st(drivers, 'available'), assigned: st(drivers, 'assigned'), inProgress: st(drivers, 'in-progress'), completed: st(drivers, 'completed'), off: st(drivers, 'off') },
+      trucks:  { available: st(trucks, 'available'), assigned: st(trucks, 'assigned'), inProgress: st(trucks, 'in-progress'), unavailable: st(trucks, 'unavailable') },
+    },
+    attention: {
+      unassigned: count('unassigned'),
+      inProgress: count('in-progress'),
+      awaitingApproval: submittedAll.length,
+      readyToBill: readyAll.length,
+      readyToBillAmount: readyAmount,
+      missingInfo: loads.filter(l => l.missing.length).length,
+      conflicts: loads.filter(l => l.conflicts.length).length,
+      carriedOver: carried.length,
+      availableDrivers: drivers.filter(d => d.available).length,
+      availableTrucks: trucks.filter(t => t.available).length,
     },
   });
 });
@@ -6272,43 +7175,128 @@ app.delete('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
 // ── QUICK ASSIGN — driver, truck and pickup yard in one mobile-friendly call ──
 // Everything else (customer, job, material, quantity, PO, date) already lives
 // on the load and is never re-entered.
+// ── ASSIGNMENT CONFLICTS ─────────────────────────────────────────────────────
+// A driver queuing several loads in a day is normal. A conflict is something
+// that cannot physically be true right now: the driver is mid-haul on another
+// load, the truck (or trailer) is on another driver's load the same day, or
+// the load being moved is mid-haul under its current driver. The dispatcher
+// is told exactly what, and can go ahead with `force` — the override is
+// written to the audit log with the reason given.
+function loadMidTrip(l) { return (l.trips || []).some(t => t.timestamps && t.timestamps.start && !t.timestamps.completed); }
+// A load holds its driver, truck and trailer while it is live work: not
+// voided, not submitted or approved, and not yet fully delivered. The conflict
+// check and the dispatch board's availability both use this one rule, so a
+// driver whose work is done (or awaiting approval) is shown free on both.
+function loadHoldsResources(l) {
+  if (l.voided || l.approvalStatus === 'approved' || l.approvalStatus === 'submitted') return false;
+  const assigned = Number(l.loadsAssigned) || 0, delivered = Number(l.loadsDelivered) || 0;
+  return !(assigned > 0 && delivered >= assigned);
+}
+function openTripOf(l) { return (l.trips || []).find(t => t.timestamps && t.timestamps.start && !t.timestamps.completed) || null; }
+// `skipDriverBusy`: creating a PO is planning the queue — the next job for a
+// driver who is out hauling right now is normal, not a conflict. Moving an
+// existing load onto a driver who is mid-haul (Quick Assign, Board) is acted
+// on now, so that one does warn.
+function assignmentConflicts(l, { driverId, truckUnitId, trailerId }, { extraLoads = [], skipDriverBusy = false } = {}) {
+  const out = [];
+  const poOf = id => findPoAnywhere(id) || {};
+  const label = x => x.poId === '__new__' ? x.id : `${x.id} (PO ${poOf(x.poId).poNumber || '—'}${poOf(x.poId).customer ? ', ' + poOf(x.poId).customer : ''})`;
+  const drvName = id => (rosterDriver(id) || {}).name || id;
+  const sameDay = [...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate === l.deliveryDate);
+  const newDriver = driverId !== undefined ? driverId : l.truckId;
+  if (driverId !== undefined && driverId !== l.truckId) {
+    const open = openTripOf(l);
+    const cur = l.driverName || drvName(l.truckId);
+    if (open && l.truckId) out.push({ type: 'load-in-progress', loadId: l.id, message: `${cur} is mid-haul on this load (trip ${open.tripNum} of ${l.loadsAssigned}). Reassigning moves the remaining work${driverId ? ' to ' + drvName(driverId) : ''}; the trips already done stay on ${cur}'s record.` });
+    if (driverId && !skipDriverBusy) {
+      const busy = sameDay.find(x => x.truckId === driverId && loadMidTrip(x));
+      if (busy) out.push({ type: 'driver-busy', loadId: busy.id, message: `${drvName(driverId)} is already mid-haul on ${label(busy)}.` });
+    }
+  }
+  if (truckUnitId !== undefined && truckUnitId) {
+    const other = sameDay.find(x => x.truckUnitId === truckUnitId && x.truckId && x.truckId !== newDriver);
+    if (other) {
+      const t = (store.trucks || []).find(x => x.id === truckUnitId);
+      out.push({ type: 'truck-busy', loadId: other.id, message: `${t ? t.truckNum : truckUnitId} is on ${other.driverName || drvName(other.truckId)}'s load ${label(other)} the same day.` });
+    }
+  }
+  if (trailerId !== undefined && trailerId) {
+    const other = sameDay.find(x => x.trailerId === trailerId && x.truckId && x.truckId !== newDriver);
+    if (other) {
+      const t = (store.trailers || []).find(x => x.id === trailerId);
+      out.push({ type: 'trailer-busy', loadId: other.id, message: `Trailer ${t ? t.number : trailerId} is on ${other.driverName || drvName(other.truckId)}'s load ${label(other)} the same day.` });
+    }
+  }
+  return out;
+}
+
 app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   const l = store.loads.find(x => x.id === req.params.id);
   if (!l) return res.status(404).json({ error: 'Load not found' });
   if (l.locked) return res.status(403).json({ error: 'Load is approved and locked' });
-  const { driverId, truckUnitId, yardId, trailerId } = req.body || {};
-  const changes = {};
+  const { driverId, truckUnitId, yardId, trailerId, force, reason } = req.body || {};
 
+  // Validate every part first; nothing on the load changes until the whole
+  // assignment is acceptable, so a refused truck cannot leave a changed trailer.
+  let tr = null, drv = null, t = null, v = null;
   if (trailerId !== undefined) {
-    const tr = trailerId ? (store.trailers || []).find(x => x.id === trailerId) : null;
+    tr = trailerId ? (store.trailers || []).find(x => x.id === trailerId) : null;
     if (trailerId && !tr) return res.status(400).json({ error: 'Unknown trailer' });
     if (tr && tr.active === false) return res.status(400).json({ error: `Trailer ${tr.number} is deactivated` });
     if (tr && (tr.status === 'maintenance' || tr.status === 'out-of-service')) return res.status(400).json({ error: `Trailer ${tr.number} is ${tr.status}` });
-    changes.trailer = { from: (getTrailerForLoad(l) || {}).number || 'none', to: tr ? tr.number : 'none' };
-    l.trailerId = tr ? tr.id : null;
   }
-
   if (driverId !== undefined) {
-    const drv = driverId ? driverRoster().find(t => t.id === driverId) : null;   // active roster only
+    drv = driverId ? driverRoster().find(x => x.id === driverId) : null;   // active roster only
     if (driverId && !drv) return res.status(400).json({ error: 'Unknown or inactive driver' });
     const rd = driverId ? rosterDriver(driverId) : null;
     if (rd && rd.status === 'off') return res.status(400).json({ error: `${rd.name} is marked off today` });
+  }
+  if (truckUnitId !== undefined) {
+    t = truckUnitId ? (store.trucks || []).find(x => x.id === truckUnitId) : null;
+    if (truckUnitId && !t) return res.status(400).json({ error: 'Unknown truck' });
+    if (t && t.active === false) return res.status(400).json({ error: `${t.truckNum} is deactivated` });
+    if (t && (t.status === 'maintenance' || t.status === 'out-of-service')) return res.status(400).json({ error: `${t.truckNum} is ${t.status}` });
+  }
+  if (yardId !== undefined) {
+    v = store.vendors.find(x => x.id === yardId);
+    if (yardId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
+  }
+  const conflicts = assignmentConflicts(l, { driverId, truckUnitId, trailerId });
+  if (conflicts.length && force !== true) {
+    console.warn(`[assign] conflict refused (409) on ${l.id}: ${conflicts.map(c => c.message).join(' ')}`);
+    return res.status(409).json({ error: conflicts.map(c => c.message).join(' '), code: 'assignment_conflict', conflicts });
+  }
+
+  const changes = {};
+  if (conflicts.length) changes.conflictsOverridden = { types: conflicts.map(c => c.type), reason: String(reason || '').trim() };
+  if (trailerId !== undefined) {
+    changes.trailer = { from: (getTrailerForLoad(l) || {}).number || 'none', to: tr ? tr.number : 'none' };
+    l.trailerId = tr ? tr.id : null;
+  }
+  if (driverId !== undefined) {
     changes.driver = { from: l.driverName || 'Unassigned', to: drv?.label || 'Unassigned' };
+    // A load handed to another driver keeps the record of who did what: each
+    // finished trip carries its own driver stamp, and the handover is written down.
+    if (driverId !== l.truckId && l.truckId && (l.trips || []).length) {
+      const open = openTripOf(l);
+      l.reassignHistory = l.reassignHistory || [];
+      l.reassignHistory.push({
+        at: new Date().toISOString(), by: req.session.user.username,
+        from: l.truckId, fromName: l.driverName || '', to: driverId || null, toName: drv?.label || '',
+        atTrip: open ? open.tripNum : null,
+        tripsDone: (l.trips || []).filter(x => x.timestamps && x.timestamps.completed).length,
+        reason: String(reason || '').trim(),
+      });
+    }
     l.truckId = driverId || null;
     l.driverName = drv?.label || '';
     l.status = driverId ? (l.status === 'unassigned' ? 'active' : l.status) : 'unassigned';
   }
   if (truckUnitId !== undefined) {
-    const t = truckUnitId ? (store.trucks || []).find(x => x.id === truckUnitId) : null;
-    if (truckUnitId && !t) return res.status(400).json({ error: 'Unknown truck' });
-    if (t && t.active === false) return res.status(400).json({ error: `${t.truckNum} is deactivated` });
-    if (t && (t.status === 'maintenance' || t.status === 'out-of-service')) return res.status(400).json({ error: `${t.truckNum} is ${t.status}` });
     changes.truck = { from: (getTruckForLoad(l) || {}).truckNum || 'none', to: t?.truckNum || 'none' };
     l.truckUnitId = truckUnitId || null;
   }
   if (yardId !== undefined) {
-    const v = store.vendors.find(x => x.id === yardId);
-    if (yardId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
     changes.yard = { from: resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).name, to: v?.name || '' };
     l.vendorId = yardId || null;
     l.vendorName = v?.name || '';
@@ -6338,9 +7326,8 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   }
   await saveData();
   const po = store.pos.find(p => p.id === l.poId) || {};
-  res.json({ success: true, load: l, pickup: resolvePickupYard(l, po), truck: getTruckForLoad(l), trailer: trailerPublic(getTrailerForLoad(l)) });
+  res.json({ success: true, load: l, pickup: resolvePickupYard(l, po), truck: getTruckForLoad(l), trailer: trailerPublic(getTrailerForLoad(l)), conflictsOverridden: conflicts.length ? conflicts.map(c => c.type) : undefined });
 });
-
 // ═══════════════════════════════════════════════════════════════════════════
 // COSTING SETTINGS — unit model (P4) and operating rates (P5)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6558,7 +7545,10 @@ app.use((err, req, res, next) => {
   });
   if (recentErrors.length > 10) recentErrors.length = 10;
   if (dbErr) {
-    return res.status(503).json({ error: `Database unreachable — reference ${ref}. The dispatch data is safe; retry in a moment or check /healthz.`, ref, reason: 'database_unreachable' });
+    const msg = err.userMessage
+      ? `${err.userMessage} (reference ${ref})`
+      : `Database unreachable — reference ${ref}. The dispatch data is safe; retry in a moment or check /healthz.`;
+    return res.status(503).json({ error: msg, ref, reason: 'database_unreachable' });
   }
   res.status(500).json({ error: `Server error — please retry. If it persists, check the server log. (ref ${ref})`, ref });
 });
@@ -6579,6 +7569,7 @@ const PORT = process.env.PORT || 3000;
   try {
     await loadData();
     await snapshotBootStore();
+    lastGoodJson = JSON.stringify(store);   // the rollback point until the first successful save
     await pruneLocationHistory();
     setInterval(pruneLocationHistory, 24 * 60 * 60 * 1000).unref();
   } catch (e) {

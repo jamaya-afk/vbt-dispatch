@@ -31,7 +31,7 @@ chk "logged out, /app/ is blocked" "$(curl -s -o /dev/null -w '%{http_code}' $B/
 # now with a real session
 chk "logged in, / redirects to app" "$(curl -s -o /dev/null -w '%{redirect_url}' -b $M $B/ | sed 's|.*//[^/]*||')" "/app/"
 chk "/app/ serves the app shell"    "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/app/)" "200"
-chk "  ...and it is the real page"  "$(curl -s -b $M $B/app/ | grep -c 'id=\"sec-board\"')" "1"
+chk "  ...and it is the real page"  "$(curl -s -b $M $B/app/ | grep -c 'id=\"sec-today\"')" "1"
 chk "static assets serve"           "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/app/index.html)" "200"
 chk "/api/me identifies the user"   "$(curl -s -b $M $B/api/me | python3 -c "import json,sys;print(json.load(sys.stdin)['username'])")" "joshua"
 
@@ -174,7 +174,10 @@ chk "nothing needs attention"   "$(echo "$C"|sed -n 2p)" "0"
 chk "no CY unit in use"         "$(echo "$C"|sed -n 3p)" "False"
 chk "supported units"           "$(echo "$C"|sed -n 4p)" "ton,load,hour,mile"
 
-# $38/ton x 25 tons x 2 loads = $1900, and both screens must agree
+# $38/ton x 25 tons x 2 loads = $1900 for this load. Cost follows the ACTUAL
+# yard trip by trip, so the section-3 load (planned VBT, but its middle trip
+# was loaded at Vulcan) also owes Vulcan one load of 3/4 Rock: $950. Grand
+# total $2850, and both screens must agree.
 curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
  "po":{"customer":"Cost Check","deliveryDate":"'"$(date +%F)"'"},
  "splits":[{"truckId":"matthew","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}' -o /dev/null
@@ -182,8 +185,9 @@ CL=$(curl -s -b $M $B/api/data | python3 -c "
 import json,sys
 print([l['id'] for l in json.load(sys.stdin)['loads'] if l['material']=='3/4 Rock' and l['truckId']=='matthew'][0])")
 curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$CL -d '{"loadsDelivered":2}' -o /dev/null
-chk "profitability cost = 38x25x2" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grand']['cost']))")" "1900"
-chk "material-costs agrees"        "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grandTotal']))")" "1900"
+chk "profitability cost = 38x25x2 + one Vulcan trip on the VBT-planned load" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grand']['cost']))")" "2850"
+chk "material-costs agrees"        "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grandTotal']))")" "2850"
+chk "  ...the Vulcan trip on the VBT-planned load is costed to Vulcan" "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;v=json.load(sys.stdin)['vendors']['vulcan'];print(v['totalLoads'], int(v['totalCost']))")" "3 2850"
 chk "cost not flagged incomplete"  "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;print(json.load(sys.stdin)['grand']['costIncomplete'])")" "False"
 
 echo "── 9. Quick Assign: today board + driver/truck/yard in one call ──"
@@ -712,7 +716,10 @@ chk "  ...audit entry recorded"                       "$(curl -s -b $M "$B/api/a
 
 echo "── 35. PO numbers are unique per order; customers are reusable ──"
 mk() { curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d "$1" -o /tmp/po.json -w '%{http_code}'; }
-BODY1='{"po":{"poNumber":"45021","customer":"Repeat Customer","deliveryDate":"'"$(date +%F)"'","address":"900 Elm St","city":"Clovis","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}'
+# Truck #14 is still on Carlos's DRV-CHK load today (section 17), so putting
+# Rigo on it is a double-booking the dispatcher has to confirm: "force" is that
+# confirmation. The PO-number rules below are checked before the conflict rule.
+BODY1='{"po":{"poNumber":"45021","customer":"Repeat Customer","deliveryDate":"'"$(date +%F)"'","address":"900 Elm St","city":"Clovis","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}],"force":true,"reason":"test: deliberate double-booking of Truck #14"}'
 chk "first PO #45021 created"                       "$(mk "$BODY1")" "200"
 chk "duplicate PO #45021 refused with the exact message" "$(mk "$BODY1")|$(python3 -c "import json;d=json.load(open('/tmp/po.json'));print(d['error'], d.get('duplicate'))")" "409|PO #45021 already exists. Please enter a different PO number. True"
 chk "  ...case/whitespace variant is the same number" "$(mk "$(echo "$BODY1" | sed 's/"45021"/" 45021 "/')")" "409"
@@ -828,7 +835,7 @@ curl -s -b $M -H "$J" -X POST $B/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/nu
 CB=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$CL\"]}" | jq "d['batches'][0]['id']")
 chk "15. batch stores 94.64 t and the ticket numbers" "$(curl -s -b $M $B/api/billing-batches | jq "[(b['totalTons'], b['ticketNumbers']) for b in d['items'] if b['id']=='$CB'][0]")" "(94.64, ['37432733', '37432799', '37432862', '37432920'])"
 curl -s -b $M -H "$J" -X POST $B/api/billing-batches/$CB/send -d '{}' -o /dev/null
-chk "   invoice line quantity = 94.64, tickets in the note" "$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoices'][-1]['lines'][0]['quantity'], d['invoices'][-1]['lines'][0]['amount'], '37432920' in d['invoices'][-1]['privateNote']")" "94.64 2839.2 True"
+chk "   invoice line quantity = 94.64, tickets in the note" "$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoices'][-1]['lines'][0]['quantity'], d['invoices'][-1]['lines'][0]['amount'], '37432920' in d['invoices'][-1]['PrivateNote']")" "94.64 2839.2 True"
 # Actual basis with a delivered trip that has no tons: not priceable until corrected. VBT ticket, no tons.
 curl -s -b $M -H "$J" -X POST $B/api/pos -d '{
  "po":{"poNumber":"25032","customer":"Dave Christian Construction","deliveryDate":"'"$(date +%F)"'","address":"North Fork","city":"North Fork","plannedVendorId":"vbt"},
@@ -840,7 +847,9 @@ chk "16. VBT internal ticket: number only, no tons, no photo required" "$(c2 '{"
 c2 '{"action":"arrived-jobsite"}' -o /dev/null; c2 '{"action":"trip-complete"}' -o /dev/null
 chk "   load-level photo still required for a photo-less VBT ticket" "$(c2 '{"action":"delivered"}' | jq "d['error']")" "Ticket photo required"
 curl -s -b $CD -H "$J" -X PUT $B/api/loads/$C2 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-09-14T22:00:00Z\"}}" -o /dev/null
-c2 '{"action":"delivered"}' -o /dev/null; curl -s -b $M -H "$J" -X POST $B/api/loads/$C2/approve -d '{}' -o /dev/null
+c2 '{"action":"delivered"}' -o /dev/null
+chk "   the approval checklist flags it: actual-basis customer, ticket with no tons → approve is refused until acknowledged" "$(curl -s -b $M -H "$J" -X POST $B/api/loads/$C2/approve -d '{}' | jq "d['code'], d['checklist']['warnings']")" "approval_incomplete ['Ticket: Dave Christian Construction is billed on actual tons and 1 ticket(s) have no tons']"
+curl -s -b $M -H "$J" -X POST $B/api/loads/$C2/approve -d '{"acknowledge":true}' -o /dev/null   # the manager approves knowing the tons are missing; billing still refuses to price it
 PV=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$C2\"]}")
 chk "17. actual-basis load with no ticket tons is NOT priceable (never billed on 25 t silently)" "$(echo "$PV" | jq "d['groups'][0]['unconfigured'], d['groups'][0]['unconfiguredReasons'][0]")" "True Dave Christian Construction is billed on actual ticket tons, but 1 of 1 delivered load on $C2 has no confirmed ticket tons"
 chk "   ...and batch creation refuses it"            "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$C2\"]}")" "400"
@@ -1144,6 +1153,493 @@ chk "7. office closes it with a reason: freight closed at the day's end reading,
 chk "   Carlos can now start a new day"                       "$(curl -s -b $CA -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-2b","odometer":5090,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d.get('success'), d['shift']['date']==sys.argv[0] or d['shift']['date'], d['shift']['id']!='SH-A'")" "True $TODAY True"
 chk "   Sept 15 history untouched throughout"                 "$(curl -s -b $M $B/api/data | jq "sorted((l['id'], l['approvalStatus'], len(l['trips'])) for l in d['loads'] if l['deliveryDate']=='2026-09-15')")" "[('L-S15A', 'approved', 1), ('L-S15B', 'pending', 2)]"
 
+echo
+echo "── 40. Phase 0 integrity: billing, attribution, deletion, archive, QuickBooks, vendor bills ──"
+# A fresh process and an empty store, so every fixture below is fully known.
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-p0.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+CA=$(mktemp); curl -s -c $CA -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
+mg()  { curl -s -b $M  -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }             # manager, body, extra curl args
+mgc() { curl -s -b $M  -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }        # driver trip action
+data() { curl -s -b $M $B/api/data | jq "$1"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+newpo() { mg POST /api/pos "$1" | jq "d.get('po',{}).get('id','') + ' ' + str(d.get('status') or '')"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1'][${2:-0}]"; }
+mg POST /api/_test/qb-fake '{"mode":"ok"}' -o /dev/null
+
+# ── C3. A PO is on record only once it is saved ──
+mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
+chk "C3 create PO answers 503 when the database write fails (never success)" "$(mgc POST /api/pos '{"po":{"poNumber":"P0-LOST","customer":"Lost Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "503"
+chk "   ...and the PO is not in memory either (rolled back)" "$(data "len([p for p in d['pos'] if p['poNumber']=='P0-LOST']), len([c for c in d['customers'] if c['name']=='Lost Co'])")" "0 0"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   ...same request succeeds once the database is back" "$(mgc POST /api/pos '{"po":{"poNumber":"P0-LOST","customer":"Lost Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "200"
+LP=$(data "[p['id'] for p in d['pos'] if p['poNumber']=='P0-LOST'][0]"); mgc DELETE /api/pos/$LP >/dev/null
+
+# ── Fixture: Beryle on Truck #2, planned Vulcan, 2 loads of 3/4 Rock ──
+P1=$(newpo '{"po":{"poNumber":"P0-1","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","address":"1 Test Rd","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}'); P1=${P1%% *}
+L1=$(loadof $P1)
+
+# ── C4. Drivers record progress only through the trip steps ──
+chk "C4 driver cannot write loadsDelivered directly (400)" "$(curl -s -b $BE -H "$J" -X PUT $B/api/loads/$L1 -d '{"loadsDelivered":2}' -o /dev/null -w '%{http_code}')" "400"
+chk "   ...nor timestamps / gps"                          "$(curl -s -b $BE -H "$J" -X PUT $B/api/loads/$L1 -d '{"timestamps":{"completed":"07:00"},"gps":{"start":{"lat":1,"lng":1}}}' | jq "d['protectedFields']")" "['timestamps', 'gps']"
+chk "   ...the load is untouched"                         "$(load $L1 "l['loadsDelivered'], l['timestamps']")" "0 {}"
+chk "   the signature still goes through (200)"          "$(curl -s -b $BE -H "$J" -X PUT $B/api/loads/$L1 -d "{\"pod\":{\"signedBy\":\"Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null -w '%{http_code}')" "200"
+
+# ── C12 + C7. Double taps do not move evidence; each trip is stamped with who ran it ──
+chk "C12 start-trip → 200"                                   "$(dr $BE $L1 '{"action":"start-trip","gps":{"lat":36.7,"lng":-119.7}}' | jq "d['success']")" "True"
+chk "   a second tap on Start is refused, the first stamp stays" "$(dr $BE $L1 '{"action":"start-trip"}' | jq "d['error']")" "Trip 1 is already started"
+chk "C7 the trip records the driver and the truck that ran it" "$(load $L1 "l['trips'][0]['driverId'], l['trips'][0]['truckUnitId'], l['trips'][0]['truckNum']")" "beryle truck-2 Truck #2"
+dr $BE $L1 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null
+dr $BE $L1 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null
+chk "   arrived-jobsite → 200"                               "$(dr $BE $L1 '{"action":"arrived-jobsite"}' | jq "d['success']")" "True"
+chk "   a second tap on Arrived at Job Site is refused"      "$(dr $BE $L1 '{"action":"arrived-jobsite"}' | jq "d['error']")" "Already marked arrived at the job site"
+dr $BE $L1 '{"action":"trip-complete"}' >/dev/null
+chk "C5 the trip carries the vendor rate fixed at the scale (Vulcan 3/4 Rock \$38)" "$(load $L1 "l['trips'][0]['actualYardId'], l['trips'][0]['vendorRate'], l['trips'][0]['vendorRateIsDefault']")" "vulcan 38 False"
+
+# ── C7. Assignment conflicts: told, not blocked; overrides audited ──
+dr $BE $L1 '{"action":"start-trip"}' >/dev/null                                  # Beryle is now mid-haul on trip 2
+P2=$(newpo '{"po":{"poNumber":"P0-2","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","address":"1 Test Rd","city":"Fresno","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}'); P2=${P2%% *}
+L2=$(loadof $P2)
+R=$(mg POST /api/loads/$L2/assign '{"driverId":"beryle"}')
+chk "C7 moving a load onto a driver who is mid-haul → 409 with the conflict named" "$(echo "$R" | jq "d['code'], d['conflicts'][0]['type'], d['conflicts'][0]['message']")" "assignment_conflict driver-busy Beryle is already mid-haul on $L1 (PO P0-1, Phase Zero Co)."
+chk "   ...nothing changed"                                                   "$(load $L2 "l['truckId'], l['truckUnitId']")" "rigo truck-4"
+chk "   putting Truck #2 (on Beryle's open load) under Rigo → 409 truck-busy" "$(mg POST /api/loads/$L2/assign '{"truckUnitId":"truck-2"}' | jq "d['conflicts'][0]['type'], d['conflicts'][0]['message']")" "truck-busy Truck #2 is on Beryle's load $L1 (PO P0-1, Phase Zero Co) the same day."
+chk "   the dispatcher's go-ahead (force) is accepted and recorded"           "$(mg POST /api/loads/$L2/assign '{"driverId":"beryle","force":true,"reason":"Rigo is out sick"}' | jq "d['success'], d['load']['truckId'], d['conflictsOverridden']")" "True beryle ['driver-busy']"
+chk "   ...in the audit log, with the reason"                                 "$(curl -s -b $M "$B/api/audit-log?limit=5" | python3 -c "import json,sys;d=json.load(sys.stdin);e=[x for x in d['entries'] if x['action']=='quick-assigned-load' and x['target']=='$L2' and 'conflictsOverridden' in x['details']][0];print(e['details']['conflictsOverridden'])")" "{'types': ['driver-busy'], 'reason': 'Rigo is out sick'}"
+mg POST /api/loads/$L2/assign '{"driverId":"rigo"}' >/dev/null                  # back to Rigo (idle → no conflict)
+chk "   a load mid-haul cannot be moved to another driver silently → 409 load-in-progress" "$(mg POST /api/loads/$L1/assign '{"driverId":"carlos"}' | jq "d['conflicts'][0]['type']")" "load-in-progress"
+chk "   with force the handover is written down, trip 1 stays on Beryle's record" "$(mg POST /api/loads/$L1/assign '{"driverId":"carlos","force":true,"reason":"Beryle called off at the yard"}' -o /dev/null; load $L1 "l['truckId'], l['trips'][0]['driverId'], l['reassignHistory'][0]['from'], l['reassignHistory'][0]['to'], l['reassignHistory'][0]['atTrip'], l['reassignHistory'][0]['tripsDone'], l['reassignHistory'][0]['reason']")" "carlos beryle beryle carlos 2 1 Beryle called off at the yard"
+chk "   PO form: a truck already on another driver's open load today → 409" "$(mgc POST /api/pos '{"po":{"poNumber":"P0-X","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "409"
+chk "   PO form: the same truck under two drivers in one PO → 409"           "$(mgc POST /api/pos '{"po":{"poNumber":"P0-X","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"matthew","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "409"
+chk "   PO form: queuing the next job for a driver who is out hauling is normal (200)" "$(mgc POST /api/pos '{"po":{"poNumber":"P0-Q","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"carlos","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "200"
+PQ=$(data "[p['id'] for p in d['pos'] if p['poNumber']=='P0-Q'][0]")
+mg PUT /api/drivers/leonardo '{"status":"off"}' >/dev/null
+chk "   PO form refuses an off-duty driver like Quick Assign does (400)"      "$(mgc POST /api/pos '{"po":{"poNumber":"P0-X","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "400"
+mg PUT /api/drivers/leonardo '{"status":"available"}' >/dev/null
+chk "   the Board card and the load detail both open the same Driver → Truck → Yard sheet" "$(grep -c "qaOpenFor('\${l.id}')" public/index.html)|$(sed -n '/^function loadCard/,/^}/p' public/index.html | grep -c "openReassignModal('single'")" "2|0"
+chk "   every assignment path goes through one conflict-aware call (sheet, PO form, reassign modal, date move)" "$(grep -c 'postAssignment(' public/index.html)|$(grep -c "openReassignModal('single'" public/index.html)" "7|0"
+
+# ── C8. Field evidence is never deleted ──
+chk "C8 a load with a delivered trip cannot be deleted (403)"                "$(mgc DELETE /api/loads/$L1)" "403"
+chk "   ...nor its PO"                                                      "$(mg DELETE /api/pos/$P1 | jq "d['blockingLoadIds']")" "['$L1']"
+LQ=$(loadof $PQ); dr $CA $LQ '{"action":"start-trip"}' >/dev/null
+chk "   a trip started by mistake with nothing recorded may still be deleted (200)" "$(mgc DELETE /api/pos/$PQ)" "200"
+# Rigo runs L2 at our yard and submits it
+for A in start-trip arrived-pickup arrived-jobsite trip-complete; do dr $RG $L2 "{\"action\":\"$A\",\"yardId\":\"vbt\"}" >/dev/null; [ $A = arrived-pickup ] && dr $RG $L2 '{"action":"loaded","ticket":{"source":"vbt","number":"VBT-P0-1"}}' >/dev/null; done
+curl -s -b $RG -H "$J" -X PUT $B/api/loads/$L2 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+dr $RG $L2 '{"action":"delivered"}' >/dev/null
+chk "   submitted work (awaiting approval) cannot be deleted (403)"          "$(mgc DELETE /api/loads/$L2)|$(mgc DELETE /api/pos/$P2)" "403|403"
+
+# ── C1. Void / unvoid never turn a billed load back into billable work ──
+mg POST /api/loads/$L2/approve >/dev/null
+chk "C1 approved load is Ready to Bill"                                      "$(load $L2 "l['billStatus']")" "ready"
+chk "   marked billed by hand"                                               "$(mg POST /api/loads/bill "{\"loadIds\":[\"$L2\"]}" | jq "d['billed']")|$(load $L2 "l['billStatus']")" "1|billed"
+chk "   voided: out of every count, previous billing state remembered"       "$(mg POST /api/loads/$L2/void '{"reason":"wrong quantity"}' -o /dev/null; load $L2 "l['voided'], l['billStatus'], l['billStatusBeforeVoid']")" "True voided billed"
+chk "   unvoided: back to BILLED, not to Ready to Bill"                      "$(mg POST /api/loads/$L2/unvoid >/dev/null; load $L2 "l['voided'], l['billStatus'], 'billStatusBeforeVoid' in l")" "False billed False"
+chk "   ...not listed in Ready to Bill, cannot join a batch (no second invoice)" "$(curl -s -b $M $B/api/ready-to-bill | jq "len([x for x in d['items'] if x['id']=='$L2'])")|$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L2\"]}")" "0|400"
+# Carlos finishes L1 (trip 2 at CEMEX, where 3/4 Rock has no price → default rate), submits; approve.
+dr $CA $L1 '{"action":"arrived-pickup","yardId":"cemex"}' >/dev/null
+dr $CA $L1 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null
+dr $CA $L1 '{"action":"arrived-jobsite"}' >/dev/null; dr $CA $L1 '{"action":"trip-complete"}' >/dev/null
+dr $CA $L1 '{"action":"delivered"}' >/dev/null
+mg POST /api/loads/$L1/approve >/dev/null
+chk "   an approved, unbilled load voided and restored returns to Ready to Bill" "$(mg POST /api/loads/$L1/void '{"reason":"check"}' -o /dev/null; mg POST /api/loads/$L1/unvoid >/dev/null; load $L1 "l['approvalStatus'], l['billStatus']")" "approved ready"
+
+# ── C5. Vendor cost follows the yard the driver actually used, trip by trip ──
+chk "C5 planned Vulcan, trip 1 at Vulcan (\$38), trip 2 at CEMEX (no price on file → \$22 default): two cost lines, CEMEX not billable" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "sorted((g['vendorName'], g['totalAmount'], g['lineItems'][0]['loads'], g['lineItems'][0]['isDefault'], g['unconfigured']) for g in d['groups'])")" "[('CEMEX', 550, 1, True, True), ('Vulcan', 950, 1, False, False)]"
+chk "   a default rate is an estimate, not a price: named as such, refused as a bill" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "[g['lineItems'][0]['description'] for g in d['groups'] if g['vendorName']=='CEMEX'][0]")|$(mgc POST /api/vendor-bills "{\"loadIds\":[\"$L1\"]}")" "3/4 Rock — 1 load (25.00 ton @ \$22/ton) [default rate — no CEMEX price on file for 3/4 Rock] [NOT PRICEABLE]|400"
+chk "   Material Costs shows the estimate meanwhile, per yard"               "$(curl -s -b $M $B/api/material-costs | jq "d['vendors']['vulcan']['totalLoads'], int(d['vendors']['vulcan']['totalCost']), d['vendors']['cemex']['totalLoads'], int(d['vendors']['cemex']['totalCost'])")" "1 950 1 550"
+chk "   Profitability splits the same load the same way (Vulcan 1 / CEMEX 1)" "$(curl -s -b $M $B/api/profitability | jq "(lambda v: (v['vulcan']['loads'], int(v['vulcan']['cost']), v['cemex']['loads'], int(v['cemex']['cost'])))({x['key']: x for x in d['byVendor']})")" "(1, 950, 1, 550)"
+mg POST /api/vendors/cemex/prices '{"material":"3/4 Rock","unit":"ton","price":20}' >/dev/null
+chk "   once CEMEX's price is on file the trip is costed at it (\$20 × 25) and billable" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "[(g['vendorName'], g['totalAmount'], g['unconfigured']) for g in d['groups'] if g['vendorName']=='CEMEX']")" "[('CEMEX', 500, False)]"
+VB=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$L1\"]}"); VBV=$(echo "$VB" | jq "[b['id'] for b in d['bills'] if b['vendorId']=='vulcan'][0]"); VBC=$(echo "$VB" | jq "[b['id'] for b in d['bills'] if b['vendorId']=='cemex'][0]")
+chk "   two bills created; each trip claimed by its own vendor's bill"       "$(echo "$VB" | jq "len(d['bills'])")|$(load $L1 "l['trips'][0]['vendorBillId']=='$VBV', l['trips'][1]['vendorBillId']=='$VBC'")" "2|True True"
+chk "   the same hauls cannot be billed to a vendor twice"                   "$(mgc POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}")" "400"
+chk "   voiding the CEMEX bill releases only its trip"                       "$(mg POST /api/vendor-bills/$VBC/void '{"reason":"wrong yard"}' | jq "d['success']")|$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "[(g['vendorName'], g['lineItems'][0]['loads']) for g in d['groups']]")" "True|[('CEMEX', 1)]"
+# An external yard with NO price is not priceable — never a $0 bill; adding the price afterwards fixes it.
+KP=$(mg POST /api/vendors/keith/prices '{"material":"Dirt","unit":"ton","price":0}' | jq "d['price']['id']")
+P5=$(newpo '{"po":{"poNumber":"P0-5","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}'); P5=${P5%% *}; L5=$(loadof $P5)
+dr $RG $L5 '{"action":"start-trip"}' >/dev/null; dr $RG $L5 '{"action":"arrived-pickup","yardId":"keith"}' >/dev/null
+dr $RG $L5 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $RG $L5 '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $L5 '{"action":"trip-complete"}' >/dev/null
+curl -s -b $RG -H "$J" -X PUT $B/api/loads/$L5 -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+dr $RG $L5 '{"action":"delivered"}' >/dev/null; mg POST /api/loads/$L5/approve >/dev/null
+chk "   planned VBT (\$0) but loaded at Keith Farms with no Dirt price → NOT priceable, no \$0 bill" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L5\"]}" | jq "d['groups'][0]['unconfigured'], d['groups'][0]['unconfiguredReasons']")|$(mgc POST /api/vendor-bills "{\"loadIds\":[\"$L5\"]}")" "True ['no price on file for Dirt at Keith Farms']|400"
+chk "   Profitability flags the same load instead of counting \$0"          "$(curl -s -b $M $B/api/profitability | jq "d['grand']['costIncomplete']")" "True"
+mg PUT /api/vendors/keith/prices/$KP '{"price":15}' >/dev/null
+chk "   once Keith's Dirt price is on file the haul is costed at it (\$15 x 25)" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L5\"]}" | jq "d['groups'][0]['unconfigured'], d['groups'][0]['vendorName'], d['groups'][0]['totalAmount']")" "False Keith Farms 375"
+# Vendor bill send: guards and lost-response recovery
+chk "   send the Vulcan bill → sent; sending it again is refused; retry on a sent bill is refused" "$(mg POST /api/vendor-bills/$VBV/send | jq "d['bill']['syncStatus'], d['bill']['qbBillId']")|$(mgc POST /api/vendor-bills/$VBV/send)|$(mgc POST /api/vendor-bills/$VBV/retry)" "sent BILL-1|400|400"
+VB2=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$L5\"]}" | jq "d['bills'][0]['id']")
+mg POST /api/_test/qb-fake '{"billMode":"lost"}' >/dev/null
+chk "   QuickBooks creates the bill but the answer is lost → failed, flagged 'may exist'" "$(mgc POST /api/vendor-bills/$VB2/send)|$(curl -s -b $M $B/api/vendor-bills | jq "[(b['syncStatus'], b['mayExistInQuickBooks']) for b in d['items'] if b['id']=='$VB2'][0]")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsCreated']")" "500|('failed', True)|2"
+mg POST /api/_test/qb-fake '{"billMode":"ok"}' >/dev/null
+chk "   Retry finds it in QuickBooks and adopts it — no second bill"        "$(mg POST /api/vendor-bills/$VB2/retry | jq "d['recovered'], d['bill']['syncStatus'], d['bill']['qbBillId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsCreated']")" "True sent BILL-2|2"
+chk "   voiding a sent bill removes it in QuickBooks first, then releases the trip" "$(mg POST /api/vendor-bills/$VB2/void '{"reason":"wrong price"}' | jq "d['success'], d['qbDeleted']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsDeleted']")|$(load $L5 "l['trips'][0].get('vendorBillId',''), l['qbBillId']")" "True True|1| "
+
+# ── C6. Invoices: QuickBooks answers, times out, or accepts and loses the answer ──
+B1=$(mg POST /api/billing-batches "{\"loadIds\":[\"$L1\"]}" | jq "d['batches'][0]['id']")
+mg POST /api/_test/qb-fake '{"mode":"lost"}' >/dev/null
+chk "C6 VBT loses QuickBooks' answer after the invoice was created → failed + 'may exist', load not billed yet" "$(mgc POST /api/billing-batches/$B1/send)|$(curl -s -b $M $B/api/billing-batches/$B1 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], d['batch']['qbInvoiceId']")|$(load $L1 "l['billStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "500|failed True |ready|1"
+chk "   send on that batch says use Retry"                                  "$(mgc POST /api/billing-batches/$B1/send)" "400"
+mg POST /api/_test/qb-fake '{"mode":"ok","connected":false}' >/dev/null
+chk "   Retry with QuickBooks disconnected refuses (cannot check) — nothing sent" "$(mgc POST /api/billing-batches/$B1/retry)|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "400|1"
+mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
+chk "   Retry finds the invoice in QuickBooks and adopts it: batch sent, load billed, still ONE invoice" "$(mg POST /api/billing-batches/$B1/retry | jq "d['recovered'], d['batch']['syncStatus'], d['batch']['qbInvoiceId']")|$(load $L1 "l['billStatus'], l['qbInvoiceId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "True sent_to_quickbooks INV-1|billed INV-1|1"
+chk "   ...recorded in the sync log"                                        "$(curl -s -b $M "$B/api/qb-sync-log?batchId=$B1" | jq "sorted(set(e['actionType'] for e in d['items']))")" "['create_invoice', 'find_customer', 'recover_invoice']"
+mg POST /api/billing-batches/$B1/void '{"reason":"test the timeout path next"}' >/dev/null
+B2=$(mg POST /api/billing-batches "{\"loadIds\":[\"$L1\"]}" | jq "d['batches'][0]['id']")
+mg POST /api/_test/qb-fake '{"mode":"timeout"}' >/dev/null
+chk "   QuickBooks times out before anything is created → failed + 'may exist'" "$(mgc POST /api/billing-batches/$B2/send)|$(curl -s -b $M $B/api/billing-batches/$B2 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks']")" "500|failed True"
+mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
+chk "   Retry finds nothing, resets the batch; send creates the one invoice" "$(mg POST /api/billing-batches/$B2/retry | jq "d.get('recovered'), d['batch']['syncStatus']")|$(mg POST /api/billing-batches/$B2/send | jq "d['batch']['qbInvoiceId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "None ready_to_bill|INV-2|2"
+mg POST /api/billing-batches/$B2/void '{"reason":"refresh test"}' >/dev/null
+B3=$(mg POST /api/billing-batches "{\"loadIds\":[\"$L1\"]}" | jq "d['batches'][0]['id']")
+mg POST /api/_test/qb-fake '{"mode":"slow","delayMs":1500}' >/dev/null
+curl -s -b $M -H "$J" -X POST $B/api/billing-batches/$B3/send -d '{}' -o /dev/null &
+sleep 0.3
+chk "   the user refreshes mid-send: the batch reads 'syncing', a void meanwhile is refused" "$(curl -s -b $M $B/api/billing-batches/$B3 | jq "d['batch']['syncStatus']")|$(mgc POST /api/billing-batches/$B3/void '{"reason":"impatient"}')" "syncing|409"
+wait
+chk "   ...and finishes exactly once"                                       "$(curl -s -b $M $B/api/billing-batches/$B3 | jq "d['batch']['syncStatus'], d['batch']['qbInvoiceId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "sent_to_quickbooks INV-3|3"
+chk "   a billed load cannot be voided on its own (409, points at the batch)" "$(mg POST /api/loads/$L1/void '{"reason":"x"}' | jq "d['billingBatchId']=='$B3'")" "True"
+
+# ── C2. Archiving moves loads off the board, not out of the records ──
+BEFORE_COST=$(curl -s -b $M $B/api/material-costs | jq "int(d['grandTotal'])")
+chk "C2 archive: the two billed loads (one QuickBooks, one manual) leave the board" "$(mg POST /api/history/archive | jq "d['archived']['loads'], d['heldBack']")|$(data "len([l for l in d['loads'] if l['id'] in ('$L1','$L2')])")" "2 0|0"
+chk "   the batch still shows its (archived) loads"                          "$(curl -s -b $M $B/api/billing-batches/$B3 | jq "[l['id'] for l in d['loads']]")" "['$L1']"
+chk "   Material Costs and Reports still count them"                        "$(curl -s -b $M $B/api/material-costs | jq "int(d['grandTotal'])==$BEFORE_COST")|$(curl -s -b $M $B/api/reports | jq "d['totals']['billedThisMonth']")" "True|2"
+chk "   voiding the batch after archive releases the archived load too (no phantom 'billed')" "$(mg POST /api/billing-batches/$B3/void '{"reason":"customer dispute"}' | jq "d['success']")|$(curl -s -b $M $B/api/history | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for b in d['archive'] for x in b['loads'] if x['id']=='$L1'][0];print(l['billStatus'], repr(l['qbInvoiceId']), repr(l['billingBatchId']))")" "True|ready '' ''"
+chk "   an archived load is still owed to its vendor: the released CEMEX trip can be billed" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L1\"]}" | jq "[(g['vendorName'], g['lineItems'][0]['loads']) for g in d['groups']]")" "[('CEMEX', 1)]"
+
+# ── C9 + C11. Shifts: odometers are per truck; an office close waits for review ──
+chk "C9 Rigo starts his day on Truck #4 at 100,000"                          "$(curl -s -b $RG -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-4","odometer":100000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' | jq "d['shift']['truckNum'], d['shift']['startOdometer']")" "Truck #4 100000"
+SH=$(curl -s -b $RG $B/api/shifts/current | jq "d['shift']['id']")
+mg POST /api/customers '{"name":"Segment Co","city":"Madera"}' >/dev/null
+mg POST /api/customer-prices '{"customer":"Segment Co","material":"3/4 Rock","unit":"hour","price":95}' >/dev/null   # an hourly customer: billed from the freight window
+P6=$(newpo '{"po":{"poNumber":"P0-6","customer":"Segment Co","deliveryDate":"'"$TODAY"'","address":"9 Seg Rd","city":"Madera","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}'); P6=${P6%% *}; L6=$(loadof $P6)
+dr $RG $L6 '{"action":"start-trip"}' >/dev/null
+FS1=$(dr $RG $L6 '{"action":"arrived-pickup","yardId":"vulcan","odometer":100010}' | jq "d['load']['freightSegmentId']")
+dr $RG $L6 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $RG $L6 '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $L6 '{"action":"trip-complete"}' >/dev/null
+chk "   freight finished on Truck #4 at 100,050"                            "$(curl -s -b $RG -H "$J" -X POST $B/api/freight-segments/$FS1/close -d '{"odometer":100050}' | jq "d['segment']['status'], d['segment']['billableMiles']")" "closed 40"
+chk "   truck change to Truck #14 (odometer 50,000)"                        "$(curl -s -b $RG -H "$J" -X POST $B/api/shifts/$SH/truck-change -d '{"toTruckId":"truck-14","fromOdometer":100060,"toOdometer":50000}' | jq "d['shift']['truckNum']")" "Truck #14"
+dr $RG $L6 '{"action":"start-trip"}' >/dev/null
+R=$(dr $RG $L6 '{"action":"arrived-pickup","yardId":"vulcan","odometer":50010}')
+chk "   next pickup at 50,010 on the new truck is accepted (was refused as 'inside' the old truck's freight)" "$(echo "$R" | jq "d['success'], d.get('code'), bool(d['load']['freightSegmentId'])")" "True None True"
+FS2=$(echo "$R" | jq "d['load']['freightSegmentId']")
+dr $RG $L6 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $RG $L6 '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $L6 '{"action":"trip-complete"}' >/dev/null
+curl -s -b $RG -H "$J" -X PUT $B/api/loads/$L6 -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+dr $RG $L6 '{"action":"delivered"}' >/dev/null; mg POST /api/loads/$L6/approve >/dev/null
+chk "   the finished Truck #4 freight is locked (all its loads approved)"   "$(curl -s -b $M $B/api/freight-segments/$FS1 | jq "d['segment']['locked']")" "True"
+chk "C11 Rigo forgot End day; the office closes it: freight closed but NOT locked — it waits for review" "$(mg POST /api/shifts/$SH/close '{"odometer":50100,"reason":"driver forgot to end the day"}' | jq "d['shift']['status']")|$(curl -s -b $M $B/api/freight-segments/$FS2 | jq "d['segment']['status'], d['segment']['locked'], bool(d['segment']['needsReview'])")" "closed|closed False True"
+chk "   the Freight Bill stays DRAFT meanwhile"                             "$(curl -s -b $M $B/api/freight-segments/$FS2/freight-bill | python3 -c "import sys;h=sys.stdin.read();print('DRAFT' in h, 'FINAL' in h, 'awaiting review' in h)")" "True False True"
+chk "   …and the hourly invoice will not bill the office-typed window until it is reviewed" "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$L6\"]}" | jq "d['groups'][0]['unconfigured'], 'closed by the office' in d['groups'][0]['unconfiguredReasons'][0]")" "True True"
+chk "   the office sees the review link on the day panel"                  "$(grep -c "confirmSegmentEnding(" public/index.html)" "2"
+sleep 1
+chk "   a manager reviews the window with a reason → locked, FINAL"         "$(mg PUT /api/freight-segments/$FS2 "{\"odEnd\":50040,\"timeEnd\":\"$(date -u +%FT%TZ)\",\"reason\":\"driver confirmed 50,040 at the last drop\"}" | jq "d['segment']['odEnd'], d['segment']['locked'], d['segment']['needsReview']")|$(curl -s -b $M $B/api/freight-segments/$FS2/freight-bill | python3 -c "import sys;h=sys.stdin.read();print('DRAFT' in h, 'FINAL' in h)")" "50040 True None|False True"
+chk "   …now the hourly invoice prices from the two freight windows"         "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$L6\"]}" | jq "d['groups'][0]['unconfigured'], d['groups'][0]['lineItems'][0]['basis'], d['groups'][0]['lineItems'][0]['unit']")" "False segment hour"
+
+# ── Review findings: a hand-counted remainder is claimed too; a date move checks conflicts;
+#    a batch that failed AFTER its invoice existed recovers instead of sticking ──
+P10=$(newpo '{"po":{"poNumber":"P0-10","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"Base Rock","loadsAssigned":3,"vendorId":"vulcan"}]}'); P10=${P10%% *}; L10=$(loadof $P10)
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+dr $MA $L10 '{"action":"start-trip"}' >/dev/null; dr $MA $L10 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $MA $L10 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $MA $L10 '{"action":"arrived-jobsite"}' >/dev/null; dr $MA $L10 '{"action":"trip-complete"}' >/dev/null
+curl -s -b $MA -H "$J" -X PUT $B/api/loads/$L10 -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+dr $MA $L10 '{"action":"incomplete","delivered":2}' >/dev/null; mg POST /api/loads/$L10/approve >/dev/null
+chk "R1 one recorded trip + one hand-counted load → billed once as 2 loads; nothing left to bill; void releases both" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}" | jq "d['groups'][0]['lineItems'][0]['loads'], d['groups'][0]['totalAmount']")|$(VBX=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$L10\"]}" | jq "d['bills'][0]['id']"); mgc POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}"; echo -n '|'; mg POST /api/vendor-bills/$VBX/void '{"reason":"check"}' >/dev/null; mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}" | jq "d['groups'][0]['lineItems'][0]['loads']")" "2 1100|400|2"
+TOMORROW=$(date -d '+1 day' +%F)
+P11=$(newpo '{"po":{"poNumber":"P0-11","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"carlos","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}'); P11=${P11%% *}; L11=$(loadof $P11)
+mg POST /api/pos '{"po":{"poNumber":"P0-12","customer":"Phase Zero Co","deliveryDate":"'"$TOMORROW"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' >/dev/null
+dr $CA $L11 '{"action":"start-trip"}' >/dev/null
+R=$(mg POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$L11\",\"newDate\":\"$TOMORROW\",\"reason\":\"customer pushed a day\"}")
+chk "R2 a date move checks conflicts: mid-haul load, and Truck #2B is Rigo's tomorrow → 409" "$(echo "$R" | jq "d['code'], sorted(c['type'] for c in d['conflicts'])")|$(load $L11 "l['deliveryDate']=='$TODAY'")" "assignment_conflict ['load-in-progress', 'truck-busy']|True"
+chk "   with the dispatcher's go-ahead it moves, and the override is audited"  "$(mg POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$L11\",\"newDate\":\"$TOMORROW\",\"reason\":\"customer pushed a day\",\"force\":true}" | jq "d['success'], d['moved']")|$(load $L11 "l['deliveryDate']=='$TOMORROW'")|$(curl -s -b $M "$B/api/audit-log?action=moved-loads" | jq "d['entries'][0]['details']['conflictsOverridden']")" "True 1|True|['load-in-progress', 'truck-busy']"
+B4=$(mg POST /api/billing-batches "{\"loadIds\":[\"$L5\"]}" | jq "d['batches'][0]['id']")
+INV_BEFORE=$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")
+mg POST /api/_test/save-mode '{"mode":"fail","after":1}' >/dev/null       # the 'syncing' save passes; the save after the invoice fails
+chk "R3 the invoice is created but the save after it fails → 503, batch failed WITH its invoice id" "$(mgc POST /api/billing-batches/$B4/send)|$(curl -s -b $M $B/api/billing-batches/$B4 | jq "d['batch']['syncStatus'], d['batch']['qbInvoiceId']!=''")" "503|failed True"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   Retry confirms the invoice in QuickBooks and marks the batch sent — no second invoice, nothing stuck" "$(mg POST /api/billing-batches/$B4/retry | jq "d['recovered'], d['batch']['syncStatus']")|$(load $L5 "l['billStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated'] - $INV_BEFORE")" "True sent_to_quickbooks|billed|1"
+
+# ── C10. Concurrent writes: all answered, memory and disk agree ──
+P7=$(newpo '{"po":{"poNumber":"P0-7","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}'); P7=${P7%% *}; L7=$(loadof $P7)
+rm -f /tmp/vbt-p0-codes.txt
+for i in 1 2 3 4 5 6 7 8; do mgc PUT /api/loads/$L7 "{\"notes\":\"note $i\"}" >> /tmp/vbt-p0-codes.txt & done; wait
+chk "C10 eight overlapping saves all succeed"                               "$(tr -d '\n' < /tmp/vbt-p0-codes.txt | fold -w3 | sort -u | tr -d '\n')" "200"
+rm -f /tmp/vbt-p0-codes.txt
+chk "   what the API shows is what is on disk"                              "$(python3 -c "
+import json;d=json.load(open('data.json'));print([l['notes'] for l in d['loads'] if l['id']=='$L7'][0])")|$(load $L7 "l['notes']")" "$(load $L7 "l['notes']")|$(load $L7 "l['notes']")"
+
+echo
+echo "── 41. One dispatch board: every status from the server, one rule for who is busy ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-board.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F); YESTERDAY=$(date -d '-1 day' +%F); TOMORROW=$(date -d '+1 day' +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+tod() { curl -s -b $M "$B/api/today${2:-}" | jq "$1"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+# Static: one board, one status source.
+chk "41 the page has one dispatch board and no second Board tab or status math" "$(grep -c 'data-tab="board"' public/index.html)|$(grep -c 'function computeBoardStats\|function renderDayBoard\|function renderMonthBoard' public/index.html)|$(grep -c 'function paintToday' public/index.html)|$(grep -c 'id="sec-today"' public/index.html)" "0|0|1|1"
+chk "   the board renders buckets, states and flags it is given, never recomputes them" "$(sed -n '/^function paintToday/,/^function dbLoadCard/p' public/index.html | grep -c "approvalStatus ===\|loadsDelivered >\|timestamps\.")" "0"
+# Fixture: Board Co today — Beryle 2 loads from Vulcan, Matthew 1 from our yard, one load with nobody yet; Carlos is off; Rigo has yesterday's unfinished load.
+P=$(mg POST /api/pos '{"po":{"poNumber":"B41-1","customer":"Board Co","deliveryDate":"'"$TODAY"'","address":"7 Board Ave","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"},{"truckId":"matthew","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":null,"truckUnitId":null,"material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LB=$(loadof $P beryle); LM=$(loadof $P matthew); LU=$(loadof $P "")
+PY=$(mg POST /api/pos '{"po":{"poNumber":"B41-Y","customer":"Board Co","deliveryDate":"'"$YESTERDAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']"); LY=$(loadof $PY rigo)
+mg PUT /api/drivers/carlos '{"status":"off"}' >/dev/null
+mg PUT /api/fleet/trucks/truck-2b '{"status":"maintenance"}' >/dev/null
+chk "   loads: 2 assigned, 1 unassigned; the unassigned one is missing a driver" "$(tod "sorted((l['bucket'], l['missing']) for l in d['loads'])")" "[('assigned', []), ('assigned', []), ('unassigned', ['driver'])]"
+chk "   drivers: Beryle and Matthew assigned, Leonardo and Rigo available, Carlos off" "$(tod "sorted((x['id'], x['state'], x['available']) for x in d['drivers'])")" "[('beryle', 'assigned', False), ('carlos', 'off', False), ('leonardo', 'available', True), ('matthew', 'assigned', False), ('rigo', 'available', True)]"
+chk "   trucks: #2 and #4 assigned (with their drivers), #12 and #14 free, #2B in shop" "$(tod "sorted((t['truckNum'], t['state'], t['driverName']) for t in d['trucks'])")" "[('Truck #12', 'available', ''), ('Truck #14', 'available', ''), ('Truck #2', 'assigned', 'Beryle'), ('Truck #2B', 'unavailable', ''), ('Truck #4', 'assigned', 'Matthew')]"
+chk "   attention row: 1 unassigned, 1 missing info, 1 carried over (Rigo's yesterday), 2 drivers free, 2 trucks free" "$(tod "tuple(d['attention'][k] for k in ['unassigned','inProgress','awaitingApproval','readyToBill','missingInfo','conflicts','carriedOver','availableDrivers','availableTrucks'])")" "(1, 0, 0, 0, 1, 0, 1, 2, 2)"
+chk "   the carried-over list names yesterday's load with its date" "$(tod "[(l['id']==\"$LY\", l['deliveryDate']==\"$YESTERDAY\", l['bucket']) for l in d['carriedOver']]")" "[(True, True, 'assigned')]"
+chk "   a driver row carries the load facts: truck, customer, PO, pickup → destination, progress" "$(tod "[(x['truckNum'], x['customer'], x['poNumber'], x['pickup'], x['destination'], x['progress'], x['stage']) for x in d['drivers'] if x['id']=='beryle'][0]")" "('Truck #2', 'Board Co', 'B41-1', 'Vulcan', '7 Board Ave, Fresno', '0/2', 'Assigned')"
+# Beryle rolls
+dr $BE $LB '{"action":"start-trip"}' >/dev/null
+chk "   Beryle starts: load in progress 'Going to yard', driver and Truck #2 in progress" "$(tod "[(l['bucket'], l['stage']) for l in d['loads'] if l['id']=='$LB'][0], [x['state'] for x in d['drivers'] if x['id']=='beryle'][0], [t['state'] for t in d['trucks'] if t['id']=='truck-2'][0], d['attention']['inProgress'], d['summary']['drivers']['inProgress'], d['summary']['trucks']['inProgress']")" "('in-progress', 'Going to yard') in-progress in-progress 1 1 1"
+dr $BE $LB '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null
+chk "   …at the yard the stage follows" "$(tod "[l['stage'] for l in d['loads'] if l['id']=='$LB'][0]")" "At yard"
+# Missing information: Matthew's load loses its truck
+mg POST /api/loads/$LM/assign '{"truckUnitId":null}' >/dev/null
+chk "   a load with a driver but no truck is flagged 'missing: truck'" "$(tod "[l['missing'] for l in d['loads'] if l['id']=='$LM'][0], d['attention']['missingInfo']")" "['truck'] 2"
+# Conflicts: the office forces Truck #2 (on Beryle's open load) onto Matthew's load
+mg POST /api/loads/$LM/assign '{"truckUnitId":"truck-2","force":true,"reason":"test"}' >/dev/null
+chk "   a forced double-booking shows as a conflict on BOTH loads and in the attention row" "$(tod "sorted(len(l['conflicts']) for l in d['loads']), d['attention']['conflicts'], [l['conflicts'][0] for l in d['loads'] if l['id']=='$LM'][0]")" "[0, 1, 1] 2 Truck #2 is also on Beryle's load $LB"
+mg POST /api/loads/$LM/assign '{"truckUnitId":"truck-4"}' >/dev/null
+chk "   …and clears when the truck is put back" "$(tod "d['attention']['conflicts'], d['attention']['missingInfo']")" "0 1"
+# Live refresh: the office version is the board's version and moves when a day starts
+V1=$(tod "d['version']"); DV=$(curl -s -b $M $B/api/dispatch-version | jq "d['version']")
+chk "   /api/dispatch-version for the office IS the board's version" "$([ "$V1" = "$DV" ] && echo same || echo differs)" "same"
+curl -s -b $RG -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-14","odometer":70000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' -o /dev/null
+chk "   a driver starting the day changes the version (the board shows 'day started')" "$([ "$V1" != "$(tod "d['version']")" ] && echo changed || echo same)|$(tod "[x['dayStartedAt'] is not None for x in d['drivers'] if x['id']=='rigo'][0], [x['truckNum'] for x in d['drivers'] if x['id']=='rigo'][0]")" "changed|True Truck #14"
+# Beryle finishes and submits; then approval, then billing — buckets and states follow
+dr $BE $LB "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $BE $LB '{"action":"arrived-jobsite"}' >/dev/null; dr $BE $LB '{"action":"trip-complete"}' >/dev/null
+dr $BE $LB '{"action":"start-trip"}' >/dev/null; dr $BE $LB '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $BE $LB "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $BE $LB '{"action":"arrived-jobsite"}' >/dev/null; dr $BE $LB '{"action":"trip-complete"}' >/dev/null
+curl -s -b $BE -H "$J" -X PUT $B/api/loads/$LB -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+dr $BE $LB '{"action":"delivered"}' >/dev/null
+chk "   submitted: awaiting approval, nothing missing, Beryle done and free again, Truck #2 free" "$(tod "[(l['bucket'], l['missing']) for l in d['loads'] if l['id']=='$LB'][0], [(x['state'], x['available']) for x in d['drivers'] if x['id']=='beryle'][0], [t['state'] for t in d['trucks'] if t['id']=='truck-2'][0], d['attention']['awaitingApproval']")" "('awaiting-approval', []) ('completed', True) available 1"
+mg POST /api/loads/$LB/approve >/dev/null
+chk "   approved: Ready to Bill, with the amount (2 loads × 25 t × \$25)" "$(tod "[l['bucket'] for l in d['loads'] if l['id']=='$LB'][0], d['summary']['readyToBill'], d['attention']['readyToBill'], d['attention']['readyToBillAmount'], d['attention']['awaitingApproval']")" "ready-to-bill 1 1 1250 0"
+mg POST /api/loads/bill "{\"loadIds\":[\"$LB\"]}" >/dev/null
+chk "   billed: Completed" "$(tod "[l['bucket'] for l in d['loads'] if l['id']=='$LB'][0], d['summary']['completed'], d['attention']['readyToBill']")" "completed 1 0"
+chk "   planning another day: its own loads, the same attention row" "$(tod "len(d['loads']), d['isToday'], d['attention']['awaitingApproval']==0 and d['attention']['carriedOver']==1" "?date=$TOMORROW")|$(tod "[l['id'] for l in d['loads']]==['$LY'], d['isToday']" "?date=$YESTERDAY")" "0 False True|True False"
+mg PUT /api/drivers/carlos '{"status":"available"}' >/dev/null; mg PUT /api/fleet/trucks/truck-2b '{"status":"available"}' >/dev/null
+
+echo
+echo "── 42. Conflicts are decided in the app: one dialog, Cancel or go ahead, never a browser confirm ──"
+CF=$(sed -n '/^function confirmConflicts/,/^async function postAssignment/p' public/index.html)
+chk "42 the conflict dialog is in the page (a Promise the caller awaits), not a native confirm()" "$(echo "$CF" | grep -c '[^a-zA-Z]confirm(')|$(echo "$CF" | grep -c 'return new Promise(resolve')|$(echo "$CF" | grep -c "id = 'conflict-modal'")" "0|1|1"
+chk "   it is titled for what collides and offers Cancel and the verb (Assign / Reassign / Move)" "$(grep -c "'driver-busy': 'Driver Already Assigned', 'truck-busy': 'Truck Already Assigned'" public/index.html)|$(echo "$CF" | grep -c 'id="conflict-cancel">Cancel<')|$(echo "$CF" | grep -c 'id="conflict-go">\${escapeHtml(verb)}<')" "1|1|1"
+chk "   Cancel is the default: focused, Escape, the × and the backdrop all cancel" "$(echo "$CF" | grep -c "conflict-cancel').focus()")|$(echo "$CF" | grep -c "e.key === 'Escape'")|$(echo "$CF" | grep -c "conflict-x').onclick = () => done(false)")|$(echo "$CF" | grep -c "e.target === el) done(false)")" "1|1|1|1"
+chk "   a go-ahead is resent with force and the typed reason; a Cancel is reported as cancelled" "$(grep -c "force: true, reason: c.reason || reason ||" public/index.html)|$(grep -c "d = { ...d, cancelled: true }" public/index.html)" "1|1"
+chk "   every assignment path (sheet, reassign modal, PO form, date move) stays quiet on Cancel" "$(grep -c '\.cancelled)' public/index.html)|$(grep -c 'postAssignment(' public/index.html)" "6|7"
+
+echo
+echo "── 43. Approval confirms the record: Driver · Truck · Pickup yard · Ticket · Delivery ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-approve.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+tod() { curl -s -b $M "$B/api/today${2:-}" | jq "$1"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+appr() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];a=l.get('approval');print($2)"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+haul() { # driver-cookie load yard : one full trip with a ticket
+  dr $1 $2 '{"action":"start-trip"}' >/dev/null; dr $1 $2 "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null
+  dr $1 $2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $1 $2 '{"action":"arrived-jobsite"}' >/dev/null; dr $1 $2 '{"action":"trip-complete"}' >/dev/null; }
+submit() { curl -s -b $1 -H "$J" -X PUT $B/api/loads/$2 -d "{\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $1 $2 '{"action":"delivered"}' >/dev/null; }
+# Fixture: Beryle's load is complete in every respect; Matthew's was created with no truck.
+P=$(mg POST /api/pos '{"po":{"poNumber":"A43-1","customer":"Approve Co","deliveryDate":"'"$TODAY"'","address":"9 Gate Rd","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"},{"truckId":"matthew","truckUnitId":null,"material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LB=$(loadof $P beryle); LM=$(loadof $P matthew)
+chk "43 a load that is not submitted carries no checklist" "$(appr $LB "a")" "None"
+haul $BE $LB vulcan; haul $BE $LB vulcan; submit $BE $LB
+haul $MA $LM vbt; submit $MA $LM
+chk "   a complete load: every item ✓ with the fact behind it, ready to approve" "$(appr $LB "a['ready'], [(i['key'], i['ok'], i['value']) for i in a['items']]")" "True [('driver', True, 'Beryle'), ('truck', True, 'Truck #2'), ('pickup', True, 'Vulcan'), ('ticket', True, '2 tickets · 49 t'), ('delivery', True, '2/2 loads · signed by Site Foreman')]"
+chk "   the pickup yard is the one confirmed at the scale; planned and actual tons sit side by side" "$(appr $LB "[i['note'] for i in a['items']]")" "['', '', 'confirmed at the scale', 'planned 50 t, actual 49 t', '']"
+chk "   Matthew's load: ⚠ Truck (none recorded), everything else ✓" "$(appr $LM "a['ready'], a['warnings'], [i['key'] for i in a['items'] if not i['ok']]")" "False ['Truck: no truck recorded on this load'] ['truck']"
+chk "   the dispatch board says the same thing about it (one rule)" "$(tod "[l['missing'] for l in d['loads'] if l['id']=='$LM'][0], d['attention']['missingInfo']")" "['Truck: no truck recorded on this load'] 1"
+chk "   a plain approve of the incomplete load is refused (409 approval_incomplete) with the checklist; it stays submitted" "$(mg POST /api/loads/$LM/approve '{}' -w ' %{http_code}' | python3 -c "import sys,json;raw=sys.stdin.read().rstrip();body,code=raw.rsplit(' ',1);d=json.loads(body);print(code, d['code'], d['checklist']['ready'], d['error'])")|$(load $LM "l['approvalStatus'], l['locked']")" "409 approval_incomplete False This load is not complete — Truck: no truck recorded on this load.|submitted True"
+chk "   the complete load approves without ceremony" "$(mg POST /api/loads/$LB/approve '{}' | jq "d['success'], d['approvedWithWarnings']")|$(load $LB "l['approvalStatus'], l['billStatus'], l.get('approvalWarnings')")" "True []|approved ready None"
+chk "   with the manager's acknowledgement the incomplete one approves, and the gap stays on the record" "$(mg POST /api/loads/$LM/approve '{"acknowledge":true}' | jq "d['success'], d['approvedWithWarnings']")|$(load $LM "l['approvalStatus'], l['locked'], l['billStatus'], l.get('approvalWarnings')")" "True ['Truck: no truck recorded on this load']|approved True ready ['Truck: no truck recorded on this load']"
+chk "   …and in the audit log" "$(curl -s -b $M "$B/api/audit-log?action=approved-load" | jq "[e['details'].get('approvedWithWarnings') for e in d['entries'] if e['target']=='$LM'][0], [e['details'].get('approvedWithWarnings') for e in d['entries'] if e['target']=='$LB'][0]")" "['Truck: no truck recorded on this load'] None"
+chk "   an approved load carries no checklist any more (it is locked)" "$(appr $LM "a")" "None"
+AP=$(sed -n '/^async function approveLoad/,/^\/\/ ── BILLING/p' public/index.html)
+chk "   approve and reject are decided in the app: no prompt(), no confirm(); a stale page re-asks with the server's checklist" "$(echo "$AP" | grep -c 'prompt(\|[^a-zA-Z]confirm(')|$(echo "$AP" | grep -c 'confirmApproval(l, d.checklist)')|$(grep -c 'approvalChecklistHtml(l.approval, true)' public/index.html)|$(grep -c 'acknowledge: !!(check && !check.ready)' public/index.html)" "0|1|1|1"
+
+echo
+echo "── 44. Editing a PO: the order changes, the work follows only where it is still operational (PO-EDITING.md) ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-poedit.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+LE=$(mktemp); curl -s -c $LE -X POST -d "username=leonardo&password=leo123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+po()   { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);p=[x for x in d['pos'] if x['id']=='$1'][0];print($2)"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+code() { python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, $1)"; }
+haul() { dr $1 $2 '{"action":"start-trip"}' >/dev/null; dr $1 $2 "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null
+  dr $1 $2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $1 $2 '{"action":"arrived-jobsite"}' >/dev/null; dr $1 $2 '{"action":"trip-complete"}' >/dev/null; }
+submit() { curl -s -b $1 -H "$J" -X PUT $B/api/loads/$2 -d "{\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $1 $2 '{"action":"delivered"}' >/dev/null; }
+mg POST /api/customer-prices '{"customer":"Priced Co","material":"3/4 Rock","unit":"ton","price":30}' >/dev/null
+# Fixture: four loads on one order — Beryle rolling (work in progress), Matthew following the planned yard,
+# Rigo on an explicit yard with a hand-set price, one load still unassigned. The jobsite has a saved pin.
+P=$(mg POST /api/pos '{"po":{"poNumber":"E44-1","customer":"Edit Co","deliveryDate":"'"$TODAY"'","address":"1 Old Rd","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"},{"truckId":"matthew","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vulcan"},{"truckId":"rigo","truckUnitId":"truck-14","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":null,"truckUnitId":null,"material":"3/4 Rock","loadsAssigned":1,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+LB=$(loadof $P beryle); LM=$(loadof $P matthew); LR=$(loadof $P rigo); LU=$(loadof $P "")
+mg PUT /api/pos/$P/location '{"lat":36.7,"lng":-119.7}' >/dev/null
+dr $BE $LB '{"action":"start-trip"}' >/dev/null
+mg PUT /api/loads/$LR '{"customerRate":40}' >/dev/null
+PC=$(mg POST /api/pos '{"po":{"poNumber":"E44-C","customer":"Other Co","deliveryDate":"'"$TOMORROW"'","plannedVendorId":"vbt"},"splits":[{"truckId":"carlos","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+chk "44 only the order's own fields go through a PO update; status, materials and the pin are derived or have their own action" "$(mg PUT /api/pos/$P '{"status":"completed","notes":"x"}' -w ' %{http_code}' | code "d['rejectedFields']")|$(po $P "p['status'], repr(p['notes'])")" "400 ['status']|active ''"
+R=$(mg PUT /api/pos/$P "{\"deliveryDate\":\"$TOMORROW\",\"reason\":\"pour moved\"}")
+chk "   a date change that would put Truck #4 on two drivers tomorrow is a conflict: 409, nothing changed" "$(echo "$R" | jq "d['code'], d['conflicts'][0]['type']")|$(po $P "p['deliveryDate']=='$TODAY'")|$(load $LM "l['deliveryDate']=='$TODAY'")" "assignment_conflict truck-busy|True|True"
+R=$(mg PUT /api/pos/$P "{\"deliveryDate\":\"$TOMORROW\",\"reason\":\"pour moved\",\"force\":true}")
+chk "   with the go-ahead: operational loads follow; Beryle's load in progress keeps today; the override is recorded" "$(echo "$R" | jq "sorted(d['propagation']['dateMoved']), d['propagation']['dateKept'], d['propagation']['conflictsOverridden']")" "['$LM', '$LR', '$LU'] ['$LB'] {'types': ['truck-busy'], 'reason': 'pour moved'}"
+chk "   …each moved load carries the reason in its move history; the PO is rescheduled" "$(load $LM "l['deliveryDate']=='$TOMORROW', l['moveHistory'][-1]['reason'], l['moveHistory'][-1]['scope'], l['originalScheduledDate']=='$TODAY'")|$(load $LB "l['deliveryDate']=='$TODAY', l.get('moveHistory')")|$(po $P "p['deliveryDate']=='$TOMORROW', p['status'], p['poMoveHistory'][-1]['reason']")" "True pour moved po-edit True|True None|True scheduled pour moved"
+R=$(mg PUT /api/pos/$P '{"customer":"Priced Co"}')
+chk "   customer change: loads still on the old list price are re-priced (3/4 Rock is \$30 for Priced Co); a hand-set price stays; work in progress keeps its snapshot" "$(echo "$R" | jq "sorted(d['propagation']['repriced']), d['propagation']['keptPrice'], d['po']['customer'], d['po']['job']")|$(load $LU "l['customerRate']")|$(load $LM "l['customerRate']")|$(load $LR "l['customerRate']")|$(load $LB "l['customerRate']")" "['$LM', '$LU'] ['$LR'] Priced Co Priced Co|30|25|40|25"
+R=$(mg PUT /api/pos/$P '{"address":"2 New Rd"}')
+chk "   a new address clears the saved jobsite pin (it described the old address)" "$(echo "$R" | jq "d['propagation']['geoCleared'], 'geo' in d['po']")|$(po $P "p['address'], p.get('geo')")" "True False|2 New Rd None"
+R=$(mg PUT /api/pos/$P '{"plannedVendorId":"teichert"}')
+chk "   planned-yard change: loads that followed the plan follow it and are re-priced for that vendor; an explicit yard stays; a load in progress is untouched" "$(echo "$R" | jq "sorted(d['propagation']['yardChanged']), d['po']['pickup']")|$(load $LM "l['vendorId'], l['vendorName'], l['vendorIsInternal']")|$(load $LR "l['vendorId']")|$(load $LB "l['vendorId']")" "['$LM', '$LU'] Teichert|teichert Teichert False|vbt|vulcan"
+chk "   the audit entry has each changed field, old and new, and what followed" "$(curl -s -b $M "$B/api/audit-log?action=updated-po" | jq "e=d['entries'][0]['details'];(e['changes'], e['fields']['plannedVendorId'], sorted(e['propagation']['yardChanged']))" 2>/dev/null || curl -s -b $M "$B/api/audit-log?action=updated-po" | python3 -c "import json,sys;d=json.load(sys.stdin);e=d['entries'][0]['details'];print((e['changes'], e['fields']['plannedVendorId'], sorted(e['propagation']['yardChanged'])))")" "(['plannedVendorId'], {'from': 'vulcan', 'to': 'teichert'}, ['$LM', '$LU'])"
+# Frozen once approved
+PF=$(mg POST /api/pos '{"po":{"poNumber":"E44-F","customer":"Frozen Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']"); LF=$(loadof $PF leonardo)
+haul $LE $LF vbt; submit $LE $LF; mg POST /api/loads/$LF/approve >/dev/null
+chk "   once a load is approved the invoice fields are frozen; date, yard and notes still edit, and the approved load keeps its date" "$(mg PUT /api/pos/$PF '{"customer":"Someone Else","poNumber":"E44-X"}' -w ' %{http_code}' | code "sorted(d['frozenFields'])")|$(mg PUT /api/pos/$PF "{\"deliveryDate\":\"$TOMORROW\",\"notes\":\"bill by Friday\"}" | jq "d['success'], d['propagation']['dateMoved'], d['propagation']['dateKept'], d['po']['status']")|$(load $LF "l['deliveryDate']=='$TODAY'")" "403 ['customer', 'job', 'poNumber']|True [] ['$LF'] completed|True"
+# Add work to an order
+R=$(mg POST /api/pos/$P/loads '{"truckId":"leonardo","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":2,"vendorId":"vbt"}')
+LN=$(echo "$R" | jq "d['load']['id']")
+chk "   add a load to the order: same PO, the PO's current date, prices snapshotted now (Priced Co, VBT yard), materials recounted" "$(echo "$R" | jq "d['success'], d['load']['poId']=='$P', d['load']['deliveryDate']=='$TOMORROW', d['load']['driverName'], d['load']['truckUnitId'], d['load']['customerRate'], d['load']['vendorIsInternal'], d['load']['vendorRate'], sorted((m['material'], m['totalLoads']) for m in d['po']['materials'])")" "True True True Leonardo truck-12 25 True 0 [('3/4 Rock', 3), ('Dirt', 4)]"
+chk "   …and it is on the board for that day, audited as added" "$(curl -s -b $M "$B/api/today?date=$TOMORROW" | jq "[(l['bucket'], l['driverName'], l['truckNum']) for l in d['loads'] if l['id']=='$LN'][0]")|$(curl -s -b $M "$B/api/audit-log?action=added-load" | jq "d['entries'][0]['target']=='$LN', d['entries'][0]['details']['poNumber']")" "('assigned', 'Leonardo', 'Truck #12')|True E44-1"
+chk "   the same guards as the New PO form: a truck on another driver's open load is a conflict; an unknown driver or a missing material is refused" "$(mg POST /api/pos/$P/loads '{"truckId":"carlos","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1}' | jq "d['code'], d['conflicts'][0]['type']")|$(mg POST /api/pos/$P/loads '{"truckId":"nobody","material":"Dirt","loadsAssigned":1}' -o /dev/null -w '%{http_code}')|$(mg POST /api/pos/$P/loads '{"truckId":"carlos","loadsAssigned":1}' -o /dev/null -w '%{http_code}')" "assignment_conflict truck-busy|400|400"
+chk "   a completed order that gets new work is open again" "$(mg POST /api/pos/$PF/loads '{"truckId":"carlos","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}' | jq "d['success'], d['po']['status']")" "True scheduled"
+mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
+N0=$(curl -s -b $M $B/api/data | jq "len(d['loads'])")
+chk "   when the database refuses the write, nothing is added and the dispatcher is told so" "$(mg POST /api/pos/$P/loads '{"truckId":"matthew","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}' -w ' %{http_code}' | code "d['error'].startswith('Unable to save'), 'Nothing was added' in d['error']")|$(curl -s -b $M $B/api/data | jq "len(d['loads'])==$N0")" "503 True True|True"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   the screen: Edit PO from the PO card and the load detail; a date change goes through the same conflict dialog; the rules are written down" "$(grep -cF "onclick=\"openEditPO('\${p.id}')\"" public/index.html)|$(grep -cF "openEditPO('\${l.poId}')" public/index.html)|$(grep -cF "postAssignment(\`/api/pos/\${p.id}\`, body, 'Move', reason, 'PUT')" public/index.html)|$(test -s PO-EDITING.md && grep -c '^| Delivery date' PO-EDITING.md)" "1|1|1|1"
+
+echo
+echo "── 45. Billing visibility: amounts, the state machine, guarded manual billing, unbill, unarchive ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-billing.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+mgc() { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+rtb() { curl -s -b $M "$B/api/ready-to-bill" | jq "$1"; }
+haul() { dr $1 $2 '{"action":"start-trip"}' >/dev/null; dr $1 $2 "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null
+  dr $1 $2 "{\"action\":\"loaded\",\"ticket\":${4:-$(tkt)}}" >/dev/null; dr $1 $2 '{"action":"arrived-jobsite"}' >/dev/null; dr $1 $2 '{"action":"trip-complete"}' >/dev/null; }
+submit() { curl -s -b $1 -H "$J" -X PUT $B/api/loads/$2 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $1 $2 '{"action":"delivered"}' >/dev/null; }
+mg POST /api/_test/qb-fake '{"mode":"ok"}' -o /dev/null
+mg POST /api/customers '{"name":"Actual Co","billingBasis":"actual"}' >/dev/null
+# Beryle: 3/4 Rock for Rate Co (planned basis → 25 t × $25). Matthew: Dirt for Actual Co with a VBT ticket that has no tons (not priceable).
+# Rigo: Dirt for Rate Co, later billed through a QuickBooks batch.
+P1=$(mg POST /api/pos '{"po":{"poNumber":"R45-1","customer":"Rate Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":1,"vendorId":"vulcan"},{"truckId":"rigo","truckUnitId":"truck-14","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+P2=$(mg POST /api/pos '{"po":{"poNumber":"R45-2","customer":"Actual Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LB=$(loadof $P1 beryle); LR=$(loadof $P1 rigo); LM=$(loadof $P2 matthew)
+haul $BE $LB vulcan; submit $BE $LB; mg POST /api/loads/$LB/approve >/dev/null
+haul $RG $LR vbt;    submit $RG $LR; mg POST /api/loads/$LR/approve >/dev/null
+haul $MA $LM vbt '{"source":"vbt","number":"V-45"}'; submit $MA $LM; mg POST /api/loads/$LM/approve '{"acknowledge":true}' >/dev/null
+chk "45 Ready to Bill prices every load with the invoice engine, says why one cannot be priced, and totals the rest" "$(rtb "sorted((x['id'], x['priceable'], x['amount'], x['rateLabel'], x['basis']) for x in d['items']), d['totals']")" "[('$LB', True, 625, '\$25/ton', 'planned'), ('$LR', True, 625, '\$25/ton', 'planned'), ('$LM', False, None, '\$25/ton', 'actual')] {'count': 3, 'amount': 1250, 'priced': 2, 'unpriced': 1}"
+chk "   …the reason is the one billing would give, and the approval gap rides along" "$(rtb "[(x['priceReason'].startswith('Actual Co is billed on actual ticket tons'), x.get('approvalWarnings')) for x in d['items'] if x['id']=='$LM'][0]")" "(True, ['Ticket: Actual Co is billed on actual tons and 1 ticket(s) have no tons'])"
+# Manual billing records who and which outside invoice; unbill reverses it with a reason
+chk "   Mark Billed (manual) records the outside invoice reference and who did it" "$(mg POST /api/loads/bill "{\"loadIds\":[\"$LB\"],\"reference\":\"INV-2041\"}" | jq "d['billed']")|$(load $LB "l['billStatus'], l['manualBillRef'], l['billedBy']")|$(curl -s -b $M "$B/api/audit-log?action=marked-billed" | jq "d['entries'][0]['details']['reference']")" "1|billed INV-2041 joshua|INV-2041"
+chk "   unbill needs a reason; a load that is not billed cannot be unbilled" "$(mgc POST /api/loads/$LB/unbill '{}')|$(mgc POST /api/loads/$LR/unbill '{"reason":"x"}')" "400|400"
+chk "   unbill puts a manually billed load back in Ready to Bill, with the reversal on the record and in the audit log" "$(mg POST /api/loads/$LB/unbill '{"reason":"paper invoice cancelled"}' | jq "d['success'], d['load']['billStatus'], d['load']['manualBillRef']")|$(load $LB "[(h['action'], h['reason'], h['reference']) for h in l['billHistory']]")|$(curl -s -b $M "$B/api/audit-log?action=unbilled-load" | jq "d['entries'][0]['target']=='$LB', d['entries'][0]['details']['reference']")|$(rtb "'$LB' in [x['id'] for x in d['items']]")" "True ready |[('unbilled', 'paper invoice cancelled', 'INV-2041')]|True INV-2041|True"
+# A load billed through QuickBooks is released only by voiding the batch
+BQ=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LR\"]}" | jq "d['batches'][0]['id']")
+mg POST /api/billing-batches/$BQ/send >/dev/null
+chk "   a load billed through a QuickBooks batch cannot be unbilled (409 points at the batch) — the invoice and the load never disagree" "$(load $LR "l['billStatus'], l['qbInvoiceId']")|$(mg POST /api/loads/$LR/unbill '{"reason":"x"}' -w ' %{http_code}' | python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, d['code'], d['billingBatchId']=='$BQ')")|$(load $LR "l['billStatus']")" "billed INV-1|409 billed_by_batch True|billed"
+# Archive, then bring it back
+mg POST /api/loads/bill "{\"loadIds\":[\"$LB\"],\"reference\":\"INV-2041-B\"}" >/dev/null
+AR=$(mg POST /api/history/archive | jq "d['archived']['batchId']")
+chk "   archived: both billed loads and their fully billed PO leave the active lists" "$(curl -s -b $M $B/api/data | jq "sorted(l['id'] for l in d['loads']), [p['poNumber'] for p in d['pos']]")" "['$LM'] ['R45-2']"
+chk "   unarchive needs a reason; an unknown batch is 404" "$(mgc POST /api/history/$AR/unarchive '{}')|$(mgc POST /api/history/BATCH-nope/unarchive '{"reason":"x"}')" "400|404"
+mg POST /api/billing-batches/$BQ/void '{"reason":"customer dispute"}' >/dev/null      # releases Rigo's archived load while it sits in the archive
+chk "   unarchive brings the batch back exactly as it was: the PO, the manual-billed load still billed, the released load in Ready to Bill again" "$(mg POST /api/history/$AR/unarchive '{"reason":"re-bill after the voided batch"}' | jq "d['success'], d['restored']")|$(curl -s -b $M $B/api/data | jq "sorted(l['id'] for l in d['loads']), sorted(p['poNumber'] for p in d['pos'])")|$(load $LR "l['billStatus'], repr(l['billingBatchId'])")|$(rtb "sorted(x['id'] for x in d['items'])")|$(curl -s -b $M $B/api/history | jq "len(d['archive'])")" "True {'pos': 1, 'loads': 2}|['$LB', '$LR', '$LM'] ['R45-1', 'R45-2']|ready ''|['$LR', '$LM']|0"
+chk "   …audited with the reason; the released load can be billed again, once" "$(curl -s -b $M "$B/api/audit-log?action=unarchived-batch" | jq "d['entries'][0]['target']=='$AR', d['entries'][0]['details']['reason'], d['entries'][0]['details']['loadCount']")|$(mg POST /api/loads/bill "{\"loadIds\":[\"$LR\"],\"reference\":\"INV-9\"}" | jq "d['billed']")|$(mgc POST /api/loads/bill "{\"loadIds\":[\"$LR\"]}")|$(mg POST /api/loads/bill "{\"loadIds\":[\"$LR\"]}" | jq "d['billed']")" "True re-bill after the voided batch 2|1|200|0"
+chk "   the screen: the state machine strip on Billing and History; manual billing, unbill, unarchive and archive all ask in the app, never with confirm()" "$(grep -c 'billingFlowHtml(' public/index.html)|$(sed -n '/^async function markBilled/,/^\/\/ ── PREVIEW + SEND TO QB/p' public/index.html | grep -c '[^a-zA-Z]confirm(')|$(sed -n '/^async function archiveBilledLoads/,/^\/\/ ── DRIVERS & TRUCKS/p' public/index.html | grep -c '[^a-zA-Z]confirm(\|prompt(')|$(sed -n '/^async function archiveBilledLoads/,/^\/\/ ── DRIVERS & TRUCKS/p' public/index.html | grep -c "required: true")" "3|0|0|2"
+
+echo
+echo "── 46. A failed save leaves nothing behind: the store rolls back to what is on disk, one write at a time ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-rollback.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+mgc() { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+drc() { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3" -o /dev/null -w '%{http_code}'; }
+tod() { curl -s -b $M "$B/api/today${2:-}" | jq "$1"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+po()   { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);p=[x for x in d['pos'] if x['id']=='$1'][0];print($2)"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+haul() { dr $1 $2 '{"action":"start-trip"}' >/dev/null; dr $1 $2 "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null
+  dr $1 $2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $1 $2 '{"action":"arrived-jobsite"}' >/dev/null; dr $1 $2 '{"action":"trip-complete"}' >/dev/null; }
+submit() { curl -s -b $1 -H "$J" -X PUT $B/api/loads/$2 -d "{\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $1 $2 '{"action":"delivered"}' >/dev/null; }
+P=$(mg POST /api/pos '{"po":{"poNumber":"RB-1","customer":"Rollback Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"matthew","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LB=$(loadof $P beryle); LM=$(loadof $P matthew)
+haul $MA $LM vbt; submit $MA $LM
+R0=$(curl -s $B/healthz | jq "d['persistence']['rollbacks']")
+mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
+chk "46 a driver tap that cannot be saved is refused (503) and leaves no trace: no trip in memory, the board still says assigned" "$(drc $BE $LB '{"action":"start-trip"}')|$(load $LB "len(l['trips']), l['status']")|$(tod "[x['state'] for x in d['drivers'] if x['id']=='beryle'][0], [l['bucket'] for l in d['loads'] if l['id']=='$LB'][0]")" "503|0 active|assigned assigned"
+chk "   …and the phone is told plainly" "$(dr $BE $LB '{"action":"start-trip"}' | jq "d['error'].startswith('Unable to save'), 'was not applied' in d['error'], d['reason']")" "True True database_unreachable"
+chk "   an assignment that cannot be saved changes nothing" "$(mgc POST /api/loads/$LB/assign '{"driverId":"leonardo","truckUnitId":"truck-12"}')|$(load $LB "l['truckId'], l['truckUnitId'], l['driverName']")" "503|beryle truck-2 Beryle"
+chk "   an approval that cannot be saved leaves the load submitted" "$(mgc POST /api/loads/$LM/approve)|$(load $LM "l['approvalStatus'], l['billStatus']")|$(tod "d['attention']['awaitingApproval']")" "503|submitted not-ready|1"
+chk "   a PO edit that cannot be saved changes nothing, on the PO or its loads" "$(mgc PUT /api/pos/$P "{\"deliveryDate\":\"$TOMORROW\",\"notes\":\"x\"}")|$(po $P "p['deliveryDate']=='$TODAY', repr(p['notes'])")|$(load $LB "l['deliveryDate']=='$TODAY', l.get('moveHistory')")" "503|True ''|True None"
+chk "   a driver's day that cannot be saved is not open" "$(curl -s -b $BE -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-2","odometer":70000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' -o /dev/null -w '%{http_code}')|$(tod "[x['dayStartedAt'] for x in d['drivers'] if x['id']=='beryle'][0], len(d['shifts'])")" "503|None 0"
+chk "   /healthz counts every rollback and says the last save failed" "$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R0, d['persistence']['lastSaveOk'], d['persistence']['lastRollbackAt'] != ''")" "6 False True"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   the same tap goes through once the database is back, and is on disk" "$(drc $BE $LB '{"action":"start-trip"}')|$(load $LB "len(l['trips'])")|$(python3 -c "import json;d=json.load(open('data.json'));print(len([l for l in d['loads'] if l['id']=='$LB'][0]['trips']))")" "200|1|1"
+# One write at a time: a failed write cannot sweep a concurrent good write away
+mg POST /api/_test/save-mode '{"mode":"fail","count":1}' >/dev/null
+rm -f /tmp/vbt-46-a /tmp/vbt-46-b
+mgc PUT /api/loads/$LB '{"notes":"note A"}' > /tmp/vbt-46-a & mgc PUT /api/loads/$LB '{"notes":"note B"}' > /tmp/vbt-46-b & wait
+chk "   two writes at once while one save fails: exactly one is refused; the other is what memory AND disk hold" "$(python3 - "$(cat /tmp/vbt-46-a)" "$(cat /tmp/vbt-46-b)" "$(load $LB "l['notes']")" "$LB" <<'PY'
+import sys,json
+a,b,mem,lid=sys.argv[1:5]
+disk=[l['notes'] for l in json.load(open('data.json'))['loads'] if l['id']==lid][0]
+winner='note A' if a=='200' else 'note B'
+print(sorted([a,b]), mem==winner, disk==mem)
+PY
+)" "['200', '503'] True True"
+chk "   the hook reset itself after one failure: the next save is fine" "$(mgc PUT /api/loads/$LB '{"notes":"note C"}')|$(load $LB "l['notes']")" "200|note C"
+chk "   mutating requests run one at a time; QuickBooks send/retry/void, GPS pings and test hooks are exempt and keep their in-flight state (their recovery record)" "$(grep -c "^const WRITE_LOCK_EXEMPT = /^\\\\/api\\\\/(billing-batches" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: true }, next)" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: false }, next)" server.js)|$(grep -c "rollbackStore(e);" server.js)" "1|1|1|3"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -1311,7 +1807,7 @@ curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/n
 chk "legacy approved load is locked after normalize" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='L-OLD'][0]['locked'])")" "True"
 chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/L-OLD -d '{"material":"Sand"}')" "403"
 chk "fabricated hour:1 / mile:1 seeds are removed on load" "$(curl -s -b $M $B/api/costing/settings | python3 -c "import json,sys;u=json.load(sys.stdin)['unitConfig']['byUnit'];print('hour' in u, 'mile' in u, u['ton'])")" "False False 25"
-chk "batch stuck in 'syncing' at restart becomes failed" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'])")" "failed True"
+chk "batch stuck in 'syncing' at restart becomes failed" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'], b['mayExistInQuickBooks'])")" "failed True True"
 pkill -f "^node server.js" >/dev/null 2>&1
 rm -f data.json
 

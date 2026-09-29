@@ -23,6 +23,7 @@ function findChrome() {
 }
 
 let PASS = 0, FAIL = 0;
+let expectConflict = false;   // a test that deliberately provokes a 409 conflict sets this
 const chk = (name, got, want) => { const ok = String(got) === String(want); ok ? PASS++ : FAIL++; console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : ` — got '${got}' want '${want}'`}`); };
 
 // Plain HTTP helpers (node fetch) with a cookie jar per user.
@@ -64,11 +65,13 @@ async function call(cookie, method, path, body) {
       ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, geolocation: { latitude: 36.73, longitude: -119.78 }, permissions: ['geolocation'] }
       : { viewport: { width: 1280, height: 900 } });
     const page = await ctx.newPage();
+    // The app must never fall back to the browser's own confirm(); count any call.
+    await page.addInitScript(() => { window.__confirmCalls = 0; const orig = window.confirm.bind(window); window.confirm = (...a) => { window.__confirmCalls++; return orig(...a); }; window.__promptCalls = 0; const op = window.prompt.bind(window); window.prompt = (...a) => { window.__promptCalls++; return op(...a); }; });
     const requests = [];
     page.on('pageerror', e => problems.push(`[${user}] pageerror: ${e.message}`));
-    page.on('console', m => { if (m.type() === 'error' && !/ERR_CERT_AUTHORITY_INVALID|net::ERR_/.test(m.text())) problems.push(`[${user}] console.error: ${m.text().slice(0, 160)}`); });
+    page.on('console', m => { if (m.type() === 'error' && !/ERR_CERT_AUTHORITY_INVALID|net::ERR_/.test(m.text()) && !(expectConflict && /409/.test(m.text()))) problems.push(`[${user}] console.error: ${m.text().slice(0, 160)}`); });
     page.on('request', r => { if (r.url().startsWith(B)) requests.push(`${r.method()} ${r.url().replace(B, '')}`); else if (/googleapis\.com\/(?!css)|sheets\.google/.test(r.url())) problems.push(`[${user}] Google Sheets request: ${r.url()}`); });
-    page.on('response', r => { const u = r.url(); if (u.includes('/api/') && r.status() >= 400 && r.status() !== 202) problems.push(`[${user}] ${r.request().method()} ${u.replace(B, '')} -> ${r.status()}`); });
+    page.on('response', r => { const u = r.url(); if (u.includes('/api/') && r.status() >= 400 && r.status() !== 202 && !(expectConflict && r.status() === 409)) problems.push(`[${user}] ${r.request().method()} ${u.replace(B, '')} -> ${r.status()}`); });
     await page.goto(B + '/login');
     await page.fill('input[name=username]', user);
     await page.fill('input[name=password]', pass);
@@ -79,7 +82,7 @@ async function call(cookie, method, path, body) {
 
   console.log('── Office: every tab renders ──');
   const { ctx, page, requests } = await session('joshua', 'joshua123', false);
-  for (const t of ['today', 'board', 'approvals', 'pos', 'billing', 'quickbooks', 'reports', 'fleet', 'history', 'vendors']) {
+  for (const t of ['today', 'approvals', 'pos', 'billing', 'quickbooks', 'reports', 'fleet', 'history', 'vendors']) {
     await page.evaluate(tab => goTab(tab), t);
     await page.waitForTimeout(500);
     const visible = await page.evaluate(tab => { const el = document.getElementById('sec-' + tab); return el ? getComputedStyle(el).display !== 'none' : null; }, t);
@@ -90,10 +93,10 @@ async function call(cookie, method, path, body) {
   chk('Drivers & Trucks lists trailers as their own table with 3B', await page.evaluate(() => { const el = document.getElementById('fleet-trailers'); return !!el && /Trailers/.test(el.innerText) && (el.querySelector('[data-trailer-id][data-field="number"]') || {}).value === '3B'; }), true);
   chk('no /api/sync call and no Google Sheets request from the app', requests.some(r => /\/api\/sync\b/.test(r)) || problems.some(p => /Google Sheets request/.test(p)), false);
   chk('History tab has no Sheets wording', await page.evaluate(() => { goTab('history'); return new Promise(r => setTimeout(() => r(/Sheets/i.test(document.getElementById('sec-history').innerText)), 600)); }), false);
-  chk('Board topbar has no Sync button', await page.evaluate(() => { goTab('board'); return /Sync/.test(document.getElementById('topbar-actions').innerText); }), false);
+  chk('Dispatch topbar has no Sync button', await page.evaluate(() => { goTab('today'); return /Sync/.test(document.getElementById('topbar-actions').innerText); }), false);
 
   console.log('── New PO form: two steps, unique PO number, truck per load ──');
-  await page.evaluate(() => goTab('board')); await page.waitForTimeout(300);
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(300);
   await page.evaluate(() => openNewPO()); await page.waitForTimeout(500);
   let f = await page.evaluate(() => ({ open: document.getElementById('po-modal').style.display !== 'none', step2hidden: document.getElementById('po-body-2').style.display === 'none', date: document.getElementById('po-date').value, yard: document.getElementById('po-vendor').value }));
   chk('modal opens on step 1 with today and VBT yard preset', `${f.open} ${f.step2hidden} ${f.date === today} ${f.yard}`, 'true true true vbt');
@@ -125,7 +128,7 @@ async function call(cookie, method, path, body) {
 
   console.log('── Office: drag/drop never assigns by itself ──');
   const writesBefore = requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length;
-  await page.evaluate(() => goTab('board')); await page.waitForTimeout(400);
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(400);
   const drop = await page.evaluate(async () => {
     const l = (loads || []).find(x => !x.locked); if (!l) return 'no-load';
     dragId = l.id; await onDrop({ preventDefault() {}, currentTarget: { classList: { remove() {} } } }, 'rigo');
@@ -136,6 +139,209 @@ async function call(cookie, method, path, body) {
   chk('   sheet offers an optional trailer step listing 3B', await page.evaluate(() => { const t = document.getElementById('qa-sheet-bg').innerText; return /4 · Trailer/i.test(t) && /3B/.test(t); }), true);
   chk('no assignment written during the drop', requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length - writesBefore, 0);
   await page.evaluate(() => qaClose());
+
+  console.log('── Office: a conflict is decided in the app, never in a browser confirm ──');
+  // Beryle is mid-haul on PO 10482; putting Rigo's load (PO 10483) on Beryle collides.
+  expectConflict = true;
+  const assignsBefore = requests.filter(r => /\/assign$/.test(r)).length;
+  await page.evaluate(id => qaOpen(id), nl.id); await page.waitForTimeout(500);
+  const dlg = await page.evaluate(async () => {
+    qaSet('driverId', 'beryle');
+    qaConfirm();                                   // resolves only once the dialog is answered
+    await new Promise(r => setTimeout(r, 800));
+    const m = document.getElementById('conflict-modal'); if (!m) return null;
+    return { title: m.querySelector('h2').textContent.trim(), items: Array.from(m.querySelectorAll('li')).map(e => e.textContent).join(' | '),
+             buttons: Array.from(m.querySelectorAll('.modal-foot button')).map(b => b.textContent.trim()).join('|'), focus: document.activeElement && document.activeElement.id, nativeConfirmUsed: window.__confirmCalls || 0 };
+  });
+  chk('1. a 409 opens the in-app dialog, titled for what collides', dlg ? dlg.title : 'no dialog', 'Driver Already Assigned');
+  chk('   …naming exactly what collides', !!dlg && /Beryle is already mid-haul on .*PO 10482/.test(dlg.items), true);
+  chk('   …with Cancel and Reassign, Cancel focused', dlg ? `${dlg.buttons} ${dlg.focus}` : 'no dialog', 'Cancel|Reassign conflict-cancel');
+  await page.click('#conflict-cancel'); await page.waitForTimeout(500);
+  let cfAfter = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === nl.id);
+  chk('2. Cancel: dialog gone, sheet still open, no error toast, one request only, load untouched',
+    await page.evaluate(() => `${!document.getElementById('conflict-modal')} ${!!document.getElementById('qa-sheet-bg')} ${document.querySelectorAll('.toast.error').length}`) + ` ${requests.filter(r => /\/assign$/.test(r)).length - assignsBefore} ${cfAfter.truckId}`, 'true true 0 1 rigo');
+  await page.evaluate(() => { qaConfirm(); }); await page.waitForTimeout(600);
+  await page.fill('#conflict-reason', 'Rigo went home sick');
+  await page.click('#conflict-go'); await page.waitForTimeout(1000);
+  cfAfter = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === nl.id);
+  const cfAudit = ((await call(mgr, 'GET', '/api/audit-log?action=quick-assigned-load')).data.entries || []).find(e => e.target === nl.id && e.details && e.details.conflictsOverridden);
+  chk('3. Reassign with a reason: the load moves, sheet and dialog close, the override is audited with the reason',
+    `${cfAfter.truckId} ${await page.evaluate(() => !document.getElementById('qa-sheet-bg') && !document.getElementById('conflict-modal'))} ${cfAudit ? cfAudit.details.conflictsOverridden.types + ' / ' + cfAudit.details.conflictsOverridden.reason : 'no-cfAudit'}`, 'beryle true driver-busy / Rigo went home sick');
+  chk('   the browser\'s own confirm() was never called', await page.evaluate(() => window.__confirmCalls || 0), 0);
+  expectConflict = false;
+  await call(mgr, 'POST', `/api/loads/${nl.id}/assign`, { driverId: 'rigo' });   // back to Rigo for the rest of the run
+  await page.waitForTimeout(300);
+
+  console.log('── Office: the dispatch board is the command center ──');
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(700);
+  const board = await page.evaluate(() => {
+    const tiles = Array.from(document.querySelectorAll('#db-tiles .db-tile .l')).map(e => e.textContent.trim());
+    const row = id => (document.querySelector(`.db-drv[data-driverid="${id}"]`) || {}).innerText || '';
+    const cards = Array.from(document.querySelectorAll('#db-loads .qa-card'));
+    const abc = cards.find(c => /PO 10482/.test(c.innerText));
+    return {
+      landed: document.getElementById('sec-today').classList.contains('active') && document.getElementById('page-title').textContent,
+      noBoardTab: !document.querySelector('[data-tab="board"]'),
+      tiles,
+      beryle: row('beryle').replace(/\s+/g, ' '),
+      rigo: row('rigo').replace(/\s+/g, ' '),
+      leonardo: row('leonardo').replace(/\s+/g, ' '),
+      abc: abc ? abc.innerText.replace(/\s+/g, ' ') : 'missing',
+      abcButtons: abc ? Array.from(abc.querySelectorAll('button')).map(b => b.textContent.trim()) : [],
+      truck12: Array.from(document.querySelectorAll('.db-truck')).map(e => e.innerText.replace(/\s+/g, ' ')).find(t => /#12/.test(t)) || '',
+    };
+  });
+  chk('1. the office lands on Dispatch, and there is no second Board tab', `${board.landed} ${board.noBoardTab}`, 'Dispatch true');
+  chk('2. the attention row names what needs a person', board.tiles.join('|'), 'Unassigned|In Progress|Awaiting Approval|Ready to Bill|Missing Info|Trucks Free|Drivers Free');
+  chk('3. Beryle\'s row: in progress on Truck #12, ABC Materials, loaded en route, Vulcan → 500 Main St', /Beryle In progress Truck #12.*ABC Materials · PO 10482 · Loaded \/ en route · 0\/3.*Vulcan → 500 Main St, Merced/i.test(board.beryle), true);
+  chk('4. Rigo\'s row: assigned on Truck #14 from the New PO form', /Rigo Assigned Truck #14.*ABC Materials · PO 10483 · Assigned · 0\/1.*VBT Yard → 500 Main St, Merced/i.test(board.rigo), true);
+  chk('5. Leonardo\'s row: available, usual truck, invitation to assign', /Leonardo Available Truck #12 \(usual\).*No load today/i.test(board.leonardo), true);
+  chk('6. the load card shows driver, truck, pickup → destination, progress and stage', /ABC Materials PO 10482.*Vulcan → 500 Main St, Merced Driver Beryle Truck #12 3\/4 Rock · 0\/3 loads Loaded \/ en route/.test(board.abc), true);
+  chk('   …with Reassign and Details, nothing else', board.abcButtons.join('|'), 'Reassign|Details');
+  chk('7. the truck strip says who has Truck #12', board.truck12, 'Truck #12 · Beryle');
+  const filt = await page.evaluate(async () => {
+    dbTile('in-progress'); await new Promise(r => setTimeout(r, 100));
+    const shown = Array.from(document.querySelectorAll('#db-loads .qa-card .qa-chip')).map(e => e.textContent.trim());
+    dbSetFilter('all');
+    dbTile('awaiting-approval'); await new Promise(r => setTimeout(r, 300));
+    const tab = (document.querySelector('.section.active') || {}).id;
+    goTab('today'); await new Promise(r => setTimeout(r, 500));
+    return { shown: [...new Set(shown)].join('|'), tab };
+  });
+  chk('8. the In Progress tile filters the board to in-progress loads', filt.shown, 'In Progress');
+  chk('9. the Awaiting Approval tile opens Approvals', filt.tab, 'sec-approvals');
+
+  console.log('── Office: approval confirms the record in the app ──');
+  // Matthew (Truck #4) and Carlos (Truck #2B) each finish one load from the VBT yard and submit.
+  const mat = await login('matthew', 'matthew123'); const car = await login('carlos', 'carlos123');
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: '10484', customer: 'Gate Rd Builders', deliveryDate: today, address: '9 Gate Rd', city: 'Fresno', plannedVendorId: 'vbt' },
+    splits: [{ truckId: 'matthew', truckUnitId: 'truck-4', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }, { truckId: 'carlos', truckUnitId: 'truck-2b', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }] });
+  const d84 = (await call(mgr, 'GET', '/api/data')).data; const p84 = d84.pos.find(p => p.poNumber === '10484');
+  const lMat = d84.loads.find(l => l.poId === p84.id && l.truckId === 'matthew'); const lCar = d84.loads.find(l => l.poId === p84.id && l.truckId === 'carlos');
+  for (const [ck, l, n] of [[mat, lMat, '5001'], [car, lCar, '5002']]) {
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'start-trip' });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'arrived-pickup', yardId: 'vbt' });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'loaded', ticket: { source: 'vbt', number: n, netTons: 24.5, photo: PNG } });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'arrived-jobsite' });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'trip-complete' });
+    await call(ck, 'PUT', `/api/loads/${l.id}`, { pod: { signedBy: 'Site Foreman', signature: PNG, signedAt: new Date().toISOString() } });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'delivered' });
+  }
+  await page.evaluate(async () => { await loadAll(); goTab('approvals'); }); await page.waitForTimeout(600);
+  const card = await page.evaluate(() => {
+    const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText)); if (!c) return null;
+    return { chips: Array.from(c.querySelectorAll('.am-check .chk')).map(e => e.innerText.replace(/\s+/g, ' ').trim()).join(' | '), warn: c.querySelectorAll('.am-check .chk.warn').length, cards: document.querySelectorAll('.approve-mini').length };
+  });
+  chk('1. the approval card shows the checklist: Driver, Truck, Pickup yard, Ticket, Delivery — all ✓', card ? card.chips : 'no card', '✓ Driver Matthew | ✓ Truck Truck #4 | ✓ Pickup yard VBT Yard | ✓ Ticket 1 ticket · 24.5 t | ✓ Delivery 1/1 load · signed by Site Foreman');
+  chk('   two loads wait, nothing flagged', card ? `${card.cards} ${card.warn}` : 'no card', '2 0');
+  const dlg2 = await page.evaluate(async () => {
+    const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText));
+    c.querySelector('button.btn.success').click();
+    await new Promise(r => setTimeout(r, 400));
+    const m = document.getElementById('ask-modal'); if (!m) return null;
+    return { title: m.querySelector('h2').textContent.trim(), rows: m.querySelectorAll('.ask-check .chk').length, ok: m.querySelectorAll('.ask-check .chk.ok').length,
+             hint: m.querySelector('.conflict-hint').innerText.replace(/\s+/g, ' '), buttons: Array.from(m.querySelectorAll('.modal-foot button')).map(b => b.textContent.trim()).join('|'), focus: document.activeElement && document.activeElement.id };
+  });
+  chk('2. Approve opens the confirmation with the five items and what approving does', dlg2 ? `${dlg2.title} ${dlg2.rows} ${dlg2.ok} ${dlg2.buttons} ${dlg2.focus}` : 'no dialog', 'Approve this load? 5 5 Cancel|Approve ask-cancel');
+  chk('   …in plain words', !!dlg2 && /Everything is on record\. Approving locks the load and moves it to Ready to Bill\./.test(dlg2.hint), true);
+  await page.click('#ask-cancel'); await page.waitForTimeout(400);
+  let lm = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('3. Cancel: nothing approved', `${await page.evaluate(() => !document.getElementById('ask-modal'))} ${lm.approvalStatus}`, 'true submitted');
+  await page.evaluate(() => Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText)).querySelector('button.btn.success').click()); await page.waitForTimeout(400);
+  await page.click('#ask-go'); await page.waitForTimeout(900);
+  lm = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('4. Approve: approved, locked, Ready to Bill; the card is gone', `${lm.approvalStatus} ${lm.locked} ${lm.billStatus} ${await page.evaluate(() => document.querySelectorAll('.approve-mini').length)}`, 'approved true ready 1');
+  const rej = await page.evaluate(async () => {
+    const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Carlos/.test(x.innerText));
+    c.querySelector('button.btn.danger').click();
+    await new Promise(r => setTimeout(r, 400));
+    const m = document.getElementById('ask-modal'); if (!m) return null;
+    return { title: m.querySelector('h2').textContent.trim(), goDisabled: m.querySelector('#ask-go').disabled, focus: document.activeElement && document.activeElement.id };
+  });
+  chk('5. Reject asks for a reason in the app, and cannot proceed without one', rej ? `${rej.title} ${rej.goDisabled} ${rej.focus}` : 'no dialog', 'Reject this load? true ask-reason');
+  await page.fill('#ask-reason', 'Ticket photo is unreadable'); await page.click('#ask-go'); await page.waitForTimeout(800);
+  const lc = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lCar.id);
+  chk('   …the load goes back to the driver with the reason', `${lc.approvalStatus} ${lc.locked} ${lc.rejectReason}`, 'rejected false Ticket photo is unreadable');
+  chk('   no browser confirm() or prompt() anywhere in this', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
+
+  console.log('── Office: Edit PO — the order changes, the work follows where it can ──');
+  // A fresh order for Leonardo (Truck #2, nothing hauled), edited from the PO card.
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: '10485', customer: 'Gate Rd Builders', deliveryDate: today, address: '9 Gate Rd', city: 'Fresno', plannedVendorId: 'vbt' },
+    splits: [{ truckId: 'leonardo', truckUnitId: 'truck-2', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }] });
+  const d85 = (await call(mgr, 'GET', '/api/data')).data; const p85 = d85.pos.find(p => p.poNumber === '10485'); const l85 = d85.loads.find(l => l.poId === p85.id);
+  await page.evaluate(async () => { await loadAll(); goTab('pos'); }); await page.waitForTimeout(500);
+  const pe = await page.evaluate(async () => {
+    const card = Array.from(document.querySelectorAll('#pos-content .qa-card')).find(c => /10485/.test(c.innerText));
+    const btn = card && Array.from(card.querySelectorAll('button')).find(b => b.textContent.trim() === 'Edit PO');
+    if (!btn) return null; btn.click(); await new Promise(r => setTimeout(r, 300));
+    const m = document.getElementById('poedit-modal'); if (!m) return null;
+    return { title: m.querySelector('h2').textContent.trim(), frozen: !!m.querySelector('.pe-frozen'), follow: m.querySelector('.pe-follow').innerText.replace(/\s+/g, ' '),
+             number: document.getElementById('pe-number').value, disabled: document.getElementById('pe-number').disabled, yard: document.getElementById('pe-yard').value };
+  });
+  chk('1. Edit PO opens from the PO card with the order\'s fields, nothing frozen', pe ? `${pe.title} ${pe.frozen} ${pe.number} ${pe.disabled} ${pe.yard}` : 'no modal', 'Edit PO 10485 · Gate Rd Builders false 10485 false vbt');
+  chk('   …and says what will follow', !!pe && /1 load on this PO\. 1 can still follow a date, customer-price or yard change/.test(pe.follow), true);
+  const tomorrow = new Date(Date.now() + 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  await page.fill('#pe-date', tomorrow); await page.fill('#pe-notes', 'Gate code 4471'); await page.fill('#pe-reason', 'customer pushed the pour a day');
+  await page.click('#pe-save'); await page.waitForTimeout(900);
+  const d85b = (await call(mgr, 'GET', '/api/data')).data; const p85b = d85b.pos.find(p => p.id === p85.id); const l85b = d85b.loads.find(l => l.id === l85.id);
+  chk('2. Save: the PO and its operational load move to tomorrow with the reason; notes saved; modal closed',
+    `${p85b.deliveryDate === tomorrow} ${l85b.deliveryDate === tomorrow} ${(l85b.moveHistory || [{}])[0].reason} ${p85b.notes} ${await page.evaluate(() => !document.getElementById('poedit-modal'))}`, 'true true customer pushed the pour a day Gate code 4471 true');
+  chk('   the confirmation says what followed', /PO 10485 saved · 1 load moved to /.test(await page.evaluate(() => Array.from(document.querySelectorAll('.toast')).map(t => t.textContent).join(' | '))), true);
+  await page.evaluate(id => openEditPO(id), p85.id); await page.waitForTimeout(300);
+  await page.click('#poedit-modal .pe-add summary'); await page.waitForTimeout(200);
+  await page.selectOption('#pe-al-driver', 'matthew'); await page.waitForTimeout(150);
+  chk('3. Add load: choosing the driver pre-fills their usual truck', await page.evaluate(() => document.getElementById('pe-al-truck').value), 'truck-4');
+  await page.selectOption('#pe-al-material', 'Dirt'); await page.fill('#pe-al-loads', '2');
+  await page.click('#pe-al-go'); await page.waitForTimeout(900);
+  const d85c = (await call(mgr, 'GET', '/api/data')).data; const added = d85c.loads.filter(l => l.poId === p85.id && l.id !== l85.id);
+  chk('   …the load is on the same order, on its current date, with the form\'s driver, truck and count', added.length === 1 ? `${added[0].truckId} ${added[0].truckUnitId} ${added[0].loadsAssigned} ${added[0].deliveryDate === tomorrow} ${added[0].vendorId}` : `added ${added.length}`, 'matthew truck-4 2 true vbt');
+  chk('   the modal reopened with the new count', await page.evaluate(() => ((document.querySelector('#poedit-modal .pe-follow') || {}).innerText || '').replace(/\s+/g, ' ').startsWith('2 loads on this PO.')), true);
+  await page.evaluate(() => closeEditPO()); await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
+
+  console.log('── Office: billing shows the money and the state machine; manual billing is guarded ──');
+  // Matthew's approved load (PO 10484) is the one load in Ready to Bill: 1 load × 25 t × $25.
+  await page.evaluate(async () => { await loadAll(); goTab('billing'); }); await page.waitForTimeout(900);
+  const bvis = await page.evaluate(() => {
+    const steps = Array.from(document.querySelectorAll('#bill-filters .bill-flow .bf-step')).map(s => `${s.querySelector('.bf-l').textContent}${s.classList.contains('active') ? '*' : ''}:${s.querySelector('.bf-n').textContent}`);
+    const row = document.querySelector('#bill-list tbody tr');
+    return { steps: steps.join(' → '), amount: row ? row.querySelector('.bill-amt').innerText.replace(/\s+/g, ' ').trim() : 'no row', total: (document.getElementById('bill-shown-total') || {}).innerText, sel: document.getElementById('bill-sel-total').innerText };
+  });
+  chk('1. the strip reads Submitted → Approved → Ready to Bill → Billed → Archived, with live counts, Ready active', bvis.steps, 'Submitted:0 → Approved:1 → Ready to Bill*:1 → Billed:0 → Archived:⌁');
+  chk('2. the Ready to Bill table prices each load and totals the page', `${bvis.amount} | ${bvis.total} | ${bvis.sel}`, '$625.00 $25/ton | $625.00 | ');
+  await page.click('#bill-list tbody tr input[type=checkbox]'); await page.waitForTimeout(200);
+  chk('   selecting shows the selected total next to the actions', await page.evaluate(() => document.getElementById('bill-sel-total').innerText.replace(/\s+/g, ' ')), 'Selected: 1 · $625.00');
+  await page.click('#mark-billed-btn'); await page.waitForTimeout(400);
+  const mb = await page.evaluate(() => { const m = document.getElementById('ask-modal'); return m ? `${m.querySelector('h2').textContent.trim()} | ${m.querySelector('#ask-go').disabled} | ${m.querySelector('.ask-sub').innerText.replace(/\s+/g, ' ')}` : 'no dialog'; });
+  chk('3. Mark Billed (manual) asks for the invoice reference in the app and cannot proceed without it', mb, 'Mark billed outside QuickBooks? | true | 1 load · $625.00');
+  await page.fill('#ask-reason', 'INV-7 (paper)'); await page.click('#ask-go'); await page.waitForTimeout(900);
+  let lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('   …the load is billed with the reference on record', `${lm2.billStatus} ${lm2.manualBillRef} ${lm2.billedBy}`, 'billed INV-7 (paper) joshua');
+  await page.evaluate(() => goTab('history')); await page.waitForTimeout(900);
+  const hs = await page.evaluate(() => {
+    const row = document.querySelector('#history-content tr[data-billed-load]');
+    return row ? `${row.querySelector('td:nth-child(9)').innerText.replace(/\s+/g, ' ').trim()} | ${Array.from(row.querySelectorAll('button')).map(b => b.textContent.trim()).join(',')} | ${document.querySelectorAll('#history-content .bf-step.active .bf-l').length ? document.querySelector('#history-content .bf-step.active .bf-l').textContent : ''}` : 'no row';
+  });
+  chk('4. History names how each load was billed and offers Unbill only for manual billing; the strip marks Billed', hs, 'Manual · INV-7 (paper) by joshua | Unbill… | Billed');
+  await page.click('#history-content tr[data-billed-load] button'); await page.waitForTimeout(400);
+  chk('5. Unbill asks for a reason in the app', await page.evaluate(() => { const m = document.getElementById('ask-modal'); return m ? `${m.querySelector('h2').textContent.trim()} ${m.querySelector('#ask-go').disabled}` : 'no dialog'; }), 'Unbill this load? true');
+  await page.fill('#ask-reason', 'paper invoice cancelled'); await page.click('#ask-go'); await page.waitForTimeout(900);
+  lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('   …back to Ready to Bill, the reversal on the record', `${lm2.billStatus} ${lm2.manualBillRef || ''}|${(lm2.billHistory || []).map(h => h.action + ':' + h.reason + ':' + h.reference).join(',')}`, 'ready |unbilled:paper invoice cancelled:INV-7 (paper)');
+  await call(mgr, 'POST', '/api/loads/bill', { loadIds: [lMat.id], reference: 'INV-8' });
+  await page.evaluate(() => renderHistory()); await page.waitForTimeout(700);
+  await page.click('#history-content .history-head button.btn.success'); await page.waitForTimeout(400);
+  chk('6. Archive asks in the app', await page.evaluate(() => { const m = document.getElementById('ask-modal'); return m ? m.querySelector('h2').textContent.trim() : 'no dialog'; }), 'Archive billed loads?');
+  await page.click('#ask-go'); await page.waitForTimeout(900);
+  const arch = await page.evaluate(() => Array.from(document.querySelectorAll('#history-content .archive-batch')).map(b => Array.from(b.querySelectorAll('button')).map(x => x.textContent.trim()).join(',')).join('|'));
+  chk('   …the batch is in the archive log with Unarchive', arch, 'Unarchive…');
+  await page.click('#history-content .archive-batch button'); await page.waitForTimeout(400);
+  chk('7. Unarchive asks for a reason', await page.evaluate(() => { const m = document.getElementById('ask-modal'); return m ? `${m.querySelector('h2').textContent.trim()} ${m.querySelector('#ask-go').disabled}` : 'no dialog'; }), 'Unarchive this batch? true');
+  await page.fill('#ask-reason', 'need to correct the invoice'); await page.click('#ask-go'); await page.waitForTimeout(900);
+  lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('   …the load is back on the active lists, still billed, and the archive log is empty', `${lm2 ? lm2.billStatus : 'missing'} ${await page.evaluate(() => document.querySelectorAll('#history-content .archive-batch').length)}`, 'billed 0');
+  chk('   no browser confirm() or prompt() in any of this', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
 
   console.log('── Fleet Map ──');
   const navCount = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-item')).filter(b => b.textContent.includes('Fleet Map') && getComputedStyle(b).display !== 'none').length);
