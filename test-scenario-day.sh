@@ -138,11 +138,12 @@ P9=$(mg POST /api/pos '{"po":{"poNumber":"HG-102","customer":"Hilltop Grading","
 chk "   (every other write also answers 503 while the database is down)" "$(mgc PUT /api/drivers/leonardo '{"phone":"559-555-0100"}')" "503"
 mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
 chk "once the database is back the same PO saves" "$(mgc POST /api/pos '{"po":{"poNumber":"HG-LOST","customer":"Hilltop Grading","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "200"
-say "   Known limit: a driver tap that fails to save is answered with an error but stays in memory until the next save"
+say "   A driver tap that fails to save is refused and leaves nothing behind (the store rolls back to what is on disk)"
 P8=$(mg POST /api/pos '{"po":{"poNumber":"HG-103","customer":"Hilltop Grading","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']"); L8=$(loadof $P8 matthew)
 mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
 chk "trip step during the outage → 503 to the phone" "$(curl -s -b $MA -H "$J" -X POST $B/api/loads/$L8/trip-action -d '{"action":"start-trip"}' -o /dev/null -w '%{http_code}')" "503"
-MEM=$(load $L8 "len(l['trips'])"); mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   …and the load shows no trip: memory was rolled back, the board still says 'assigned'" "$(load $L8 "len(l['trips'])")|$(curl -s -b $M $B/api/today | jq "[l['bucket'] for l in d['loads'] if l['id']=='$L8'][0]")" "0|assigned"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
 
 say "7. ARCHIVE — billed work leaves the board, not the records; then a restart"
 BEFORE=$(curl -s -b $M $B/api/material-costs | jq "int(d['grandTotal'])")
@@ -158,8 +159,8 @@ say "   Restart: what survives is exactly what was saved"
 pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; start
 M=$(login joshua joshua123)
 chk "after restart: archive, batches, sync log and the recovered invoice ids are all there" "$(curl -s -b $M $B/api/history | jq "sum(len(b['loads']) for b in d['archive'])")|$(curl -s -b $M $B/api/billing-batches | jq "sorted((b['id']==('$B1','$B2','$B3')[i], b['syncStatus']) for i,b in enumerate(sorted(d['items'], key=lambda x: x['createdAt'])))")|$(curl -s -b $M "$B/api/qb-sync-log?actionType=recover_invoice" | jq "len(d['items'])")" "2|[(True, 'voided'), (True, 'voided'), (True, 'voided')]|1"
-chk "the tap that was answered 503 still took effect in memory ($MEM trip) and was carried to disk by the next successful save" "$(load $L8 "len(l['trips'])")" "1"
-chk "   …so the driver's retry gets a clear answer instead of a duplicate" "$(MA=$(login matthew matthew123); curl -s -b $MA -H "$J" -X POST $B/api/loads/$L8/trip-action -d '{"action":"start-trip"}' | jq "d['error']")" "Trip 1 is already started"
+chk "the tap that was answered 503 never took effect: after the restart the load still has no trip" "$(load $L8 "len(l['trips'])")" "0"
+chk "   …so the driver's retry simply starts the trip — no duplicate, no confusing 'already started'" "$(MA=$(login matthew matthew123); curl -s -b $MA -H "$J" -X POST $B/api/loads/$L8/trip-action -d '{"action":"start-trip"}' | jq "d.get('success'), len(d['load']['trips'])")" "True 1"
 chk "the PO refused during the outage never existed; the one saved afterwards does" "$(data "len([p for p in d['pos'] if p['poNumber']=='HG-LOST'])")" "1"
 
 echo; echo "════ scenario: $PASS passed, $FAIL failed ════"

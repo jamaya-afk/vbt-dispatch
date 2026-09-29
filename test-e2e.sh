@@ -1590,6 +1590,56 @@ chk "   unarchive brings the batch back exactly as it was: the PO, the manual-bi
 chk "   …audited with the reason; the released load can be billed again, once" "$(curl -s -b $M "$B/api/audit-log?action=unarchived-batch" | jq "d['entries'][0]['target']=='$AR', d['entries'][0]['details']['reason'], d['entries'][0]['details']['loadCount']")|$(mg POST /api/loads/bill "{\"loadIds\":[\"$LR\"],\"reference\":\"INV-9\"}" | jq "d['billed']")|$(mgc POST /api/loads/bill "{\"loadIds\":[\"$LR\"]}")|$(mg POST /api/loads/bill "{\"loadIds\":[\"$LR\"]}" | jq "d['billed']")" "True re-bill after the voided batch 2|1|200|0"
 chk "   the screen: the state machine strip on Billing and History; manual billing, unbill, unarchive and archive all ask in the app, never with confirm()" "$(grep -c 'billingFlowHtml(' public/index.html)|$(sed -n '/^async function markBilled/,/^\/\/ ── PREVIEW + SEND TO QB/p' public/index.html | grep -c '[^a-zA-Z]confirm(')|$(sed -n '/^async function archiveBilledLoads/,/^\/\/ ── DRIVERS & TRUCKS/p' public/index.html | grep -c '[^a-zA-Z]confirm(\|prompt(')|$(sed -n '/^async function archiveBilledLoads/,/^\/\/ ── DRIVERS & TRUCKS/p' public/index.html | grep -c "required: true")" "3|0|0|2"
 
+echo
+echo "── 46. A failed save leaves nothing behind: the store rolls back to what is on disk, one write at a time ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-rollback.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+mgc() { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+drc() { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3" -o /dev/null -w '%{http_code}'; }
+tod() { curl -s -b $M "$B/api/today${2:-}" | jq "$1"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+po()   { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);p=[x for x in d['pos'] if x['id']=='$1'][0];print($2)"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+haul() { dr $1 $2 '{"action":"start-trip"}' >/dev/null; dr $1 $2 "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null
+  dr $1 $2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $1 $2 '{"action":"arrived-jobsite"}' >/dev/null; dr $1 $2 '{"action":"trip-complete"}' >/dev/null; }
+submit() { curl -s -b $1 -H "$J" -X PUT $B/api/loads/$2 -d "{\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $1 $2 '{"action":"delivered"}' >/dev/null; }
+P=$(mg POST /api/pos '{"po":{"poNumber":"RB-1","customer":"Rollback Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"matthew","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LB=$(loadof $P beryle); LM=$(loadof $P matthew)
+haul $MA $LM vbt; submit $MA $LM
+R0=$(curl -s $B/healthz | jq "d['persistence']['rollbacks']")
+mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
+chk "46 a driver tap that cannot be saved is refused (503) and leaves no trace: no trip in memory, the board still says assigned" "$(drc $BE $LB '{"action":"start-trip"}')|$(load $LB "len(l['trips']), l['status']")|$(tod "[x['state'] for x in d['drivers'] if x['id']=='beryle'][0], [l['bucket'] for l in d['loads'] if l['id']=='$LB'][0]")" "503|0 active|assigned assigned"
+chk "   …and the phone is told plainly" "$(dr $BE $LB '{"action":"start-trip"}' | jq "d['error'].startswith('Unable to save'), 'was not applied' in d['error'], d['reason']")" "True True database_unreachable"
+chk "   an assignment that cannot be saved changes nothing" "$(mgc POST /api/loads/$LB/assign '{"driverId":"leonardo","truckUnitId":"truck-12"}')|$(load $LB "l['truckId'], l['truckUnitId'], l['driverName']")" "503|beryle truck-2 Beryle"
+chk "   an approval that cannot be saved leaves the load submitted" "$(mgc POST /api/loads/$LM/approve)|$(load $LM "l['approvalStatus'], l['billStatus']")|$(tod "d['attention']['awaitingApproval']")" "503|submitted not-ready|1"
+chk "   a PO edit that cannot be saved changes nothing, on the PO or its loads" "$(mgc PUT /api/pos/$P "{\"deliveryDate\":\"$TOMORROW\",\"notes\":\"x\"}")|$(po $P "p['deliveryDate']=='$TODAY', repr(p['notes'])")|$(load $LB "l['deliveryDate']=='$TODAY', l.get('moveHistory')")" "503|True ''|True None"
+chk "   a driver's day that cannot be saved is not open" "$(curl -s -b $BE -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-2","odometer":70000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' -o /dev/null -w '%{http_code}')|$(tod "[x['dayStartedAt'] for x in d['drivers'] if x['id']=='beryle'][0], len(d['shifts'])")" "503|None 0"
+chk "   /healthz counts every rollback and says the last save failed" "$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R0, d['persistence']['lastSaveOk'], d['persistence']['lastRollbackAt'] != ''")" "6 False True"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   the same tap goes through once the database is back, and is on disk" "$(drc $BE $LB '{"action":"start-trip"}')|$(load $LB "len(l['trips'])")|$(python3 -c "import json;d=json.load(open('data.json'));print(len([l for l in d['loads'] if l['id']=='$LB'][0]['trips']))")" "200|1|1"
+# One write at a time: a failed write cannot sweep a concurrent good write away
+mg POST /api/_test/save-mode '{"mode":"fail","count":1}' >/dev/null
+rm -f /tmp/vbt-46-a /tmp/vbt-46-b
+mgc PUT /api/loads/$LB '{"notes":"note A"}' > /tmp/vbt-46-a & mgc PUT /api/loads/$LB '{"notes":"note B"}' > /tmp/vbt-46-b & wait
+chk "   two writes at once while one save fails: exactly one is refused; the other is what memory AND disk hold" "$(python3 - "$(cat /tmp/vbt-46-a)" "$(cat /tmp/vbt-46-b)" "$(load $LB "l['notes']")" "$LB" <<'PY'
+import sys,json
+a,b,mem,lid=sys.argv[1:5]
+disk=[l['notes'] for l in json.load(open('data.json'))['loads'] if l['id']==lid][0]
+winner='note A' if a=='200' else 'note B'
+print(sorted([a,b]), mem==winner, disk==mem)
+PY
+)" "['200', '503'] True True"
+chk "   the hook reset itself after one failure: the next save is fine" "$(mgc PUT /api/loads/$LB '{"notes":"note C"}')|$(load $LB "l['notes']")" "200|note C"
+chk "   mutating requests run one at a time; QuickBooks send/retry/void, GPS pings and test hooks are exempt and keep their in-flight state (their recovery record)" "$(grep -c "^const WRITE_LOCK_EXEMPT = /^\\\\/api\\\\/(billing-batches" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: true }, next)" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: false }, next)" server.js)|$(grep -c "rollbackStore(e);" server.js)" "1|1|1|3"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes

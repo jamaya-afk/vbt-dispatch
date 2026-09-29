@@ -839,6 +839,8 @@ const persistence = {
   lastSaveAt: '',
   lastError: '',
   degradedSince: '',
+  rollbacks: 0,           // failed saves whose in-memory change was undone (see rollbackStore)
+  lastRollbackAt: '',
 };
 
 // Writes are serialized. Every handler mutates the shared in-memory store
@@ -851,6 +853,36 @@ const persistence = {
 // status reconciliation): they write the store but leave `store_prev` alone,
 // so the one-step undo copy is the state before the last thing a PERSON did,
 // not before the last GPS ping.
+// ── ROLLBACK ─────────────────────────────────────────────────────────────────
+// A handler mutates the store and then saves it. If the save fails, the
+// in-memory change must not outlive the failure: the caller was told "not
+// saved", so the board must not show it and the next unrelated save must not
+// smuggle it onto disk. `lastGoodJson` is the store exactly as it was last
+// written successfully (or as it was loaded at boot); on a failed write the
+// store is put back to it. Because mutating requests run one at a time (the
+// write lock below), the only unsaved change in memory at that moment is the
+// failing request's own.
+//
+// The QuickBooks and vendor-bill send/retry/void routes opt out through the
+// request context: their in-flight state (an invoice QuickBooks has already
+// issued) IS their recovery record and must survive a failed save.
+const { AsyncLocalStorage } = require('async_hooks');
+const requestCtx = new AsyncLocalStorage();
+let lastGoodJson = null;
+function rollbackStore(err) {
+  const ctx = requestCtx.getStore();
+  if ((ctx && ctx.keepOnFailure) || !lastGoodJson) return false;
+  const fresh = JSON.parse(lastGoodJson);
+  for (const k of Object.keys(store)) delete store[k];
+  Object.assign(store, fresh);
+  persistence.rollbacks++;
+  persistence.lastRollbackAt = new Date().toISOString();
+  if (err && !err.userMessage) err.userMessage = 'Unable to save — the database did not accept the write. Your change was not applied; please try again.';
+  console.warn(`[rollback] store restored to the last saved state after a failed write (${err && err.message})`);
+  return true;
+}
+let testSaveFailLeft = null;   // test hook: fail this many saves, then behave again (null = until reset)
+
 let saveChain = Promise.resolve();
 function saveData(opts) {
   const run = () => writeStore(opts || {});
@@ -875,10 +907,12 @@ async function writeStore({ rotatePrev = true } = {}) {
     throw new Error(msg);
   }
   if (testSaveMode === 'fail' && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD && testSaveSkip-- <= 0) {
+    if (testSaveFailLeft != null && --testSaveFailLeft <= 0) { testSaveMode = 'ok'; testSaveFailLeft = null; }
     const e = new Error('test hook: simulated database write failure');
     e.code = 'ECONNRESET';
     persistence.lastSaveOk = false;
     persistence.lastError = e.message;
+    rollbackStore(e);
     throw e;
   }
   const j = JSON.stringify(store);
@@ -911,6 +945,7 @@ async function writeStore({ rotatePrev = true } = {}) {
       persistence.lastSaveAt = new Date().toISOString();
       persistence.lastError = '';
       persistence.degradedSince = '';
+      lastGoodJson = j;
       return;
     } catch (e) {
       console.error('PG write error:', e.message);
@@ -919,6 +954,7 @@ async function writeStore({ rotatePrev = true } = {}) {
       if (!persistence.degradedSince) persistence.degradedSince = new Date().toISOString();
       // Never fall back to local disk when Postgres is the configured store —
       // a file write would look like success and vanish on the next deploy.
+      rollbackStore(e);
       throw e;
     }
   }
@@ -930,9 +966,11 @@ async function writeStore({ rotatePrev = true } = {}) {
       fs.writeFileSync(DATA_FILE, j);
       persistence.lastSaveOk = true;
       persistence.lastSaveAt = new Date().toISOString();
+      lastGoodJson = j;
     } catch (e) {
       persistence.lastSaveOk = false;
       persistence.lastError = e.message;
+      rollbackStore(e);
       throw e;
     }
   }
@@ -1854,6 +1892,8 @@ app.get('/healthz', async (req, res) => {
     lastSaveAt: persistence.lastSaveAt,
     lastError: persistence.lastError,
     degradedSince: persistence.degradedSince,
+    rollbacks: persistence.rollbacks,
+    lastRollbackAt: persistence.lastRollbackAt,
   },
   fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
   // merged in from the second /healthz the branch merge left behind — Express
@@ -1901,6 +1941,31 @@ app.use('/api', (req, res, next) => {
   });
 });
 
+// ── WRITE LOCK ───────────────────────────────────────────────────────────────
+// One dispatch write at a time. Every mutating /api request holds this lock
+// for its whole life (handler and save), so when a failed save rolls the store
+// back to the last persisted state (rollbackStore), no other request's unsaved
+// change can be swept away with it. Reads never wait. For a five-truck fleet
+// the wait is milliseconds; a hung handler releases after 30 s regardless.
+//
+// Exempt on purpose: the QuickBooks and vendor-bill send/retry/void routes
+// (they talk to QuickBooks for seconds, must not stall the drivers' taps, and
+// keep their in-flight state on a failed save — it is their recovery record),
+// GPS pings, the QuickBooks connection routes and the test hooks.
+const WRITE_LOCK_EXEMPT = /^\/api\/(billing-batches\/[^/]+\/(send|retry|void)|vendor-bills\/[^/]+\/(send|retry|void)|driver-location|quickbooks\/|_test\/)/;
+let writeLockTail = Promise.resolve();
+app.use('/api', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  if (WRITE_LOCK_EXEMPT.test(req.originalUrl.split('?')[0])) return requestCtx.run({ keepOnFailure: true }, next);
+  let release; const held = new Promise(r => { release = r; });
+  const wait = writeLockTail; writeLockTail = wait.then(() => held);
+  wait.then(() => {
+    const timer = setTimeout(release, 30000);
+    res.once('close', () => { clearTimeout(timer); release(); });
+    requestCtx.run({ keepOnFailure: false }, next);
+  });
+});
+
 // ── BACKUP / RESTORE (admin) ─────────────────────────────────────────────────
 // store_prev = the value before the most recent save; store_boot = the value
 // when this process last started. Restoring first copies the current row to
@@ -1945,6 +2010,9 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     } else if (store.qbConnection) {
       store.qbConnection.status = 'disconnected';
     }
+    // The fake connection lives on the store like the real one, so a rollback
+    // after a simulated failed save does not silently disconnect the tests.
+    try { await saveData({ rotatePrev: false }); } catch {}
     qb.findOrCreateCustomer = async (conn, c) => ({ customer: { Id: 'CUST-' + (c.name || 'x').replace(/\W/g, ''), DisplayName: c.name }, created: false });
     qb.findOrCreateVendor = async (conn, v) => ({ vendor: { Id: 'VEND-' + (v.name || 'x').replace(/\W/g, ''), DisplayName: v.name }, created: false });
     qb.createInvoice = async (conn, args) => {
@@ -2000,7 +2068,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   });
   app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
   // 'fail' makes every save throw until set back to 'ok'.
-  app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); res.json({ mode: testSaveMode, after: testSaveSkip }); });
+  app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft }); });
   app.get('/api/_test/today', (req, res) => res.json({ tz: OPERATING_TZ, today: todayStrAt(req.query.at ? new Date(String(req.query.at)) : new Date()) }));
   app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
   app.get('/api/_test/async-reject', (req, res) => Promise.reject(new Error('test: rejected promise')));
@@ -7501,6 +7569,7 @@ const PORT = process.env.PORT || 3000;
   try {
     await loadData();
     await snapshotBootStore();
+    lastGoodJson = JSON.stringify(store);   // the rollback point until the first successful save
     await pruneLocationHistory();
     setInterval(pruneLocationHistory, 24 * 60 * 60 * 1000).unref();
   } catch (e) {
