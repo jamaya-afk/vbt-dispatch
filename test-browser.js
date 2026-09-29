@@ -66,7 +66,7 @@ async function call(cookie, method, path, body) {
       : { viewport: { width: 1280, height: 900 } });
     const page = await ctx.newPage();
     // The app must never fall back to the browser's own confirm(); count any call.
-    await page.addInitScript(() => { window.__confirmCalls = 0; const orig = window.confirm.bind(window); window.confirm = (...a) => { window.__confirmCalls++; return orig(...a); }; });
+    await page.addInitScript(() => { window.__confirmCalls = 0; const orig = window.confirm.bind(window); window.confirm = (...a) => { window.__confirmCalls++; return orig(...a); }; window.__promptCalls = 0; const op = window.prompt.bind(window); window.prompt = (...a) => { window.__promptCalls++; return op(...a); }; });
     const requests = [];
     page.on('pageerror', e => problems.push(`[${user}] pageerror: ${e.message}`));
     page.on('console', m => { if (m.type() === 'error' && !/ERR_CERT_AUTHORITY_INVALID|net::ERR_/.test(m.text()) && !(expectConflict && /409/.test(m.text()))) problems.push(`[${user}] console.error: ${m.text().slice(0, 160)}`); });
@@ -210,6 +210,60 @@ async function call(cookie, method, path, body) {
   });
   chk('8. the In Progress tile filters the board to in-progress loads', filt.shown, 'In Progress');
   chk('9. the Awaiting Approval tile opens Approvals', filt.tab, 'sec-approvals');
+
+  console.log('── Office: approval confirms the record in the app ──');
+  // Matthew (Truck #4) and Carlos (Truck #2B) each finish one load from the VBT yard and submit.
+  const mat = await login('matthew', 'matthew123'); const car = await login('carlos', 'carlos123');
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: '10484', customer: 'Gate Rd Builders', deliveryDate: today, address: '9 Gate Rd', city: 'Fresno', plannedVendorId: 'vbt' },
+    splits: [{ truckId: 'matthew', truckUnitId: 'truck-4', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }, { truckId: 'carlos', truckUnitId: 'truck-2b', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }] });
+  const d84 = (await call(mgr, 'GET', '/api/data')).data; const p84 = d84.pos.find(p => p.poNumber === '10484');
+  const lMat = d84.loads.find(l => l.poId === p84.id && l.truckId === 'matthew'); const lCar = d84.loads.find(l => l.poId === p84.id && l.truckId === 'carlos');
+  for (const [ck, l, n] of [[mat, lMat, '5001'], [car, lCar, '5002']]) {
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'start-trip' });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'arrived-pickup', yardId: 'vbt' });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'loaded', ticket: { source: 'vbt', number: n, netTons: 24.5, photo: PNG } });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'arrived-jobsite' });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'trip-complete' });
+    await call(ck, 'PUT', `/api/loads/${l.id}`, { pod: { signedBy: 'Site Foreman', signature: PNG, signedAt: new Date().toISOString() } });
+    await call(ck, 'POST', `/api/loads/${l.id}/trip-action`, { action: 'delivered' });
+  }
+  await page.evaluate(async () => { await loadAll(); goTab('approvals'); }); await page.waitForTimeout(600);
+  const card = await page.evaluate(() => {
+    const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText)); if (!c) return null;
+    return { chips: Array.from(c.querySelectorAll('.am-check .chk')).map(e => e.innerText.replace(/\s+/g, ' ').trim()).join(' | '), warn: c.querySelectorAll('.am-check .chk.warn').length, cards: document.querySelectorAll('.approve-mini').length };
+  });
+  chk('1. the approval card shows the checklist: Driver, Truck, Pickup yard, Ticket, Delivery — all ✓', card ? card.chips : 'no card', '✓ Driver Matthew | ✓ Truck Truck #4 | ✓ Pickup yard VBT Yard | ✓ Ticket 1 ticket · 24.5 t | ✓ Delivery 1/1 load · signed by Site Foreman');
+  chk('   two loads wait, nothing flagged', card ? `${card.cards} ${card.warn}` : 'no card', '2 0');
+  const dlg2 = await page.evaluate(async () => {
+    const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText));
+    c.querySelector('button.btn.success').click();
+    await new Promise(r => setTimeout(r, 400));
+    const m = document.getElementById('ask-modal'); if (!m) return null;
+    return { title: m.querySelector('h2').textContent.trim(), rows: m.querySelectorAll('.ask-check .chk').length, ok: m.querySelectorAll('.ask-check .chk.ok').length,
+             hint: m.querySelector('.conflict-hint').innerText.replace(/\s+/g, ' '), buttons: Array.from(m.querySelectorAll('.modal-foot button')).map(b => b.textContent.trim()).join('|'), focus: document.activeElement && document.activeElement.id };
+  });
+  chk('2. Approve opens the confirmation with the five items and what approving does', dlg2 ? `${dlg2.title} ${dlg2.rows} ${dlg2.ok} ${dlg2.buttons} ${dlg2.focus}` : 'no dialog', 'Approve this load? 5 5 Cancel|Approve ask-cancel');
+  chk('   …in plain words', !!dlg2 && /Everything is on record\. Approving locks the load and moves it to Ready to Bill\./.test(dlg2.hint), true);
+  await page.click('#ask-cancel'); await page.waitForTimeout(400);
+  let lm = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('3. Cancel: nothing approved', `${await page.evaluate(() => !document.getElementById('ask-modal'))} ${lm.approvalStatus}`, 'true submitted');
+  await page.evaluate(() => Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText)).querySelector('button.btn.success').click()); await page.waitForTimeout(400);
+  await page.click('#ask-go'); await page.waitForTimeout(900);
+  lm = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('4. Approve: approved, locked, Ready to Bill; the card is gone', `${lm.approvalStatus} ${lm.locked} ${lm.billStatus} ${await page.evaluate(() => document.querySelectorAll('.approve-mini').length)}`, 'approved true ready 1');
+  const rej = await page.evaluate(async () => {
+    const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Carlos/.test(x.innerText));
+    c.querySelector('button.btn.danger').click();
+    await new Promise(r => setTimeout(r, 400));
+    const m = document.getElementById('ask-modal'); if (!m) return null;
+    return { title: m.querySelector('h2').textContent.trim(), goDisabled: m.querySelector('#ask-go').disabled, focus: document.activeElement && document.activeElement.id };
+  });
+  chk('5. Reject asks for a reason in the app, and cannot proceed without one', rej ? `${rej.title} ${rej.goDisabled} ${rej.focus}` : 'no dialog', 'Reject this load? true ask-reason');
+  await page.fill('#ask-reason', 'Ticket photo is unreadable'); await page.click('#ask-go'); await page.waitForTimeout(800);
+  const lc = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lCar.id);
+  chk('   …the load goes back to the driver with the reason', `${lc.approvalStatus} ${lc.locked} ${lc.rejectReason}`, 'rejected false Ticket photo is unreadable');
+  chk('   no browser confirm() or prompt() anywhere in this', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
 
   console.log('── Fleet Map ──');
   const navCount = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-item')).filter(b => b.textContent.includes('Fleet Map') && getComputedStyle(b).display !== 'none').length);

@@ -165,6 +165,25 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .conflict-list li::marker{color:var(--A)}
 .conflict-hint{font-size:12.5px;color:var(--txt2);padding:10px 12px;background:var(--bg2);border-radius:var(--r)}
 .conflict-modal .modal-foot .btn{min-height:40px;padding:8px 20px;font-size:13px}
+/* Approval checklist: ✓ on record, ⚠ missing — on the card and in the dialog */
+.ask-modal{max-width:480px}
+.ask-modal .modal-foot .btn{min-height:40px;padding:8px 20px;font-size:13px}
+.ask-sub{font-size:12.5px;color:var(--txt2)}
+.am-check{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.am-check .chk{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 9px;border-radius:20px;border:1px solid var(--Gd);background:var(--Gb);color:#0a7a3a}
+.am-check .chk.warn{border-color:var(--Ad);background:var(--Ab);color:var(--A)}
+.am-check .chk-label{font-weight:700}
+.am-check .chk-val{color:inherit;opacity:.9}
+.am-check .chk.ok .chk-val:empty{display:none}
+.ask-check{display:flex;flex-direction:column;gap:6px}
+.ask-check .chk{display:grid;grid-template-columns:22px 92px 1fr;align-items:baseline;gap:4px 8px;padding:8px 10px;border-radius:var(--r);border:1px solid var(--Gd);background:var(--Gb);font-size:13px}
+.ask-check .chk.warn{border-color:var(--Ad);background:var(--Ab)}
+.ask-check .chk-ic{font-weight:800;color:var(--G)}.ask-check .chk.warn .chk-ic{color:var(--A)}
+.ask-check .chk-label{font-weight:700}
+.ask-check .chk-val{font-weight:600}
+.ask-check .chk.warn .chk-val{color:var(--A)}
+.ask-check .chk-note{grid-column:2/4;font-size:11.5px;color:var(--txt2)}
+.ask-check .chk.warn .chk-note{color:var(--A);font-weight:600}
 
 .field{display:flex;flex-direction:column;gap:5px}
 .field label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
@@ -3418,6 +3437,7 @@ function renderApprovals() {
           <div class="am-customer">${po.customer}</div>
           <div class="am-detail">${l.material} · <b style="color:${l.isPartial ? 'var(--A)' : 'var(--txt)'}">${l.loadsDelivered}/${l.loadsAssigned} loads${l.isPartial ? ' ⚠ partial' : ''}</b> · ${l.driverName}${l.trailer ? ' · trailer ' + escapeHtml(l.trailer.number) : ''}${(l.pickup && l.pickup.name) ? ' · ' + `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg>` + ' ' + escapeHtml(l.pickup.name) : ''}</div>
           ${ticketSummaryHtml(l)}
+          ${approvalChecklistHtml(l.approval, true)}
         </div>
         <div class="am-thumbs">
           ${(() => {
@@ -3479,16 +3499,98 @@ function updateApproveBadge() {
   else { badge.style.display = 'none'; }
 }
 
+// ── APPROVAL: confirm the record, then lock it ──────────────────────────────
+// The checklist comes from the server (load.approval): Driver, Truck, Pickup
+// yard, Ticket, Delivery — ✓ on record, ⚠ missing. Approving with a ⚠ is the
+// manager's call, made here and acknowledged to the server, which records it.
+const CHECK_ICON = { ok: '✓', warn: '⚠' };
+function approvalChecklistHtml(check, compact) {
+  if (!check || !check.items) return '';
+  return `<div class="${compact ? 'am-check' : 'ask-check'}">${check.items.map(i => `
+    <div class="chk ${i.ok ? 'ok' : 'warn'}" title="${escapeAttr(i.note || '')}">
+      <span class="chk-ic">${i.ok ? CHECK_ICON.ok : CHECK_ICON.warn}</span>
+      <span class="chk-label">${escapeHtml(i.label)}</span>
+      <span class="chk-val">${escapeHtml(i.value || (i.ok ? '' : 'missing'))}</span>
+      ${!compact && i.note ? `<span class="chk-note">${escapeHtml(i.note)}</span>` : ''}
+    </div>`).join('')}</div>`;
+}
+// One in-app question with Cancel (default) and one action. Resolves to
+// { go, reason }. Never a browser confirm() or prompt().
+function askDialog({ title, bodyHtml, confirmLabel, confirmClass = 'primary', reason = null }) {
+  return new Promise(resolve => {
+    const old = document.getElementById('ask-modal'); if (old) old.remove();
+    const el = document.createElement('div');
+    el.className = 'modal-bg'; el.id = 'ask-modal'; el.style.zIndex = '500';
+    el.innerHTML = `
+      <div class="modal ask-modal" role="dialog" aria-modal="true" aria-labelledby="ask-title">
+        <div class="modal-head"><h2 id="ask-title">${escapeHtml(title)}</h2><button type="button" class="modal-close" id="ask-x" aria-label="Cancel">&#215;</button></div>
+        <div class="modal-body">${bodyHtml}
+          ${reason ? `<div class="field"><label>${escapeHtml(reason.label)}${reason.required ? '' : ' (optional)'}</label>
+            <input type="text" id="ask-reason" placeholder="${escapeAttr(reason.placeholder || '')}" autocomplete="off"></div>` : ''}
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn ghost" id="ask-cancel">Cancel</button>
+          <button type="button" class="btn ${confirmClass}" id="ask-go" ${reason && reason.required ? 'disabled' : ''}>${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>`;
+    const typed = () => (el.querySelector('#ask-reason')?.value || '').trim();
+    const done = go => { document.removeEventListener('keydown', onKey); el.remove(); resolve({ go, reason: typed() }); };
+    const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); done(false); } };
+    el.querySelector('#ask-x').onclick = () => done(false);
+    el.querySelector('#ask-cancel').onclick = () => done(false);
+    el.querySelector('#ask-go').onclick = () => { if (reason && reason.required && !typed()) return; done(true); };
+    const input = el.querySelector('#ask-reason');
+    if (input) {
+      input.oninput = () => { if (reason.required) el.querySelector('#ask-go').disabled = !typed(); };
+      input.onkeydown = e => { if (e.key === 'Enter' && typed()) { e.preventDefault(); done(true); } };
+    }
+    el.addEventListener('mousedown', e => { if (e.target === el) done(false); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(el);
+    (input && reason.required ? input : el.querySelector('#ask-cancel')).focus();
+  });
+}
+function confirmApproval(l, check) {
+  const po = pos.find(p => p.id === l.poId) || {};
+  const gaps = check ? check.items.filter(i => !i.ok).length : 0;
+  const body = `
+    <div class="ask-sub">PO ${escapeHtml(po.poNumber || '—')} · ${escapeHtml(po.customer || '')} · ${escapeHtml(l.material || '')} · ${escapeHtml(l.driverName || '')}</div>
+    ${approvalChecklistHtml(check, false)}
+    <div class="conflict-hint">${gaps
+      ? `<b>${gaps} item${gaps === 1 ? '' : 's'} missing.</b> You can approve anyway; what was missing is written to the audit log and stays on the load for billing.`
+      : 'Everything is on record. Approving locks the load and moves it to <b>Ready to Bill</b>.'}</div>`;
+  return askDialog({ title: 'Approve this load?', bodyHtml: body, confirmLabel: gaps ? 'Approve anyway' : 'Approve', confirmClass: gaps ? 'primary' : 'success' });
+}
 async function approveLoad(id) {
-  const d = await api('POST', '/api/loads/' + id + '/approve', {});
-  if (d.ok) { toast('Approved & locked', 'success'); await loadAll(); renderApprovals(); updateApproveBadge(); }
-  else toast(d.error || 'Failed', 'error');
+  const l = loads.find(x => x.id === id); if (!l) return;
+  const after = ok => { toast(ok, 'success'); return loadAll().then(() => { renderApprovals(); updateApproveBadge(); }); };
+  let check = l.approval || null;
+  const first = await confirmApproval(l, check);
+  if (!first.go) return;
+  let d = await api('POST', '/api/loads/' + id + '/approve', { acknowledge: !!(check && !check.ready) });
+  if (d.ok) return after((d.approvedWithWarnings || []).length ? 'Approved with noted gaps & locked' : 'Approved & locked');
+  if (d.status === 409 && d.code === 'approval_incomplete') {
+    // The record changed since the page loaded: show the server's checklist and ask again.
+    const again = await confirmApproval(l, d.checklist);
+    if (!again.go) return;
+    d = await api('POST', '/api/loads/' + id + '/approve', { acknowledge: true });
+    if (d.ok) return after('Approved with noted gaps & locked');
+  }
+  toast(d.error || 'Failed', 'error');
 }
 
 async function rejectLoad(id) {
-  const reason = prompt('Reason for rejection?');
-  if (!reason) return;
-  const d = await api('POST', '/api/loads/' + id + '/reject', { reason });
+  const l = loads.find(x => x.id === id); if (!l) return;
+  const po = pos.find(p => p.id === l.poId) || {};
+  const a = await askDialog({
+    title: 'Reject this load?',
+    bodyHtml: `<div class="ask-sub">PO ${escapeHtml(po.poNumber || '—')} · ${escapeHtml(po.customer || '')} · ${escapeHtml(l.driverName || '')}</div>
+               <div class="conflict-hint">The load is unlocked and goes back to the driver with your reason, to fix and resubmit.</div>`,
+    confirmLabel: 'Reject', confirmClass: 'danger',
+    reason: { label: 'Reason', placeholder: 'e.g. ticket photo is unreadable', required: true },
+  });
+  if (!a.go) return;
+  const d = await api('POST', '/api/loads/' + id + '/reject', { reason: a.reason });
   if (d.ok) { toast('Rejected', 'success'); await loadAll(); renderApprovals(); updateApproveBadge(); }
   else toast(d.error || 'Failed', 'error');
 }

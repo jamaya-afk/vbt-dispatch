@@ -847,7 +847,9 @@ chk "16. VBT internal ticket: number only, no tons, no photo required" "$(c2 '{"
 c2 '{"action":"arrived-jobsite"}' -o /dev/null; c2 '{"action":"trip-complete"}' -o /dev/null
 chk "   load-level photo still required for a photo-less VBT ticket" "$(c2 '{"action":"delivered"}' | jq "d['error']")" "Ticket photo required"
 curl -s -b $CD -H "$J" -X PUT $B/api/loads/$C2 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-09-14T22:00:00Z\"}}" -o /dev/null
-c2 '{"action":"delivered"}' -o /dev/null; curl -s -b $M -H "$J" -X POST $B/api/loads/$C2/approve -d '{}' -o /dev/null
+c2 '{"action":"delivered"}' -o /dev/null
+chk "   the approval checklist flags it: actual-basis customer, ticket with no tons → approve is refused until acknowledged" "$(curl -s -b $M -H "$J" -X POST $B/api/loads/$C2/approve -d '{}' | jq "d['code'], d['checklist']['warnings']")" "approval_incomplete ['Ticket: Dave Christian Construction is billed on actual tons and 1 ticket(s) have no tons']"
+curl -s -b $M -H "$J" -X POST $B/api/loads/$C2/approve -d '{"acknowledge":true}' -o /dev/null   # the manager approves knowing the tons are missing; billing still refuses to price it
 PV=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$C2\"]}")
 chk "17. actual-basis load with no ticket tons is NOT priceable (never billed on 25 t silently)" "$(echo "$PV" | jq "d['groups'][0]['unconfigured'], d['groups'][0]['unconfiguredReasons'][0]")" "True Dave Christian Construction is billed on actual ticket tons, but 1 of 1 delivered load on $C2 has no confirmed ticket tons"
 chk "   ...and batch creation refuses it"            "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/billing-batches -d "{\"loadIds\":[\"$C2\"]}")" "400"
@@ -1441,6 +1443,44 @@ chk "   it is titled for what collides and offers Cancel and the verb (Assign / 
 chk "   Cancel is the default: focused, Escape, the × and the backdrop all cancel" "$(echo "$CF" | grep -c "conflict-cancel').focus()")|$(echo "$CF" | grep -c "e.key === 'Escape'")|$(echo "$CF" | grep -c "conflict-x').onclick = () => done(false)")|$(echo "$CF" | grep -c "e.target === el) done(false)")" "1|1|1|1"
 chk "   a go-ahead is resent with force and the typed reason; a Cancel is reported as cancelled" "$(grep -c "force: true, reason: c.reason || reason ||" public/index.html)|$(grep -c "d = { ...d, cancelled: true }" public/index.html)" "1|1"
 chk "   every assignment path (sheet, reassign modal, PO form, date move) stays quiet on Cancel" "$(grep -c '\.cancelled)' public/index.html)|$(grep -c 'postAssignment(' public/index.html)" "4|5"
+
+echo
+echo "── 43. Approval confirms the record: Driver · Truck · Pickup yard · Ticket · Delivery ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-approve.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+tod() { curl -s -b $M "$B/api/today${2:-}" | jq "$1"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+appr() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];a=l.get('approval');print($2)"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+haul() { # driver-cookie load yard : one full trip with a ticket
+  dr $1 $2 '{"action":"start-trip"}' >/dev/null; dr $1 $2 "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null
+  dr $1 $2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $1 $2 '{"action":"arrived-jobsite"}' >/dev/null; dr $1 $2 '{"action":"trip-complete"}' >/dev/null; }
+submit() { curl -s -b $1 -H "$J" -X PUT $B/api/loads/$2 -d "{\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $1 $2 '{"action":"delivered"}' >/dev/null; }
+# Fixture: Beryle's load is complete in every respect; Matthew's was created with no truck.
+P=$(mg POST /api/pos '{"po":{"poNumber":"A43-1","customer":"Approve Co","deliveryDate":"'"$TODAY"'","address":"9 Gate Rd","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"},{"truckId":"matthew","truckUnitId":null,"material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LB=$(loadof $P beryle); LM=$(loadof $P matthew)
+chk "43 a load that is not submitted carries no checklist" "$(appr $LB "a")" "None"
+haul $BE $LB vulcan; haul $BE $LB vulcan; submit $BE $LB
+haul $MA $LM vbt; submit $MA $LM
+chk "   a complete load: every item ✓ with the fact behind it, ready to approve" "$(appr $LB "a['ready'], [(i['key'], i['ok'], i['value']) for i in a['items']]")" "True [('driver', True, 'Beryle'), ('truck', True, 'Truck #2'), ('pickup', True, 'Vulcan'), ('ticket', True, '2 tickets · 49 t'), ('delivery', True, '2/2 loads · signed by Site Foreman')]"
+chk "   the pickup yard is the one confirmed at the scale; planned and actual tons sit side by side" "$(appr $LB "[i['note'] for i in a['items']]")" "['', '', 'confirmed at the scale', 'planned 50 t, actual 49 t', '']"
+chk "   Matthew's load: ⚠ Truck (none recorded), everything else ✓" "$(appr $LM "a['ready'], a['warnings'], [i['key'] for i in a['items'] if not i['ok']]")" "False ['Truck: no truck recorded on this load'] ['truck']"
+chk "   the dispatch board says the same thing about it (one rule)" "$(tod "[l['missing'] for l in d['loads'] if l['id']=='$LM'][0], d['attention']['missingInfo']")" "['Truck: no truck recorded on this load'] 1"
+chk "   a plain approve of the incomplete load is refused (409 approval_incomplete) with the checklist; it stays submitted" "$(mg POST /api/loads/$LM/approve '{}' -w ' %{http_code}' | python3 -c "import sys,json;raw=sys.stdin.read().rstrip();body,code=raw.rsplit(' ',1);d=json.loads(body);print(code, d['code'], d['checklist']['ready'], d['error'])")|$(load $LM "l['approvalStatus'], l['locked']")" "409 approval_incomplete False This load is not complete — Truck: no truck recorded on this load.|submitted True"
+chk "   the complete load approves without ceremony" "$(mg POST /api/loads/$LB/approve '{}' | jq "d['success'], d['approvedWithWarnings']")|$(load $LB "l['approvalStatus'], l['billStatus'], l.get('approvalWarnings')")" "True []|approved ready None"
+chk "   with the manager's acknowledgement the incomplete one approves, and the gap stays on the record" "$(mg POST /api/loads/$LM/approve '{"acknowledge":true}' | jq "d['success'], d['approvedWithWarnings']")|$(load $LM "l['approvalStatus'], l['locked'], l['billStatus'], l.get('approvalWarnings')")" "True ['Truck: no truck recorded on this load']|approved True ready ['Truck: no truck recorded on this load']"
+chk "   …and in the audit log" "$(curl -s -b $M "$B/api/audit-log?action=approved-load" | jq "[e['details'].get('approvedWithWarnings') for e in d['entries'] if e['target']=='$LM'][0], [e['details'].get('approvedWithWarnings') for e in d['entries'] if e['target']=='$LB'][0]")" "['Truck: no truck recorded on this load'] None"
+chk "   an approved load carries no checklist any more (it is locked)" "$(appr $LM "a")" "None"
+AP=$(sed -n '/^async function approveLoad/,/^\/\/ ── BILLING/p' public/index.html)
+chk "   approve and reject are decided in the app: no prompt(), no confirm(); a stale page re-asks with the server's checklist" "$(echo "$AP" | grep -c 'prompt(\|[^a-zA-Z]confirm(')|$(echo "$AP" | grep -c 'confirmApproval(l, d.checklist)')|$(grep -c 'approvalChecklistHtml(l.approval, true)' public/index.html)|$(grep -c 'acknowledge: !!(check && !check.ready)' public/index.html)" "0|1|1|1"
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.

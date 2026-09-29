@@ -1506,7 +1506,9 @@ async function applyLocationRequest(rec, body, user, addressText) {
 function withPickup(l) {
   const po = store.pos.find(p => p.id === l.poId) || {};
   const segs = segmentsForLoad(l).map(s => { const p = segmentPublic(s); return { id: p.id, customer: p.customer, originName: p.originName, destinationLabel: p.destinationLabel, status: p.status, locked: p.locked, timeStart: p.timeStart, timeEnd: p.timeEnd, odStart: p.odStart, odEnd: p.odEnd, billableMiles: p.billableMiles, billableHours: p.billableHours, tripCount: p.tripCount, loadIds: p.loadIds }; });
-  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs };
+  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs,
+    // The approval checklist rides along only while a load waits for approval.
+    ...(l.approvalStatus === 'submitted' ? { approval: approvalChecklist(l) } : {}) };
 }
 
 function resolveVendorRate(vendorId, material) {
@@ -4011,11 +4013,62 @@ app.put('/api/loads/:id/trips/:tripNum/ticket', reqAuth, async (req, res) => {
 });
 
 // ── API: MANAGER APPROVALS ──────────────────────────────────────────────────
+// ── APPROVAL CHECKLIST ───────────────────────────────────────────────────────
+// What the office confirms before a load is approved and locked for billing:
+// who hauled it, on which truck, from which yard, the ticket(s), and the
+// delivery (count and signature). Every item is a fact from the record, never
+// an assumption. A ⚠ item does not stop the manager: approving with it is a
+// decision, taken in the app (acknowledge: true) and written to the audit log
+// and onto the load, so billing can see what was known to be missing.
+function approvalChecklist(l) {
+  const po = findPoAnywhere(l.poId) || {};
+  const truck = getTruckForLoad(l);
+  const pickup = resolvePickupYard(l, po);
+  const trips = l.trips || [];
+  const yardIds = [...new Set(trips.filter(t => t.actualYardId).map(t => t.actualYardId))];
+  const yardName = id => (store.vendors.find(v => v.id === id) || {}).name || id;
+  const tons = loadTons(l);
+  const pod = l.pod || {};
+  const delivered = Number(l.loadsDelivered) || 0;
+  const hasDriver = !!(l.truckId && l.truckId !== 'unassigned');
+  const items = [];
+  items.push({ key: 'driver', label: 'Driver', ok: hasDriver, value: l.driverName || (hasDriver ? l.truckId : ''),
+    note: !hasDriver ? 'no driver on this load' : (l.reassignHistory || []).length ? `handed over ${l.reassignHistory.length}× — each trip keeps its own driver` : '' });
+  items.push({ key: 'truck', label: 'Truck', ok: !!truck, value: truck ? truck.truckNum : '', note: truck ? '' : 'no truck recorded on this load' });
+  items.push({ key: 'pickup', label: 'Pickup yard', ok: true,
+    value: yardIds.length === 1 ? yardName(yardIds[0]) : yardIds.length > 1 ? yardIds.map(yardName).join(' + ') : pickup.name,
+    note: yardIds.length ? 'confirmed at the scale' : trips.length ? 'planned yard — arrival was never confirmed' : 'planned yard' });
+  const ticketProblems = [];
+  if (!l.ticketImage && !l.ticketImageUrl) ticketProblems.push('no ticket photo');
+  if (tons.missingTickets.length) ticketProblems.push(`no ticket on trip ${tons.missingTickets.join(', ')}`);
+  if (customerBillingBasis(po.customer) === 'actual' && delivered > 0 && !tons.actualComplete)
+    ticketProblems.push(`${po.customer} is billed on actual tons and ${Math.max(1, delivered - tons.ticketsWithTons)} ticket(s) have no tons`);
+  items.push({ key: 'ticket', label: 'Ticket', ok: !ticketProblems.length,
+    value: tons.tickets ? `${tons.tickets} ticket${tons.tickets === 1 ? '' : 's'}${tons.ticketsWithTons ? ` · ${tons.actualTons} t` : ''}` : ((l.ticketImage || l.ticketImageUrl) ? 'photo on file' : ''),
+    note: ticketProblems.join('; ') || (tons.plannedTons != null ? `planned ${tons.plannedTons} t${tons.ticketsWithTons ? `, actual ${tons.actualTons} t` : ''}` : '') });
+  const signed = !!(pod.signedBy && (pod.signature || pod.signatureUrl));
+  const deliveryProblems = [];
+  if (!delivered) deliveryProblems.push('nothing delivered');
+  if (!signed) deliveryProblems.push('no customer signature');
+  items.push({ key: 'delivery', label: 'Delivery', ok: !deliveryProblems.length,
+    value: `${delivered}/${l.loadsAssigned} load${l.loadsAssigned === 1 ? '' : 's'}${l.isPartial ? ' (partial)' : ''}${signed ? ` · signed by ${pod.signedBy}` : ''}`,
+    note: deliveryProblems.join('; ') || (l.isPartial ? 'submitted as incomplete by the driver' : '') });
+  const warnings = items.filter(i => !i.ok).map(i => `${i.label}: ${i.note}`);
+  return { items, warnings, ready: !warnings.length };
+}
+
 app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const l = store.loads[idx];
   if (l.approvalStatus !== 'submitted') return res.status(400).json({ error: 'Load not submitted for approval' });
+  // The checklist is confirmed in the app; a load with a ⚠ item is approved
+  // only with an explicit acknowledgement, and what was missing is recorded.
+  const check = approvalChecklist(l);
+  if (!check.ready && req.body?.acknowledge !== true) {
+    return res.status(409).json({ error: `This load is not complete — ${check.warnings.join('; ')}.`, code: 'approval_incomplete', checklist: check });
+  }
+  if (!check.ready) l.approvalWarnings = check.warnings;
   l.approvalStatus = 'approved';
   l.approvedAt     = new Date().toISOString();
   l.approvedBy     = req.session.user.displayName || req.session.user.username;
@@ -4044,9 +4097,10 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
     actualTons:  tons.actualTons,
     tickets:     tons.ticketNumbers,
     missingTickets: tons.missingTickets,
+    ...(check.ready ? {} : { approvedWithWarnings: check.warnings }),
   });
   await saveData();
-  res.json({ success: true });
+  res.json({ success: true, approvedWithWarnings: check.ready ? [] : check.warnings });
 });
 
 app.post('/api/loads/:id/reject', reqMgr, async (req, res) => {
@@ -6608,16 +6662,11 @@ function boardStage(l) {
 function boardMissing(l, pickup, truck) {
   const b = boardBucket(l);
   if (b === 'completed' || b === 'ready-to-bill') return [];
+  if (b === 'awaiting-approval') return approvalChecklist(l).warnings;   // the same rule the approval dialog shows
   const out = [];
   if (!l.truckId || l.truckId === 'unassigned') out.push('driver');
   if (l.truckId && l.truckId !== 'unassigned' && !truck) out.push('truck');
   if (!pickup || !pickup.id) out.push('pickup yard');
-  if (b === 'awaiting-approval') {
-    if (!l.ticketImage && !l.ticketImageUrl) out.push('ticket photo');
-    const t = loadTons(l);
-    if (t.missingTickets.length) out.push(`ticket on trip ${t.missingTickets.join(', ')}`);
-    if (!l.pod || !l.pod.signedBy) out.push('signature');
-  }
   return out;
 }
 // One load as the board shows it. `holding` is the day's live work, for the
