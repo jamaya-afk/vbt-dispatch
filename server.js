@@ -2861,8 +2861,9 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   res.json({ success: true, po: newPo });
   } catch (err) {
     // A database failure goes to the error middleware: 503 with a reference
-    // id and "the dispatch data is safe", the same answer every other route gives.
-    if (isDbError(err)) throw err;
+    // id, the same answer every other route gives — but saying plainly that
+    // nothing was created, since the PO was rolled back above.
+    if (isDbError(err)) { err.userMessage = 'Unable to save — the database did not accept the write. Nothing was created; please try again.'; throw err; }
     console.error('[create-PO] CRASH:', err);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Failed to create PO: ' + (err.message || 'unknown error') });
@@ -6556,10 +6557,11 @@ app.get('/api/today', reqMgr, (req, res) => {
     };
   });
 
-  // Driver availability, derived from today's actual work
+  // Driver availability, derived from today's actual work — the same rule the
+  // assignment conflict check uses, so the board and the refusal never disagree.
   const busyBy = new Map();
   dayLoads.forEach(l => {
-    if (!l.truckId || l.approvalStatus === 'approved') return;
+    if (!l.truckId || !loadHoldsResources(l)) return;
     if (!busyBy.has(l.truckId)) busyBy.set(l.truckId, []);
     busyBy.get(l.truckId).push(l.id);
   });
@@ -6572,7 +6574,7 @@ app.get('/api/today', reqMgr, (req, res) => {
 
   const truckBusy = new Map();
   dayLoads.forEach(l => {
-    if (l.truckUnitId && l.approvalStatus !== 'approved') truckBusy.set(l.truckUnitId, l.id);
+    if (l.truckUnitId && loadHoldsResources(l)) truckBusy.set(l.truckUnitId, l.id);
   });
   const trucks = (store.trucks || []).filter(t => t.active).map(t => ({
     id: t.id, truckNum: t.truckNum, type: t.type, status: t.status,
@@ -6581,7 +6583,7 @@ app.get('/api/today', reqMgr, (req, res) => {
   }));
   const trailerBusy = new Map();
   dayLoads.forEach(l => {
-    if (l.trailerId && l.approvalStatus !== 'approved') trailerBusy.set(l.trailerId, l.id);
+    if (l.trailerId && loadHoldsResources(l)) trailerBusy.set(l.trailerId, l.id);
   });
   const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({
     id: t.id, number: t.number, type: t.type || '', status: t.status || 'available',
@@ -6686,6 +6688,15 @@ app.delete('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
 // is told exactly what, and can go ahead with `force` — the override is
 // written to the audit log with the reason given.
 function loadMidTrip(l) { return (l.trips || []).some(t => t.timestamps && t.timestamps.start && !t.timestamps.completed); }
+// A load holds its driver, truck and trailer while it is live work: not
+// voided, not submitted or approved, and not yet fully delivered. The conflict
+// check and the dispatch board's availability both use this one rule, so a
+// driver whose work is done (or awaiting approval) is shown free on both.
+function loadHoldsResources(l) {
+  if (l.voided || l.approvalStatus === 'approved' || l.approvalStatus === 'submitted') return false;
+  const assigned = Number(l.loadsAssigned) || 0, delivered = Number(l.loadsDelivered) || 0;
+  return !(assigned > 0 && delivered >= assigned);
+}
 function openTripOf(l) { return (l.trips || []).find(t => t.timestamps && t.timestamps.start && !t.timestamps.completed) || null; }
 // `skipDriverBusy`: creating a PO is planning the queue — the next job for a
 // driver who is out hauling right now is normal, not a conflict. Moving an
@@ -6696,11 +6707,7 @@ function assignmentConflicts(l, { driverId, truckUnitId, trailerId }, { extraLoa
   const poOf = id => findPoAnywhere(id) || {};
   const label = x => x.poId === '__new__' ? x.id : `${x.id} (PO ${poOf(x.poId).poNumber || '—'}${poOf(x.poId).customer ? ', ' + poOf(x.poId).customer : ''})`;
   const drvName = id => (rosterDriver(id) || {}).name || id;
-  // Work still holding a driver or a vehicle today: not voided, not approved
-  // or submitted, and not fully delivered (a finished load frees its truck).
-  const stillOpen = x => !x.voided && x.approvalStatus !== 'approved' && x.approvalStatus !== 'submitted'
-    && !((Number(x.loadsAssigned) || 0) > 0 && (Number(x.loadsDelivered) || 0) >= (Number(x.loadsAssigned) || 0));
-  const sameDay = [...store.loads, ...extraLoads].filter(x => x.id !== l.id && stillOpen(x) && x.deliveryDate === l.deliveryDate);
+  const sameDay = [...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate === l.deliveryDate);
   const newDriver = driverId !== undefined ? driverId : l.truckId;
   if (driverId !== undefined && driverId !== l.truckId) {
     const open = openTripOf(l);
@@ -7043,7 +7050,10 @@ app.use((err, req, res, next) => {
   });
   if (recentErrors.length > 10) recentErrors.length = 10;
   if (dbErr) {
-    return res.status(503).json({ error: `Database unreachable — reference ${ref}. The dispatch data is safe; retry in a moment or check /healthz.`, ref, reason: 'database_unreachable' });
+    const msg = err.userMessage
+      ? `${err.userMessage} (reference ${ref})`
+      : `Database unreachable — reference ${ref}. The dispatch data is safe; retry in a moment or check /healthz.`;
+    return res.status(503).json({ error: msg, ref, reason: 'database_unreachable' });
   }
   res.status(500).json({ error: `Server error — please retry. If it persists, check the server log. (ref ${ref})`, ref });
 });
