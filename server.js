@@ -2005,6 +2005,37 @@ app.get('/api/linxup/trackers', reqMgr, (req, res) => {
   res.json({ enabled: linxup.enabled, trackers: linxup.listTrackers().map(t => ({ ...t, latest: linxup.latestFor(t.trackerId), linkedTruckId: linked.has(t.trackerId) ? linked.get(t.trackerId).id : null, linkedTruckNum: linked.has(t.trackerId) ? linked.get(t.trackerId).truckNum : '' })),
     persons: linxup.listPersons() });
 });
+// L2: a load's telemetry evidence (live or archived), beside its VBT record.
+app.get('/api/loads/:id/telemetry', reqMgr, async (req, res) => {
+  const l = findLoadAnywhere(req.params.id);
+  if (!l) return res.status(404).json({ error: 'Load not found' });
+  res.json(await loadTelemetryEvidence(l));
+});
+// Linxup's geofences (learned from its events) and how they map to VBT yards.
+app.get('/api/linxup/geofences', reqMgr, (req, res) => {
+  const vendors = (store.vendors || []).filter(v => v.active !== false);
+  const byId = new Map(vendors.filter(v => v.linxupGeofenceId != null).map(v => [Number(v.linxupGeofenceId), v]));
+  const lc = s => String(s || '').trim().toLowerCase();
+  res.json({ enabled: linxup.enabled,
+    geofences: linxup.listGeofences().map(g => { const m = byId.get(g.geofenceId) || null; const s = m ? null : vendors.find(v => lc(v.name) === lc(g.name)) || null;
+      return { ...g, mappedVendorId: m ? m.id : null, mappedVendorName: m ? m.name : '', suggestedVendorId: s ? s.id : null, suggestedVendorName: s ? s.name : '' }; }),
+    vendors: vendors.map(v => ({ id: v.id, name: v.name, linxupGeofenceId: v.linxupGeofenceId ?? null })) });
+});
+// Map a VBT yard to a Linxup geofence by id (a manager's decision, saved on the vendor).
+app.put('/api/vendors/:id/linxup-geofence', reqMgr, async (req, res) => {
+  const v = (store.vendors || []).find(x => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Vendor not found' });
+  const gid = req.body?.geofenceId == null || req.body.geofenceId === '' ? null : Number(req.body.geofenceId);
+  if (gid != null && !Number.isFinite(gid)) return res.status(400).json({ error: 'geofenceId must be a number' });
+  if (gid != null && !linxup.geofence(gid)) return res.status(400).json({ error: 'Unknown Linxup geofence — VBT has not heard from it yet' });
+  const other = gid != null ? (store.vendors || []).find(x => x.id !== v.id && Number(x.linxupGeofenceId) === gid) : null;
+  if (other) return res.status(409).json({ error: `That geofence is already mapped to ${other.name}.` });
+  const before = v.linxupGeofenceId ?? null;
+  if (gid == null) delete v.linxupGeofenceId; else v.linxupGeofenceId = gid;
+  logAction(req.session.user, 'mapped-geofence', v.id, { vendor: v.name, from: before, to: gid, geofenceName: gid != null ? linxup.geofence(gid).name : '' });
+  await saveData();
+  res.json({ success: true, vendor: v, geofence: gid != null ? linxup.geofence(gid) : null });
+});
 
 // ── BACKUP / RESTORE (admin) ─────────────────────────────────────────────────
 // store_prev = the value before the most recent save; store_boot = the value
@@ -7135,6 +7166,9 @@ function truckTelematics(truck, holdingLoad, now, dayLoads) {
   base.assignedDriverId = holdingLoad ? holdingLoad.truckId : null;
   base.assignedDriverName = holdingLoad ? holdingLoad.driverName : '';
   base.driverMismatch = !!(mapped && holdingLoad && holdingLoad.truckId && mapped.id !== holdingLoad.truckId);
+  // The most recent Linxup geofence visit on this truck (L2), for the board.
+  const lv = linxup.lastVisitFor(link.trackerId);
+  base.lastFence = lv ? { name: lv.geofenceName || `geofence ${lv.geofenceId}`, geofenceId: lv.geofenceId, enteredAt: lv.enteredAt, leftAt: lv.leftAt, minutes: lv.durationMin, source: 'Linxup geofence' } : null;
   if (!p) return { ...base, state: 'offline', label: base.trackerActive ? 'No position yet' : 'Tracker inactive', at: null, ageSeconds: null };
   const ageSeconds = Math.max(0, Math.round((now - Date.parse(p.at)) / 1000));
   const fence = p.geofenceName ? { kind: 'fence', id: p.geofenceId, name: p.geofenceName, source: 'linxup' } : null;
@@ -7164,6 +7198,105 @@ function telemetryIssues(truckRows) {
   return out;
 }
 
+// ── LINXUP EVIDENCE FOR A LOAD (L2) ──────────────────────────────────────────
+// What the truck's own telemetry says about a load, beside what the driver's
+// taps say. Evidence only: nothing here writes to a load, a trip or a status.
+// Every line names its source (Linxup geofence · Linxup GPS · Linxup stop ·
+// Linxup vehicle trip · Linxup usage · VBT driver app). Attribution is by
+// truck and time: each VBT trip's window, start − 30 min to completed + 30 min
+// (or now), on the truck that trip ran on. A Linxup "vehicle trip" is an
+// ignition cycle and is never called a VBT trip.
+const EV_PAD_MS = 30 * 60 * 1000, EV_FAR_M = 30 * 1609, EV_LIVE_MS = 10 * 60 * 1000;
+// A vendor's Linxup fence: the manager's mapping first, else an exact name
+// match in the mirror, labelled so nobody mistakes a guess for a decision.
+function fenceForVendor(v) {
+  if (!v) return null;
+  if (v.linxupGeofenceId != null) { const g = linxup.geofence(v.linxupGeofenceId); return { geofenceId: Number(v.linxupGeofenceId), name: g ? g.name : v.name, confidence: 'mapped' }; }
+  const name = String(v.name || '').trim().toLowerCase();
+  const g = name ? linxup.listGeofences().find(x => String(x.name || '').trim().toLowerCase() === name) : null;
+  return g ? { geofenceId: g.geofenceId, name: g.name, confidence: 'name' } : null;
+}
+function nearWindow(positions, geo, radius) {
+  let first = null, last = null, count = 0;
+  for (const p of positions) { if (metersBetween(p.lat, p.lng, geo.lat, geo.lng) <= radius) { count++; if (!first) first = p.at; last = p.at; } }
+  return count ? { firstAt: first, lastAt: last, count, source: 'Linxup GPS' } : null;
+}
+const stopPublic  = s => ({ startAt: s.startAt, endAt: s.endAt, minutes: s.durationMin, type: s.stopType, address: s.addressLine || '', geofence: s.geofenceName || '', source: 'Linxup stop' });
+const vtripPublic = t => ({ startAt: t.startAt, endAt: t.endAt, minutes: t.durationMin, miles: t.distanceMi, authorizedMiles: t.authorizedMi, unauthorizedMiles: t.unauthorizedMi, from: t.startGeofenceName || t.startAddressLine || '', to: t.endGeofenceName || t.endAddressLine || '', source: 'Linxup vehicle trip' });
+const usagePublic = u => ({ startAt: u.startAt, endAt: u.endAt, minutes: u.durationMin, engineOn: u.engineOn, from: u.startGeofenceName || u.startAddressLine || '', to: u.endGeofenceName || u.endAddressLine || '', source: 'Linxup usage' });
+async function loadTelemetryEvidence(load, opts = {}) {
+  const now = opts.now || Date.now();
+  const po = findPoAnywhere(load.poId) || {};
+  const out = { loadId: load.id, poNumber: po.poNumber || '', customer: po.customer || '', enabled: linxup.enabled, linked: false, truckNum: '', current: null, trips: [], timeline: [], flags: [], note: '' };
+  if (!linxup.enabled) { out.note = 'Linxup is not connected.'; return out; }
+  const truckFor = trip => (store.trucks || []).find(t => t.id === ((trip && trip.truckUnitId) || load.truckUnitId)) || null;
+  const mainTruck = truckFor(null);
+  out.truckNum = mainTruck ? mainTruck.truckNum : '';
+  if (mainTruck && mainTruck.linxup && mainTruck.linxup.trackerId != null) { out.linked = true; out.current = truckTelematics(mainTruck, loadHoldsResources(load) ? load : null, now, []); }
+  const started = (load.trips || []).filter(t => t.timestamps && t.timestamps.start);
+  if (!started.length) { out.note = out.linked ? 'No VBT trip has started on this load yet; there is nothing to correlate.' : 'The truck on this load is not linked to a Linxup tracker.'; return out; }
+  const only = opts.tripIndexes ? new Set(opts.tripIndexes) : null;
+  const T = (ev, at, text, source, kind) => out.timeline.push({ at, text, source, kind, tripNum: ev.tripNum });
+  for (let i = 0; i < started.length; i++) {
+    if (only && !only.has(i)) continue;
+    const trip = started[i];
+    const truck = truckFor(trip);
+    const ts = trip.isoStamps || {};
+    const ev = { tripNum: trip.tripNum || i + 1, truckNum: truck ? truck.truckNum : '', linked: !!(truck && truck.linxup && truck.linxup.trackerId != null),
+      vbt: { start: ts.start || null, arrivedPickup: ts.arrivedPickup || null, loadedAt: ts.loadedAt || null, arrivedJobsite: ts.arrivedJobsite || null, completed: ts.completed || null, source: 'VBT driver app' },
+      pickup: null, jobsite: null, otherVisits: [], stops: [], vehicleTrips: [], usage: [], positions: 0, flags: [], note: '' };
+    out.trips.push(ev);
+    if (!ev.linked) { ev.note = 'The truck this trip ran on is not linked to a Linxup tracker.'; continue; }
+    out.linked = true;
+    const startMs = Date.parse(ts.start), endMs = ts.completed ? Date.parse(ts.completed) : now;
+    const from = startMs - EV_PAD_MS, to = Math.min(endMs + EV_PAD_MS, now);
+    const w = await linxup.window(truck.linxup.trackerId, from, to);
+    const pickup = resolvePickupYard(load, po, trip);
+    const vendor = (store.vendors || []).find(v => v.id === pickup.id) || null;
+    const fence = fenceForVendor(vendor);
+    const vendorGeo = vendor && vendor.geo && validLatLng(vendor.geo.lat, vendor.geo.lng) ? vendor.geo : null;
+    const jobGeo = po.geo && validLatLng(po.geo.lat, po.geo.lng) ? po.geo : null;
+    const pickupVisits = fence ? w.visits.filter(v => Number(v.geofenceId) === Number(fence.geofenceId)) : [];
+    const pickupGps = vendorGeo ? nearWindow(w.positions, vendorGeo, PLACE_RADIUS_M.vendor) : null;
+    const jobsiteGps = jobGeo ? nearWindow(w.positions, jobGeo, PLACE_RADIUS_M.jobsite) : null;
+    const near = (s, geo, r) => !!geo && s.lat != null && metersBetween(s.lat, s.lng, geo.lat, geo.lng) <= r;
+    const jobsiteStops = w.stops.filter(s => near(s, jobGeo, PLACE_RADIUS_M.jobsite));
+    const pickupStops = w.stops.filter(s => near(s, vendorGeo, PLACE_RADIUS_M.vendor) || (fence && s.geofenceId != null && Number(s.geofenceId) === Number(fence.geofenceId)));
+    ev.positions = w.positions.length;
+    ev.pickup = { name: pickup.name, fence: fence ? { geofenceId: fence.geofenceId, name: fence.name, confidence: fence.confidence } : null, pinned: !!vendorGeo,
+      visits: pickupVisits.map(v => ({ enteredAt: v.enteredAt, leftAt: v.leftAt, minutes: v.durationMin, source: 'Linxup geofence' })),
+      gps: pickupGps, stops: pickupStops.map(stopPublic),
+      evidence: pickupVisits.length ? 'geofence' : pickupGps ? 'gps' : (fence || vendorGeo) ? 'none' : 'no-reference' };
+    ev.jobsite = { name: [po.address, po.city].filter(Boolean).join(', ') || po.customer || 'Jobsite', pinned: !!jobGeo, gps: jobsiteGps, stops: jobsiteStops.map(stopPublic),
+      evidence: jobsiteGps ? 'gps' : jobGeo ? 'none' : 'no-reference' };
+    ev.otherVisits = w.visits.filter(v => !fence || Number(v.geofenceId) !== Number(fence.geofenceId)).map(v => ({ name: v.geofenceName, enteredAt: v.enteredAt, leftAt: v.leftAt, minutes: v.durationMin, source: 'Linxup geofence' }));
+    ev.stops = w.stops.map(stopPublic); ev.vehicleTrips = w.trips.map(vtripPublic); ev.usage = w.usage.map(usagePublic);
+    // Discrepancies — attention items, never a verdict. Only when the tracker
+    // did report during the trip (silence is not evidence of anything).
+    const tapPickup = ts.arrivedPickup || ts.loadedAt;
+    if (tapPickup && w.positions.length && ev.pickup.evidence === 'none')
+      ev.flags.push({ kind: 'pickup-mismatch', text: `Pickup telemetry mismatch — trip ${ev.tripNum}: the driver tapped Arrived at ${pickup.name} at ${fmtClock(tapPickup)}; Linxup shows no visit to ${fence ? fence.name : pickup.name} by ${truck.truckNum} in this trip's window (${w.positions.length} position${w.positions.length === 1 ? '' : 's'}).` });
+    if (ts.arrivedJobsite && w.positions.length && ev.jobsite.evidence === 'none')
+      ev.flags.push({ kind: 'jobsite-mismatch', text: `Jobsite telemetry mismatch — trip ${ev.tripNum}: the driver tapped Arrived at jobsite at ${fmtClock(ts.arrivedJobsite)}; Linxup never placed ${truck.truckNum} within ${PLACE_RADIUS_M.jobsite} m of the jobsite pin in this trip's window.` });
+    if (!ts.completed && out.current && out.current.at && out.current.ageSeconds * 1000 <= EV_LIVE_MS && jobGeo && vendorGeo) {
+      const dP = metersBetween(out.current.lat, out.current.lng, vendorGeo.lat, vendorGeo.lng), dJ = metersBetween(out.current.lat, out.current.lng, jobGeo.lat, jobGeo.lng);
+      if (dP > EV_FAR_M && dJ > EV_FAR_M) ev.flags.push({ kind: 'location-attention', text: `Location attention — ${truck.truckNum} is ${Math.round(Math.min(dP, dJ) / 1609)} mi from both ${pickup.name} and the jobsite while trip ${ev.tripNum} is open.` });
+    }
+    out.flags.push(...ev.flags);
+    // The timeline: Linxup's story and the driver's taps side by side, each line labelled.
+    pickupVisits.concat(w.visits.filter(v => !pickupVisits.includes(v))).forEach(v => { T(ev, v.enteredAt, `Entered ${v.geofenceName} geofence`, 'Linxup geofence', 'fence-enter'); if (v.leftAt) T(ev, v.leftAt, `Exited ${v.geofenceName} geofence (${v.durationMin} min inside)`, 'Linxup geofence', 'fence-exit'); });
+    if (pickupGps && !pickupVisits.length) { T(ev, pickupGps.firstAt, `GPS near ${pickup.name} (first of ${pickupGps.count} fixes)`, 'Linxup GPS', 'near-pickup'); if (pickupGps.lastAt !== pickupGps.firstAt) T(ev, pickupGps.lastAt, `GPS last near ${pickup.name}`, 'Linxup GPS', 'near-pickup'); }
+    if (jobsiteGps) { T(ev, jobsiteGps.firstAt, `GPS near jobsite (first of ${jobsiteGps.count} fixes)`, 'Linxup GPS', 'near-jobsite'); if (jobsiteGps.lastAt !== jobsiteGps.firstAt) T(ev, jobsiteGps.lastAt, 'GPS last near jobsite', 'Linxup GPS', 'near-jobsite'); }
+    w.stops.forEach(s => T(ev, s.startAt, `${s.stopType === 'idle' ? 'Idling' : s.stopType === 'off' ? 'Stopped, engine off' : 'Stop'}${s.durationMin != null ? ` ${s.durationMin} min` : ''} ${jobsiteStops.includes(s) ? 'near jobsite' : pickupStops.includes(s) ? `near ${pickup.name}` : s.geofenceName ? `in ${s.geofenceName}` : s.addressLine ? `at ${s.addressLine}` : ''}`.trim(), 'Linxup stop', 'stop'));
+    w.trips.forEach(t => { T(ev, t.startAt, `Linxup vehicle trip began${t.startGeofenceName ? ' at ' + t.startGeofenceName : t.startAddressLine ? ' at ' + t.startAddressLine : ''}`, 'Linxup vehicle trip', 'vehicle-trip'); if (t.endAt) T(ev, t.endAt, `Linxup vehicle trip ended${t.endGeofenceName ? ' at ' + t.endGeofenceName : t.endAddressLine ? ' at ' + t.endAddressLine : ''}${t.distanceMi != null ? ` · ${t.distanceMi} mi` : ''}${t.durationMin != null ? ` · ${t.durationMin} min` : ''}`, 'Linxup vehicle trip', 'vehicle-trip'); });
+    w.usage.forEach(u => T(ev, u.startAt, `Usage period, engine ${u.engineOn === false ? 'off' : 'on'}${u.durationMin != null ? ` · ${u.durationMin} min` : ''}`, 'Linxup usage', 'usage'));
+    [['start', 'Driver tapped Start trip'], ['arrivedPickup', 'Driver tapped Arrived at pickup'], ['loadedAt', 'Driver tapped Loaded'], ['arrivedJobsite', 'Driver tapped Arrived at jobsite'], ['completed', 'Driver tapped Trip complete']]
+      .forEach(([k, txt]) => { if (ts[k]) T(ev, ts[k], txt, 'VBT driver app', 'vbt'); });
+  }
+  out.timeline.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  return out;
+}
+
 // The office's live-refresh fingerprint: the day's loads plus everything the
 // attention row shows (submitted and ready-to-bill counts, the drivers' open
 // days), so the board refreshes when any of them change and only then.
@@ -7179,7 +7312,7 @@ function officeFingerprint(day) {
   return require('crypto').createHash('sha1').update(dispatchFingerprint(dayLoads) + '#' + extra).digest('hex').slice(0, 16);
 }
 
-app.get('/api/today', reqMgr, (req, res) => {
+app.get('/api/today', reqMgr, async (req, res) => {
   const today = todayStr();
   const day = req.query.date || today;
   const now = Date.now();
@@ -7236,6 +7369,17 @@ app.get('/api/today', reqMgr, (req, res) => {
     };
   });
   const telIssues = telemetryIssues(trucks);
+  // L2: evidence flags for loads under way on linked trucks (the open trip only, to keep the board quick).
+  for (const l of holding) {
+    const started = (l.trips || []).filter(x => x.timestamps && x.timestamps.start);
+    const open = started.length && !started[started.length - 1].timestamps.completed;
+    const truck = l.truckUnitId ? (store.trucks || []).find(x => x.id === l.truckUnitId) : null;
+    if (!open || !truck || !truck.linxup || truck.linxup.trackerId == null) continue;
+    try {
+      const ev = await loadTelemetryEvidence(l, { now, tripIndexes: [started.length - 1] });
+      ev.flags.forEach(f => telIssues.push({ truckId: truck.id, truckNum: truck.truckNum, loadId: l.id, kind: f.kind, text: f.text }));
+    } catch (e) { console.error('[linxup] evidence failed for', l.id, e.message); }
+  }
   const trailerBusy = new Map();
   holding.forEach(l => { if (l.trailerId) trailerBusy.set(l.trailerId, l.id); });
   const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({

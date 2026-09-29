@@ -65,6 +65,16 @@ carlos / carlos123
   is shown as information; a disagreement with VBT's assignment is an
   attention item, never a reassignment. Telemetry lives in its own tables
   (`linxup_*`), never in the dispatch store. See `LINXUP-INTEGRATION.md`.
+- **Linxup as evidence.** Geofence visits, stops, Linxup vehicle trips
+  (ignition cycles, not VBT trips) and usage hours are kept by event time and
+  read beside each VBT load: Load Details shows a LINXUP TELEMETRY section
+  (what the truck did at the yard and near the jobsite, its activity, and a
+  timeline with the driver's taps between Linxup's entries, every line naming
+  its source); the approval dialog gets one evidence line per trip; the board
+  shows the truck's last geofence. A yard is mapped to its Linxup geofence on
+  Vendors (a name match is only suggested). Disagreements — driver, pickup,
+  jobsite, location — are attention items. Telemetry never completes, arrives,
+  approves, assigns or bills anything.
 
 ## Files
 
@@ -180,8 +190,8 @@ LINXUP_COMPANY_ID           # the account's companyId; messages for any other co
 
 Register one URL per message type in Linxup: `https://<host>/api/linxup/position`,
 `/device-status`, `/device-update`, `/geofence-event`, `/trip`, `/stop`,
-`/usage-hours`, `/alert`, `/geofence-change`, `/media`. Only the first three
-are interpreted today; the rest are kept raw for the next phase.
+`/usage-hours`, `/alert`, `/geofence-change`, `/media`. The first seven are
+interpreted; alerts, geofence changes and media are kept raw for the next phase.
 
 ### Sync Log
 

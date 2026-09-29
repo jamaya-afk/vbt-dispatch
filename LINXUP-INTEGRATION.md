@@ -1,8 +1,13 @@
 # Linxup Push API V3 × VBT Dispatch — analysis and architecture proposal
 
-Status: **L0 and L1 implemented** (`linxup.js`, the `/api/linxup/*` routes,
-the `linxup_*` tables, the link screens, the board and map lines; e2e §47 and
-the browser suite cover them). L2 and L3 remain proposals. Written from the
+Status: **L0, L1 and L2 implemented** (`linxup.js`, the `/api/linxup/*`
+routes, the `linxup_*` tables, the link screens, the board and map lines; the
+L2 evidence: geofence visits, stops, vehicle trips and usage hours stored and
+correlated to VBT loads read-only, `GET /api/loads/:id/telemetry`, the
+LINXUP TELEMETRY section on Load Details, the evidence line on the approval
+dialog, the yard ↔ geofence mapping on Vendors; e2e §47/§48, the Postgres run
+in §21 and the browser suite cover them). **L3 remains a proposal and nothing
+telemetry-driven changes a VBT record.** Written from the
 Linxup Push API V3 message documentation and from the VBT code as it stands
 after Phase 1; the open questions in the "Assumptions" section below are
 still to be confirmed with Linxup before go-live.
@@ -458,14 +463,29 @@ block and `/api/linxup/health`. Definition of done: five trucks live on the
 board from Linxup alone, phones off; duplicates and out-of-order fixes proven
 harmless; a renamed tracker changes nothing but its label.
 
-**L2 — Evidence.** Geofence mirror and vendor/yard mapping; `linxup_place_visits`
-from fence events and from VBT pins (jobsites); attribution to load and trip;
-vehicle evidence line in load detail and on the approval checklist
-(informational flags only); `linxup_trips`, `linxup_stops`, `linxup_usage`
-stored and shown per load ("vehicle trips and idle during this load");
-"Telemetry disagrees" attention tile. Definition of done: a full five-truck
-day shows tapped and telemetry times side by side on every trip, and a load
-whose truck loaded at the wrong plant is flagged before approval.
+**L2 — Evidence (implemented).** Geofence Event, Stop, Trip ("Linxup vehicle
+trip", an ignition cycle — never a VBT trip) and Usage Hours are interpreted
+and stored in `linxup_geofence_events`, `linxup_stops`,
+`linxup_vehicle_trips`, `linxup_usage`, each keyed by tracker and the event's
+own time (ENTER and EXIT complete the same visit; an EXIT that arrives first
+is kept and the late ENTER adds nothing; a second delivery is a duplicate). The
+geofence mirror (`linxup_geofences`) is learned from the events; a yard is
+mapped to a fence by a manager on Vendors (`vendor.linxupGeofenceId`, audited),
+an exact name match is only suggested and, when used unconfirmed, labelled
+"matched by name". Correlation is by truck and time, read-only:
+`GET /api/loads/:id/telemetry` takes each VBT trip's window (start − 30 min to
+completed + 30 min, or now) on the truck that trip ran on and returns, per
+trip, pickup evidence (fence visits, else GPS near the yard pin), jobsite
+evidence ("near jobsite based on GPS" from the PO pin, plus stops there),
+other visits, stops, vehicle trips, usage, a chronological telemetry timeline
+with the source on every entry and the driver's taps beside them, and flags:
+`pickup-mismatch`, `jobsite-mismatch`, `location-attention` (only when the
+tracker did report in the window; silence proves nothing). The board adds
+"Last geofence: … — entered …" to the truck line and the open trip's flags to
+the Telemetry attention tile; Load Details gets a LINXUP TELEMETRY section
+(Current · Pickup · Jobsite · Vehicle activity · timeline); the approval
+dialog gets one evidence line per trip. Works for archived loads. Nothing in
+L2 writes to a load, trip, assignment, approval or billing record.
 
 **L3 — Decide and report (opt-in).** Owner picks which of A1–A3 to enable,
 with "by telemetry" stamps. Alerts stored and listed in a small Fleet section
@@ -513,6 +533,10 @@ design.
 | 19 | How is a message type identified? | One URL per type (`/api/linxup/<type>`). If only one URL is possible, `/api/linxup/event` classifies by shape as a fallback. |
 | 20 | Are payloads single objects or arrays? | Both are accepted; an array is processed element by element. |
 | 21 | Which `person` is on a message? | The driver Linxup currently associates with the tracker (e.g. "VBT #2 (Jesus Guzman)"). Shown as "Linxup driver: …"; never used to assign. |
+| 22 | Does a FENCE_EXIT carry the `enterDateTime` of its own ENTER? | **Assumed yes** (the document lists both on the Geofence Event). L2 keys a visit by (tracker, geofence, enterDateTime), so ENTER and EXIT complete one row in either order. If an EXIT ever arrives with a different or missing enter time it is stored as its own row and the ENTER stays open — visible, never merged by guesswork. |
+| 23 | Are Stop, Trip and Usage Hours sent once, when the period closes? | **Assumed yes.** L2 keys them by (tracker, start time); a re-delivery with the same end is a duplicate, one with a later end updates the row. An open-ended message (no end) is kept and shown as "still …". |
+| 24 | `durationMinutes` on Stop/Trip/Usage — minutes, and the field names `startDate`/`endDate` on Usage Hours? | Read as minutes; when absent, derived from start and end. Usage Hours accepts `startDate`/`endDate` and `startDateTime`/`endDateTime`. |
+| 25 | Is a Trip's `startGeofence`/`endGeofence` populated whenever the truck was inside a fence? | Unknown. L2 uses it only as a label ("began at Fowler Yard"); pickup evidence comes from Geofence Events and positions, never from a Trip's fence fields. |
 
 Facts taken from the account's own screens (not from the API document):
 ten trackers named "VBT #1" … "VBT #26", which do not map one-to-one to

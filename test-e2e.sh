@@ -1728,14 +1728,130 @@ chk "   Fleet Map: Beryle's position comes from Linxup (Truck #2), Rigo's from h
 import json,sys;d=json.load(sys.stdin);r={x['driverId']:x for x in d['trucks']}
 print(r['beryle']['gps']['source'], r['beryle']['gps']['speed'], r['beryle']['telematics']['label'], '|', r['rigo']['gps']['source'], r['rigo']['gps']['accuracy'], '|', r['truck:truck-4']['truckNum'], r['truck:truck-4']['gps']['source'], r['truck:truck-4']['status'], r['truck:truck-4']['live'])")" "linxup 50 Moving | phone 9 | Truck #4 linxup Moving True"
 # ── Other message types: kept or dropped, never guessed ──
-chk "   trips/stops/alerts are accepted and kept raw for L2 (deferred); item tracking is dropped; an unknown type is 404" "$(lx trip '{"startDateTime":1790700000000,"endDateTime":1790703600000,"distanceMiles":13,"tracker":{"trackerId":501},"company":{"companyId":1}}' | jq "d['deferred']")|$(lx item-location '{"timestamp":1,"latitude":1,"longitude":1,"trackedItem":{"itemId":1},"company":{"id":1}}' | jq "d['dropped']")|$(lxc whatever '{}')|$(curl -s -b $M $B/api/linxup/health | jq "sorted(k for k in d['lastMessageAt'])")" "1|1|404|['device-status', 'device-update', 'item-location', 'position', 'trip']"
-chk "   the single-URL fallback classifies by shape; an unrecognizable body is 400" "$(lx event '{"stopType":"Idling","startDateTime":1790700000000,"endDateTime":1790700600000,"durationMinutes":10,"latitude":36.7,"longitude":-119.7,"tracker":{"trackerId":501},"company":{"companyId":1}}' | jq "d['type'], d['deferred']")|$(lxc event '{"hello":"world","company":{"companyId":1}}')" "event 1|400"
+chk "   a vehicle trip is stored (L2); alerts are accepted and kept raw for L3 (deferred); item tracking is dropped; an unknown type is 404" "$(lx trip '{"startDateTime":1790700000000,"endDateTime":1790703600000,"distanceMiles":13,"tracker":{"trackerId":501},"company":{"companyId":1}}' | jq "d['stored'], d['deferred']")|$(lx alert '{"alertType":"SPEEDING","date":1790700000000,"tracker":{"trackerId":501},"company":{"companyId":1}}' | jq "d['deferred']")|$(lx item-location '{"timestamp":1,"latitude":1,"longitude":1,"trackedItem":{"itemId":1},"company":{"id":1}}' | jq "d['dropped']")|$(lxc whatever '{}')|$(curl -s -b $M $B/api/linxup/health | jq "sorted(k for k in d['lastMessageAt'])")" "1 0|1|1|404|['alert', 'device-status', 'device-update', 'item-location', 'position', 'trip']"
+chk "   the single-URL fallback classifies by shape (a stop is a stop); an unrecognizable body is 400" "$(lx event '{"stopType":"Idling","startDateTime":1790700000000,"endDateTime":1790700600000,"durationMinutes":10,"latitude":36.7,"longitude":-119.7,"tracker":{"trackerId":501},"company":{"companyId":1}}' | jq "d['type'], d['stored']")|$(lxc event '{"hello":"world","company":{"companyId":1}}')" "event 1|400"
 # ── Retention ──
 D40=$(( ( $(ms 3456000) / 300000 ) * 300000 + 10000 )); D400=$(ms 34560000)   # 10 s into a 5-minute bucket, so the three points share it
 lx position "[$(pos 507 $D40 36.1 -119.1), $(pos 507 $((D40+60000)) 36.1 -119.1), $(pos 507 $((D40+120000)) 36.1 -119.1), $(pos 507 $D400 36.1 -119.1)]" >/dev/null
 chk "   retention: raw for 30 days, one point per 5 minutes to a year, gone after" "$(mg POST /api/_test/linxup-prune | jq "d['dropped'], d['thinned']")" "1 2"
 # ── Isolation ──
 chk "   the receiver runs outside sessions and the write lock; linxup.js never touches the dispatch store" "$(grep -c "app.post('/api/linxup/:type', async (req, res)" server.js)|$(grep -cF 'linxup\/|quickbooks' server.js)|$(grep -v '^\s*//' linxup.js | grep -c 'store\.')|$(grep -c "telemetry.json" .gitignore)" "1|1|0|1"
+
+echo
+echo "── 48. Linxup telemetry (L2): geofence visits, stops, vehicle trips and usage hours as evidence beside VBT loads ──"
+# One scenario, run here against the file-mode server and again in §21 against Postgres:
+#   l2_suite <base-url> <tag> <restart-command>
+l2_suite() {
+  local B=$1 TAG=$2 RESTART=$3
+  local J='Content-Type: application/json' TODAY=$(date +%F) NOW=$(date +%s)
+  local M=$(mktemp) BE=$(mktemp)
+  curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+  curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+  jq()  { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+  mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+  mgc() { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+  lx()  { curl -s -H "Authorization: Bearer test-token" -H "$J" -X POST "$B/api/linxup/$1" -d "$2" "${@:3}"; }
+  lxc() { curl -s -H "Authorization: Bearer test-token" -H "$J" -X POST "$B/api/linxup/$1" -d "$2" -o /dev/null -w '%{http_code}'; }
+  dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+  tod() { curl -s -b $M "$B/api/today" | jq "$1"; }
+  tel() { curl -s -b $M "$B/api/today" | python3 -c "import json,sys;d=json.load(sys.stdin);t=[x for x in d['trucks'] if x['id']=='$1'][0];x=t['telematics'];print($2)"; }
+  trk() { curl -s -b $M "$B/api/linxup/trackers" | python3 -c "import json,sys;d=json.load(sys.stdin);t=[x for x in d['trackers'] if x['trackerId']==$1];t=t[0] if t else None;print($2)"; }
+  load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+  ev()  { curl -s -b $M "$B/api/loads/$1/telemetry" | python3 -c "import json,sys;d=json.load(sys.stdin);T=d['trips'];t=T[0] if T else None;t2=T[1] if len(T)>1 else None;print($2)"; }
+  evc() { curl -s -b $M -o /dev/null -w '%{http_code}' "$B/api/loads/$1/telemetry"; }
+  gf()  { curl -s -b $M "$B/api/linxup/geofences" | jq "$1"; }
+  hl()  { curl -s -b $M "$B/api/linxup/health" | jq "$1"; }
+  ms()  { echo $(( NOW * 1000 - ${1:-0} * 1000 )); }   # a fixed "now", so the same event is the same key however many seconds the suite takes
+  fence() { # ENTER|EXIT trackerId fenceId "name" enterSecAgo [exitSecAgo] [extra json]
+    local x="" nm=""; [ "$1" = EXIT ] && x=",\"exitDateTime\":$(ms $6),\"durationMinutes\":$(( ($5 - $6) / 60 ))"
+    [ -n "$4" ] && nm=",\"name\":\"$4\",\"fenceGroup\":\"Yards\""
+    echo "{\"eventType\":\"FENCE_$1\",\"enterDateTime\":$(ms $5)$x,\"tracker\":{\"trackerId\":$2,\"name\":\"VBT #$2\"},\"geofence\":{\"geofenceId\":$3$nm},\"company\":{\"companyId\":1}${7:+,$7}}"; }
+  pos() { echo "{\"date\":$(ms $2),\"latitude\":$3,\"longitude\":$4,\"speed\":${5:-0},\"engineOn\":true,\"tracker\":{\"trackerId\":$1,\"name\":\"VBT #$1\"},\"asset\":{\"vin\":\"VIN$1\"},\"company\":{\"companyId\":1}${6:+,$6}}"; }
+  STOP="{\"stopType\":\"Idling\",\"startDateTime\":$(ms 500),\"endDateTime\":$(ms 320),\"durationMinutes\":3,\"latitude\":36.9701,\"longitude\":-119.9701,\"tracker\":{\"trackerId\":701},\"company\":{\"companyId\":1},\"address\":{\"street\":\"9 Gate Rd\",\"city\":\"Fresno\",\"stateCode\":\"CA\"}}"
+  VTRIP="{\"startDateTime\":$(ms 600),\"endDateTime\":$(ms 500),\"startLatitude\":36.95,\"startLongitude\":-119.95,\"endLatitude\":36.97,\"endLongitude\":-119.97,\"distanceMiles\":2.1,\"authorizedMiles\":2.1,\"unauthorizedMiles\":0,\"durationMinutes\":2,\"authorized\":true,\"startGeofence\":{\"geofenceId\":9,\"name\":\"Vulcan Materials Fresno\"},\"startAddress\":{\"street\":\"1 Quarry Rd\",\"city\":\"Fresno\",\"stateCode\":\"CA\"},\"endAddress\":{\"street\":\"9 Gate Rd\",\"city\":\"Fresno\",\"stateCode\":\"CA\"},\"tracker\":{\"trackerId\":701},\"company\":{\"companyId\":1}}"
+  USAGE="{\"startDate\":$(ms 1000),\"endDate\":$(ms 220),\"engineOn\":true,\"durationMinutes\":13,\"startLatitude\":36.95,\"startLongitude\":-119.95,\"tracker\":{\"trackerId\":701},\"company\":{\"companyId\":1}}"
+  # ── Fixture: Truck #2 ↔ tracker 701; Vulcan and CEMEX pinned; one PO for Linx Co with a pinned jobsite; Beryle on Truck #2, 2 loads from Vulcan ──
+  mg PUT /api/fleet/trucks/truck-2/linxup '{"trackerId":701}' >/dev/null
+  mg PUT /api/vendors/vulcan/location '{"lat":36.95,"lng":-119.95}' >/dev/null; mg PUT /api/vendors/cemex/location '{"lat":36.60,"lng":-119.60}' >/dev/null
+  local P=$(mg POST /api/pos '{"po":{"poNumber":"LX-2","customer":"Linx Co","deliveryDate":"'"$TODAY"'","address":"9 Gate Rd","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":2,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+  mg PUT /api/pos/$P/location '{"lat":36.97,"lng":-119.97}' >/dev/null
+  local LB=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][0]")
+  chk "$TAG before any VBT trip: the load's telemetry says there is nothing to correlate yet (and says why)" "$(ev $LB "d['enabled'], d['linked'], d['truckNum'], len(T), d['note']")" "True True Truck #2 0 No VBT trip has started on this load yet; there is nothing to correlate."
+  # ── Geofence events: enter, exit, duration; the fence is learned; the board shows the last visit ──
+  chk "$TAG FENCE_ENTER is stored; the geofence is learned from the event and listed as unmapped (its name matches no VBT yard, so nothing is guessed)" "$(lx geofence-event "$(fence ENTER 701 9 'Vulcan Materials Fresno' 900 '' '"person":{"personId":88,"name":"Jesus Guzman"},"asset":{"vin":"VIN701"},"fleet":{"fleetId":3,"name":"No Group"}')" | jq "d['stored'], d['duplicates']")|$(gf "[(g['geofenceId'], g['name'], g['fenceGroup'], g['mappedVendorId'], g['suggestedVendorId']) for g in d['geofences']]")|$(tel truck-2 "x['lastFence']['name'], x['lastFence']['leftAt'], x['lastFence']['source']")" "1 0|[(9, 'Vulcan Materials Fresno', 'Yards', None, None)]|Vulcan Materials Fresno None Linxup geofence"
+  chk "$TAG FENCE_EXIT completes the same visit (keyed by tracker · fence · enter time): left, 5 min inside" "$(lx geofence-event "$(fence EXIT 701 9 'Vulcan Materials Fresno' 900 600)" | jq "d['stored']")|$(tel truck-2 "x['lastFence']['leftAt'] is not None, x['lastFence']['minutes']")|$(hl "d['geofences']")" "1|True 5|1"
+  chk "$TAG the same ENTER and the same EXIT again are duplicates: answered 200, nothing stored twice" "$(lx geofence-event "$(fence ENTER 701 9 'Vulcan Materials Fresno' 900)" | jq "d['stored'], d['duplicates']")|$(lx geofence-event "$(fence EXIT 701 9 'Vulcan Materials Fresno' 900 600)" | jq "d['stored'], d['duplicates']")" "0 1|0 1"
+  chk "$TAG out of order: an EXIT that arrives before its ENTER is stored by event time; the late ENTER adds nothing and erases nothing" "$(lx geofence-event "$(fence EXIT 701 9 'Vulcan Materials Fresno' 420 300)" | jq "d['stored']")|$(lx geofence-event "$(fence ENTER 701 9 'Vulcan Materials Fresno' 420)" | jq "d['stored'], d['duplicates']")|$(tel truck-2 "x['lastFence']['leftAt'] is not None, x['lastFence']['minutes']")" "1|0 1|True 2"
+  # ── Stops, vehicle trips, usage hours ──
+  chk "$TAG a Stop is stored once (idle, 3 min, where, address); the same stop again is a duplicate" "$(lx stop "$STOP" | jq "d['stored']")|$(lx stop "$STOP" | jq "d['stored'], d['duplicates']")" "1|0 1"
+  chk "$TAG a Linxup vehicle trip (ignition cycle — not a VBT trip) is stored with distance, authorized miles, start fence and end address" "$(lx trip "$VTRIP" | jq "d['stored']")|$(lx trip "$VTRIP" | jq "d['duplicates']")" "1|1"
+  chk "$TAG a Usage Hours period is stored (engine on, 13 min); duplicate detected" "$(lx usage-hours "$USAGE" | jq "d['stored']")|$(lx usage-hours "$USAGE" | jq "d['duplicates']")" "1|1"
+  chk "$TAG malformed: a fence event without enterDateTime, a stop without coordinates, a trip without a tracker — 400, nothing stored" "$(lxc geofence-event '{"eventType":"FENCE_ENTER","tracker":{"trackerId":701},"geofence":{"geofenceId":9},"company":{"companyId":1}}')|$(lxc stop "{\"stopType\":\"Idling\",\"startDateTime\":$(ms 100),\"tracker\":{\"trackerId\":701},\"company\":{\"companyId\":1}}")|$(lxc trip "{\"startDateTime\":$(ms 100),\"company\":{\"companyId\":1}}")" "400|400|400"
+  # ── Unknown tracker, unknown geofence, unmapped VBT location ──
+  chk "$TAG an unknown tracker's fence event is kept and the tracker mirrored as unlinked; no VBT truck shows it" "$(lx geofence-event "$(fence ENTER 799 9 'Vulcan Materials Fresno' 100)" | jq "d['stored']")|$(trk 799 "t['linkedTruckId'], t['name']")|$(tod "sorted(t['truckNum'] for t in d['trucks'] if t['telematics'] and t['telematics'].get('lastFence'))")" "1|None VBT #799|['Truck #2']"
+  chk "$TAG an unknown geofence (id only, no name) is learned as such and mapped to nothing" "$(lx geofence-event "$(fence ENTER 701 55 '' 30)" | jq "d['stored']")|$(gf "[(g['geofenceId'], g['name'], g['mappedVendorId']) for g in d['geofences'] if g['geofenceId']==55]")" "1|[(55, None, None)]"
+  lx geofence-event "$(fence ENTER 702 10 'VBT Yard' 3600)" >/dev/null; lx geofence-event "$(fence EXIT 702 10 'VBT Yard' 3600 3300)" >/dev/null
+  chk "$TAG a fence whose name equals a VBT yard is only SUGGESTED for it — the mapping is the manager's to confirm" "$(gf "[(g['geofenceId'], g['mappedVendorId'], g['suggestedVendorId'], g['suggestedVendorName']) for g in d['geofences'] if g['geofenceId']==10]")" "[(10, None, 'vbt', 'VBT Yard')]"
+  chk "$TAG mapping Vulcan → fence 9 is saved on the vendor and audited; an unknown fence is 400; a fence already mapped elsewhere is 409; Edit Vendor keeps the mapping" "$(mg PUT /api/vendors/vulcan/linxup-geofence '{"geofenceId":9}' | jq "d['success'], d['vendor']['linxupGeofenceId'], d['geofence']['name']")|$(mgc PUT /api/vendors/cemex/linxup-geofence '{"geofenceId":999}')|$(mgc PUT /api/vendors/cemex/linxup-geofence '{"geofenceId":9}')|$(curl -s -b $M "$B/api/audit-log?action=mapped-geofence" | jq "d['entries'][0]['target'], d['entries'][0]['details']['to']")|$(mg PUT /api/vendors/vulcan '{"location":"Fresno, CA"}' >/dev/null; gf "[(g['mappedVendorId'], g['mappedVendorName']) for g in d['geofences'] if g['geofenceId']==9]")" "True 9 Vulcan Materials Fresno|400|409|vulcan 9|[('vulcan', 'Vulcan')]"
+  # ── The load: VBT's trip beside Linxup's record ──
+  dr $BE $LB '{"action":"start-trip","gps":{"lat":36.74,"lng":-119.77}}' >/dev/null
+  lx position "$(pos 701 400 36.9702 -119.9702 0)" >/dev/null   # one fix inside the jobsite pin
+  local SNAP=$(load $LB "json.dumps(l, sort_keys=True)")
+  chk "$TAG trip 1 — pickup evidence from the mapped geofence: two visits to Vulcan Materials Fresno, each with entered/left/minutes and its source" "$(ev $LB "t['tripNum'], t['truckNum'], t['linked'], t['pickup']['name'], t['pickup']['fence'], t['pickup']['evidence'], [(v['minutes'], v['leftAt'] is not None, v['source']) for v in t['pickup']['visits']]")" "1 Truck #2 True Vulcan {'geofenceId': 9, 'name': 'Vulcan Materials Fresno', 'confidence': 'mapped'} geofence [(5, True, 'Linxup geofence'), (2, True, 'Linxup geofence')]"
+  chk "$TAG trip 1 — jobsite evidence is 'near jobsite based on GPS' from VBT's own pin, plus the idle stop there; VBT's Arrived-at-jobsite stamp stays empty" "$(ev $LB "t['jobsite']['evidence'], t['jobsite']['gps']['count'], t['jobsite']['gps']['source'], [(s['type'], s['minutes'], s['address'], s['source']) for s in t['jobsite']['stops']], t['vbt']['arrivedJobsite'], t['vbt']['source']")" "gps 1 Linxup GPS [('idle', 3, '9 Gate Rd, Fresno, CA', 'Linxup stop')] None VBT driver app"
+  chk "$TAG trip 1 — vehicle activity: 1 Linxup vehicle trip (2.1 mi, from the fence to the address), 1 stop, 1 usage period (13 min, engine on); the id-only fence 55 visit shows as another visit" "$(ev $LB "[(v['miles'], v['authorizedMiles'], v['from'], v['to'], v['source']) for v in t['vehicleTrips']], len(t['stops']), [(u['minutes'], u['engineOn'], u['source']) for u in t['usage']], [v['name'] for v in t['otherVisits']]")" "[(2.1, 2.1, 'Vulcan Materials Fresno', '9 Gate Rd, Fresno, CA', 'Linxup vehicle trip')] 1 [(13, True, 'Linxup usage')] [None]"
+  chk "$TAG the telemetry timeline is chronological, every entry names its source, and VBT's taps sit beside Linxup's record" "$(ev $LB "[e['at'] for e in d['timeline']]==sorted(e['at'] for e in d['timeline']), sorted(set(e['source'] for e in d['timeline'])), [e['text'] for e in d['timeline'] if e['kind']=='vbt']")" "True ['Linxup GPS', 'Linxup geofence', 'Linxup stop', 'Linxup usage', 'Linxup vehicle trip', 'VBT driver app'] ['Driver tapped Start trip']"
+  chk "$TAG nothing in the VBT load moved: the record is byte-for-byte what it was before the evidence was read; no flags while VBT and Linxup agree" "$([ "$SNAP" = "$(load $LB "json.dumps(l, sort_keys=True)")" ] && echo same)|$(ev $LB "t['flags'], d['flags']")|$(tod "d['attention']['telemetry']")" "same|[] []|0"
+  # ── Discrepancies: attention items, never verdicts ──
+  mg PUT /api/drivers/rigo '{"linxupPersonId":88}' >/dev/null
+  chk "$TAG driver mismatch: Linxup's person (mapped to Rigo) vs VBT's Beryle — flagged on the board and in the load's Current block; the assignment is untouched" "$(tod "[i['kind'] for i in d['telemetryIssues']]")|$(ev $LB "d['current']['linxupDriver']['name'], d['current']['linxupDriver']['vbtDriverName'], d['current']['driverMismatch']")|$(load $LB "l['truckId'], l['driverName']")" "['driver-mismatch']|Jesus Guzman Rigo True|beryle Beryle"
+  dr $BE $LB '{"action":"arrived-pickup","yardId":"cemex"}' >/dev/null
+  chk "$TAG pickup telemetry mismatch: the driver taps Arrived at CEMEX, Linxup never had Truck #2 near CEMEX in this trip — a flag on the load and the board; VBT's yard choice stands" "$(ev $LB "t['pickup']['name'], t['pickup']['evidence'], [(f['kind'], f['text'].startswith('Pickup telemetry mismatch — trip 1: the driver tapped Arrived at CEMEX')) for f in t['flags']]")|$(tod "sorted(i['kind'] for i in d['telemetryIssues'])")|$(load $LB "l['vendorId'], l['trips'][0].get('actualYardId')")" "CEMEX none [('pickup-mismatch', True)]|['driver-mismatch', 'pickup-mismatch']|vulcan cemex"
+  lx position "$(pos 701 30 37.60 -120.60 55)" >/dev/null
+  chk "$TAG location attention: a fresh fix 50+ mi from both the yard and the jobsite while the trip is open" "$(ev $LB "[(f['kind'], f['text']) for f in t['flags'] if f['kind']=='location-attention']")|$(tod "sorted(i['kind'] for i in d['telemetryIssues'])")" "[('location-attention', 'Location attention — Truck #2 is 56 mi from both CEMEX and the jobsite while trip 1 is open.')]|['driver-mismatch', 'location-attention', 'pickup-mismatch']"
+  dr $BE $LB "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $BE $LB '{"action":"arrived-jobsite"}' >/dev/null; dr $BE $LB '{"action":"trip-complete"}' >/dev/null
+  chk "$TAG trip 1 completed by the DRIVER (never by telemetry): the open-trip flags leave the board, the pickup mismatch stays on the record, GPS near the jobsite agrees with the tap" "$(load $LB "l['loadsDelivered'], sorted(l['trips'][0]['isoStamps'])")|$(tod "sorted(i['kind'] for i in d['telemetryIssues'])")|$(ev $LB "[f['kind'] for f in t['flags']], t['jobsite']['evidence'], t['vbt']['arrivedJobsite'] is not None")" "1 ['arrivedJobsite', 'arrivedPickup', 'completed', 'loadedAt', 'start']|['driver-mismatch']|['pickup-mismatch'] gps True"
+  # ── Truck mismatch: evidence follows the truck each trip actually ran on ──
+  mg POST /api/loads/$LB/assign '{"truckUnitId":"truck-4"}' >/dev/null
+  dr $BE $LB '{"action":"start-trip"}' >/dev/null
+  chk "$TAG trip 2 runs on Truck #4, which has no tracker: trip 2 says so; trip 1's evidence stays with Truck #2 (its Vulcan visits, now 'also in' since the driver named CEMEX)" "$(ev $LB "t2['tripNum'], t2['truckNum'], t2['linked'], t2['note'], t['truckNum'], len(t['otherVisits'])")" "2 Truck #4 False The truck this trip ran on is not linked to a Linxup tracker. Truck #2 3"
+  lx position "$(pos 702 60 36.95 -119.95 0)" >/dev/null
+  mg PUT /api/fleet/trucks/truck-4/linxup '{"trackerId":702}' >/dev/null
+  lx geofence-event "$(fence ENTER 702 10 'VBT Yard' 60)" >/dev/null
+  dr $BE $LB '{"action":"arrived-pickup","yardId":"vbt"}' >/dev/null
+  chk "$TAG once Truck #4 is linked, trip 2 shows ITS tracker's visit to VBT Yard — matched by name only, and labelled so" "$(ev $LB "t2['linked'], t2['pickup']['name'], t2['pickup']['fence']['confidence'], t2['pickup']['evidence'], len(t2['pickup']['visits']), t2['pickup']['visits'][0]['leftAt']")" "True VBT Yard name geofence 1 None"
+  lx device-update '{"tracker":{"trackerId":702,"name":"VBT #702"},"company":{"companyId":1},"asset":{"vin":"VIN-OTHER"}}' >/dev/null
+  chk "$TAG tracker mismatch: tracker 702 now reports another VIN — flagged in the load's Current block and on the board; the VBT truck is not changed" "$(ev $LB "d['current']['trackerMismatch']")|$(tod "sorted(i['kind'] for i in d['telemetryIssues'] if i['truckId']=='truck-4')")|$(load $LB "l['truckUnitId']")" "VIN now VIN-OTHER (linked as VIN702)|['tracker-mismatch']|truck-4"
+  # ── Telemetry that matches no load ──
+  lx geofence-event "$(fence ENTER 701 9 'Vulcan Materials Fresno' 10800)" >/dev/null; lx geofence-event "$(fence EXIT 701 9 'Vulcan Materials Fresno' 10800 10200)" >/dev/null
+  mg PUT /api/fleet/trucks/truck-14/linxup '{"trackerId":703}' >/dev/null; lx geofence-event "$(fence ENTER 703 9 'Vulcan Materials Fresno' 120)" >/dev/null
+  chk "$TAG a visit three hours before the trip, and a visit by a truck with no load, are kept but attached to no load: trip 1 still has its three, the free truck shows its last fence only" "$(ev $LB "len(t['otherVisits'])")|$(tel truck-14 "t['state'], x['lastFence']['name']")|$(tod "sorted(i['kind'] for i in d['telemetryIssues'] if i['truckId']=='truck-14')")" "3|available Vulcan Materials Fresno|[]"
+  # ── Completed, approved, archived: the evidence is still readable, the load never moves ──
+  dr $BE $LB "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $BE $LB '{"action":"arrived-jobsite"}' >/dev/null; dr $BE $LB '{"action":"trip-complete"}' >/dev/null
+  curl -s -b $BE -H "$J" -X PUT $B/api/loads/$LB -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null; dr $BE $LB '{"action":"delivered"}' >/dev/null
+  mg POST /api/loads/$LB/approve '{"acknowledge":true}' >/dev/null
+  chk "$TAG approved and locked by a person; telemetry arriving afterwards is stored and changes nothing on the load" "$(load $LB "l['approvalStatus'], l['locked'], l['loadsDelivered']")|$(lx geofence-event "$(fence ENTER 703 9 'Vulcan Materials Fresno' 5)" | jq "d['stored']")|$(load $LB "l['approvalStatus'], l['locked'], l['status']")|$(ev $LB "len(T), d['current']['state'], d['current']['label']")" "approved True 2|1|approved True completed|2 at-place At Vulcan"
+  mg POST /api/loads/bill "{\"loadIds\":[\"$LB\"],\"reference\":\"INV-L2\"}" >/dev/null
+  local AR=$(mg POST /api/history/archive | jq "d['archived']['loads']")
+  chk "$TAG archived: the load leaves the active lists, its telemetry is still served, VBT's stamps and Linxup's visits side by side" "$AR|$(curl -s -b $M $B/api/data | jq "'$LB' in [l['id'] for l in d['loads']]")|$(evc $LB)|$(ev $LB "d['loadId']=='$LB', len(T), sorted(t['vbt'].keys()), len(t['otherVisits']), len(t2['pickup']['visits'])")|$(evc LOAD-nope)" "1|False|200|True 2 ['arrivedJobsite', 'arrivedPickup', 'completed', 'loadedAt', 'source', 'start'] 3 1|404"
+  # ── Persistence failure: 503 for every L2 type, nothing stored, retry succeeds ──
+  local F0=$(hl "d['counters']['failed']")
+  mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
+  chk "$TAG the telemetry store refuses writes → 503 with retry:true for a fence event, a stop, a vehicle trip and usage hours" "$(lxc geofence-event "$(fence ENTER 703 9 'Vulcan Materials Fresno' 2)")|$(lxc stop "{\"stopType\":\"Idling\",\"startDateTime\":$(ms 50),\"latitude\":36.9,\"longitude\":-119.9,\"tracker\":{\"trackerId\":701},\"company\":{\"companyId\":1}}")|$(lxc trip "{\"startDateTime\":$(ms 50),\"tracker\":{\"trackerId\":701},\"company\":{\"companyId\":1}}")|$(lxc usage-hours "{\"startDate\":$(ms 50),\"engineOn\":true,\"tracker\":{\"trackerId\":701},\"company\":{\"companyId\":1}}")|$(hl "d['counters']['failed'] - $F0")" "503|503|503|503|4"
+  mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+  chk "$TAG …and the same fence event is stored (not a duplicate) once the store is back: nothing had been kept during the failure" "$(lx geofence-event "$(fence ENTER 703 9 'Vulcan Materials Fresno' 2)" | jq "d['stored'], d['duplicates']")" "1 0"
+  # ── Restart: everything comes back from the telemetry tables, not from the dispatch store ──
+  eval "$RESTART"
+  curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+  chk "$TAG after a restart: the geofence mirror and mapping, the last visit per truck, and the archived load's evidence are all still there" "$(gf "sorted((g['geofenceId'], g['mappedVendorId'], g['suggestedVendorId']) for g in d['geofences'])")|$(tel truck-14 "x['lastFence']['name']")|$(tel truck-2 "x['lastFence']['name'], x['lastFence']['leftAt']")|$(ev $LB "len(T), len(t['otherVisits']), len(t['stops']), len(t['vehicleTrips']), len(t['usage']), t['jobsite']['gps']['count'], len(t2['pickup']['visits']), [f['kind'] for f in t['flags']]")|$(hl "d['geofences'], d['mode']")" "[(9, 'vulcan', None), (10, None, 'vbt'), (55, None, None)]|Vulcan Materials Fresno|geofence 55 None|2 3 1 1 1 1 1 ['pickup-mismatch']|3 $([ "$TAG" = 48 ] && echo file || echo postgres)"
+  rm -f $M $BE
+}
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+(VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 node server.js > /tmp/vbt-test-linxup2.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+l2_suite $B 48 "pkill -f '^node server.js' >/dev/null 2>&1; sleep 1; (VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 node server.js > /tmp/vbt-test-linxup2.log 2>&1 &); for i in \$(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done"
+chk "48 L2 never writes: the evidence engine saves nothing and touches no status; the load telemetry route is read-only; Linxup's driver never becomes VBT's" "$(sed -n '/^async function loadTelemetryEvidence/,/^}/p' server.js | grep -c 'saveData\|logAction\|approvalStatus\|\.locked\|\.status = \|truckId = \|driverName = ')|$(grep -c "app.get('/api/loads/:id/telemetry'" server.js)|$(grep -c "app.\(post\|put\|delete\)('/api/loads/:id/telemetry'" server.js)|$(grep -c "vehicle trip" public/index.html)" "0|1|0|1"
+chk "   the screen wording never declares an arrival from GPS" "$(cat public/index.html server.js | grep -ci 'arrival confirmed\|confirmed by gps\|GPS confirms')|$(grep -c 'near jobsite based on GPS' public/index.html)" "0|1"
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
@@ -1887,6 +2003,13 @@ else
   for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
   chk "missing store row + backups present: refuses to seed" "$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['loaded'])")" "False"
   chk "  ...no store row was created" "$($PSQL -c "select count(*) from dispatch_data where key='store'")" "0"
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  # ── Linxup L2 on Postgres: the §48 scenario, word for word, on the linxup_* tables ──
+  $PSQL -c "DROP TABLE IF EXISTS dispatch_data, users, companies, user_sessions, linxup_trackers, linxup_positions, linxup_latest_positions, linxup_geofences, linxup_geofence_events, linxup_webhook_log, linxup_stops, linxup_vehicle_trips, linxup_usage" >/dev/null
+  PGL2="(VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 DATABASE_URL=\"$TEST_DATABASE_URL\" PORT=$P2 node server.js > /tmp/vbt-test-pg-l2.log 2>&1 &); for i in \$(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done"
+  eval "$PGL2"
+  l2_suite $B2 "21/pg" "pkill -f '^node server.js' >/dev/null 2>&1; sleep 1; $PGL2"
+  chk "21/pg the evidence lives in its own tables; the dispatch store row carries none of it — only the yard mapping and its audit entry" "$($PSQL -c "select (select count(*) from linxup_geofence_events) > 0, (select count(*) from linxup_stops) > 0, (select count(*) from linxup_vehicle_trips) > 0, (select count(*) from linxup_usage) > 0, (select count(*) from linxup_geofences)")|$($PSQL -c "select count(*) from dispatch_data where key='store' and (value like '%FENCE_ENTER%' or value like '%enteredAt%' or value like '%durationMin%' or value like '%stopType%')")|$($PSQL -c "select count(*) from dispatch_data where key='store' and value like '%linxupGeofenceId%'")|$($PSQL -c "select count(*) from dispatch_data where key='store' and value like '%mapped-geofence%'")" "t|t|t|t|3|0|1|1"
   pkill -f "^node server.js" >/dev/null 2>&1
 fi
 echo

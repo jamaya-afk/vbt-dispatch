@@ -16,7 +16,8 @@ const crypto = require('crypto');
 // 1 = interpreted in L1 · 2 = kept raw for L2/L3 · 3 = accepted and dropped · 0 = classify by shape
 const TYPES = {
   position: 1, 'device-status': 1, 'device-update': 1,
-  'geofence-event': 2, stop: 2, trip: 2, 'usage-hours': 2, alert: 2, 'geofence-change': 2, media: 2,
+  'geofence-event': 1, stop: 1, trip: 1, 'usage-hours': 1,          // L2: evidence, stored by their own event times
+  alert: 2, 'geofence-change': 2, media: 2,
   'item-location': 3, 'item-left-behind': 3,
   event: 0,
 };
@@ -68,6 +69,82 @@ function normalizePosition(raw, now) {
     company: normCompany(raw.company), fleet: normFleet(raw.fleet), asset: normAsset(raw.asset),
   } };
 }
+// ── L2 messages: evidence, keyed by their own event times ────────────────────
+// A Geofence Event is one visit (enter, and later exit) to a Linxup fence; a
+// Stop is idle or engine-off time at a place; a Linxup VEHICLE trip is one
+// ignition cycle (never a VBT hauling trip); Usage Hours is one usage period.
+function normFenceEvent(raw) {
+  const errors = [];
+  const tracker = normTracker(raw.tracker); if (!tracker || tracker.trackerId == null) errors.push('tracker.trackerId missing');
+  const fence = normFence(raw.geofence); if (!fence || fence.geofenceId == null) errors.push('geofence.geofenceId missing');
+  const type = String(raw.eventType || '').toUpperCase();
+  if (type !== 'FENCE_ENTER' && type !== 'FENCE_EXIT') errors.push('eventType must be FENCE_ENTER or FENCE_EXIT');
+  const enteredAt = epochToDate(raw.enterDateTime); if (!enteredAt) errors.push('enterDateTime missing');
+  const leftAt = type === 'FENCE_EXIT' ? epochToDate(raw.exitDateTime) : null;
+  if (type === 'FENCE_EXIT' && !leftAt) errors.push('exitDateTime missing on FENCE_EXIT');
+  if (errors.length) return { ok: false, errors };
+  const person = normPerson(raw.person), asset = normAsset(raw.asset), fleet = normFleet(raw.fleet);
+  return { ok: true, v: { trackerId: tracker.trackerId, tracker, asset, fleet, geofenceId: fence.geofenceId, geofenceName: fence.name, fenceGroup: fence.fenceGroup, type, enteredAt, leftAt,
+    durationMin: leftAt ? (num(raw.durationMinutes) ?? Math.round((leftAt - enteredAt) / 60000)) : null,
+    personId: person ? person.personId : null, personName: person ? person.name : null, vin: asset ? asset.vin : null, fleetId: fleet ? fleet.fleetId : null } };
+}
+function normStop(raw) {
+  const errors = [];
+  const tracker = normTracker(raw.tracker); if (!tracker || tracker.trackerId == null) errors.push('tracker.trackerId missing');
+  const startAt = epochToDate(raw.startDateTime); if (!startAt) errors.push('startDateTime missing');
+  const endAt = epochToDate(raw.endDateTime);
+  const lat = num(raw.latitude), lng = num(raw.longitude);
+  if (lat == null || lat < -90 || lat > 90 || lng == null || lng < -180 || lng > 180) errors.push('latitude/longitude out of range');
+  if (errors.length) return { ok: false, errors };
+  const kind = String(raw.stopType || '').toLowerCase();
+  const stopType = /idl/.test(kind) ? 'idle' : /off/.test(kind) ? 'off' : (kind || 'stop');
+  const person = normPerson(raw.person), asset = normAsset(raw.asset), fence = normFence(raw.geofence), address = normAddress(raw.address);
+  return { ok: true, s: { trackerId: tracker.trackerId, tracker, asset, startAt, endAt, stopType, durationMin: num(raw.durationMinutes) ?? (endAt ? Math.round((endAt - startAt) / 60000) : null),
+    lat, lng, address, addressLine: address ? address.line : null, geofenceId: fence ? fence.geofenceId : null, geofenceName: fence ? fence.name : null,
+    personId: person ? person.personId : null, personName: person ? person.name : null, vin: asset ? asset.vin : null } };
+}
+function normVehicleTrip(raw) {
+  const errors = [];
+  const tracker = normTracker(raw.tracker); if (!tracker || tracker.trackerId == null) errors.push('tracker.trackerId missing');
+  const startAt = epochToDate(raw.startDateTime); if (!startAt) errors.push('startDateTime missing');
+  const endAt = epochToDate(raw.endDateTime);
+  if (errors.length) return { ok: false, errors };
+  const person = normPerson(raw.person), asset = normAsset(raw.asset), sa = normAddress(raw.startAddress), ea = normAddress(raw.endAddress);
+  const sf = normFence(raw.startGeofence), ef = normFence(raw.endGeofence);
+  return { ok: true, t: { trackerId: tracker.trackerId, tracker, asset, startAt, endAt, startLat: num(raw.startLatitude), startLng: num(raw.startLongitude), endLat: num(raw.endLatitude), endLng: num(raw.endLongitude),
+    startAddress: sa, startAddressLine: sa ? sa.line : null, endAddress: ea, endAddressLine: ea ? ea.line : null, authorized: bool(raw.authorized),
+    durationMin: num(raw.durationMinutes) ?? (endAt ? Math.round((endAt - startAt) / 60000) : null), distanceMi: num(raw.distanceMiles),
+    authorizedMi: num(raw.authorizedMiles ?? raw['authorized Miles']), unauthorizedMi: num(raw.unauthorizedMiles),
+    startGeofenceId: sf ? sf.geofenceId : null, startGeofenceName: sf ? sf.name : null, endGeofenceId: ef ? ef.geofenceId : null, endGeofenceName: ef ? ef.name : null,
+    personId: person ? person.personId : null, personName: person ? person.name : null, vin: asset ? asset.vin : null } };
+}
+function normUsage(raw) {
+  const errors = [];
+  const tracker = normTracker(raw.tracker); if (!tracker || tracker.trackerId == null) errors.push('tracker.trackerId missing');
+  const startAt = epochToDate(raw.startDate ?? raw.startDateTime); if (!startAt) errors.push('startDate missing');
+  const endAt = epochToDate(raw.endDate ?? raw.endDateTime);
+  if (errors.length) return { ok: false, errors };
+  const person = normPerson(raw.person), asset = normAsset(raw.asset), sa = normAddress(raw.startAddress), ea = normAddress(raw.endAddress);
+  const sf = normFence(raw.startGeofence), ef = normFence(raw.endGeofence);
+  return { ok: true, u: { trackerId: tracker.trackerId, tracker, asset, startAt, endAt, engineOn: bool(raw.engineOn),
+    durationMin: num(raw.durationMinutes) ?? (endAt ? Math.round((endAt - startAt) / 60000) : null),
+    startLat: num(raw.startLatitude), startLng: num(raw.startLongitude), endLat: num(raw.endLatitude), endLng: num(raw.endLongitude),
+    startAddress: sa, startAddressLine: sa ? sa.line : null, endAddress: ea, endAddressLine: ea ? ea.line : null,
+    startGeofenceId: sf ? sf.geofenceId : null, startGeofenceName: sf ? sf.name : null, endGeofenceId: ef ? ef.geofenceId : null, endGeofenceName: ef ? ef.name : null,
+    personId: person ? person.personId : null, personName: person ? person.name : null, vin: asset ? asset.vin : null } };
+}
+const iso = d => d ? (d instanceof Date ? d.toISOString() : new Date(d).toISOString()) : null;
+const memVisit = v => ({ trackerId: v.trackerId, geofenceId: v.geofenceId, geofenceName: v.geofenceName, fenceGroup: v.fenceGroup, enteredAt: iso(v.enteredAt), leftAt: iso(v.leftAt), durationMin: v.durationMin, personId: v.personId, personName: v.personName, vin: v.vin, source: 'Linxup geofence' });
+const memStop = s => ({ trackerId: s.trackerId, startAt: iso(s.startAt), endAt: iso(s.endAt), stopType: s.stopType, durationMin: s.durationMin, lat: s.lat, lng: s.lng, address: s.address, addressLine: s.addressLine, geofenceId: s.geofenceId, geofenceName: s.geofenceName, personId: s.personId, personName: s.personName, vin: s.vin, source: 'Linxup stop' });
+const memTrip = t => ({ trackerId: t.trackerId, startAt: iso(t.startAt), endAt: iso(t.endAt), startLat: t.startLat, startLng: t.startLng, endLat: t.endLat, endLng: t.endLng, startAddress: t.startAddress, startAddressLine: t.startAddressLine, endAddress: t.endAddress, endAddressLine: t.endAddressLine, authorized: t.authorized, durationMin: t.durationMin, distanceMi: t.distanceMi, authorizedMi: t.authorizedMi, unauthorizedMi: t.unauthorizedMi, startGeofenceId: t.startGeofenceId, startGeofenceName: t.startGeofenceName, endGeofenceId: t.endGeofenceId, endGeofenceName: t.endGeofenceName, personId: t.personId, personName: t.personName, vin: t.vin, source: 'Linxup vehicle trip' });
+const memUsage = u => ({ trackerId: u.trackerId, startAt: iso(u.startAt), endAt: iso(u.endAt), engineOn: u.engineOn, durationMin: u.durationMin, startLat: u.startLat, startLng: u.startLng, endLat: u.endLat, endLng: u.endLng, startAddress: u.startAddress, startAddressLine: u.startAddressLine, endAddress: u.endAddress, endAddressLine: u.endAddressLine, startGeofenceId: u.startGeofenceId, startGeofenceName: u.startGeofenceName, endGeofenceId: u.endGeofenceId, endGeofenceName: u.endGeofenceName, personId: u.personId, personName: u.personName, vin: u.vin, source: 'Linxup usage' });
+const nid = v => v == null ? null : Number(v);
+const rowVisit = r => ({ trackerId: Number(r.tracker_id), geofenceId: Number(r.geofence_id), geofenceName: r.geofence_name, fenceGroup: r.fence_group, enteredAt: iso(r.entered_at), leftAt: iso(r.left_at), durationMin: r.duration_min, personId: nid(r.person_id), personName: r.person_name, vin: r.vin, source: 'Linxup geofence' });
+const rowStop = r => ({ trackerId: Number(r.tracker_id), startAt: iso(r.start_at), endAt: iso(r.end_at), stopType: r.stop_type, durationMin: r.duration_min, lat: r.lat, lng: r.lng, address: r.address, addressLine: r.address_line, geofenceId: nid(r.geofence_id), geofenceName: r.geofence_name, personId: nid(r.person_id), personName: r.person_name, vin: r.vin, source: 'Linxup stop' });
+const rowTrip = r => ({ trackerId: Number(r.tracker_id), startAt: iso(r.start_at), endAt: iso(r.end_at), startLat: r.start_lat, startLng: r.start_lng, endLat: r.end_lat, endLng: r.end_lng, startAddress: r.start_address, startAddressLine: r.start_address_line, endAddress: r.end_address, endAddressLine: r.end_address_line, authorized: r.authorized, durationMin: r.duration_min, distanceMi: r.distance_mi, authorizedMi: r.authorized_mi, unauthorizedMi: r.unauthorized_mi, startGeofenceId: nid(r.start_geofence_id), startGeofenceName: r.start_geofence_name, endGeofenceId: nid(r.end_geofence_id), endGeofenceName: r.end_geofence_name, personId: nid(r.person_id), personName: r.person_name, vin: r.vin, source: 'Linxup vehicle trip' });
+const rowUsage = r => ({ trackerId: Number(r.tracker_id), startAt: iso(r.start_at), endAt: iso(r.end_at), engineOn: r.engine_on, durationMin: r.duration_min, startLat: r.start_lat, startLng: r.start_lng, endLat: r.end_lat, endLng: r.end_lng, startAddress: r.start_address, startAddressLine: r.start_address_line, endAddress: r.end_address, endAddressLine: r.end_address_line, startGeofenceId: nid(r.start_geofence_id), startGeofenceName: r.start_geofence_name, endGeofenceId: nid(r.end_geofence_id), endGeofenceName: r.end_geofence_name, personId: nid(r.person_id), personName: r.person_name, vin: r.vin, source: 'Linxup usage' });
+const J = v => v == null ? null : JSON.stringify(v);
+
 // One URL per type is the plan; when only one URL is possible, classify by shape.
 function classify(raw) {
   if (!raw || typeof raw !== 'object') return null;
@@ -131,7 +208,9 @@ class Linxup {
     this.enabled = !!this.token;
     this.trackers = new Map();   // trackerId → mirror row
     this.latest = new Map();     // trackerId → latest position
-    this.file = null;            // dev mode: { trackers, latest, positions[], log[] }
+    this.geofences = new Map();  // geofenceId → { geofenceId, name, fenceGroup }
+    this.lastVisit = new Map();  // trackerId → most recent geofence visit (for the board's "Last geofence")
+    this.file = null;            // dev mode: { trackers, latest, positions[], visits[], stops[], trips[], usage[], geofences{}, log[] }
     this.version = 0;
     this.counters = { received: 0, stored: 0, duplicates: 0, deferred: 0, dropped: 0, rejected: 0, unauthorized: 0, wrongCompany: 0, failed: 0 };
     this.lastMessageAt = {};     // type → ISO
@@ -157,18 +236,40 @@ class Linxup {
       await this.pg.query(`CREATE TABLE IF NOT EXISTS linxup_webhook_log (id BIGSERIAL PRIMARY KEY, received_at TIMESTAMPTZ NOT NULL DEFAULT now(), type TEXT NOT NULL,
         tracker_id BIGINT, outcome TEXT NOT NULL, http_status INTEGER, body_sha1 TEXT, note TEXT, body JSONB)`);
       await this.pg.query(`CREATE INDEX IF NOT EXISTS linxup_webhook_log_received ON linxup_webhook_log (received_at)`);
+      // L2 evidence tables. Keyed by the event's own time, never by arrival.
+      await this.pg.query(`ALTER TABLE linxup_geofence_events ADD COLUMN IF NOT EXISTS vin TEXT`);
+      await this.pg.query(`ALTER TABLE linxup_geofence_events ADD COLUMN IF NOT EXISTS fleet_id BIGINT`);
+      await this.pg.query(`CREATE INDEX IF NOT EXISTS linxup_geofence_events_tracker_entered ON linxup_geofence_events (tracker_id, entered_at DESC)`);
+      await this.pg.query(`CREATE TABLE IF NOT EXISTS linxup_stops (tracker_id BIGINT NOT NULL, start_at TIMESTAMPTZ NOT NULL, end_at TIMESTAMPTZ, stop_type TEXT, duration_min REAL,
+        lat DOUBLE PRECISION, lng DOUBLE PRECISION, address JSONB, address_line TEXT, geofence_id BIGINT, geofence_name TEXT, person_id BIGINT, person_name TEXT, vin TEXT,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (tracker_id, start_at))`);
+      await this.pg.query(`CREATE TABLE IF NOT EXISTS linxup_vehicle_trips (tracker_id BIGINT NOT NULL, start_at TIMESTAMPTZ NOT NULL, end_at TIMESTAMPTZ,
+        start_lat DOUBLE PRECISION, start_lng DOUBLE PRECISION, end_lat DOUBLE PRECISION, end_lng DOUBLE PRECISION, start_address JSONB, start_address_line TEXT, end_address JSONB, end_address_line TEXT,
+        authorized BOOLEAN, duration_min REAL, distance_mi REAL, authorized_mi REAL, unauthorized_mi REAL, start_geofence_id BIGINT, start_geofence_name TEXT, end_geofence_id BIGINT, end_geofence_name TEXT,
+        person_id BIGINT, person_name TEXT, vin TEXT, received_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (tracker_id, start_at))`);
+      await this.pg.query(`CREATE TABLE IF NOT EXISTS linxup_usage (tracker_id BIGINT NOT NULL, start_at TIMESTAMPTZ NOT NULL, end_at TIMESTAMPTZ, engine_on BOOLEAN, duration_min REAL,
+        start_lat DOUBLE PRECISION, start_lng DOUBLE PRECISION, end_lat DOUBLE PRECISION, end_lng DOUBLE PRECISION, start_address JSONB, start_address_line TEXT, end_address JSONB, end_address_line TEXT,
+        start_geofence_id BIGINT, start_geofence_name TEXT, end_geofence_id BIGINT, end_geofence_name TEXT, person_id BIGINT, person_name TEXT, vin TEXT,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (tracker_id, start_at))`);
       const t = await this.pg.query(`SELECT * FROM linxup_trackers`);
       t.rows.forEach(r => this.trackers.set(Number(r.tracker_id), rowToMemTracker(r)));
       const l = await this.pg.query(`SELECT * FROM linxup_latest_positions`);
       l.rows.forEach(r => this.latest.set(Number(r.tracker_id), rowToMemPosition(r)));
+      const g = await this.pg.query(`SELECT geofence_id, name, fence_group FROM linxup_geofences WHERE deleted_at IS NULL`);
+      g.rows.forEach(r => this.geofences.set(Number(r.geofence_id), { geofenceId: Number(r.geofence_id), name: r.name, fenceGroup: r.fence_group }));
+      const lv = await this.pg.query(`SELECT DISTINCT ON (tracker_id) * FROM linxup_geofence_events ORDER BY tracker_id, entered_at DESC`);
+      lv.rows.forEach(r => this.lastVisit.set(Number(r.tracker_id), rowVisit(r)));
     } else {
-      this.file = { trackers: {}, latest: {}, positions: [], log: [] };
+      this.file = { trackers: {}, latest: {}, positions: [], visits: [], stops: [], trips: [], usage: [], geofences: {}, log: [] };
       try { if (this.filePath && fs.existsSync(this.filePath)) this.file = { ...this.file, ...JSON.parse(fs.readFileSync(this.filePath, 'utf8')) }; } catch (e) { this.logger.warn('[linxup] telemetry file unreadable, starting empty:', e.message); }
       Object.values(this.file.trackers).forEach(t => this.trackers.set(Number(t.trackerId), t));
       Object.values(this.file.latest).forEach(p => this.latest.set(Number(p.trackerId), p));
+      Object.values(this.file.geofences).forEach(g => this.geofences.set(Number(g.geofenceId), g));
+      this.file.visits.forEach(v => this._noteVisit(v));
     }
     this.mode = this.pg ? 'postgres' : 'file';
   }
+  _noteVisit(v) { const cur = this.lastVisit.get(v.trackerId); if (!cur || Date.parse(v.enteredAt) >= Date.parse(cur.enteredAt)) this.lastVisit.set(v.trackerId, v); }
 
   // ── auth ──
   authorize(headers) {
@@ -235,6 +336,118 @@ class Linxup {
     if (latestUpdated) { this.latest.set(p.trackerId, memPosition(p, receivedAt)); this.version++; }
     return { stored, duplicate: !stored, latestUpdated };
   }
+
+  // The geofence mirror: identity only (id, name, group), learned from every
+  // event that names a fence. Mapping a fence to a VBT place is VBT's data.
+  async upsertGeofence(f) {
+    if (!f || f.geofenceId == null) return;
+    const cur = this.geofences.get(f.geofenceId);
+    const next = { geofenceId: f.geofenceId, name: f.name ?? (cur ? cur.name : null), fenceGroup: f.fenceGroup ?? (cur ? cur.fenceGroup : null) };
+    if (cur && cur.name === next.name && cur.fenceGroup === next.fenceGroup) return;
+    if (this.pg) await this.pg.query(`INSERT INTO linxup_geofences (geofence_id, name, fence_group, updated_at) VALUES ($1,$2,$3,now())
+      ON CONFLICT (geofence_id) DO UPDATE SET name = COALESCE(EXCLUDED.name, linxup_geofences.name), fence_group = COALESCE(EXCLUDED.fence_group, linxup_geofences.fence_group), updated_at = now()`, [next.geofenceId, next.name, next.fenceGroup]);
+    else { this.file.geofences[next.geofenceId] = next; this._flushFile(); }
+    this.geofences.set(next.geofenceId, next); this.version++;
+  }
+  // One visit per (tracker, fence, enter time). An EXIT completes the visit
+  // whether its ENTER came before or after it; repeats change nothing.
+  async storeVisit(v, receivedAt) {
+    this._guard();
+    let existing = null;
+    if (this.pg) { const r = await this.pg.query(`SELECT left_at, duration_min FROM linxup_geofence_events WHERE tracker_id=$1 AND geofence_id=$2 AND entered_at=$3`, [v.trackerId, v.geofenceId, v.enteredAt]); existing = r.rows[0] ? { leftAt: iso(r.rows[0].left_at), durationMin: r.rows[0].duration_min } : null; }
+    else existing = this.file.visits.find(x => x.trackerId === v.trackerId && x.geofenceId === v.geofenceId && x.enteredAt === v.enteredAt.toISOString()) || null;
+    const duplicate = !!existing && (v.type === 'FENCE_ENTER' || (existing.leftAt && v.leftAt && existing.leftAt === v.leftAt.toISOString()));
+    if (!duplicate) {
+      if (this.pg) await this.pg.query(`INSERT INTO linxup_geofence_events (tracker_id, geofence_id, entered_at, left_at, duration_min, geofence_name, fence_group, person_id, person_name, vin, fleet_id, received_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          ON CONFLICT (tracker_id, geofence_id, entered_at) DO UPDATE SET left_at = COALESCE(EXCLUDED.left_at, linxup_geofence_events.left_at), duration_min = COALESCE(EXCLUDED.duration_min, linxup_geofence_events.duration_min),
+            geofence_name = COALESCE(EXCLUDED.geofence_name, linxup_geofence_events.geofence_name), fence_group = COALESCE(EXCLUDED.fence_group, linxup_geofence_events.fence_group),
+            person_id = COALESCE(EXCLUDED.person_id, linxup_geofence_events.person_id), person_name = COALESCE(EXCLUDED.person_name, linxup_geofence_events.person_name), vin = COALESCE(EXCLUDED.vin, linxup_geofence_events.vin)`,
+        [v.trackerId, v.geofenceId, v.enteredAt, v.leftAt, v.durationMin, v.geofenceName, v.fenceGroup, v.personId, v.personName, v.vin, v.fleetId, receivedAt]);
+      else {
+        const m = memVisit(v);
+        if (existing) { if (m.leftAt) { existing.leftAt = m.leftAt; existing.durationMin = m.durationMin; } for (const k of ['geofenceName', 'fenceGroup', 'personId', 'personName', 'vin']) if (m[k] != null) existing[k] = m[k]; }
+        else this.file.visits.push(m);
+        this._flushFile();
+      }
+      this.version++;
+    }
+    const mem = this.pg ? memVisit(v) : (existing || memVisit(v));
+    if (existing && this.pg && !mem.leftAt && existing.leftAt) { mem.leftAt = existing.leftAt; mem.durationMin = existing.durationMin; }
+    this._noteVisit(mem);
+    return { stored: !duplicate, duplicate };
+  }
+  async _storeKeyed(table, fileKey, key, row, cols, vals, toMem) {
+    // Stops, vehicle trips and usage periods: keyed by (tracker, start time);
+    // a repeat is a no-op, a revised end time updates the row.
+    this._guard();
+    let duplicate;
+    if (this.pg) {
+      const r = await this.pg.query(`SELECT end_at FROM ${table} WHERE tracker_id=$1 AND start_at=$2`, [key.trackerId, key.startAt]);
+      duplicate = !!r.rows[0] && iso(r.rows[0].end_at) === iso(row.endAt);
+      if (!duplicate) {
+        const ph = cols.map((c, i) => /address$/.test(c) ? `$${i + 1}::jsonb` : `$${i + 1}`).join(',');
+        const sets = cols.filter(c => c !== 'tracker_id' && c !== 'start_at').map(c => `${c} = EXCLUDED.${c}`).join(', ');
+        await this.pg.query(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${ph}) ON CONFLICT (tracker_id, start_at) DO UPDATE SET ${sets}`, vals);
+      }
+    } else {
+      const arr = this.file[fileKey];
+      const i = arr.findIndex(x => x.trackerId === key.trackerId && x.startAt === key.startAt.toISOString());
+      const m = toMem(row);
+      duplicate = i >= 0 && arr[i].endAt === m.endAt;
+      if (!duplicate) { if (i >= 0) arr[i] = m; else arr.push(m); this._flushFile(); }
+    }
+    if (!duplicate) this.version++;
+    return { stored: !duplicate, duplicate };
+  }
+  storeStop(s, receivedAt) {
+    return this._storeKeyed('linxup_stops', 'stops', { trackerId: s.trackerId, startAt: s.startAt }, s,
+      ['tracker_id', 'start_at', 'end_at', 'stop_type', 'duration_min', 'lat', 'lng', 'address', 'address_line', 'geofence_id', 'geofence_name', 'person_id', 'person_name', 'vin', 'received_at'],
+      [s.trackerId, s.startAt, s.endAt, s.stopType, s.durationMin, s.lat, s.lng, J(s.address), s.addressLine, s.geofenceId, s.geofenceName, s.personId, s.personName, s.vin, receivedAt], memStop);
+  }
+  storeVehicleTrip(t, receivedAt) {
+    return this._storeKeyed('linxup_vehicle_trips', 'trips', { trackerId: t.trackerId, startAt: t.startAt }, t,
+      ['tracker_id', 'start_at', 'end_at', 'start_lat', 'start_lng', 'end_lat', 'end_lng', 'start_address', 'start_address_line', 'end_address', 'end_address_line', 'authorized', 'duration_min', 'distance_mi', 'authorized_mi', 'unauthorized_mi',
+       'start_geofence_id', 'start_geofence_name', 'end_geofence_id', 'end_geofence_name', 'person_id', 'person_name', 'vin', 'received_at'],
+      [t.trackerId, t.startAt, t.endAt, t.startLat, t.startLng, t.endLat, t.endLng, J(t.startAddress), t.startAddressLine, J(t.endAddress), t.endAddressLine, t.authorized, t.durationMin, t.distanceMi, t.authorizedMi, t.unauthorizedMi,
+       t.startGeofenceId, t.startGeofenceName, t.endGeofenceId, t.endGeofenceName, t.personId, t.personName, t.vin, receivedAt], memTrip);
+  }
+  storeUsage(u, receivedAt) {
+    return this._storeKeyed('linxup_usage', 'usage', { trackerId: u.trackerId, startAt: u.startAt }, u,
+      ['tracker_id', 'start_at', 'end_at', 'engine_on', 'duration_min', 'start_lat', 'start_lng', 'end_lat', 'end_lng', 'start_address', 'start_address_line', 'end_address', 'end_address_line',
+       'start_geofence_id', 'start_geofence_name', 'end_geofence_id', 'end_geofence_name', 'person_id', 'person_name', 'vin', 'received_at'],
+      [u.trackerId, u.startAt, u.endAt, u.engineOn, u.durationMin, u.startLat, u.startLng, u.endLat, u.endLng, J(u.startAddress), u.startAddressLine, J(u.endAddress), u.endAddressLine,
+       u.startGeofenceId, u.startGeofenceName, u.endGeofenceId, u.endGeofenceName, u.personId, u.personName, u.vin, receivedAt], memUsage);
+  }
+  // Everything the tracker did in a time window, for a load's evidence.
+  async window(trackerId, fromMs, toMs) {
+    const id = num(trackerId), from = new Date(fromMs), to = new Date(toMs);
+    const overlap = (s, e) => Date.parse(s) <= toMs && (e == null || Date.parse(e) >= fromMs);
+    if (this.pg) {
+      const q = (sql, map) => this.pg.query(sql, [id, from, to]).then(r => r.rows.map(map));
+      const [visits, stops, trips, usage, positions] = await Promise.all([
+        q(`SELECT * FROM linxup_geofence_events WHERE tracker_id=$1 AND entered_at <= $3 AND (left_at IS NULL OR left_at >= $2) ORDER BY entered_at`, rowVisit),
+        q(`SELECT * FROM linxup_stops WHERE tracker_id=$1 AND start_at <= $3 AND (end_at IS NULL OR end_at >= $2) ORDER BY start_at`, rowStop),
+        q(`SELECT * FROM linxup_vehicle_trips WHERE tracker_id=$1 AND start_at <= $3 AND (end_at IS NULL OR end_at >= $2) ORDER BY start_at`, rowTrip),
+        q(`SELECT * FROM linxup_usage WHERE tracker_id=$1 AND start_at <= $3 AND (end_at IS NULL OR end_at >= $2) ORDER BY start_at`, rowUsage),
+        q(`SELECT tracker_id, at, lat, lng, speed, engine_on, geofence_name, address_line FROM linxup_positions WHERE tracker_id=$1 AND at BETWEEN $2 AND $3 ORDER BY at LIMIT 5000`,
+          r => ({ at: iso(r.at), lat: r.lat, lng: r.lng, speed: r.speed, engineOn: r.engine_on, geofenceName: r.geofence_name, addressLine: r.address_line })),
+      ]);
+      return { visits, stops, trips, usage, positions };
+    }
+    const f = this.file;
+    return {
+      visits: f.visits.filter(v => v.trackerId === id && overlap(v.enteredAt, v.leftAt)).sort((a, b) => a.enteredAt.localeCompare(b.enteredAt)),
+      stops: f.stops.filter(s => s.trackerId === id && overlap(s.startAt, s.endAt)).sort((a, b) => a.startAt.localeCompare(b.startAt)),
+      trips: f.trips.filter(t => t.trackerId === id && overlap(t.startAt, t.endAt)).sort((a, b) => a.startAt.localeCompare(b.startAt)),
+      usage: f.usage.filter(u => u.trackerId === id && overlap(u.startAt, u.endAt)).sort((a, b) => a.startAt.localeCompare(b.startAt)),
+      positions: f.positions.filter(p => p.trackerId === id && Date.parse(p.at) >= fromMs && Date.parse(p.at) <= toMs).sort((a, b) => a.at.localeCompare(b.at))
+        .map(p => ({ at: p.at, lat: p.lat, lng: p.lng, speed: p.speed, engineOn: p.engineOn, geofenceName: p.geofenceName, addressLine: p.addressLine })),
+    };
+  }
+  geofence(id) { return this.geofences.get(num(id)) || null; }
+  listGeofences() { return [...this.geofences.values()].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))); }
+  lastVisitFor(trackerId) { return this.lastVisit.get(num(trackerId)) || null; }
 
   async logMessage(entry) {
     const e = { receivedAt: new Date().toISOString(), ...entry };
@@ -320,8 +533,25 @@ class Linxup {
             personGiven: true, personId: person ? person.personId : null, personName: person ? person.name : null }, receivedAt);
           summary.stored++; this.counters.stored++;
           await this.logMessage({ type: t, trackerId: tr.trackerId, outcome: 'updated', status: 200, sha1, body: raw });
+        } else if (t === 'geofence-event') {
+          const n = normFenceEvent(raw); if (!n.ok) { errors.push(...n.errors); continue; }
+          const v = n.v;
+          await this.upsertTracker({ trackerId: v.trackerId, ...v.tracker, ...(v.asset || {}), fleetId: v.fleetId, ...(v.personId != null ? { personGiven: true, personId: v.personId, personName: v.personName } : {}) }, receivedAt);
+          await this.upsertGeofence({ geofenceId: v.geofenceId, name: v.geofenceName, fenceGroup: v.fenceGroup });
+          const r = await this.storeVisit(v, receivedAt);
+          if (r.stored) { summary.stored++; this.counters.stored++; } else { summary.duplicates++; this.counters.duplicates++; }
+          await this.logMessage({ type: t, trackerId: v.trackerId, outcome: r.stored ? (v.type === 'FENCE_EXIT' ? 'exit' : 'enter') : 'duplicate', status: 200, sha1 });
+        } else if (t === 'stop' || t === 'trip' || t === 'usage-hours') {
+          const n = t === 'stop' ? normStop(raw) : t === 'trip' ? normVehicleTrip(raw) : normUsage(raw);
+          if (!n.ok) { errors.push(...n.errors); continue; }
+          const x = n.s || n.t || n.u;
+          await this.upsertTracker({ trackerId: x.trackerId, ...x.tracker, ...(x.asset || {}), ...(x.personId != null ? { personGiven: true, personId: x.personId, personName: x.personName } : {}) }, receivedAt);
+          for (const g of [x.geofenceId != null ? { geofenceId: x.geofenceId, name: x.geofenceName } : null, x.startGeofenceId != null ? { geofenceId: x.startGeofenceId, name: x.startGeofenceName } : null, x.endGeofenceId != null ? { geofenceId: x.endGeofenceId, name: x.endGeofenceName } : null]) if (g) await this.upsertGeofence(g);
+          const r = t === 'stop' ? await this.storeStop(x, receivedAt) : t === 'trip' ? await this.storeVehicleTrip(x, receivedAt) : await this.storeUsage(x, receivedAt);
+          if (r.stored) { summary.stored++; this.counters.stored++; } else { summary.duplicates++; this.counters.duplicates++; }
+          await this.logMessage({ type: t, trackerId: x.trackerId, outcome: r.stored ? 'stored' : 'duplicate', status: 200, sha1 });
         } else if (k === 2) {
-          // Kept raw for L2/L3: the tracker is still mirrored so the link screen knows it.
+          // Kept raw for L3: the tracker is still mirrored so the link screen knows it.
           const tr = normTracker(raw.tracker);
           if (tr && tr.trackerId != null) await this.upsertTracker({ trackerId: tr.trackerId, ...tr, ...(normAsset(raw.asset) || {}) }, receivedAt);
           summary.deferred++; this.counters.deferred++;
@@ -352,7 +582,7 @@ class Linxup {
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
   health() {
-    return { enabled: this.enabled, mode: this.mode || 'off', companyIdConfigured: this.companyId != null, trackers: this.trackers.size, latest: this.latest.size,
+    return { enabled: this.enabled, mode: this.mode || 'off', companyIdConfigured: this.companyId != null, trackers: this.trackers.size, latest: this.latest.size, geofences: this.geofences.size,
       counters: { ...this.counters }, lastMessageAt: { ...this.lastMessageAt }, lastError: this.lastError, version: this.version };
   }
 }
