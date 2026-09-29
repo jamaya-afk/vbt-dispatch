@@ -6549,7 +6549,7 @@ function dispatchFingerprint(loads) {
   const parts = loads.map(l => [
     l.id, l.truckId || '-', l.truckUnitId || '-', l.vendorId || '-',
     l.actualYardId || '-', l.loadsAssigned, l.loadsDelivered,
-    l.status, l.approvalStatus, l.deliveryDate,
+    l.status, l.approvalStatus, l.billStatus || '-', l.deliveryDate,
     (l.trips || []).length,
   ].join(':'));
   parts.sort();
@@ -6559,9 +6559,11 @@ function dispatchFingerprint(loads) {
 app.get('/api/dispatch-version', reqAuth, (req, res) => {
   const u = req.session.user;
   const today = todayStr();
-  const scope = u.role === 'driver'
-    ? driverWorkdayLoads(u)
-    : store.loads.filter(l => !l.voided && l.deliveryDate === today);
+  if (u.role !== 'driver') {
+    const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === today);
+    return res.json({ version: officeFingerprint(today), count: dayLoads.length, at: new Date().toISOString() });
+  }
+  const scope = driverWorkdayLoads(u);
   res.json({ version: dispatchFingerprint(scope), count: scope.length, at: new Date().toISOString() });
 });
 
@@ -6575,71 +6577,153 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
 
 // ── TODAY BOARD — everything Quick Assign needs in ONE call ─────────────────
 // The dispatcher must never wait on several round trips to assign a load.
-app.get('/api/today', reqMgr, (req, res) => {
-  const day = req.query.date || todayStr();
-  const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
-
-  const bucketOf = (l) => {
-    if (l.approvalStatus === 'approved') return 'completed';
-    if (l.approvalStatus === 'submitted') return 'awaiting-approval';
-    if (!l.truckId || l.truckId === 'unassigned') return 'unassigned';
-    if ((l.loadsDelivered || 0) > 0 || (l.trips || []).length > 0) return 'in-progress';
-    return 'assigned';
+// ── THE DISPATCH BOARD ───────────────────────────────────────────────────────
+// One answer to "what is happening with my trucks right now". Every status the
+// office sees is computed here, once, with the same rule the assignment
+// conflict check uses (loadHoldsResources). The screen never recomputes one.
+//
+//   Loads:   unassigned → assigned → in-progress → awaiting-approval →
+//            ready-to-bill → completed (approved and billed)
+//   Drivers: available · assigned · in-progress · completed (worked today,
+//            done) · off
+//   Trucks:  available · assigned · in-progress · unavailable (shop)
+const BOARD_STAGE_LABEL = { toYard: 'Going to yard', atYard: 'At yard', enRoute: 'Loaded / en route', atJobsite: 'At jobsite', returning: 'Returning', completed: 'Done', assigned: 'Assigned', available: 'Available' };
+function boardBucket(l) {
+  if (l.approvalStatus === 'approved') return l.billStatus === 'billed' ? 'completed' : 'ready-to-bill';
+  if (l.approvalStatus === 'submitted') return 'awaiting-approval';
+  if (!l.truckId || l.truckId === 'unassigned') return 'unassigned';
+  if ((l.loadsDelivered || 0) > 0 || (l.trips || []).length > 0) return 'in-progress';
+  return 'assigned';
+}
+// Where the driver is on the current trip, in the words the Fleet Map uses.
+function boardStage(l) {
+  const trips = l.trips || [];
+  const idx = activeTripIdx(l);
+  const trip = trips[idx] || (idx > 0 ? trips[idx - 1] : null);
+  const remains = (l.loadsDelivered || 0) < (l.loadsAssigned || 0) && l.approvalStatus !== 'submitted';
+  const wf = fleetWorkflowStatus({ load: l, trip, workRemains: remains, hadWorkToday: true });
+  return { key: wf.key, label: BOARD_STAGE_LABEL[wf.key] || wf.key, since: wf.since };
+}
+// What a load still needs before it can proceed, or be approved — plain words.
+function boardMissing(l, pickup, truck) {
+  const b = boardBucket(l);
+  if (b === 'completed' || b === 'ready-to-bill') return [];
+  const out = [];
+  if (!l.truckId || l.truckId === 'unassigned') out.push('driver');
+  if (l.truckId && l.truckId !== 'unassigned' && !truck) out.push('truck');
+  if (!pickup || !pickup.id) out.push('pickup yard');
+  if (b === 'awaiting-approval') {
+    if (!l.ticketImage && !l.ticketImageUrl) out.push('ticket photo');
+    const t = loadTons(l);
+    if (t.missingTickets.length) out.push(`ticket on trip ${t.missingTickets.join(', ')}`);
+    if (!l.pod || !l.pod.signedBy) out.push('signature');
+  }
+  return out;
+}
+// One load as the board shows it. `holding` is the day's live work, for the
+// double-booking check (same truck or trailer under two drivers).
+function boardLoadRow(l, holding) {
+  const po = findPoAnywhere(l.poId) || {};
+  const pickup = resolvePickupYard(l, po);
+  const truck = getTruckForLoad(l);
+  const trailer = getTrailerForLoad(l);
+  const bucket = boardBucket(l);
+  const stage = bucket === 'in-progress' ? boardStage(l) : null;
+  const conflicts = [];
+  if (loadHoldsResources(l) && l.truckId) {
+    for (const o of holding) {
+      if (o.id === l.id || !o.truckId || o.truckId === l.truckId) continue;
+      if (l.truckUnitId && o.truckUnitId === l.truckUnitId) conflicts.push(`${truck ? truck.truckNum : 'This truck'} is also on ${o.driverName || o.truckId}'s load ${o.id}`);
+      if (l.trailerId && o.trailerId === l.trailerId) conflicts.push(`Trailer ${trailer ? trailer.number : ''} is also on ${o.driverName || o.truckId}'s load ${o.id}`);
+    }
+  }
+  const tons = loadTons(l);
+  return {
+    id: l.id, bucket, poId: l.poId, deliveryDate: l.deliveryDate,
+    notifyOn: !!po.notifications?.enabled,
+    poNumber: po.poNumber || '', customer: po.customer || '',
+    jobName: po.job || po.customer || '', jobCode: po.jobCode || '',
+    address: po.address || '', city: po.city || '',
+    destination: [po.address, po.city].filter(Boolean).join(', '),
+    material: l.material,
+    loadsAssigned: l.loadsAssigned, loadsDelivered: l.loadsDelivered || 0,
+    driverId: l.truckId || null, driverName: l.driverName || '',
+    truckUnitId: l.truckUnitId || null, truckNum: truck ? truck.truckNum : '',
+    trailerId: l.trailerId || null, trailerNum: trailer ? trailer.number : '',
+    yardId: pickup.id, yardName: pickup.name, yardIsActual: !!pickup.isActual,
+    locked: !!l.locked, approvalStatus: l.approvalStatus, billStatus: l.billStatus || '',
+    isPartial: !!l.isPartial,
+    stage: stage ? stage.label : '', stageKey: stage ? stage.key : '', stageSince: stage ? stage.since : null,
+    missing: boardMissing(l, pickup, truck),
+    conflicts,
+    missingTicket: !l.ticketImage && !l.ticketImageUrl,
+    tons: { plannedTons: tons.plannedTons, actualTons: tons.actualTons, tickets: tons.tickets, missingTickets: tons.missingTickets },
   };
+}
+// The office's live-refresh fingerprint: the day's loads plus everything the
+// attention row shows (submitted and ready-to-bill counts, the drivers' open
+// days), so the board refreshes when any of them change and only then.
+function officeFingerprint(day) {
+  const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
+  const live = store.loads.filter(l => !l.voided);
+  const extra = [
+    'sub:' + live.filter(l => l.approvalStatus === 'submitted').length,
+    'rtb:' + live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready').length,
+    'sh:' + (store.shifts || []).filter(s => s.status === 'open').map(s => s.id + ':' + (s.truckId || '')).sort().join(','),
+  ].join('|');
+  return require('crypto').createHash('sha1').update(dispatchFingerprint(dayLoads) + '#' + extra).digest('hex').slice(0, 16);
+}
 
-  const loads = dayLoads.map(l => {
-    const po = store.pos.find(p => p.id === l.poId) || {};
-    const pickup = resolvePickupYard(l, po);
-    const truck = getTruckForLoad(l);
+app.get('/api/today', reqMgr, (req, res) => {
+  const today = todayStr();
+  const day = req.query.date || today;
+  const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
+  const holding = dayLoads.filter(loadHoldsResources);
+  const loads = dayLoads.map(l => boardLoadRow(l, holding));
+
+  // Drivers: their state comes from the loads that hold them today, plus what
+  // they are doing right now and on which truck.
+  const drivers = (store.drivers || []).filter(d => d.active).map(d => {
+    const mine = dayLoads.filter(l => l.truckId === d.id);
+    const held = mine.filter(loadHoldsResources);
+    const current = held.find(loadMidTrip) || held[0] || null;
+    const state = d.status === 'off' ? 'off' : held.some(loadMidTrip) ? 'in-progress' : held.length ? 'assigned' : mine.length ? 'completed' : 'available';
+    const shift = openShiftFor(d.id);
+    const truck = current ? getTruckForLoad(current) : (shift ? (store.trucks || []).find(t => t.id === shift.truckId) : null);
+    const usual = !truck && d.defaultTruckId ? (store.trucks || []).find(t => t.id === d.defaultTruckId) : null;
+    const row = current ? loads.find(x => x.id === current.id) : null;
     return {
-      id: l.id,
-      bucket: bucketOf(l),
-      poId: l.poId,
-      notifyOn: !!po.notifications?.enabled,
-      poNumber: po.poNumber || '', customer: po.customer || '',
-      jobName: po.job || po.customer || '', jobCode: po.jobCode || '',
-      address: po.address || '', city: po.city || '',
-      material: l.material,
-      loadsAssigned: l.loadsAssigned, loadsDelivered: l.loadsDelivered || 0,
-      driverId: l.truckId || null, driverName: l.driverName || '',
-      truckUnitId: l.truckUnitId || null, truckNum: truck ? truck.truckNum : '',
-      trailerId: l.trailerId || null, trailerNum: (getTrailerForLoad(l) || {}).number || '',
-      yardId: pickup.id, yardName: pickup.name,
-      locked: !!l.locked,
-      approvalStatus: l.approvalStatus,
-      missingTicket: !l.ticketImage && !l.ticketImageUrl,
-      tons: (() => { const t = loadTons(l); return { plannedTons: t.plannedTons, actualTons: t.actualTons, tickets: t.tickets, missingTickets: t.missingTickets }; })(),
+      id: d.id, name: d.name, status: d.status, state,
+      openLoadIds: held.map(l => l.id),
+      loadsToday: mine.length,
+      available: held.length === 0 && d.status !== 'off',
+      lastSeen: (store.driverLocations || {})[d.id] || null,
+      truckUnitId: truck ? truck.id : (usual ? usual.id : null),
+      truckNum: truck ? truck.truckNum : (usual ? usual.truckNum : ''),
+      truckIsUsual: !truck && !!usual,
+      dayStartedAt: shift ? shift.startAt : null,
+      currentLoadId: current ? current.id : null,
+      stage: row ? (row.stage || 'Assigned') : (state === 'completed' ? 'Done for the day' : state === 'off' ? 'Off' : 'Available'),
+      customer: row ? row.customer : '', poNumber: row ? row.poNumber : '',
+      pickup: row ? row.yardName : '', destination: row ? row.destination : '',
+      progress: row ? `${row.loadsDelivered}/${row.loadsAssigned}` : '',
     };
   });
 
-  // Driver availability, derived from today's actual work — the same rule the
-  // assignment conflict check uses, so the board and the refusal never disagree.
-  const busyBy = new Map();
-  dayLoads.forEach(l => {
-    if (!l.truckId || !loadHoldsResources(l)) return;
-    if (!busyBy.has(l.truckId)) busyBy.set(l.truckId, []);
-    busyBy.get(l.truckId).push(l.id);
+  const truckLoad = new Map();
+  holding.forEach(l => { if (l.truckUnitId) truckLoad.set(l.truckUnitId, l); });
+  const trucks = (store.trucks || []).filter(t => t.active).map(t => {
+    const l = truckLoad.get(t.id) || null;
+    const unavailable = t.status === 'maintenance' || t.status === 'out-of-service';
+    const state = unavailable ? 'unavailable' : l ? (loadMidTrip(l) ? 'in-progress' : 'assigned') : 'available';
+    return {
+      id: t.id, truckNum: t.truckNum, type: t.type, status: t.status, state,
+      inUseOnLoadId: l ? l.id : null, driverName: l ? (l.driverName || '') : '',
+      available: !l && t.status === 'available',
+    };
   });
-  const drivers = (store.drivers || []).filter(d => d.active).map(d => ({
-    id: d.id, name: d.name, status: d.status,
-    openLoadIds: busyBy.get(d.id) || [],
-    available: (busyBy.get(d.id) || []).length === 0 && d.status !== 'off',
-    lastSeen: (store.driverLocations || {})[d.id] || null,
-  }));
-
-  const truckBusy = new Map();
-  dayLoads.forEach(l => {
-    if (l.truckUnitId && loadHoldsResources(l)) truckBusy.set(l.truckUnitId, l.id);
-  });
-  const trucks = (store.trucks || []).filter(t => t.active).map(t => ({
-    id: t.id, truckNum: t.truckNum, type: t.type, status: t.status,
-    inUseOnLoadId: truckBusy.get(t.id) || null,
-    available: !truckBusy.has(t.id) && t.status === 'available',
-  }));
   const trailerBusy = new Map();
-  dayLoads.forEach(l => {
-    if (l.trailerId && loadHoldsResources(l)) trailerBusy.set(l.trailerId, l.id);
-  });
+  holding.forEach(l => { if (l.trailerId) trailerBusy.set(l.trailerId, l.id); });
   const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({
     id: t.id, number: t.number, type: t.type || '', status: t.status || 'available',
     defaultTruckId: t.defaultTruckId || null,
@@ -6647,11 +6731,21 @@ app.get('/api/today', reqMgr, (req, res) => {
     available: !trailerBusy.has(t.id) && (t.status || 'available') === 'available',
   }));
 
-  const count = (b) => loads.filter(l => l.bucket === b).length;
+  // Attention: what needs a person, wherever it sits on the calendar.
+  const live = store.loads.filter(l => !l.voided);
+  const submittedAll = live.filter(l => l.approvalStatus === 'submitted');
+  const readyAll = live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready');
+  const readyAmount = Math.round(readyAll.reduce((s, l) => { const r = revenueDetail(l); return s + (r.amount == null ? 0 : r.amount); }, 0) * 100) / 100;
+  const carried = live.filter(l => l.deliveryDate && l.deliveryDate < today && l.approvalStatus !== 'approved' && l.approvalStatus !== 'submitted');
+
+  const count = b => loads.filter(l => l.bucket === b).length;
+  const st = (arr, s) => arr.filter(x => x.state === s).length;
   res.json({
-    date: day,
-    version: dispatchFingerprint(dayLoads),
+    date: day, today, isToday: day === today,
+    version: officeFingerprint(day),
     loads, drivers, trucks, trailers,
+    // Unfinished work from earlier days, shown when the office asks for it.
+    carriedOver: carried.map(l => boardLoadRow(l, [])),
     // The drivers' day: shifts dated today (open or closed) plus any still-open
     // shift from an earlier date, which the office must see and close.
     shifts: (store.shifts || []).filter(s => s.date === day || s.status === 'open').map(shiftPublic),
@@ -6662,11 +6756,26 @@ app.get('/api/today', reqMgr, (req, res) => {
       unassigned: count('unassigned'),
       assigned: count('assigned'),
       inProgress: count('in-progress'),
-      completed: count('completed'),
       awaitingApproval: count('awaiting-approval'),
+      readyToBill: count('ready-to-bill'),
+      completed: count('completed'),
       driversWorking: drivers.filter(d => d.openLoadIds.length > 0).length,
       driversAvailable: drivers.filter(d => d.available).length,
       missingTicket: loads.filter(l => l.missingTicket && l.bucket === 'awaiting-approval').length,
+      drivers: { available: st(drivers, 'available'), assigned: st(drivers, 'assigned'), inProgress: st(drivers, 'in-progress'), completed: st(drivers, 'completed'), off: st(drivers, 'off') },
+      trucks:  { available: st(trucks, 'available'), assigned: st(trucks, 'assigned'), inProgress: st(trucks, 'in-progress'), unavailable: st(trucks, 'unavailable') },
+    },
+    attention: {
+      unassigned: count('unassigned'),
+      inProgress: count('in-progress'),
+      awaitingApproval: submittedAll.length,
+      readyToBill: readyAll.length,
+      readyToBillAmount: readyAmount,
+      missingInfo: loads.filter(l => l.missing.length).length,
+      conflicts: loads.filter(l => l.conflicts.length).length,
+      carriedOver: carried.length,
+      availableDrivers: drivers.filter(d => d.available).length,
+      availableTrucks: trucks.filter(t => t.available).length,
     },
   });
 });

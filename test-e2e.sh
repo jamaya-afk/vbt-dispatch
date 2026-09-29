@@ -31,7 +31,7 @@ chk "logged out, /app/ is blocked" "$(curl -s -o /dev/null -w '%{http_code}' $B/
 # now with a real session
 chk "logged in, / redirects to app" "$(curl -s -o /dev/null -w '%{redirect_url}' -b $M $B/ | sed 's|.*//[^/]*||')" "/app/"
 chk "/app/ serves the app shell"    "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/app/)" "200"
-chk "  ...and it is the real page"  "$(curl -s -b $M $B/app/ | grep -c 'id=\"sec-board\"')" "1"
+chk "  ...and it is the real page"  "$(curl -s -b $M $B/app/ | grep -c 'id=\"sec-today\"')" "1"
 chk "static assets serve"           "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/app/index.html)" "200"
 chk "/api/me identifies the user"   "$(curl -s -b $M $B/api/me | python3 -c "import json,sys;print(json.load(sys.stdin)['username'])")" "joshua"
 
@@ -1372,6 +1372,66 @@ chk "C10 eight overlapping saves all succeed"                               "$(t
 rm -f /tmp/vbt-p0-codes.txt
 chk "   what the API shows is what is on disk"                              "$(python3 -c "
 import json;d=json.load(open('data.json'));print([l['notes'] for l in d['loads'] if l['id']=='$L7'][0])")|$(load $L7 "l['notes']")" "$(load $L7 "l['notes']")|$(load $L7 "l['notes']")"
+
+echo
+echo "── 41. One dispatch board: every status from the server, one rule for who is busy ──"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+(VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-board.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F); YESTERDAY=$(date -d '-1 day' +%F); TOMORROW=$(date -d '+1 day' +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3"; }
+tod() { curl -s -b $M "$B/api/today${2:-}" | jq "$1"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+# Static: one board, one status source.
+chk "41 the page has one dispatch board and no second Board tab or status math" "$(grep -c 'data-tab="board"' public/index.html)|$(grep -c 'function computeBoardStats\|function renderDayBoard\|function renderMonthBoard' public/index.html)|$(grep -c 'function paintToday' public/index.html)|$(grep -c 'id="sec-today"' public/index.html)" "0|0|1|1"
+chk "   the board renders buckets, states and flags it is given, never recomputes them" "$(sed -n '/^function paintToday/,/^function dbLoadCard/p' public/index.html | grep -c "approvalStatus ===\|loadsDelivered >\|timestamps\.")" "0"
+# Fixture: Board Co today — Beryle 2 loads from Vulcan, Matthew 1 from our yard, one load with nobody yet; Carlos is off; Rigo has yesterday's unfinished load.
+P=$(mg POST /api/pos '{"po":{"poNumber":"B41-1","customer":"Board Co","deliveryDate":"'"$TODAY"'","address":"7 Board Ave","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"},{"truckId":"matthew","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":null,"truckUnitId":null,"material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LB=$(loadof $P beryle); LM=$(loadof $P matthew); LU=$(loadof $P "")
+PY=$(mg POST /api/pos '{"po":{"poNumber":"B41-Y","customer":"Board Co","deliveryDate":"'"$YESTERDAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']"); LY=$(loadof $PY rigo)
+mg PUT /api/drivers/carlos '{"status":"off"}' >/dev/null
+mg PUT /api/fleet/trucks/truck-2b '{"status":"maintenance"}' >/dev/null
+chk "   loads: 2 assigned, 1 unassigned; the unassigned one is missing a driver" "$(tod "sorted((l['bucket'], l['missing']) for l in d['loads'])")" "[('assigned', []), ('assigned', []), ('unassigned', ['driver'])]"
+chk "   drivers: Beryle and Matthew assigned, Leonardo and Rigo available, Carlos off" "$(tod "sorted((x['id'], x['state'], x['available']) for x in d['drivers'])")" "[('beryle', 'assigned', False), ('carlos', 'off', False), ('leonardo', 'available', True), ('matthew', 'assigned', False), ('rigo', 'available', True)]"
+chk "   trucks: #2 and #4 assigned (with their drivers), #12 and #14 free, #2B in shop" "$(tod "sorted((t['truckNum'], t['state'], t['driverName']) for t in d['trucks'])")" "[('Truck #12', 'available', ''), ('Truck #14', 'available', ''), ('Truck #2', 'assigned', 'Beryle'), ('Truck #2B', 'unavailable', ''), ('Truck #4', 'assigned', 'Matthew')]"
+chk "   attention row: 1 unassigned, 1 missing info, 1 carried over (Rigo's yesterday), 2 drivers free, 2 trucks free" "$(tod "tuple(d['attention'][k] for k in ['unassigned','inProgress','awaitingApproval','readyToBill','missingInfo','conflicts','carriedOver','availableDrivers','availableTrucks'])")" "(1, 0, 0, 0, 1, 0, 1, 2, 2)"
+chk "   the carried-over list names yesterday's load with its date" "$(tod "[(l['id']==\"$LY\", l['deliveryDate']==\"$YESTERDAY\", l['bucket']) for l in d['carriedOver']]")" "[(True, True, 'assigned')]"
+chk "   a driver row carries the load facts: truck, customer, PO, pickup → destination, progress" "$(tod "[(x['truckNum'], x['customer'], x['poNumber'], x['pickup'], x['destination'], x['progress'], x['stage']) for x in d['drivers'] if x['id']=='beryle'][0]")" "('Truck #2', 'Board Co', 'B41-1', 'Vulcan', '7 Board Ave, Fresno', '0/2', 'Assigned')"
+# Beryle rolls
+dr $BE $LB '{"action":"start-trip"}' >/dev/null
+chk "   Beryle starts: load in progress 'Going to yard', driver and Truck #2 in progress" "$(tod "[(l['bucket'], l['stage']) for l in d['loads'] if l['id']=='$LB'][0], [x['state'] for x in d['drivers'] if x['id']=='beryle'][0], [t['state'] for t in d['trucks'] if t['id']=='truck-2'][0], d['attention']['inProgress'], d['summary']['drivers']['inProgress'], d['summary']['trucks']['inProgress']")" "('in-progress', 'Going to yard') in-progress in-progress 1 1 1"
+dr $BE $LB '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null
+chk "   …at the yard the stage follows" "$(tod "[l['stage'] for l in d['loads'] if l['id']=='$LB'][0]")" "At yard"
+# Missing information: Matthew's load loses its truck
+mg POST /api/loads/$LM/assign '{"truckUnitId":null}' >/dev/null
+chk "   a load with a driver but no truck is flagged 'missing: truck'" "$(tod "[l['missing'] for l in d['loads'] if l['id']=='$LM'][0], d['attention']['missingInfo']")" "['truck'] 2"
+# Conflicts: the office forces Truck #2 (on Beryle's open load) onto Matthew's load
+mg POST /api/loads/$LM/assign '{"truckUnitId":"truck-2","force":true,"reason":"test"}' >/dev/null
+chk "   a forced double-booking shows as a conflict on BOTH loads and in the attention row" "$(tod "sorted(len(l['conflicts']) for l in d['loads']), d['attention']['conflicts'], [l['conflicts'][0] for l in d['loads'] if l['id']=='$LM'][0]")" "[0, 1, 1] 2 Truck #2 is also on Beryle's load $LB"
+mg POST /api/loads/$LM/assign '{"truckUnitId":"truck-4"}' >/dev/null
+chk "   …and clears when the truck is put back" "$(tod "d['attention']['conflicts'], d['attention']['missingInfo']")" "0 1"
+# Live refresh: the office version is the board's version and moves when a day starts
+V1=$(tod "d['version']"); DV=$(curl -s -b $M $B/api/dispatch-version | jq "d['version']")
+chk "   /api/dispatch-version for the office IS the board's version" "$([ "$V1" = "$DV" ] && echo same || echo differs)" "same"
+curl -s -b $RG -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-14","odometer":70000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' -o /dev/null
+chk "   a driver starting the day changes the version (the board shows 'day started')" "$([ "$V1" != "$(tod "d['version']")" ] && echo changed || echo same)|$(tod "[x['dayStartedAt'] is not None for x in d['drivers'] if x['id']=='rigo'][0], [x['truckNum'] for x in d['drivers'] if x['id']=='rigo'][0]")" "changed|True Truck #14"
+# Beryle finishes and submits; then approval, then billing — buckets and states follow
+dr $BE $LB "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $BE $LB '{"action":"arrived-jobsite"}' >/dev/null; dr $BE $LB '{"action":"trip-complete"}' >/dev/null
+dr $BE $LB '{"action":"start-trip"}' >/dev/null; dr $BE $LB '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $BE $LB "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $BE $LB '{"action":"arrived-jobsite"}' >/dev/null; dr $BE $LB '{"action":"trip-complete"}' >/dev/null
+curl -s -b $BE -H "$J" -X PUT $B/api/loads/$LB -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+dr $BE $LB '{"action":"delivered"}' >/dev/null
+chk "   submitted: awaiting approval, nothing missing, Beryle done and free again, Truck #2 free" "$(tod "[(l['bucket'], l['missing']) for l in d['loads'] if l['id']=='$LB'][0], [(x['state'], x['available']) for x in d['drivers'] if x['id']=='beryle'][0], [t['state'] for t in d['trucks'] if t['id']=='truck-2'][0], d['attention']['awaitingApproval']")" "('awaiting-approval', []) ('completed', True) available 1"
+mg POST /api/loads/$LB/approve >/dev/null
+chk "   approved: Ready to Bill, with the amount (2 loads × 25 t × \$25)" "$(tod "[l['bucket'] for l in d['loads'] if l['id']=='$LB'][0], d['summary']['readyToBill'], d['attention']['readyToBill'], d['attention']['readyToBillAmount'], d['attention']['awaitingApproval']")" "ready-to-bill 1 1 1250 0"
+mg POST /api/loads/bill "{\"loadIds\":[\"$LB\"]}" >/dev/null
+chk "   billed: Completed" "$(tod "[l['bucket'] for l in d['loads'] if l['id']=='$LB'][0], d['summary']['completed'], d['attention']['readyToBill']")" "completed 1 0"
+chk "   planning another day: its own loads, the same attention row" "$(tod "len(d['loads']), d['isToday'], d['attention']['awaitingApproval']==0 and d['attention']['carriedOver']==1" "?date=$TOMORROW")|$(tod "[l['id'] for l in d['loads']]==['$LY'], d['isToday']" "?date=$YESTERDAY")" "0 False True|True False"
+mg PUT /api/drivers/carlos '{"status":"available"}' >/dev/null; mg PUT /api/fleet/trucks/truck-2b '{"status":"available"}' >/dev/null
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.

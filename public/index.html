@@ -74,156 +74,81 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .section{display:none}
 .section.active{display:block;min-height:100%}
 
-/* ── BOARD ── */
-.board-header{padding:14px 22px;display:flex;align-items:center;gap:12px;background:var(--bg);border-bottom:1px solid var(--bdr);flex-wrap:wrap}
-.date-nav{display:flex;align-items:center;gap:6px}
-.date-nav button{width:34px;height:34px;border-radius:50%;border:1px solid var(--bdr2);background:var(--bg);cursor:pointer;font-size:15px;color:var(--txt2);transition:all .15s}
-.date-nav button:hover{border-color:var(--I);color:var(--I);background:var(--Ib)}
-.date-label{font-size:14px;font-weight:600;min-width:220px;text-align:center;letter-spacing:-.005em}
-.today-btn{font-size:11px;color:var(--I);background:var(--Ib);border:1px solid var(--Id);padding:5px 12px;border-radius:20px;cursor:pointer;font-family:var(--f);font-weight:600;letter-spacing:.02em}
-.today-btn:hover{background:var(--I);color:#fff;border-color:var(--I)}
-.view-btn{padding:5px 14px;font-size:11px;font-weight:600;background:transparent;border:none;border-radius:20px;cursor:pointer;color:var(--txt2);font-family:var(--f);transition:all .15s}
-.view-btn.active{background:var(--bg);color:var(--txt);box-shadow:0 1px 3px rgba(15,22,40,.12)}
-
-/* ── HERO DISPATCH SUMMARY ── */
-.dispatch-hero{margin:18px 22px 0;background:var(--hero-grad);border-radius:18px;padding:22px 26px;color:#fff;position:relative;overflow:hidden;box-shadow:var(--shadow-lg)}
-.dispatch-hero::before{content:'';position:absolute;top:-60px;right:-60px;width:240px;height:240px;background:radial-gradient(circle,rgba(122,140,255,.35) 0%,transparent 70%);pointer-events:none}
-.dispatch-hero::after{content:'';position:absolute;bottom:-80px;left:30%;width:280px;height:280px;background:radial-gradient(circle,rgba(59,130,246,.18) 0%,transparent 70%);pointer-events:none}
-.hero-row{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap;position:relative;z-index:1}
-.hero-greeting{flex:1;min-width:240px}
-.hero-eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#a8b1cf;font-weight:600;margin-bottom:4px}
-.hero-title{font-size:22px;font-weight:700;letter-spacing:-.02em;margin-bottom:4px}
-.hero-sub{font-size:13px;color:#a8b1cf;font-weight:500;line-height:1.5}
-.hero-date{font-size:13px;color:#cbd2e8;font-weight:600;background:rgba(255,255,255,.08);padding:7px 14px;border-radius:20px;border:1px solid rgba(255,255,255,.1);display:inline-flex;align-items:center;gap:7px}
-.hero-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:18px;position:relative;z-index:1}
-.hero-stat{background:rgba(255,255,255,.06);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.08);border-radius:13px;padding:14px 16px;cursor:pointer;transition:all .18s}
-.hero-stat:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.18);transform:translateY(-1px)}
-.hero-stat.active{background:rgba(122,140,255,.18);border-color:rgba(122,140,255,.55);box-shadow:0 0 0 3px rgba(122,140,255,.18)}
-.hero-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#a8b1cf;font-weight:600;display:flex;align-items:center;gap:6px}
-.hero-stat-num{font-size:26px;font-weight:700;letter-spacing:-.02em;margin-top:4px;color:#fff;font-variant-numeric:tabular-nums}
-.hero-stat-meta{font-size:11px;color:#a8b1cf;margin-top:2px;font-weight:500}
-.hero-stat.alert .hero-stat-num{color:#fca5a5}
-.hero-stat.alert .hero-stat-label::before{content:'';width:6px;height:6px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px rgba(239,68,68,.6);animation:pulse 1.6s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
-.hero-stat.warn .hero-stat-num{color:#fcd38a}
-.hero-stat.success .hero-stat-num{color:#86efac}
-.hero-stat.bill .hero-stat-num{color:#5eead4}
-
-/* ── FILTER BAR ── */
-.filter-bar{margin:14px 22px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px;background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow)}
-.filter-bar-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600;margin-right:4px}
-.filter-bar select,.filter-bar input{padding:7px 11px;font-size:12px;border:1px solid var(--bdr);border-radius:8px;background:var(--bg2);font-family:var(--f);color:var(--txt);font-weight:500;cursor:pointer;transition:all .15s}
-.filter-bar select:hover,.filter-bar input:hover{border-color:var(--Id);background:var(--bg)}
-.filter-bar select:focus,.filter-bar input:focus{outline:none;border-color:var(--I);background:var(--bg);box-shadow:0 0 0 3px var(--Ib)}
-.filter-clear{padding:6px 12px;font-size:11px;font-weight:600;background:transparent;border:1px dashed var(--bdr2);border-radius:8px;color:var(--txt2);cursor:pointer;font-family:var(--f);margin-left:auto}
-.filter-clear:hover{border-color:var(--R);color:var(--R);border-style:solid}
-.filter-result-count{font-size:11px;color:var(--txt3);font-weight:600}
-
-/* ── DRIVER AVAILABILITY STRIP ── */
-.driver-strip{margin:14px 22px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 14px;background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow)}
-.driver-strip-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);font-weight:600;margin-right:6px}
-.driver-chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px 6px 6px;background:var(--bg2);border:1px solid var(--bdr);border-radius:20px;font-size:12px;font-weight:600;color:var(--txt);transition:all .15s;cursor:pointer}
-.driver-chip:hover{border-color:var(--I);transform:translateY(-1px);box-shadow:var(--shadow)}
-.driver-chip.busy{background:linear-gradient(135deg,#fff7ed,#fff8ed);border-color:var(--Ad)}
-.driver-chip.busy .driver-chip-dot{background:linear-gradient(135deg,#f59e0b,#d97706)}
-.driver-chip.heavy{background:linear-gradient(135deg,#fef2f2,#fff0f0);border-color:var(--Rd)}
-.driver-chip.heavy .driver-chip-dot{background:linear-gradient(135deg,#ef4444,#dc2626)}
-.driver-chip.free{background:linear-gradient(135deg,#ecfdf5,#edfaf4);border-color:var(--Gd)}
-.driver-chip.free .driver-chip-dot{background:linear-gradient(135deg,#22c55e,#16a066)}
-.driver-chip.active{outline:2px solid var(--I);outline-offset:1px}
-.driver-chip-dot{width:22px;height:22px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0}
-.driver-chip-name{font-size:12px}
-.driver-chip-count{font-size:10px;background:rgba(15,22,40,.06);color:var(--txt2);padding:1px 7px;border-radius:10px;font-weight:700}
-.driver-chip.heavy .driver-chip-count{background:rgba(220,38,38,.15);color:#dc2626}
-
-.board{padding:0 0 22px;max-width:100%}
-.board-cols{padding:18px 22px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:16px;max-width:100%}
-.driver-col{background:var(--bg);border-radius:16px;box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:220px;border:1px solid var(--bdr);overflow:hidden;transition:all .18s}
-.driver-col:hover{box-shadow:var(--shadow-md)}
-.driver-col.unassigned-col{background:linear-gradient(180deg,#fff8ed,#fff);border:1.5px dashed var(--Ad)}
-.driver-col-head{padding:13px 16px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#fafbfd,transparent)}
-.driver-col.unassigned-col .driver-col-head{border-bottom-color:var(--Ad);background:transparent}
-.driver-name{font-size:13px;font-weight:700;letter-spacing:-.005em;display:flex;align-items:center;gap:7px}
-.driver-name-avatar{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,var(--I),var(--B));color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;box-shadow:0 1px 3px rgba(79,70,229,.25)}
-.driver-truck{font-size:11px;color:var(--txt3);margin-top:2px;letter-spacing:.02em}
-.driver-load-count{background:var(--Ib);font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;color:var(--I);font-variant-numeric:tabular-nums}
-.driver-load-count.heavy{background:var(--Rb);color:var(--R)}
-.driver-load-count.empty{background:var(--bg2);color:var(--txt3)}
-.driver-col-body{flex:1;padding:11px;display:flex;flex-direction:column;gap:9px;min-height:90px;transition:background .12s}
-.driver-col-body.drop-target{background:var(--Ib);box-shadow:inset 0 0 0 2px var(--I)}
-
-.lcard{background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:12px 13px;cursor:grab;box-shadow:var(--shadow);transition:all .18s;position:relative;overflow:hidden}
-.lcard::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--bdr2);transition:all .18s}
-.lcard:hover{box-shadow:var(--shadow-md);border-color:var(--Bd);transform:translateY(-1px)}
-.lcard:hover::before{width:4px}
-.lcard.dragging{opacity:.5;transform:rotate(.5deg)}
-.lcard.submitted{border-color:var(--P);background:var(--Pb)}
-.lcard.submitted::before{background:var(--P)}
-.lcard.is-normal::before{background:var(--B)}
-.lcard.is-active::before{background:var(--A)}
-.lcard.is-completed::before{background:var(--P)}
-.lcard.is-overdue::before{background:var(--R)}
-.lcard.is-partial::before{background:#facc15}
-.lc-driver-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--bdr)}
-.lc-driver{font-size:11px;color:var(--txt2);font-weight:600;display:inline-flex;align-items:center;gap:5px}
-.lc-driver-avatar{width:18px;height:18px;border-radius:50%;background:linear-gradient(135deg,var(--I),var(--B));color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.lc-driver.unassigned{color:var(--A)}
-.lc-driver.unassigned .lc-driver-avatar{background:linear-gradient(135deg,#f59e0b,#d97706)}
-.lc-vendor{font-size:10px;color:var(--txt3);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-.lc-vendor.internal{color:var(--T)}
-.lcard.is-partial{background:linear-gradient(180deg,#fffbeb,#fff);border-color:#fcd34d}
-.lcard.is-partial .lc-po,.mcard.is-partial .mcard-po{color:#a16207}
-.lcard.is-partial .lc-customer,.lcard.is-partial .lc-detail,.mcard.is-partial .mcard-cust,.mcard.is-partial .mcard-mat{color:#854d0e}
-.lc-status.is-partial{background:linear-gradient(135deg,#facc15,#eab308);color:#fff}
-
-/* ── STATUS-COLORED CARDS (Day + Month views) ── */
-.lcard.is-completed,.mcard.is-completed{
-  background:#f3edff;border-color:#c4b5fd;
-}
-.lcard.is-completed .lc-customer,.lcard.is-completed .lc-detail,
-.lcard.is-completed .lc-progress span,
-.mcard.is-completed .mcard-cust,.mcard.is-completed .mcard-mat{color:#4c1d95}
-.lcard.is-completed .lc-po,.mcard.is-completed .mcard-po{color:#6d28d9}
-
-.lcard.is-overdue,.mcard.is-overdue{
-  background:#fde6e6;border-color:#f4a8a8;
-}
-.lcard.is-overdue .lc-customer,.lcard.is-overdue .lc-detail,
-.lcard.is-overdue .lc-progress span,
-.mcard.is-overdue .mcard-cust,.mcard.is-overdue .mcard-mat{color:#7a1a1a}
-.lcard.is-overdue .lc-po,.mcard.is-overdue .mcard-po{color:#a82828}
-
-.lcard.is-active,.mcard.is-active{
-  background:#fff8ed;border-color:#fcd38a;
-}
-.lcard.is-active .lc-po,.mcard.is-active .mcard-po{color:#a86109}
-
-/* Status pills */
-.lc-status.is-completed{background:linear-gradient(135deg,#8b5cf6,#7c3aed);color:#fff;box-shadow:0 1px 3px rgba(124,58,237,.3)}
-.lc-status.is-overdue{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;box-shadow:0 1px 3px rgba(220,38,38,.3)}
-.lc-status.is-active{background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;box-shadow:0 1px 3px rgba(217,119,6,.3)}
-.lc-status.is-normal{background:var(--Ib);color:var(--I);font-weight:700}
-/* Voided: kept on the record as proof, but visibly not live work */
-.lc-status.is-voided{background:#71717a;color:#fff;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-.lcard.is-voided{opacity:.55}
-.lcard.is-voided::before{background:#71717a}
-.lcard.is-voided .lc-customer,.lcard.is-voided .lc-po{text-decoration:line-through}
-.lc-po{font-size:10px;font-weight:700;color:var(--I);letter-spacing:.06em;margin-bottom:4px;text-transform:uppercase}
-.lc-customer{font-size:13.5px;font-weight:700;line-height:1.3;margin-bottom:4px;letter-spacing:-.005em;padding-right:80px}
-.lc-detail{font-size:11.5px;color:var(--txt2);margin-bottom:3px;line-height:1.4;font-weight:500}
-.lc-mat-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;background:linear-gradient(135deg,var(--Ib),var(--Bb));color:var(--I);margin-top:5px;letter-spacing:.02em}
-.lc-progress{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;font-weight:600}
-.lc-progress span{color:var(--txt2);font-variant-numeric:tabular-nums;min-width:32px}
-.lc-progress-bar{flex:1;height:5px;background:var(--bg2);border-radius:4px;overflow:hidden;position:relative}
-.lc-progress-fill{height:100%;background:linear-gradient(90deg,var(--G),#22c55e);transition:width .3s;border-radius:4px;box-shadow:0 0 6px rgba(22,160,102,.3)}
-.lc-status{position:absolute;top:10px;right:10px;font-size:9px;font-weight:700;padding:3px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em}
-.lc-status.pending{background:var(--bg2);color:var(--txt2)}
-.lc-status.submitted{background:linear-gradient(135deg,var(--Pb),#fff);color:var(--P);box-shadow:inset 0 0 0 1px var(--Pd)}
-.lc-status.approved{background:linear-gradient(135deg,var(--Gb),#fff);color:var(--G);box-shadow:inset 0 0 0 1px var(--Gd)}
-.lc-status.rejected{background:linear-gradient(135deg,var(--Rb),#fff);color:var(--R);box-shadow:inset 0 0 0 1px var(--Rd)}
-.lc-moved-pill{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:20px;background:rgba(15,22,40,.06);color:var(--txt2);text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
-
-.empty-col{padding:20px;text-align:center;color:var(--txt3);font-size:11px;font-style:italic}
+/* ── DISPATCH BOARD ── */
+.db-wrap{padding:14px 18px 24px;max-width:1360px;margin:0 auto}
+.db-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.db-eyebrow{font-size:11px;font-weight:800;letter-spacing:.14em;color:var(--txt3)}
+.db-date{font-size:20px;font-weight:800;letter-spacing:-.01em}
+.db-nav{display:flex;align-items:center;gap:6px}
+.db-nav button{min-width:40px;height:40px;border-radius:10px;border:1px solid var(--bdr2);background:var(--bg);font-size:18px;cursor:pointer;color:var(--txt2);font-family:var(--f)}
+.db-nav button:hover{border-color:var(--B);color:var(--B)}
+.db-nav .db-today{font-size:12px;font-weight:700;padding:0 12px;color:var(--B);border-color:var(--Bd)}
+.db-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:8px;margin-bottom:14px}
+.db-tile{background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:11px 10px;text-align:left;cursor:pointer;font-family:var(--f);box-shadow:var(--shadow);color:var(--txt);min-height:44px}
+.db-tile:hover{border-color:var(--Bd)}
+.db-tile .n{font-size:24px;font-weight:800;line-height:1}
+.db-tile .l{font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-top:5px}
+.db-tile .s{font-size:11px;color:var(--txt3);margin-top:3px}
+.db-tile.active{outline:2px solid var(--B);outline-offset:1px}
+.db-tile.alert{border-color:#fca5a5;background:#fef2f2}.db-tile.alert .n{color:#b42318}
+.db-tile.warn{border-color:#fcd34d;background:#fff8ec}.db-tile.warn .n{color:#b45309}
+.db-tile.live .n{color:#b45309}
+.db-tile.bill{border-color:var(--Td);background:var(--Tb)}.db-tile.bill .n{color:var(--T)}
+.db-tile.ok .n{color:var(--G)}
+.db-grid{display:grid;grid-template-columns:minmax(300px,400px) 1fr;gap:16px;align-items:start}
+@media(max-width:1000px){.db-grid{grid-template-columns:1fr}}
+.db-sec{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);margin:4px 0 8px}
+.db-sec-meta{font-weight:600;text-transform:none;letter-spacing:0;color:var(--txt3);text-align:right}
+.db-clear{font-size:11.5px;font-weight:700;text-transform:none;letter-spacing:0;color:var(--B);background:none;border:none;cursor:pointer;font-family:var(--f);padding:4px 0}
+.db-empty{font-size:12px;color:var(--txt3);padding:8px 2px}
+.db-drv{display:grid;grid-template-columns:10px 1fr auto;gap:10px;align-items:start;background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:10px 12px;margin-bottom:8px;box-shadow:var(--shadow)}
+.db-drv.drop-target{outline:2px dashed var(--B);background:var(--Bb)}
+.db-drv-dot{width:10px;height:10px;border-radius:50%;margin-top:6px;background:var(--bdr2)}
+.db-drv.available .db-drv-dot{background:var(--G)}
+.db-drv.assigned .db-drv-dot{background:#2563eb}
+.db-drv.in-progress .db-drv-dot{background:#d97706;box-shadow:0 0 0 3px #fde68a}
+.db-drv.completed .db-drv-dot{background:var(--G)}
+.db-drv.off{opacity:.6}.db-drv.off .db-drv-dot{background:var(--txt3)}
+.db-drv-main{min-width:0}
+.db-drv-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13.5px}
+.db-drv-truck{font-size:12px;color:var(--txt2);font-weight:600}.db-drv-truck i{color:var(--txt3);font-weight:500}
+.db-drv-day{font-size:11px;color:var(--txt3)}
+.db-drv-load{font-size:12.5px;margin-top:4px;cursor:pointer}
+.db-drv-load:hover{text-decoration:underline}
+.db-drv-route{font-size:12px;color:var(--txt2);margin-top:2px}.db-drv-route.muted{color:var(--txt3)}
+.db-drv-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.db-drv-more{font-size:11px;color:var(--txt3);font-weight:700;white-space:nowrap}
+.db-drv-link{font-size:11px;color:var(--B);font-weight:600;white-space:nowrap}
+.db-chip{display:inline-block;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;padding:2px 8px;border-radius:20px;background:var(--bg2);color:var(--txt2)}
+.db-chip.available,.db-chip.completed{background:#dcfce7;color:#0a8a3a}
+.db-chip.assigned{background:#dbeafe;color:#1d4ed8}
+.db-chip.in-progress{background:#fef3c7;color:#b45309}
+.db-chip.off,.db-chip.unavailable{background:var(--bg2);color:var(--txt3)}
+.db-trucks{display:flex;flex-wrap:wrap;gap:6px}
+.db-truck{font-size:11.5px;border:1px solid var(--bdr);border-radius:8px;padding:5px 9px;background:var(--bg)}
+.db-truck.available{border-color:var(--Gd);background:var(--Gb)}
+.db-truck.in-progress{border-color:var(--Ad);background:var(--Ab)}
+.db-truck.assigned{border-color:var(--Bd);background:var(--Bb)}
+.db-truck.unavailable{color:var(--txt3)}
+.db-route{display:flex;gap:8px;align-items:center;font-size:12.5px;margin-top:8px;color:var(--txt);flex-wrap:wrap}
+.db-route-yard{font-weight:700}.db-route-arrow{color:var(--txt3)}
+.db-flag{font-size:12px;font-weight:700;border-radius:8px;padding:6px 10px;margin-top:8px}
+.db-flag.missing{background:#fef2f2;color:#b42318;border:1px solid #fca5a5}
+.db-flag.conflict{background:#fff8ec;color:#b45309;border:1px solid #fcd34d}
+.qa-card.attn{border-color:#fca5a5}
+.qa-card.ready-to-bill{border-left-color:var(--T)}
+.qa-chip.ready-to-bill{background:var(--Tb);color:var(--T)}
+.qa-fact.live{border-color:#fcd34d;background:#fff8ec}
+.qa-card.dragging{opacity:.5}
+.qa-card[draggable="true"]{cursor:grab}
+.lc-progress{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;color:var(--txt2)}
+.lc-progress-bar{flex:1;height:5px;background:var(--bg2);border-radius:3px;overflow:hidden}
+.lc-progress-fill{height:100%;background:var(--G);border-radius:3px}
+.db-day{margin-top:16px}
+.db-day summary{cursor:pointer;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--txt2);padding:8px 0;list-style:none}
+.db-day summary::before{content:'▸ ';color:var(--txt3)}
+.db-day[open] summary::before{content:'▾ '}
+.empty-col{padding:20px;text-align:center;color:var(--txt3);font-size:12px}
 
 /* ── PO MODAL ── */
 .modal-bg{position:fixed;inset:0;background:rgba(26,32,53,.5);display:flex;align-items:flex-start;justify-content:center;padding:20px;z-index:200;overflow-y:auto}
@@ -647,12 +572,6 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 
 /* Tap-to-assign on a load card — the touch-safe path. Drag-and-drop does not
    fire on iOS/Android, so this is the only way to reassign from a phone. */
-.lc-assign-btn{margin-left:auto;flex-shrink:0;padding:7px 14px;min-height:34px;font-size:11.5px;font-weight:700;
-  border:1.5px solid var(--B);background:var(--Bb,#e7f0ff);color:var(--B);border-radius:20px;cursor:pointer;
-  font-family:var(--f);letter-spacing:.02em;transition:all .15s}
-.lc-assign-btn:hover{background:var(--B);color:#fff}
-.lc-assign-btn:active{transform:scale(.97)}
-@media(max-width:600px){.lc-assign-btn{min-height:44px;padding:10px 18px;font-size:13px}}
 
 /* ── QUICK ASSIGN / TODAY ─────────────────────────────────────────────────
    Built phone-first: a dispatcher standing in a yard must assign a load in
@@ -765,13 +684,9 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand"><img src="/app/logo-sidebar.png" alt="Valley Best Trucking"></div>
     <nav class="sidebar-nav">
-      <button class="nav-item active" data-tab="board" onclick="goTab('board')">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-        <span>Board</span>
-      </button>
-      <button class="nav-item" data-tab="today" onclick="goTab('today')" id="nav-today">
+      <button class="nav-item active" data-tab="today" onclick="goTab('today')" id="nav-today">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-        <span>Quick Assign</span>
+        <span>Dispatch</span>
         <span class="nav-badge" id="today-badge" style="display:none">0</span>
       </button>
       <button class="nav-item" data-tab="map" onclick="goTab('map')" id="nav-map" style="display:none">
@@ -829,17 +744,12 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   <main class="main">
     <header class="topbar">
       <button class="menu-toggle" onclick="toggleMenu()">☰</button>
-      <h1 class="page-title" id="page-title">Board</h1>
+      <h1 class="page-title" id="page-title">Dispatch</h1>
       <div class="topbar-actions" id="topbar-actions"></div>
     </header>
     <div class="content">
-      <!-- BOARD -->
-      <div class="section active" id="sec-board">
-        <div class="board-header" id="board-header"></div>
-        <div class="board" id="board"></div>
-      </div>
-      <!-- QUICK ASSIGN / TODAY -->
-      <div class="section" id="sec-today">
+      <!-- DISPATCH BOARD -->
+      <div class="section active" id="sec-today">
         <div id="today-content"></div>
       </div>
       <!-- PURCHASE ORDERS -->
@@ -1247,13 +1157,8 @@ let me = null, role = 'driver', myTruckId = null, myUsername = '', myDisplayName
 let trucks = [], materials = [], yards = [], pos = [], loads = [];
 let vendors = [], vendorPrices = {};
 let currentVendorTab = null;  // selected vendor in the Vendors screen
-let dayOffset = 0, monthOffset = 0;
-let boardView = 'day';  // 'day' | 'month'
-let currentTab = 'board';
-// Dispatch board filters — applied in renderDayBoard. 'all' / '' means no filter.
-let boardFilters = { driver: '', material: '', customer: '', city: '', status: '', search: '' };
+let currentTab = 'today';
 // "Active" status pulse on the hero summary card; clicking a stat sets this.
-let boardStatusFilter = '';  // '' | 'unassigned' | 'in-progress' | 'pending-approval' | 'ready-to-bill' | 'completed'
 let editingPoId = null;
 let fleet = [], rosterDrivers = [];
 let poAvail = null;        // /api/today for the PO's delivery date: driver + truck availability
@@ -1271,54 +1176,6 @@ const todayStr = () => {
 
 // Card status logic — drives green/red/normal coloring
 // Returns: { kind: 'completed'|'overdue'|'active'|'normal', label: string }
-function getCardStatus(l) {
-  const today = todayStr();
-  const sched = l.deliveryDate || '';
-  const ts = l.timestamps || {};
-
-  // Voided outranks everything. The record is kept as proof but the load does
-  // not count, and it must not sit on the board looking like live work.
-  if (l.voided) return { kind: 'voided', label: 'Voided' };
-
-  // 1. PARTIAL — driver submitted incomplete (some but not all) — YELLOW
-  // This takes priority over "completed" coloring so manager sees it stands out
-  if (l.isPartial) {
-    if (l.approvalStatus === 'approved' || l.billStatus === 'billed') {
-      return { kind: 'partial', label: `Approved partial (${l.loadsDelivered}/${l.loadsAssigned})` };
-    }
-    return { kind: 'partial', label: `Partial (${l.loadsDelivered}/${l.loadsAssigned})` };
-  }
-
-  // 2. Fully completed — purple/green
-  if (l.approvalStatus === 'approved' || l.billStatus === 'billed') {
-    return { kind: 'completed', label: 'Approved' };
-  }
-  if (l.approvalStatus === 'submitted' || ts.completed) {
-    return { kind: 'completed', label: 'Delivered' };
-  }
-
-  // 3. Rejected — re-do it
-  if (l.approvalStatus === 'rejected') {
-    return { kind: 'overdue', label: 'Rejected' };
-  }
-
-  // 4. In progress today
-  if (sched === today && ts.start) {
-    return { kind: 'active', label: 'In progress' };
-  }
-
-  // 5. Future or today not started
-  if (sched === today) {
-    return { kind: 'normal', label: 'Today' };
-  }
-  // Note: removed automatic "overdue" coloring — manager checks board manually
-  return { kind: 'normal', label: 'Scheduled' };
-}
-function getBoardDate() {
-  const d = new Date();
-  d.setDate(d.getDate() + dayOffset);
-  return d;
-}
 // Returns a YYYY-MM-DD string for the given Date in the user's LOCAL calendar.
 // CRITICAL: do NOT use d.toISOString().slice(0,10) — that returns the UTC date,
 // which in US timezones rolls over to "tomorrow" any time after late afternoon
@@ -1508,12 +1365,12 @@ async function init() {
 
 // ── TAB ROUTING ──────────────────────────────────────────────────────────────
 function goTab(tab) {
+  if (tab === 'board') tab = 'today';   // the old Board is the Dispatch board now
   currentTab = tab;
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 
-  if (tab === 'board')    { document.getElementById('sec-board').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch Board'; renderBoard(); }
-  if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = "Today's Dispatch"; renderToday(); }
+  if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch'; renderToday(); }
   if (tab === 'pos')      { document.getElementById('sec-pos').classList.add('active'); document.getElementById('page-title').textContent = 'Purchase Orders'; renderPOsList(); }
   if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
@@ -1531,7 +1388,7 @@ function goTab(tab) {
 
   // Update topbar actions
   const actions = document.getElementById('topbar-actions');
-  if ((role === 'manager' || role === 'admin') && tab === 'board') {
+  if ((role === 'manager' || role === 'admin') && tab === 'today') {
     actions.innerHTML = `<button class="btn primary" onclick="openNewPO()">+ New PO</button>`;
   } else if (role === 'driver') {
     const isDark = document.body.classList.contains('drv-dark');
@@ -1555,434 +1412,20 @@ function toggleMenu() {
   document.getElementById('sidebar').classList.toggle('open');
 }
 
-// ── BOARD (manager) ──────────────────────────────────────────────────────────
-function setBoardView(v) {
-  boardView = v;
-  renderBoard();
-}
-
-function renderBoard() {
-  if (boardView === 'month') return renderMonthBoard();
-  return renderDayBoard();
-}
-
-function renderDayBoard() {
-  const date = getBoardDate();
-  const dateStr = ymd(date);
-  const isToday = dateStr === todayStr();
-  const me = myDisplayName || (myUsername.charAt(0).toUpperCase() + myUsername.slice(1));
-
-  // Header with date nav
-  document.getElementById('board-header').innerHTML = `
-    <div class="date-nav">
-      <button onclick="changeDay(-1)" aria-label="Previous day">‹</button>
-      <span class="date-label">${date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</span>
-      <button onclick="changeDay(1)" aria-label="Next day">›</button>
-    </div>
-    ${!isToday ? `<button class="today-btn" onclick="goToday()">Today</button>` : ''}
-    <div style="margin-left:auto;display:flex;gap:4px;background:var(--bg2);padding:3px;border-radius:20px">
-      <button class="view-btn ${boardView === 'day' ? 'active' : ''}" onclick="setBoardView('day')">Day</button>
-      <button class="view-btn ${boardView === 'month' ? 'active' : ''}" onclick="setBoardView('month')">Month</button>
-    </div>
-  `;
-
-  // All loads scheduled for this day, regardless of filter (used for hero counts)
-  const allDayLoads = loads.filter(l => l.deliveryDate === dateStr && !l.voided);
-
-  // Compute hero stats
-  const stats = computeBoardStats(allDayLoads);
-
-  // Apply filters
-  const filtered = applyBoardFilters(allDayLoads);
-
-  // Build the board layout: HERO → FILTER BAR → DRIVER STRIP → COLUMNS
-  const board = document.getElementById('board');
-  const heroHtml = renderDispatchHero(stats, isToday, date, me);
-  const filterHtml = renderFilterBar(filtered.length, allDayLoads.length);
-  const stripHtml = renderDriverStrip(allDayLoads);
-
-  // Build columns with filtered loads
-  const colHtml = [];
-  trucks.forEach(t => {
-    const myLoads = filtered.filter(l => l.truckId === t.id);
-    const allMyDayLoads = allDayLoads.filter(l => l.truckId === t.id);
-    const reassignableCount = allMyDayLoads.filter(l => !l.locked).length;
-    const initials = (t.label || '?').split(/\s+/).map(s => s.charAt(0)).join('').slice(0,2).toUpperCase();
-    const countCls = allMyDayLoads.length === 0 ? 'empty' : (allMyDayLoads.length >= 5 ? 'heavy' : '');
-    colHtml.push(`
-      <div class="driver-col">
-        <div class="driver-col-head">
-          <div style="flex:1;min-width:0">
-            <div class="driver-name"><span class="driver-name-avatar">${initials}</span>${t.label}</div>
-            <div class="driver-truck">${t.truckNum}${reassignableCount > 0 ? ` · <a onclick="event.stopPropagation();openReassignModal('all-driver','${t.id}')" style="color:var(--I);cursor:pointer;text-decoration:underline;font-weight:600">Reassign all</a>` : ''}</div>
-          </div>
-          <span class="driver-load-count ${countCls}">${allMyDayLoads.length}</span>
-        </div>
-        <div class="driver-col-body" data-truckid="${t.id}"
-          ondragover="event.preventDefault();this.classList.add('drop-target')"
-          ondragleave="this.classList.remove('drop-target')"
-          ondrop="onDrop(event, '${t.id}')">
-          ${myLoads.length ? myLoads.map(l => loadCard(l)).join('') : (allMyDayLoads.length ? '<div class="empty-col">No loads match the current filter</div>' : '<div class="empty-col">No loads</div>')}
-        </div>
-      </div>
-    `);
-  });
-
-  // Unassigned column — always last, always visible (it's the alert column)
-  const unas = filtered.filter(l => !l.truckId || l.truckId === 'unassigned');
-  const allUnas = allDayLoads.filter(l => !l.truckId || l.truckId === 'unassigned');
-  colHtml.push(`
-    <div class="driver-col unassigned-col">
-      <div class="driver-col-head">
-        <div>
-          <div class="driver-name" style="color:var(--A)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</div>
-          <div class="driver-truck">Tap Assign on a load — or drag a card here to unassign</div>
-        </div>
-        <span class="driver-load-count" style="background:var(--Ad);color:var(--A)">${allUnas.length}</span>
-      </div>
-      <div class="driver-col-body" data-truckid=""
-        ondragover="event.preventDefault();this.classList.add('drop-target')"
-        ondragleave="this.classList.remove('drop-target')"
-        ondrop="onDrop(event, '')">
-        ${unas.length ? unas.map(l => loadCard(l)).join('') : (allUnas.length ? '<div class="empty-col">No loads match the current filter</div>' : '<div class="empty-col">No unassigned loads</div>')}
-      </div>
-    </div>
-  `);
-
-  board.innerHTML = `${heroHtml}${filterHtml}${stripHtml}<div class="board-cols">${colHtml.join('')}</div>`;
-  updateApproveBadge();
-}
-
-// Compute counts of each status bucket for the hero summary card.
-function computeBoardStats(dayLoads) {
-  let unassigned = 0, inProgress = 0, pendingApproval = 0, readyToBill = 0, approved = 0, completed = 0, partial = 0;
-  dayLoads.forEach(l => {
-    if (!l.truckId || l.truckId === 'unassigned') unassigned++;
-    if (l.timestamps?.start && !l.timestamps?.completed && l.approvalStatus !== 'approved' && l.approvalStatus !== 'submitted') inProgress++;
-    if (l.approvalStatus === 'submitted') pendingApproval++;
-    if (l.approvalStatus === 'approved' && l.billStatus !== 'billed') readyToBill++;
-    if (l.approvalStatus === 'approved') approved++;
-    if (l.approvalStatus === 'approved' || l.timestamps?.completed) completed++;
-    if (l.isPartial) partial++;
-  });
-  return { total: dayLoads.length, unassigned, inProgress, pendingApproval, readyToBill, approved, completed, partial };
-}
-
-function renderDispatchHero(stats, isToday, date, displayName) {
-  const greet = isToday
-    ? `Welcome back, ${displayName}`
-    : `${date.toLocaleDateString('en-US', { weekday: 'long' })} dispatch`;
-  const sub = isToday
-    ? `Here's what needs your attention today.`
-    : `Schedule for ${date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}.`;
-  const dateLabel = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-
-  const stat = (key, label, num, meta, cls = '') => `
-    <div class="hero-stat ${cls} ${boardStatusFilter === key ? 'active' : ''}" onclick="setBoardStatusFilter('${key}')">
-      <div class="hero-stat-label">${label}</div>
-      <div class="hero-stat-num">${num}</div>
-      <div class="hero-stat-meta">${meta}</div>
-    </div>`;
-
-  return `<div class="dispatch-hero">
-    <div class="hero-row">
-      <div class="hero-greeting">
-        <div class="hero-eyebrow">Dispatch Command Center</div>
-        <div class="hero-title">${greet}</div>
-        <div class="hero-sub">${sub}</div>
-      </div>
-      <div class="hero-date"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> ${dateLabel}</div>
-    </div>
-    <div class="hero-stats">
-      ${stat('', 'All Loads', stats.total, `${trucks.length} drivers on shift`)}
-      ${stat('unassigned', 'Unassigned', stats.unassigned, stats.unassigned ? 'Needs assignment' : 'All assigned', stats.unassigned ? 'alert' : '')}
-      ${stat('in-progress', 'In Progress', stats.inProgress, stats.inProgress ? 'On the road' : 'None active', stats.inProgress ? 'warn' : '')}
-      ${stat('pending-approval', 'Pending Approval', stats.pendingApproval, stats.pendingApproval ? 'Awaiting review' : 'All clear', stats.pendingApproval ? 'warn' : '')}
-      ${stat('ready-to-bill', 'Ready to Bill', stats.readyToBill, stats.readyToBill ? 'Approved & locked' : 'Nothing queued', 'bill')}
-      ${stat('completed', 'Completed', stats.completed, stats.completed ? 'Finished today' : 'None yet', 'success')}
-    </div>
-  </div>`;
-}
-
-function renderFilterBar(visible, total) {
-  const customers = [...new Set(pos.map(p => p.customer).filter(Boolean))].sort();
-  const cities = [...new Set(pos.map(p => p.city).filter(Boolean))].sort();
-  const mats = [...new Set(loads.map(l => l.material).filter(Boolean))].sort();
-  const opt = (val, list) => list.map(x => `<option value="${escapeHtml(x)}" ${val === x ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('');
-  const driverOpts = trucks.map(t => `<option value="${t.id}" ${boardFilters.driver === t.id ? 'selected' : ''}>${escapeHtml(t.label)}</option>`).join('');
-  const hasAny = boardFilters.driver || boardFilters.material || boardFilters.customer || boardFilters.city || boardFilters.search || boardStatusFilter;
-  const visMeta = hasAny ? `${visible} of ${total} loads` : '';
-  return `<div class="filter-bar">
-    <span class="filter-bar-label">Filter</span>
-    <input type="text" placeholder="Search PO / customer / job…" value="${escapeHtml(boardFilters.search || '')}" oninput="setBoardFilter('search', this.value)" style="min-width:180px">
-    <select onchange="setBoardFilter('driver', this.value)">
-      <option value="">All drivers</option>
-      ${driverOpts}
-      <option value="__unassigned__" ${boardFilters.driver === '__unassigned__' ? 'selected' : ''}>Unassigned only</option>
-    </select>
-    <select onchange="setBoardFilter('material', this.value)">
-      <option value="">All materials</option>
-      ${opt(boardFilters.material, mats)}
-    </select>
-    <select onchange="setBoardFilter('customer', this.value)">
-      <option value="">All customers</option>
-      ${opt(boardFilters.customer, customers)}
-    </select>
-    <select onchange="setBoardFilter('city', this.value)">
-      <option value="">All cities</option>
-      ${opt(boardFilters.city, cities)}
-    </select>
-    <span class="filter-result-count">${visMeta}</span>
-    ${hasAny ? `<button class="filter-clear" onclick="clearBoardFilters()">Clear filters</button>` : ''}
-  </div>`;
-}
-
-function renderDriverStrip(allDayLoads) {
-  if (!trucks.length) return '';
-  const chips = trucks.map(t => {
-    const cnt = allDayLoads.filter(l => l.truckId === t.id).length;
-    const cls = cnt === 0 ? 'free' : (cnt >= 5 ? 'heavy' : 'busy');
-    const initials = (t.label || '?').split(/\s+/).map(s => s.charAt(0)).join('').slice(0,2).toUpperCase();
-    const active = boardFilters.driver === t.id ? 'active' : '';
-    return `<button type="button" class="driver-chip ${cls} ${active}" onclick="toggleDriverFilter('${t.id}')" title="${escapeHtml(t.label)} — ${cnt} load${cnt===1?'':'s'}">
-      <span class="driver-chip-dot">${initials}</span>
-      <span class="driver-chip-name">${escapeHtml(t.label)}</span>
-      <span class="driver-chip-count">${cnt}</span>
-    </button>`;
-  }).join('');
-  return `<div class="driver-strip">
-    <span class="driver-strip-label">Driver Availability</span>
-    ${chips}
-  </div>`;
-}
-
-function setBoardFilter(key, value) {
-  boardFilters[key] = value;
-  // Clear hero status filter when driver/material/customer/city changes (treat them as separate axes)
-  renderDayBoard();
-}
-function toggleDriverFilter(truckId) {
-  boardFilters.driver = boardFilters.driver === truckId ? '' : truckId;
-  renderDayBoard();
-}
-function clearBoardFilters() {
-  boardFilters = { driver: '', material: '', customer: '', city: '', status: '', search: '' };
-  boardStatusFilter = '';
-  renderDayBoard();
-}
-function setBoardStatusFilter(key) {
-  boardStatusFilter = (boardStatusFilter === key) ? '' : key;
-  renderDayBoard();
-}
-function applyBoardFilters(dayLoads) {
-  return dayLoads.filter(l => {
-    const po = pos.find(p => p.id === l.poId) || {};
-    if (boardFilters.driver) {
-      if (boardFilters.driver === '__unassigned__') {
-        if (l.truckId && l.truckId !== 'unassigned') return false;
-      } else if (l.truckId !== boardFilters.driver) return false;
-    }
-    if (boardFilters.material && l.material !== boardFilters.material) return false;
-    if (boardFilters.customer && (po.customer || '') !== boardFilters.customer) return false;
-    if (boardFilters.city && (po.city || '') !== boardFilters.city) return false;
-    if (boardFilters.search) {
-      const q = boardFilters.search.toLowerCase();
-      const hay = [po.poNumber, po.customer, po.jobCode, po.address, po.city, l.material, l.driverName].filter(Boolean).join(' ').toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    if (boardStatusFilter) {
-      if (boardStatusFilter === 'unassigned' && (l.truckId && l.truckId !== 'unassigned')) return false;
-      if (boardStatusFilter === 'in-progress' && !(l.timestamps?.start && !l.timestamps?.completed && l.approvalStatus !== 'approved' && l.approvalStatus !== 'submitted')) return false;
-      if (boardStatusFilter === 'pending-approval' && l.approvalStatus !== 'submitted') return false;
-      if (boardStatusFilter === 'ready-to-bill' && !(l.approvalStatus === 'approved' && l.billStatus !== 'billed')) return false;
-      if (boardStatusFilter === 'completed' && !(l.approvalStatus === 'approved' || l.timestamps?.completed)) return false;
-    }
-    return true;
-  });
-}
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
 
-// ── MONTH BOARD ──
-function renderMonthBoard() {
-  const today = new Date();
-  const target = new Date(today.getFullYear(), today.getMonth() + monthOffset, 1);
-  const daysInMonth = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
-  const todStr = todayStr();
-  const monthLabel = target.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-
-  // Header
-  document.getElementById('board-header').innerHTML = `
-    <div class="date-nav">
-      <button onclick="changeMonth(-1)">‹</button>
-      <span class="date-label">${monthLabel}</span>
-      <button onclick="changeMonth(1)">›</button>
-    </div>
-    ${monthOffset !== 0 ? `<button class="today-btn" onclick="goToday()">Today</button>` : ''}
-    <div style="margin-left:auto;display:flex;gap:4px;background:var(--bg2);padding:3px;border-radius:20px">
-      <button class="view-btn ${boardView === 'day' ? 'active' : ''}" onclick="setBoardView('day')">Day</button>
-      <button class="view-btn ${boardView === 'month' ? 'active' : ''}" onclick="setBoardView('month')">Month</button>
-    </div>
-  `;
-
-  let h = '<div class="month-grid" style="padding:18px 22px"><table>';
-  // Header row
-  h += '<thead><tr><th class="day-col">Date</th>';
-  trucks.forEach(t => { h += `<th>${t.label}<div style="font-size:10px;font-weight:400;color:var(--txt3)">${t.truckNum}</div></th>`; });
-  h += '<th style="width:90px;color:var(--A)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unassigned</th>';
-  h += '</tr></thead><tbody>';
-
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dt = new Date(target.getFullYear(), target.getMonth(), d);
-    const dateStr = ymd(dt);
-    const dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getDay()];
-    const isToday = dateStr === todStr;
-    const isPast = dateStr < todStr;
-    const dayLoads = loads.filter(l => l.deliveryDate === dateStr && !l.voided);
-    const totalAssigned = dayLoads.reduce((s,l) => s + (Number(l.loadsAssigned)||0), 0);
-    const totalDelivered = dayLoads.reduce((s,l) => s + (Number(l.loadsDelivered)||0), 0);
-    const unas = dayLoads.filter(l => !l.truckId || l.truckId === 'unassigned');
-
-    h += `<tr>`;
-    h += `<td class="day-cell ${isToday ? 'today-cell' : ''} ${isPast && !isToday ? 'past-cell' : ''}" onclick="jumpToDay('${dateStr}')">
-      <span class="day-num">${d}</span>
-      <span class="day-name">${dayName}</span>
-      ${dayLoads.length ? `<div class="day-summary">${totalDelivered}/${totalAssigned}</div>` : ''}
-      ${unas.length ? `<span class="day-warn">${unas.length}</span>` : ''}
-    </td>`;
-
-    trucks.forEach(t => {
-      const myLoads = dayLoads.filter(l => l.truckId === t.id);
-      h += '<td>';
-      if (myLoads.length === 0) h += '<div class="mempty">—</div>';
-      else {
-        myLoads.slice(0, 3).forEach(l => {
-          const po = pos.find(p => p.id === l.poId) || {};
-          const status = getCardStatus(l);
-          h += `<div class="mcard is-${status.kind}" onclick="openLoadDetail('${l.id}')">
-            <div class="mcard-po">${po.poNumber || ''}${po.jobCode ? ` · ${po.jobCode}` : ''}</div>
-            <div class="mcard-cust">${po.customer || ''}</div>
-            <div class="mcard-mat">${l.material}${po.city ? ' · ' + po.city : ''}</div>
-            <div class="mcard-progress">${l.loadsDelivered}/${l.loadsAssigned} loads</div>
-          </div>`;
-        });
-        if (myLoads.length > 3) h += `<div class="mempty" onclick="jumpToDay('${dateStr}')" style="cursor:pointer;color:var(--B)">+${myLoads.length - 3} more</div>`;
-      }
-      h += '</td>';
-    });
-
-    // Unassigned column
-    h += '<td>';
-    if (unas.length === 0) h += '<div class="mempty">—</div>';
-    else {
-      unas.slice(0, 2).forEach(l => {
-        const po = pos.find(p => p.id === l.poId) || {};
-        h += `<div class="mcard unassigned-m" onclick="openLoadDetail('${l.id}')">
-          <div class="mcard-po">${po.poNumber || ''}</div>
-          <div class="mcard-cust">${po.customer || ''}</div>
-          <div class="mcard-mat">${l.material}</div>
-        </div>`;
-      });
-      if (unas.length > 2) h += `<div class="mempty">+${unas.length - 2}</div>`;
-    }
-    h += '</td>';
-    h += '</tr>';
-  }
-  h += '</tbody></table></div>';
-
-  document.getElementById('board').innerHTML = h;
-  updateApproveBadge();
-}
-
-function changeMonth(n) { monthOffset += n; renderBoard(); }
-function jumpToDay(dateStr) {
-  // Set dayOffset to land exactly on dateStr (a YYYY-MM-DD local date string).
-  // Anchor BOTH endpoints at local noon — that way the diff in milliseconds is
-  // an exact integer multiple of 24h (within DST tolerance) and Math.round
-  // doesn't get fooled by a 0.5-day offset like it did when today was anchored
-  // at midnight and target at noon (the old code rounded the wrong way and
-  // landed on the next day).
-  const today = new Date(); today.setHours(12, 0, 0, 0);
-  const target = new Date(dateStr + 'T12:00:00');
-  dayOffset = Math.round((target - today) / 86400000);
-  setBoardView('day');
-}
-
-function loadCard(l) {
-  const po = pos.find(p => p.id === l.poId) || {};
-  const pct = l.loadsAssigned > 0 ? Math.round(l.loadsDelivered / l.loadsAssigned * 100) : 0;
-  const status = getCardStatus(l);
-  const cardCls = `is-${status.kind}`;
-
-  const wasMoved = l.moveHistory && l.moveHistory.length > 0;
-  const lastMove = wasMoved ? l.moveHistory[l.moveHistory.length - 1] : null;
-
-  // Driver chip — initials avatar + name (or Unassigned)
-  let driverHtml;
-  if (l.truckId && l.driverName) {
-    const initials = l.driverName.split(/\s+/).map(s => s.charAt(0)).join('').slice(0,2).toUpperCase();
-    driverHtml = `<span class="lc-driver"><span class="lc-driver-avatar">${initials}</span>${escapeHtml(l.driverName)}</span>`;
-  } else {
-    driverHtml = `<span class="lc-driver unassigned"><span class="lc-driver-avatar">!</span>Unassigned</span>`;
-  }
-
-  // Vendor / pickup yard chip — VBT Yard rendered as INTERNAL
-  // One source: the server's resolvePickupYard, delivered as l.pickup.
-  let vendorHtml = '';
-  if (l.pickup && l.pickup.name) {
-    vendorHtml = `<span class="lc-vendor ${l.pickup.isInternal ? 'internal' : ''}">${escapeHtml(l.pickup.name)}${l.pickup.isActual ? '' : ''}</span>`;
-  }
-
-  // City / address line
-  const pinSvg = `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;display:inline-block;vertical-align:-1px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`;
-  let routeHtml = '';
-  if (po.city || po.address) {
-    routeHtml = `<div class="lc-detail">${pinSvg} ${escapeHtml([po.city, po.address].filter(Boolean).join(' · '))}</div>`;
-  }
-
-  return `<div class="lcard ${cardCls}"
-    draggable="${(role === 'manager' || role === 'admin') && !l.locked ? 'true' : 'false'}"
-    data-loadid="${l.id}"
-    ondragstart="onDragStart(event, '${l.id}')"
-    ondragend="this.classList.remove('dragging')"
-    onclick="openLoadDetail('${l.id}')">
-    <span class="lc-status ${cardCls}">${status.label}</span>
-    <div class="lc-po">${escapeHtml(po.poNumber || '—')}${po.jobCode ? ` · <span style="color:var(--txt3);font-weight:600">${escapeHtml(po.jobCode)}</span>` : ''}</div>
-    <div class="lc-customer">${escapeHtml(po.customer || '')}</div>
-    ${routeHtml}
-    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:5px">
-      <span class="lc-mat-pill">${escapeHtml(l.material)} · ${l.loadsAssigned} load${l.loadsAssigned===1?'':'s'}</span>
-      ${vendorHtml}
-      ${wasMoved ? `<span class="lc-moved-pill" title="Moved from ${fmtDate(lastMove.from)} — ${lastMove.reason}"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:11px;height:11px;display:inline-block;vertical-align:-1px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Moved</span>` : ''}
-    </div>
-    <div class="lc-progress">
-      <span>${l.loadsDelivered}/${l.loadsAssigned}</span>
-      <div class="lc-progress-bar"><div class="lc-progress-fill" style="width:${pct}%"></div></div>
-      <span style="min-width:34px;text-align:right">${pct}%</span>
-    </div>
-    <div class="lc-driver-row">
-      ${driverHtml}
-      ${(role === 'manager' || role === 'admin') && !l.locked
-        ? `<button class="lc-assign-btn" onclick="event.stopPropagation();qaOpenFor('${l.id}')" title="Assign driver, truck and yard">${l.truckId && l.truckId !== 'unassigned' ? 'Reassign' : 'Assign'}</button>`
-        : ''}
-    </div>
-  </div>`;
-}
-
-function changeDay(n) { dayOffset += n; renderBoard(); }
-function goToday() { dayOffset = 0; monthOffset = 0; renderBoard(); }
-
-// ── DRAG & DROP ──────────────────────────────────────────────────────────────
+// ── DRAG A LOAD ONTO A DRIVER ────────────────────────────────────────────────
+// A second way in to the same Quick Assign sheet. Dropping a card never
+// assigns by itself: it opens the sheet with the target driver pre-selected,
+// and nothing is written until Confirm — so a stray touch cannot move a load.
 let dragId = null;
 function onDragStart(e, id) {
   dragId = id;
   e.target.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
 }
-// Dropping a card never assigns by itself. It opens the same Quick Assign
-// sheet as the Assign button, pre-selecting the drop target, and nothing is
-// written until Confirm — so a stray touch on a phone cannot move a load.
 async function onDrop(e, truckId) {
   e.preventDefault();
   e.currentTarget.classList.remove('drop-target');
@@ -2261,7 +1704,7 @@ async function savePO() {
     if (d.ok) {
       toast(`PO ${d.po?.poNumber || ''} created — ${validSplits.length} load assignment${validSplits.length === 1 ? '' : 's'}`, 'success');
       closePO(); await loadAll();
-      if (currentTab === 'today') renderToday(); else if (currentTab === 'pos') renderPOsList(); else renderBoard();
+      if (currentTab === 'today') renderToday(); else if (currentTab === 'pos') renderPOsList();
     } else if (d.duplicate) {
       poNumberState = { value: po.poNumber, exists: true, message: d.error };
       poStep(1); const msg = document.getElementById('po-number-msg'); msg.textContent = d.error; msg.className = 'po-inline bad';
@@ -2605,6 +2048,7 @@ function openLoadDetail(id) {
       actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();qaOpenFor('${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Reassign Driver</button>`;
       actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openMoveModal('single','${l.id}')"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Move Date</button>`;
     }
+    actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openNotifySheet('${l.poId}')">Customer updates: ${po.notifications && po.notifications.enabled ? 'On' : 'Off'}</button>`;
     if (!l.approvalStatus || l.approvalStatus === 'pending') {
       actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
     }
@@ -2645,7 +2089,7 @@ function showInfoModal(title, html, actions = '') {
 
 async function deleteLoad(id) {
   const d = await api('DELETE', '/api/loads/' + id);
-  if (d.ok) { document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove(); await loadAll(); renderBoard(); toast('Load deleted', 'success'); }
+  if (d.ok) { document.querySelector('.modal-bg[style*="z-index: 250"]')?.remove(); await loadAll(); refreshCurrentView(); toast('Load deleted', 'success'); }
   else toast(d.error || 'Failed', 'error');
 }
 
@@ -2716,7 +2160,6 @@ function refreshCurrentView() {
   else if (currentTab === 'today') renderToday();
   else if (currentTab === 'approvals') renderApprovals();
   else if (currentTab === 'billing') renderBilling();
-  else renderBoard();
 }
 
 // Delete a PO and every load on it. Use this to clear test POs — the server
@@ -2733,7 +2176,6 @@ async function deletePO(poId, loadCount) {
   toast(`Deleted PO ${po ? po.poNumber : ''}`, 'success');
   if (currentTab === 'pos') renderPOsList();
   else if (currentTab === 'today') renderToday();
-  else renderBoard();
 }
 
 // ── REASSIGN DRIVER ──────────────────────────────────────────────────────────
@@ -2848,7 +2290,7 @@ async function confirmReassign() {
 
   closeReassign();
   await loadAll();
-  if (currentTab === 'board') renderBoard();
+  refreshCurrentView();
 }
 
 // ── MOVE DATE ────────────────────────────────────────────────────────────────
@@ -2975,7 +2417,7 @@ async function confirmMove() {
     toast(msg, 'success');
     closeMove();
     await loadAll();
-    if (currentTab === 'board') renderBoard();
+    refreshCurrentView();
   } else {
     toast(d.error || 'Move failed', 'error');
   }
@@ -4486,52 +3928,202 @@ function poCard(r) {
 // ── QUICK ASSIGN / TODAY'S DISPATCH ─────────────────────────────────────────
 // One screen, phone-first: see today, spot the unassigned, assign in seconds.
 let todayData = null;
-let qaFilter = 'all';       // all | unassigned | assigned | in-progress | completed
 let qaPick = null;          // { loadId, driverId, truckUnitId, yardId }
 
 async function renderToday() {
   const wrap = document.getElementById('today-content');
-  if (!todayData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading today…</div>`;
-  const d = await api('GET', '/api/today');
+  if (!todayData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading the board…</div>`;
+  const d = await api('GET', '/api/today' + (dbDate ? '?date=' + encodeURIComponent(dbDate) : ''));
   if (!d.ok) { wrap.innerHTML = `<div style="padding:24px;color:var(--R)">${d.error || 'Failed to load'}</div>`; return; }
   todayData = d;
   paintToday();
 }
 
-function paintToday() {
-  const d = todayData; if (!d) return;
-  const s = d.summary;
-  const tile = (n, label, cls, filter) =>
-    `<div class="qa-stat ${cls || ''}" onclick="qaSetFilter('${filter || 'all'}')" style="cursor:pointer">
-       <div class="n">${n}</div><div class="l">${label}</div></div>`;
+// ── THE DISPATCH BOARD ───────────────────────────────────────────────────────
+// The one screen the office runs the day from. Every status, count and flag
+// comes from /api/today (the same rules the server uses to refuse a
+// conflicting assignment); nothing here recomputes a status. The board can be
+// pointed at another day for planning; the attention row is always about now.
+let dbDate = null;          // YYYY-MM-DD shown on the board; null = today
+let dbFilter = 'all';       // all | <bucket> | missing | conflicts | carried
+let dbFleetOnlyFree = false;
+let dbDayOpen = false;      // the Drivers' day panel (odometers, breaks, freight) stays folded
 
-  const order = { unassigned: 0, 'in-progress': 1, assigned: 2, 'awaiting-approval': 3, completed: 4 };
-  let loads = [...d.loads].sort((a, b) => (order[a.bucket] - order[b.bucket]) || String(a.customer).localeCompare(String(b.customer)));
-  if (qaFilter !== 'all') loads = loads.filter(l => l.bucket === qaFilter);
-
-  document.getElementById('today-content').innerHTML = `
-    <div class="qa-wrap">
-      <div class="qa-stats">
-        ${tile(s.unassigned, 'Unassigned', s.unassigned ? 'alert' : '', 'unassigned')}
-        ${tile(s.assigned, 'Assigned', '', 'assigned')}
-        ${tile(s.inProgress, 'In Progress', '', 'in-progress')}
-        ${tile(s.completed, 'Completed', '', 'completed')}
-        ${tile(s.awaitingApproval, 'Awaiting Approval', s.awaitingApproval ? 'warn' : '', 'awaiting-approval')}
-        ${tile(s.driversAvailable, 'Drivers Free', '', 'all')}
-        ${tile(s.driversWorking, 'Drivers Working', '', 'all')}
-        ${tile(s.jobs, 'Jobs Today', '', 'all')}
-      </div>
-      ${qaFilter !== 'all' ? `<button class="btn ghost" onclick="qaSetFilter('all')">← Showing ${qaFilter.replace('-', ' ')} · show all</button>` : ''}
-      ${shiftsPanel(d.shifts || [])}
-      <div class="qa-sec-title">${loads.length} load${loads.length === 1 ? '' : 's'} · ${d.date}</div>
-      ${loads.length ? loads.map(qaCard).join('') :
-        `<div class="empty-state"><h3>Nothing here</h3><p>No loads match this filter for today.</p></div>`}
-    </div>`;
-  const badge = document.getElementById('today-badge');
-  if (badge) { badge.style.display = s.unassigned ? '' : 'none'; badge.textContent = s.unassigned; }
+function dbGo(deltaDays) {
+  const base = new Date((dbDate || (todayData && todayData.today) || todayStr()) + 'T12:00:00');
+  base.setDate(base.getDate() + deltaDays);
+  dbDate = ymd(base);
+  if (todayData && dbDate === todayData.today) dbDate = null;
+  dbFilter = 'all';
+  renderToday();
+}
+function dbToday() { dbDate = null; dbFilter = 'all'; renderToday(); }
+function dbSetFilter(f) { dbFilter = (dbFilter === f && f !== 'all') ? 'all' : f; paintToday(); }
+// Every tile is an action: it filters the board or opens the workflow it names.
+function dbTile(key) {
+  if (key === 'awaiting-approval') return goTab('approvals');
+  if (key === 'ready-to-bill') return goTab('billing');
+  if (key === 'trucks' || key === 'drivers') {
+    dbFleetOnlyFree = !dbFleetOnlyFree; paintToday();
+    const el = document.getElementById('db-fleet'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  dbSetFilter(key);
 }
 
-function qaSetFilter(f) { qaFilter = f; paintToday(); }
+const DB_BUCKET_LABEL = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In Progress', 'awaiting-approval': 'Awaiting Approval', 'ready-to-bill': 'Ready to Bill', completed: 'Completed' };
+const DB_STATE_LABEL  = { available: 'Available', assigned: 'Assigned', 'in-progress': 'In progress', completed: 'Done', off: 'Off', unavailable: 'In shop' };
+const DB_FILTER_TITLE = { missing: 'Missing information', conflicts: 'Conflicts', carried: 'Unfinished from earlier days' };
+
+function paintToday() {
+  const d = todayData; if (!d) return;
+  const s = d.summary, a = d.attention || {};
+  const dateObj = new Date(d.date + 'T12:00:00');
+  const dateLabel = dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const money = v => '$' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const tile = (key, n, label, cls, sub) =>
+    `<button type="button" class="db-tile ${cls || ''} ${dbFilter === key || ((key === 'trucks' || key === 'drivers') && dbFleetOnlyFree) ? 'active' : ''}" onclick="dbTile('${key}')">
+       <div class="n">${n}</div><div class="l">${label}</div>${sub ? `<div class="s">${sub}</div>` : ''}</button>`;
+
+  // Loads, most urgent first
+  const order = { unassigned: 0, 'in-progress': 1, assigned: 2, 'awaiting-approval': 3, 'ready-to-bill': 4, completed: 5 };
+  let list = [...d.loads].sort((x, y) => (order[x.bucket] - order[y.bucket]) || String(x.customer).localeCompare(String(y.customer)));
+  if (dbFilter === 'missing') list = list.filter(l => l.missing.length);
+  else if (dbFilter === 'conflicts') list = list.filter(l => l.conflicts.length);
+  else if (dbFilter === 'carried') list = [...(d.carriedOver || [])].sort((x, y) => String(x.deliveryDate).localeCompare(String(y.deliveryDate)));
+  else if (dbFilter !== 'all') list = list.filter(l => l.bucket === dbFilter);
+  const listTitle = dbFilter === 'all'
+    ? `${d.loads.length} load${d.loads.length === 1 ? '' : 's'} · ${d.isToday ? 'today' : dateLabel}`
+    : `${list.length} · ${DB_FILTER_TITLE[dbFilter] || DB_BUCKET_LABEL[dbFilter] || dbFilter}`;
+  const emptyText = dbFilter === 'all'
+    ? (d.isToday ? 'No loads scheduled today. Create a PO to put work on the board.' : `Nothing scheduled for ${dateLabel}.`)
+    : 'Nothing in this group right now.';
+
+  let drivers = d.drivers;
+  let trucks = d.trucks;
+  if (dbFleetOnlyFree) { drivers = drivers.filter(x => x.available); trucks = trucks.filter(x => x.available); }
+  const sd = s.drivers || {}, stk = s.trucks || {};
+
+  document.getElementById('today-content').innerHTML = `
+  <div class="db-wrap">
+    <div class="db-head">
+      <div><div class="db-eyebrow">${d.isToday ? 'TODAY' : 'PLANNING'}</div><div class="db-date">${dateLabel}</div></div>
+      <div class="db-nav">
+        <button type="button" onclick="dbGo(-1)" aria-label="Previous day">‹</button>
+        ${d.isToday ? '' : `<button type="button" class="db-today" onclick="dbToday()">Today</button>`}
+        <button type="button" onclick="dbGo(1)" aria-label="Next day">›</button>
+      </div>
+    </div>
+    <div class="db-tiles" id="db-tiles">
+      ${tile('unassigned', a.unassigned, 'Unassigned', a.unassigned ? 'alert' : 'ok', a.unassigned ? 'need a driver' : 'all assigned')}
+      ${tile('in-progress', a.inProgress, 'In Progress', a.inProgress ? 'live' : '', 'hauling now')}
+      ${tile('awaiting-approval', a.awaitingApproval, 'Awaiting Approval', a.awaitingApproval ? 'warn' : '', a.awaitingApproval ? 'review now' : 'nothing waiting')}
+      ${tile('ready-to-bill', a.readyToBill, 'Ready to Bill', a.readyToBill ? 'bill' : '', a.readyToBill ? money(a.readyToBillAmount) : 'nothing queued')}
+      ${tile('missing', a.missingInfo, 'Missing Info', a.missingInfo ? 'alert' : 'ok', a.missingInfo ? 'cannot proceed' : 'nothing missing')}
+      ${a.conflicts ? tile('conflicts', a.conflicts, 'Conflicts', 'alert', 'double-booked') : ''}
+      ${a.carriedOver ? tile('carried', a.carriedOver, 'Carried Over', 'warn', 'unfinished earlier') : ''}
+      ${tile('trucks', a.availableTrucks, 'Trucks Free', '', `of ${d.trucks.length}`)}
+      ${tile('drivers', a.availableDrivers, 'Drivers Free', '', `of ${d.drivers.length}`)}
+    </div>
+    <div class="db-grid">
+      <section class="db-fleet" id="db-fleet">
+        <div class="db-sec"><span>Drivers &amp; Trucks</span>
+          <span class="db-sec-meta">${sd.inProgress || 0} hauling · ${sd.assigned || 0} assigned · ${sd.available || 0} free${sd.completed ? ` · ${sd.completed} done` : ''}${sd.off ? ` · ${sd.off} off` : ''}</span></div>
+        ${dbFleetOnlyFree ? `<button type="button" class="db-clear" onclick="dbFleetOnlyFree=false;paintToday()">Showing free only · show everyone</button>` : ''}
+        ${drivers.length ? drivers.map(dbDriverRow).join('') : `<div class="db-empty">No one is free right now.</div>`}
+        <div class="db-sec" style="margin-top:12px"><span>Trucks</span>
+          <span class="db-sec-meta">${stk.inProgress || 0} hauling · ${stk.assigned || 0} assigned · ${stk.available || 0} free${stk.unavailable ? ` · ${stk.unavailable} in shop` : ''}</span></div>
+        <div class="db-trucks">${trucks.map(t => `<span class="db-truck ${t.state}" title="${escapeAttr(t.driverName ? DB_STATE_LABEL[t.state] + ' · ' + t.driverName : DB_STATE_LABEL[t.state] || t.state)}">
+            <b>${escapeHtml(t.truckNum)}</b> · ${t.driverName ? escapeHtml(t.driverName) : (DB_STATE_LABEL[t.state] || t.state).toLowerCase()}</span>`).join('') || '<span class="db-empty">No trucks free.</span>'}</div>
+      </section>
+      <section class="db-loads" id="db-loads">
+        <div class="db-sec"><span>${listTitle}</span>${dbFilter !== 'all' ? `<button type="button" class="db-clear" onclick="dbSetFilter('all')">Show all</button>` : ''}</div>
+        ${list.length ? list.map(dbLoadCard).join('') : `<div class="empty-state"><h3>Nothing here</h3><p>${emptyText}</p></div>`}
+      </section>
+    </div>
+    ${(d.shifts || []).length ? `<details class="db-day" ${dbDayOpen ? 'open' : ''} ontoggle="dbDayOpen=this.open">
+      <summary>Drivers' day · ${d.shifts.filter(x => x.status === 'open').length} open · odometers, breaks, freight</summary>${shiftsPanel(d.shifts)}</details>` : ''}
+  </div>`;
+
+  // Nav badges follow the attention row, on every repaint.
+  const tb = document.getElementById('today-badge');
+  if (tb) { tb.style.display = a.unassigned ? '' : 'none'; tb.textContent = a.unassigned; }
+  const ab = document.getElementById('approve-badge');
+  if (ab) { ab.textContent = a.awaitingApproval || 0; ab.style.display = a.awaitingApproval ? 'inline-block' : 'none'; }
+}
+
+// One driver: who, state, truck, and the load they are on right now with its
+// pickup → destination and stage. A row accepts a dragged load (opens the
+// same Quick Assign sheet with this driver pre-selected).
+function dbDriverRow(dr) {
+  const can = dr.state !== 'off';
+  const state = DB_STATE_LABEL[dr.state] || dr.state;
+  const truck = dr.truckNum
+    ? `${escapeHtml(dr.truckNum)}${dr.truckIsUsual ? ' <i>(usual)</i>' : ''}`
+    : '<i>no truck</i>';
+  let body;
+  if (dr.currentLoadId) {
+    body = `<div class="db-drv-load" onclick="openLoadDetail('${dr.currentLoadId}')">${escapeHtml(dr.customer)} · PO ${escapeHtml(dr.poNumber || '—')} · <b>${escapeHtml(dr.stage)}</b> · ${escapeHtml(dr.progress)}</div>
+            <div class="db-drv-route">${escapeHtml(dr.pickup || '—')} <span class="db-route-arrow">→</span> ${escapeHtml(dr.destination || '—')}</div>`;
+  } else if (dr.state === 'completed') {
+    body = `<div class="db-drv-route muted">Done for the day · ${dr.loadsToday} load${dr.loadsToday === 1 ? '' : 's'}</div>`;
+  } else if (dr.state === 'off') {
+    body = `<div class="db-drv-route muted">Marked off</div>`;
+  } else {
+    body = `<div class="db-drv-route muted">No load today — drag a load here, or Quick Assign one</div>`;
+  }
+  const more = dr.openLoadIds.length > 1 ? `<span class="db-drv-more">+${dr.openLoadIds.length - 1} more</span>` : '';
+  const moveAll = dr.openLoadIds.length ? `<a class="db-drv-link" href="#" onclick="event.preventDefault();openReassignModal('all-driver','${dr.id}')">move all</a>` : '';
+  return `<div class="db-drv ${dr.state}" data-driverid="${dr.id}" ${can ? `ondragover="event.preventDefault();this.classList.add('drop-target')" ondragleave="this.classList.remove('drop-target')" ondrop="onDrop(event, '${dr.id}')"` : ''}>
+    <div class="db-drv-dot"></div>
+    <div class="db-drv-main">
+      <div class="db-drv-top"><b>${escapeHtml(dr.name)}</b><span class="db-chip ${dr.state}">${state}</span><span class="db-drv-truck">${truck}</span>${dr.dayStartedAt ? `<span class="db-drv-day">day started ${new Date(dr.dayStartedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>` : ''}</div>
+      ${body}
+    </div>
+    <div class="db-drv-side">${more}${moveAll}</div>
+  </div>`;
+}
+
+// One load card: the operational facts and nothing else. Everything further
+// (tickets, tons, GPS, history, notifications) is in Details.
+function dbLoadCard(l) {
+  const label = DB_BUCKET_LABEL[l.bucket] || l.bucket;
+  const pct = l.loadsAssigned ? Math.round((l.loadsDelivered / l.loadsAssigned) * 100) : 0;
+  const carried = !!(todayData && l.deliveryDate && l.deliveryDate !== todayData.date);
+  const office = role === 'manager' || role === 'admin';
+  const flags = [
+    l.missing.length ? `<div class="db-flag missing">Missing: ${l.missing.map(escapeHtml).join(', ')}</div>` : '',
+    ...l.conflicts.map(c => `<div class="db-flag conflict">${escapeHtml(c)}</div>`),
+  ].join('');
+  const assignBtn = l.locked ? '' :
+    `<button class="qa-btn" onclick="${carried ? `qaOpenFor('${l.id}')` : `qaOpen('${l.id}')`}">${l.bucket === 'unassigned' ? 'Quick Assign' : 'Reassign'}</button>`;
+  const nextBtn = l.bucket === 'awaiting-approval' ? `<button class="qa-btn" onclick="goTab('approvals')">Review</button>`
+                : l.bucket === 'ready-to-bill' ? `<button class="qa-btn" onclick="goTab('billing')">Bill</button>` : '';
+  return `<div class="qa-card ${l.bucket} ${flags ? 'attn' : ''}" data-loadid="${l.id}"
+      draggable="${office && !l.locked ? 'true' : 'false'}" ondragstart="onDragStart(event, '${l.id}')" ondragend="this.classList.remove('dragging')">
+    <div class="qa-top">
+      <div>
+        <div class="qa-cust">${escapeHtml(l.customer || '(no customer)')}</div>
+        <div class="qa-sub">PO ${escapeHtml(l.poNumber || '—')}${l.jobName && l.jobName !== l.customer ? ' · ' + escapeHtml(l.jobName) : ''}${l.jobCode ? ' · ' + escapeHtml(l.jobCode) : ''}${carried ? ` · <b style="color:var(--A)">${fmtDate(l.deliveryDate)}</b>` : ''}</div>
+      </div>
+      <span class="qa-chip ${l.bucket}">${label}</span>
+    </div>
+    <div class="db-route"><span class="db-route-yard">${escapeHtml(l.yardName || '—')}</span><span class="db-route-arrow">→</span><span>${escapeHtml(l.destination || '—')}</span></div>
+    <div class="qa-facts">
+      <div class="qa-fact${l.driverName ? '' : ' missing'}">Driver <b>${escapeHtml(l.driverName || 'NONE')}</b></div>
+      <div class="qa-fact${l.truckNum ? '' : (l.driverName ? ' missing' : '')}">${l.truckNum ? `<b>${escapeHtml(l.truckNum)}</b>` : 'Truck <b>NONE</b>'}</div>
+      <div class="qa-fact"><b>${escapeHtml(l.material)}</b> · ${l.loadsDelivered}/${l.loadsAssigned} load${l.loadsAssigned === 1 ? '' : 's'}${l.isPartial ? ' · partial' : ''}</div>
+      ${l.stage ? `<div class="qa-fact live"><b>${escapeHtml(l.stage)}</b></div>` : ''}
+    </div>
+    <div class="lc-progress"><div class="lc-progress-bar"><div class="lc-progress-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>
+    ${flags}
+    <div class="qa-actions">
+      ${assignBtn}${nextBtn}
+      <button class="qa-btn ghost" onclick="openLoadDetail('${l.id}')">Details</button>
+    </div>
+    ${l.locked ? `<div class="qa-sub" style="margin-top:8px">Approved and locked — assignment can no longer change.</div>` : ''}
+  </div>`;
+}
 
 // The drivers' day, from the shift records: who started, on what, odometer,
 // open freight, daily and billable miles once closed. Daily Log and Freight
@@ -4594,33 +4186,6 @@ async function mgrCloseSegment(id) {
   const r = await api('POST', `/api/freight-segments/${id}/close`, { odometer, reason });
   if (!r.ok) return toast(r.error || 'Failed', 'error');
   toast('Freight segment closed', 'success'); renderToday();
-}
-
-function qaCard(l) {
-  const label = { 'unassigned': 'Unassigned', 'assigned': 'Assigned', 'in-progress': 'In Progress',
-                  'completed': 'Completed', 'awaiting-approval': 'Awaiting Approval' }[l.bucket] || l.bucket;
-  return `<div class="qa-card ${l.bucket}">
-    <div class="qa-top">
-      <div>
-        <div class="qa-cust">${escapeHtml(l.customer || '(no customer)')}</div>
-        <div class="qa-sub">${escapeHtml(l.poNumber)}${l.jobName && l.jobName !== l.customer ? ' · ' + escapeHtml(l.jobName) : ''}${l.city ? ' · ' + escapeHtml(l.city) : ''}</div>
-      </div>
-      <span class="qa-chip ${l.bucket}">${label}</span>
-    </div>
-    <div class="qa-facts">
-      <div class="qa-fact"><b>${escapeHtml(l.material)}</b> · ${l.loadsDelivered}/${l.loadsAssigned} loads</div>
-      <div class="qa-fact">Yard: <b>${escapeHtml(l.yardName)}</b></div>
-      <div class="qa-fact${l.driverName ? '' : ' missing'}">Driver: <b>${escapeHtml(l.driverName || 'NONE')}</b></div>
-      <div class="qa-fact${l.truckNum ? '' : ' missing'}">Truck: <b>${escapeHtml(l.truckNum || 'NONE')}</b></div>
-    </div>
-    <div class="qa-actions">
-      ${l.locked ? '' : `<button class="qa-btn" onclick="qaOpen('${l.id}')">${l.bucket === 'unassigned' ? 'Assign' : 'Reassign'}</button>`}
-      <button class="qa-btn ghost" onclick="openLoadDetail('${l.id}')">Details</button>
-      <button class="qa-btn ghost" style="flex:0 0 auto;padding:0 14px" title="Customer updates: ${l.notifyOn ? 'ON' : 'OFF'}"
-        onclick="openNotifySheet('${l.poId}')">${l.notifyOn ? '&#128276; On' : '&#128276; Off'}</button>
-    </div>
-    ${l.locked ? `<div class="qa-sub" style="margin-top:8px">Approved and locked — assignment can no longer change.</div>` : ''}
-  </div>`;
 }
 
 // ── Assignment sheet: Driver → Truck → Yard → Confirm ───────────────────────
@@ -4738,7 +4303,7 @@ async function qaConfirm() {
   qaClose();
   toast(`${who} → ${truck}${trailer} → ${r.pickup.name}`, 'success');
   await loadAll();
-  if (currentTab === 'today') await renderToday(); else if (currentTab === 'board') renderBoard();
+  if (currentTab === 'today') await renderToday();
 }
 
 // ── CUSTOMER NOTIFICATIONS (per PO) ─────────────────────────────────────────
@@ -4879,7 +4444,6 @@ async function liveCheck(force) {
       await renderToday();
     } else {
       await loadAll();
-      if (currentTab === 'board') renderBoard();
     }
   } catch (e) { /* offline — retry on the next tick */ }
 }

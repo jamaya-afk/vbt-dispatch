@@ -79,7 +79,7 @@ async function call(cookie, method, path, body) {
 
   console.log('── Office: every tab renders ──');
   const { ctx, page, requests } = await session('joshua', 'joshua123', false);
-  for (const t of ['today', 'board', 'approvals', 'pos', 'billing', 'quickbooks', 'reports', 'fleet', 'history', 'vendors']) {
+  for (const t of ['today', 'approvals', 'pos', 'billing', 'quickbooks', 'reports', 'fleet', 'history', 'vendors']) {
     await page.evaluate(tab => goTab(tab), t);
     await page.waitForTimeout(500);
     const visible = await page.evaluate(tab => { const el = document.getElementById('sec-' + tab); return el ? getComputedStyle(el).display !== 'none' : null; }, t);
@@ -90,10 +90,10 @@ async function call(cookie, method, path, body) {
   chk('Drivers & Trucks lists trailers as their own table with 3B', await page.evaluate(() => { const el = document.getElementById('fleet-trailers'); return !!el && /Trailers/.test(el.innerText) && (el.querySelector('[data-trailer-id][data-field="number"]') || {}).value === '3B'; }), true);
   chk('no /api/sync call and no Google Sheets request from the app', requests.some(r => /\/api\/sync\b/.test(r)) || problems.some(p => /Google Sheets request/.test(p)), false);
   chk('History tab has no Sheets wording', await page.evaluate(() => { goTab('history'); return new Promise(r => setTimeout(() => r(/Sheets/i.test(document.getElementById('sec-history').innerText)), 600)); }), false);
-  chk('Board topbar has no Sync button', await page.evaluate(() => { goTab('board'); return /Sync/.test(document.getElementById('topbar-actions').innerText); }), false);
+  chk('Dispatch topbar has no Sync button', await page.evaluate(() => { goTab('today'); return /Sync/.test(document.getElementById('topbar-actions').innerText); }), false);
 
   console.log('── New PO form: two steps, unique PO number, truck per load ──');
-  await page.evaluate(() => goTab('board')); await page.waitForTimeout(300);
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(300);
   await page.evaluate(() => openNewPO()); await page.waitForTimeout(500);
   let f = await page.evaluate(() => ({ open: document.getElementById('po-modal').style.display !== 'none', step2hidden: document.getElementById('po-body-2').style.display === 'none', date: document.getElementById('po-date').value, yard: document.getElementById('po-vendor').value }));
   chk('modal opens on step 1 with today and VBT yard preset', `${f.open} ${f.step2hidden} ${f.date === today} ${f.yard}`, 'true true true vbt');
@@ -125,7 +125,7 @@ async function call(cookie, method, path, body) {
 
   console.log('── Office: drag/drop never assigns by itself ──');
   const writesBefore = requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length;
-  await page.evaluate(() => goTab('board')); await page.waitForTimeout(400);
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(400);
   const drop = await page.evaluate(async () => {
     const l = (loads || []).find(x => !x.locked); if (!l) return 'no-load';
     dragId = l.id; await onDrop({ preventDefault() {}, currentTarget: { classList: { remove() {} } } }, 'rigo');
@@ -136,6 +136,45 @@ async function call(cookie, method, path, body) {
   chk('   sheet offers an optional trailer step listing 3B', await page.evaluate(() => { const t = document.getElementById('qa-sheet-bg').innerText; return /4 · Trailer/i.test(t) && /3B/.test(t); }), true);
   chk('no assignment written during the drop', requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length - writesBefore, 0);
   await page.evaluate(() => qaClose());
+
+  console.log('── Office: the dispatch board is the command center ──');
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(700);
+  const board = await page.evaluate(() => {
+    const tiles = Array.from(document.querySelectorAll('#db-tiles .db-tile .l')).map(e => e.textContent.trim());
+    const row = id => (document.querySelector(`.db-drv[data-driverid="${id}"]`) || {}).innerText || '';
+    const cards = Array.from(document.querySelectorAll('#db-loads .qa-card'));
+    const abc = cards.find(c => /PO 10482/.test(c.innerText));
+    return {
+      landed: document.getElementById('sec-today').classList.contains('active') && document.getElementById('page-title').textContent,
+      noBoardTab: !document.querySelector('[data-tab="board"]'),
+      tiles,
+      beryle: row('beryle').replace(/\s+/g, ' '),
+      rigo: row('rigo').replace(/\s+/g, ' '),
+      leonardo: row('leonardo').replace(/\s+/g, ' '),
+      abc: abc ? abc.innerText.replace(/\s+/g, ' ') : 'missing',
+      abcButtons: abc ? Array.from(abc.querySelectorAll('button')).map(b => b.textContent.trim()) : [],
+      truck12: Array.from(document.querySelectorAll('.db-truck')).map(e => e.innerText.replace(/\s+/g, ' ')).find(t => /#12/.test(t)) || '',
+    };
+  });
+  chk('1. the office lands on Dispatch, and there is no second Board tab', `${board.landed} ${board.noBoardTab}`, 'Dispatch true');
+  chk('2. the attention row names what needs a person', board.tiles.join('|'), 'Unassigned|In Progress|Awaiting Approval|Ready to Bill|Missing Info|Trucks Free|Drivers Free');
+  chk('3. Beryle\'s row: in progress on Truck #12, ABC Materials, loaded en route, Vulcan → 500 Main St', /Beryle In progress Truck #12.*ABC Materials · PO 10482 · Loaded \/ en route · 0\/3.*Vulcan → 500 Main St, Merced/i.test(board.beryle), true);
+  chk('4. Rigo\'s row: assigned on Truck #14 from the New PO form', /Rigo Assigned Truck #14.*ABC Materials · PO 10483 · Assigned · 0\/1.*VBT Yard → 500 Main St, Merced/i.test(board.rigo), true);
+  chk('5. Leonardo\'s row: available, usual truck, invitation to assign', /Leonardo Available Truck #12 \(usual\).*No load today/i.test(board.leonardo), true);
+  chk('6. the load card shows driver, truck, pickup → destination, progress and stage', /ABC Materials PO 10482.*Vulcan → 500 Main St, Merced Driver Beryle Truck #12 3\/4 Rock · 0\/3 loads Loaded \/ en route/.test(board.abc), true);
+  chk('   …with Reassign and Details, nothing else', board.abcButtons.join('|'), 'Reassign|Details');
+  chk('7. the truck strip says who has Truck #12', board.truck12, 'Truck #12 · Beryle');
+  const filt = await page.evaluate(async () => {
+    dbTile('in-progress'); await new Promise(r => setTimeout(r, 100));
+    const shown = Array.from(document.querySelectorAll('#db-loads .qa-card .qa-chip')).map(e => e.textContent.trim());
+    dbSetFilter('all');
+    dbTile('awaiting-approval'); await new Promise(r => setTimeout(r, 300));
+    const tab = (document.querySelector('.section.active') || {}).id;
+    goTab('today'); await new Promise(r => setTimeout(r, 500));
+    return { shown: [...new Set(shown)].join('|'), tab };
+  });
+  chk('8. the In Progress tile filters the board to in-progress loads', filt.shown, 'In Progress');
+  chk('9. the Awaiting Approval tile opens Approvals', filt.tab, 'sec-approvals');
 
   console.log('── Fleet Map ──');
   const navCount = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-item')).filter(b => b.textContent.includes('Fleet Map') && getComputedStyle(b).display !== 'none').length);
