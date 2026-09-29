@@ -10,7 +10,7 @@ set -u
 SP=${SCENARIO_LOG_DIR:-/tmp}
 PORT=4700; B=http://localhost:$PORT
 cd "$(dirname "$0")"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
 start() { (VBT_TEST_HOOKS=1 PORT=$PORT node server.js >> $SP/scenario-server.log 2>&1 &); for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done; }
 : > $SP/scenario-server.log; start
 PASS=0; FAIL=0
@@ -164,5 +164,5 @@ chk "   …so the driver's retry simply starts the trip — no duplicate, no con
 chk "the PO refused during the outage never existed; the one saved afterwards does" "$(data "len([p for p in d['pos'] if p['poNumber']=='HG-LOST'])")" "1"
 
 echo; echo "════ scenario: $PASS passed, $FAIL failed ════"
-pkill -f "^node server.js" >/dev/null 2>&1; rm -f data.json
+pkill -f "^node server.js" >/dev/null 2>&1; rm -f data.json telemetry.json
 [ "$FAIL" -eq 0 ]

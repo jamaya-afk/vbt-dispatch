@@ -135,6 +135,35 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .db-flag{font-size:12px;font-weight:700;border-radius:8px;padding:6px 10px;margin-top:8px}
 .db-flag.missing{background:#fef2f2;color:#b42318;border:1px solid #fca5a5}
 .db-flag.conflict{background:#fff8ec;color:#b45309;border:1px solid #fcd34d}
+/* Linxup beside VBT */
+.db-tel{font-size:11.5px;color:var(--txt2);margin-top:5px;display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.db-tel-dot{width:8px;height:8px;border-radius:50%;background:var(--txt3);display:inline-block;margin-right:2px}
+.db-tel.moving .db-tel-dot{background:var(--G)}.db-tel.idling .db-tel-dot{background:#d97706}.db-tel.at-place .db-tel-dot{background:#2563eb}
+.db-tel.stale .db-tel-dot,.db-tel.offline .db-tel-dot{background:var(--R)}
+.db-tel-where{width:100%;color:var(--txt3)}
+.db-tel-mini{font-style:normal;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--txt3);margin-left:4px}
+.db-tel-mini.moving{color:var(--G)}.db-tel-mini.idling{color:#b45309}.db-tel-mini.at-place{color:#1d4ed8}.db-tel-mini.stale,.db-tel-mini.offline{color:var(--R)}
+.qa-fact.tel-stale,.qa-fact.tel-offline{border-color:#fca5a5;background:#fef2f2}
+/* Linxup evidence on the load detail and the approval dialog */
+.ld-tel{margin-top:14px;padding:10px 12px;background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;font-size:12.5px}
+.ld-tel-head{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3);font-weight:700;margin-bottom:6px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.ld-tel-src{font-size:10.5px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--txt3)}
+.ld-tel-muted{color:var(--txt3)}
+.ld-tel-block{padding:6px 0;border-top:1px solid var(--bdr)}
+.ld-tel-block:first-of-type{border-top:none}
+.ld-tel-k{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:700;margin-bottom:2px}
+.ld-tel-sub{color:var(--txt2);font-size:12px;margin-top:2px}
+.ld-tel-timeline{margin-top:8px}
+.ld-tel-timeline summary{cursor:pointer;font-size:12px;font-weight:700;color:var(--B)}
+.ld-tl{display:grid;grid-template-columns:70px 1fr auto;gap:8px;padding:3px 0;font-size:12px;border-bottom:1px dashed var(--bdr)}
+.ld-tl.vbt{background:#fffdf5}
+.ld-tl-t{font-variant-numeric:tabular-nums;color:var(--txt2)}
+.ld-tl-src{font-size:10.5px;color:var(--txt3);white-space:nowrap}
+.ask-tel{font-size:12.5px;padding:8px 10px;background:var(--bg2);border-radius:var(--r);display:flex;flex-direction:column;gap:3px}
+.v-fence{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 18px;border-top:1px solid var(--bdr);font-size:12.5px}
+.v-fence label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.v-fence select{padding:6px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:12.5px;font-family:var(--f)}
+.v-fence-note{color:var(--txt3);font-size:11.5px}
 .qa-card.attn{border-color:#fca5a5}
 .qa-card.ready-to-bill{border-left-color:var(--T)}
 .qa-chip.ready-to-bill{background:var(--Tb);color:var(--T)}
@@ -2090,6 +2119,9 @@ function openLoadDetail(id) {
     </div>`;
   }
 
+  // Linxup beside VBT: filled in after the modal opens (its own request).
+  if (role === 'manager' || role === 'admin') html += `<div id="ld-telemetry" class="ld-tel"><div class="ld-tel-head">LINXUP TELEMETRY</div><div class="ld-tel-muted">Loading the truck's own record…</div></div>`;
+
   let actions = '';
   if (role === 'manager' || role === 'admin') {
     if (!l.locked) {
@@ -2119,6 +2151,56 @@ function openLoadDetail(id) {
   }
 
   showInfoModal('Load Details', html, actions);
+  if (role === 'manager' || role === 'admin') loadDetailTelemetry(l.id);
+}
+
+// ── LINXUP EVIDENCE ON THE LOAD DETAIL (L2) ─────────────────────────────────
+// The truck's own record beside the driver's taps. Rendered from
+// /api/loads/:id/telemetry; nothing here is computed or decided in the page,
+// and every line keeps the source it came from.
+async function loadDetailTelemetry(id) {
+  const el = document.getElementById('ld-telemetry'); if (!el) return;
+  const d = await api('GET', `/api/loads/${id}/telemetry`);
+  if (!el.isConnected) return;
+  if (!d.ok) { el.innerHTML = `<div class="ld-tel-head">LINXUP TELEMETRY</div><div class="ld-tel-muted">Unavailable: ${escapeHtml(d.error || 'request failed')}</div>`; return; }
+  el.innerHTML = telemetryPanelHtml(d);
+}
+const tClock = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
+function telemetryPanelHtml(d) {
+  const head = `<div class="ld-tel-head">LINXUP TELEMETRY <span class="ld-tel-src">the truck's tracker · evidence, not the driver's record</span></div>`;
+  if (!d.enabled) return head + `<div class="ld-tel-muted">Linxup is not connected.</div>`;
+  let h = head;
+  if (d.current && d.current.state !== 'not-linked') h += `<div class="ld-tel-block"><div class="ld-tel-k">Current</div><div>${escapeHtml(d.current.label)}${d.current.state === 'moving' && d.current.speed != null ? ` · ${Math.round(d.current.speed)} mph` : ''}${d.current.engineOn != null ? ` · engine ${d.current.engineOn ? 'on' : 'off'}` : ''}${d.current.at ? ` · Linxup GPS ${dbTelAge(d.current.ageSeconds)}` : ''}${d.current.address && d.current.state === 'moving' ? ` · ${escapeHtml(d.current.address)}` : ''}</div></div>`;
+  if (!d.linked || !d.trips.length) return h + `<div class="ld-tel-muted">${escapeHtml(d.note || 'No telemetry for this load.')}</div>`;
+  const src = s => `<span class="ld-tel-src">${escapeHtml(s)}</span>`;
+  d.trips.forEach(tr => {
+    h += `<div class="ld-tel-block"><div class="ld-tel-k">Trip ${tr.tripNum}${tr.truckNum ? ' · ' + escapeHtml(tr.truckNum) : ''}</div>`;
+    if (!tr.linked) { h += `<div class="ld-tel-muted">${escapeHtml(tr.note)}</div></div>`; return; }
+    // Pickup
+    const p = tr.pickup;
+    if (p.evidence === 'geofence') h += p.visits.map(v => `<div><b>Pickup — ${escapeHtml(p.name)}</b> · entered ${tClock(v.enteredAt)}${v.leftAt ? ` · exited ${tClock(v.leftAt)} · ${v.minutes} min inside` : ' · still inside'} ${src('Linxup geofence' + (p.fence && p.fence.confidence === 'name' ? ' (matched by name)' : ''))}</div>`).join('');
+    else if (p.evidence === 'gps') h += `<div><b>Pickup — near ${escapeHtml(p.name)} based on GPS</b> · first ${tClock(p.gps.firstAt)} · last ${tClock(p.gps.lastAt)} · ${p.gps.count} fixes ${src('Linxup GPS')}</div>`;
+    else if (p.evidence === 'none') h += `<div><b>Pickup — ${escapeHtml(p.name)}</b> · no Linxup activity there during this trip (${tr.positions} positions) ${src(p.fence ? 'Linxup geofence' : 'Linxup GPS')}</div>`;
+    else h += `<div><b>Pickup — ${escapeHtml(p.name)}</b> · no Linxup geofence mapped and no saved pin, so nothing to compare ${src('—')}</div>`;
+    if (p.stops.length) h += `<div class="ld-tel-sub">${p.stops.map(s => `${s.type === 'idle' ? 'Idling' : s.type === 'off' ? 'Engine off' : 'Stop'} ${s.minutes != null ? s.minutes + ' min' : ''} from ${tClock(s.startAt)}`).join(' · ')} ${src('Linxup stop')}</div>`;
+    // Jobsite
+    const j = tr.jobsite;
+    if (j.evidence === 'gps') h += `<div><b>Jobsite — near jobsite based on GPS</b> · first detected ${tClock(j.gps.firstAt)} · last ${tClock(j.gps.lastAt)} ${src('Linxup GPS')}</div>`;
+    else if (j.evidence === 'none') h += `<div><b>Jobsite</b> · no Linxup activity within the jobsite pin during this trip ${src('Linxup GPS')}</div>`;
+    else h += `<div><b>Jobsite</b> · no saved jobsite pin, so nothing to compare ${src('—')}</div>`;
+    if (j.stops.length) h += `<div class="ld-tel-sub">${j.stops.map(s => `Stop detected ${tClock(s.startAt)}${s.minutes != null ? ` · ${s.minutes} min` : ''}${s.type === 'off' ? ' · engine off' : s.type === 'idle' ? ' · idling' : ''}`).join(' · ')} ${src('Linxup stop')}</div>`;
+    // Activity
+    const act = [];
+    if (tr.vehicleTrips.length) act.push(`${tr.vehicleTrips.length} Linxup vehicle trip${tr.vehicleTrips.length === 1 ? '' : 's'} (ignition cycles)${tr.vehicleTrips.some(t => t.miles != null) ? ` · ${tr.vehicleTrips.reduce((s, t) => s + (t.miles || 0), 0).toFixed(1)} mi` : ''}`);
+    if (tr.stops.length) act.push(`${tr.stops.length} stop${tr.stops.length === 1 ? '' : 's'}`);
+    if (tr.usage.length) act.push(`usage ${tr.usage.reduce((s, u) => s + (u.minutes || 0), 0)} min`);
+    if (tr.otherVisits.length) act.push(`also in ${tr.otherVisits.map(v => escapeHtml(v.name)).join(', ')}`);
+    h += `<div class="ld-tel-sub">Vehicle activity: ${act.length ? act.join(' · ') : 'none recorded in this trip\'s window'} ${src('Linxup')}</div>`;
+    tr.flags.forEach(f => { h += `<div class="db-flag conflict" style="margin-top:6px">⚠ ${escapeHtml(f.text)}</div>`; });
+    h += `</div>`;
+  });
+  if (d.timeline.length) h += `<details class="ld-tel-timeline"><summary>Telemetry timeline · ${d.timeline.length} entries</summary>${d.timeline.map(e => `<div class="ld-tl ${e.kind === 'vbt' ? 'vbt' : ''}"><span class="ld-tl-t">${tClock(e.at)}</span><span>${escapeHtml(e.text)}</span><span class="ld-tl-src">${escapeHtml(e.source)}</span></div>`).join('')}</details>`;
+  return h;
 }
 
 function showInfoModal(title, html, actions = '') {
@@ -3574,12 +3656,28 @@ function askDialog({ title, bodyHtml, confirmLabel, confirmClass = 'primary', re
     (input && reason.required ? input : el.querySelector('#ask-cancel')).focus();
   });
 }
-function confirmApproval(l, check) {
+// One line of Linxup evidence per trip for the approval dialog (best effort).
+async function approvalTelemetryHtml(loadId) {
+  try {
+    const d = await api('GET', `/api/loads/${loadId}/telemetry`);
+    if (!d.ok || !d.enabled) return '';
+    if (!d.linked || !d.trips.length) return `<div class="ld-tel-sub">Linxup: ${escapeHtml(d.note || 'no telemetry')}</div>`;
+    return `<div class="ask-tel"><div class="ld-tel-k">Linxup evidence</div>${d.trips.map(tr => {
+      if (!tr.linked) return `<div>Trip ${tr.tripNum}: truck not linked</div>`;
+      const p = tr.pickup, j = tr.jobsite;
+      const pk = p.evidence === 'geofence' ? `${escapeHtml(p.name)} ${tClock(p.visits[0].enteredAt)}–${p.visits[0].leftAt ? tClock(p.visits[0].leftAt) : 'open'} (geofence)` : p.evidence === 'gps' ? `near ${escapeHtml(p.name)} ${tClock(p.gps.firstAt)} (GPS)` : p.evidence === 'none' ? `<span style="color:var(--A)">no activity at ${escapeHtml(p.name)}</span>` : 'no reference for the yard';
+      const jb = j.evidence === 'gps' ? `near jobsite ${tClock(j.gps.firstAt)}–${tClock(j.gps.lastAt)} (GPS)` : j.evidence === 'none' ? `<span style="color:var(--A)">no activity near the jobsite</span>` : 'no jobsite pin';
+      return `<div>Trip ${tr.tripNum}: ${pk} · ${jb}</div>`;
+    }).join('')}</div>`;
+  } catch { return ''; }
+}
+async function confirmApproval(l, check) {
   const po = pos.find(p => p.id === l.poId) || {};
   const gaps = check ? check.items.filter(i => !i.ok).length : 0;
+  const tel = await approvalTelemetryHtml(l.id);
   const body = `
     <div class="ask-sub">PO ${escapeHtml(po.poNumber || '—')} · ${escapeHtml(po.customer || '')} · ${escapeHtml(l.material || '')} · ${escapeHtml(l.driverName || '')}</div>
-    ${approvalChecklistHtml(check, false)}
+    ${approvalChecklistHtml(check, false)}${tel}
     <div class="conflict-hint">${gaps
       ? `<b>${gaps} item${gaps === 1 ? '' : 's'} missing.</b> You can approve anyway; what was missing is written to the audit log and stays on the load for billing.`
       : 'Everything is on record. Approving locks the load and moves it to <b>Ready to Bill</b>.'}</div>`;
@@ -4258,6 +4356,10 @@ function dbTile(key) {
     const el = document.getElementById('db-fleet'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
+  if (key === 'telemetry') {   // the issues are listed in the Drivers & Trucks panel
+    const el = document.getElementById('db-tel-issues') || document.getElementById('db-fleet'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
   dbSetFilter(key);
 }
 
@@ -4312,6 +4414,7 @@ function paintToday() {
       ${tile('missing', a.missingInfo, 'Missing Info', a.missingInfo ? 'alert' : 'ok', a.missingInfo ? 'cannot proceed' : 'nothing missing')}
       ${a.conflicts ? tile('conflicts', a.conflicts, 'Conflicts', 'alert', 'double-booked') : ''}
       ${a.carriedOver ? tile('carried', a.carriedOver, 'Carried Over', 'warn', 'unfinished earlier') : ''}
+      ${a.telemetry ? tile('telemetry', a.telemetry, 'Telemetry', 'warn', 'Linxup disagrees') : ''}
       ${tile('trucks', a.availableTrucks, 'Trucks Free', '', `of ${d.trucks.length}`)}
       ${tile('drivers', a.availableDrivers, 'Drivers Free', '', `of ${d.drivers.length}`)}
     </div>
@@ -4323,8 +4426,9 @@ function paintToday() {
         ${drivers.length ? drivers.map(dbDriverRow).join('') : `<div class="db-empty">No one is free right now.</div>`}
         <div class="db-sec" style="margin-top:12px"><span>Trucks</span>
           <span class="db-sec-meta">${stk.inProgress || 0} hauling · ${stk.assigned || 0} assigned · ${stk.available || 0} free${stk.unavailable ? ` · ${stk.unavailable} in shop` : ''}</span></div>
-        <div class="db-trucks">${trucks.map(t => `<span class="db-truck ${t.state}" title="${escapeAttr(t.driverName ? DB_STATE_LABEL[t.state] + ' · ' + t.driverName : DB_STATE_LABEL[t.state] || t.state)}">
-            <b>${escapeHtml(t.truckNum)}</b> · ${t.driverName ? escapeHtml(t.driverName) : (DB_STATE_LABEL[t.state] || t.state).toLowerCase()}</span>`).join('') || '<span class="db-empty">No trucks free.</span>'}</div>
+        ${(d.telemetryIssues || []).length ? `<div class="db-flag conflict" id="db-tel-issues" style="margin:0 0 8px">${d.telemetryIssues.map(i => escapeHtml(i.text)).join('<br>')}</div>` : ''}
+        <div class="db-trucks">${trucks.map(t => { const x = t.telematics && t.telematics.state !== 'not-linked' ? t.telematics : null; return `<span class="db-truck ${t.state}" title="${escapeAttr((t.driverName ? DB_STATE_LABEL[t.state] + ' · ' + t.driverName : DB_STATE_LABEL[t.state] || t.state) + (x ? ` · Linxup: ${x.label}${x.at ? ' ' + dbTelAge(x.ageSeconds) : ''}` : ''))}">
+            <b>${escapeHtml(t.truckNum)}</b> · ${t.driverName ? escapeHtml(t.driverName) : (DB_STATE_LABEL[t.state] || t.state).toLowerCase()}${x ? ` <i class="db-tel-mini ${x.state}">${escapeHtml(x.label)}</i>` : ''}</span>`; }).join('') || '<span class="db-empty">No trucks free.</span>'}</div>
       </section>
       <section class="db-loads" id="db-loads">
         <div class="db-sec"><span>${listTitle}</span>${dbFilter !== 'all' ? `<button type="button" class="db-clear" onclick="dbSetFilter('all')">Show all</button>` : ''}</div>
@@ -4342,6 +4446,22 @@ function paintToday() {
   if (ab) { ab.textContent = a.awaitingApproval || 0; ab.style.display = a.awaitingApproval ? 'inline-block' : 'none'; }
 }
 
+// Linxup beside VBT: one line per truck with the vehicle's own state (from
+// /api/today, never computed here). "Linxup GPS" and "Phone GPS" are named,
+// never merged.
+function dbTelAge(s) { return s == null ? '' : s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; }
+function dbTelLine(x) {
+  if (!x || x.state === 'not-linked') return '';
+  const bits = [`<b>${escapeHtml(x.label)}</b>`];
+  if (x.state === 'moving' && x.speed != null) bits.push(`${Math.round(x.speed)} mph${x.heading ? ' ' + escapeHtml(x.heading) : ''}`);
+  if (x.engineOn != null && x.state !== 'offline') bits.push(`engine ${x.engineOn ? 'on' : 'off'}`);
+  if (x.odometer != null) bits.push(`odo ${Math.round(x.odometer).toLocaleString()}`);
+  bits.push(x.at ? `Linxup GPS ${dbTelAge(x.ageSeconds)}` : 'no Linxup position yet');
+  const where = (x.state === 'moving' || !x.place) && x.address ? escapeHtml(x.address) : '';
+  const who = x.linxupDriver ? `Linxup driver: ${escapeHtml(x.linxupDriver.name)}${x.linxupDriver.vbtDriverName ? ` (${escapeHtml(x.linxupDriver.vbtDriverName)})` : ' (not mapped to a VBT driver)'}` : '';
+  const fence = x.lastFence ? `Last geofence: ${escapeHtml(x.lastFence.name)} — entered ${tClock(x.lastFence.enteredAt)}${x.lastFence.leftAt ? `, left ${tClock(x.lastFence.leftAt)}${x.lastFence.minutes != null ? ` (${x.lastFence.minutes} min)` : ''}` : ' (still inside)'}` : '';
+  return `<div class="db-tel ${x.state}"><span class="db-tel-dot"></span>${bits.join(' · ')}${where ? `<div class="db-tel-where">${where}</div>` : ''}${fence ? `<div class="db-tel-where">${fence}</div>` : ''}${who ? `<div class="db-tel-where">${who}</div>` : ''}${x.trackerMismatch ? `<div class="db-tel-where" style="color:var(--A)">Tracker mismatch: ${escapeHtml(x.trackerMismatch)}</div>` : ''}</div>`;
+}
 // One driver: who, state, truck, and the load they are on right now with its
 // pickup → destination and stage. A row accepts a dragged load (opens the
 // same Quick Assign sheet with this driver pre-selected).
@@ -4362,6 +4482,10 @@ function dbDriverRow(dr) {
   } else {
     body = `<div class="db-drv-route muted">No load today — drag a load here, or Quick Assign one</div>`;
   }
+  const tel = dr.telematics && dr.telematics.state !== 'not-linked' ? dbTelLine(dr.telematics) : '';
+  const telFlag = dr.telematics && dr.telematics.driverMismatch
+    ? `<div class="db-flag conflict">Linxup reports ${escapeHtml(dr.telematics.linxupDriver.name)} in ${escapeHtml(dr.truckNum)}; VBT has ${escapeHtml(dr.name)} assigned.</div>` : '';
+  body += tel + telFlag;
   const more = dr.openLoadIds.length > 1 ? `<span class="db-drv-more">+${dr.openLoadIds.length - 1} more</span>` : '';
   const moveAll = dr.openLoadIds.length ? `<a class="db-drv-link" href="#" onclick="event.preventDefault();openReassignModal('all-driver','${dr.id}')">move all</a>` : '';
   return `<div class="db-drv ${dr.state}" data-driverid="${dr.id}" ${can ? `ondragover="event.preventDefault();this.classList.add('drop-target')" ondragleave="this.classList.remove('drop-target')" ondrop="onDrop(event, '${dr.id}')"` : ''}>
@@ -4404,6 +4528,7 @@ function dbLoadCard(l) {
       <div class="qa-fact${l.truckNum ? '' : (l.driverName ? ' missing' : '')}">${l.truckNum ? `<b>${escapeHtml(l.truckNum)}</b>` : 'Truck <b>NONE</b>'}</div>
       <div class="qa-fact"><b>${escapeHtml(l.material)}</b> · ${l.loadsDelivered}/${l.loadsAssigned} load${l.loadsAssigned === 1 ? '' : 's'}${l.isPartial ? ' · partial' : ''}</div>
       ${l.stage ? `<div class="qa-fact live"><b>${escapeHtml(l.stage)}</b></div>` : ''}
+      ${l.telematics && l.telematics.state !== 'not-linked' ? `<div class="qa-fact tel-${l.telematics.state}" title="Linxup, the truck's own tracker">Linxup <b>${escapeHtml(l.telematics.label)}</b>${l.telematics.at ? ` · ${dbTelAge(l.telematics.ageSeconds)}` : ''}</div>` : ''}
     </div>
     <div class="lc-progress"><div class="lc-progress-bar"><div class="lc-progress-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div>
     ${flags}
@@ -5021,6 +5146,27 @@ function setVendorSubview(view) {
   vendorSubview = view;
   renderVendors();
 }
+// Which Linxup geofence is this yard? Learned fences are offered by id; an
+// exact name match is suggested, never applied on its own.
+async function paintVendorFence(vendorId) {
+  const el = document.getElementById('v-fence'); if (!el) return;
+  const d = await api('GET', '/api/linxup/geofences');
+  if (!d.ok || !d.enabled) { el.innerHTML = ''; return; }
+  const v = (d.vendors || []).find(x => x.id === vendorId) || {};
+  const cur = v.linxupGeofenceId != null ? Number(v.linxupGeofenceId) : null;
+  const sug = cur == null ? (d.geofences || []).find(g => g.suggestedVendorId === vendorId) : null;
+  el.innerHTML = `<label>Linxup geofence</label>
+    <select id="v-fence-sel"><option value="">— not mapped —</option>${(d.geofences || []).map(g => `<option value="${g.geofenceId}" ${cur === g.geofenceId ? 'selected' : ''} ${g.mappedVendorId && g.mappedVendorId !== vendorId ? 'disabled' : ''}>${escapeHtml(g.name || ('fence ' + g.geofenceId))}${g.fenceGroup ? ' · ' + escapeHtml(g.fenceGroup) : ''}${g.mappedVendorId && g.mappedVendorId !== vendorId ? ` (mapped to ${escapeHtml(g.mappedVendorName)})` : ''}</option>`).join('')}</select>
+    <button class="btn ghost" style="padding:6px 12px;font-size:12px" onclick="saveVendorFence('${escapeAttr(vendorId)}')">Save</button>
+    <span class="v-fence-note">${cur != null ? 'Geofence visits count as pickup evidence for this yard.' : sug ? `Suggested by name: <b>${escapeHtml(sug.name)}</b> — pick it and Save to confirm.` : (d.geofences || []).length ? 'Pick the Linxup geofence for this yard, or leave unmapped (GPS near the saved pin is used instead).' : 'No Linxup geofence has reported yet.'}</span>`;
+}
+async function saveVendorFence(vendorId) {
+  const sel = document.getElementById('v-fence-sel'); if (!sel) return;
+  const d = await api('PUT', `/api/vendors/${encodeURIComponent(vendorId)}/linxup-geofence`, { geofenceId: sel.value || null });
+  if (!d.ok) return toast(d.error || 'Could not save', 'error');
+  toast(d.geofence ? `Mapped to ${d.geofence.name}` : 'Geofence mapping removed', 'success');
+  await loadAll(); paintVendorFence(vendorId);
+}
 
 function renderVendors() {
   const wrap = document.getElementById('vendors-content');
@@ -5101,7 +5247,9 @@ function renderVendors() {
         <button class="btn ghost" onclick="toggleVendorActive('${v.id}')">${v.active ? 'Mark Inactive' : 'Mark Active'}</button>
         <button class="btn danger" onclick="deleteVendorConfirm('${v.id}')">Delete</button>
       </div>
-    </div>`;
+    </div>
+    <div id="v-fence" class="v-fence"></div>`;
+  setTimeout(() => paintVendorFence(v.id), 0);
 
   if (!prices.length) {
     h += '<div class="vendor-empty">No materials added yet for this vendor.<br>Add one below.</div>';
@@ -6539,6 +6687,30 @@ function paintFleet() {
   const truckOpts = (sel) => `<option value="">— none —</option>` + trucks.filter(t => t.active !== false).map(t =>
     `<option value="${escapeAttr(t.id)}" ${t.id === sel ? 'selected' : ''}>${escapeHtml(t.truckNum || t.id)}</option>`).join('');
 
+  // Linxup: link a truck to a tracker BY ID (names change); show what the
+  // tracker itself reports so a moved tracker is caught, not trusted.
+  const lx = fleetState.linxup || { enabled: false, trackers: [], persons: [] };
+  const linkedBy = new Map(trucks.filter(t => t.linxup && t.linxup.trackerId != null).map(t => [Number(t.linxup.trackerId), t]));
+  const trackerOpts = (t) => {
+    const cur = t.linxup ? Number(t.linxup.trackerId) : null;
+    const seen = new Set((lx.trackers || []).map(x => Number(x.trackerId)));
+    const opts = [`<option value="">— not linked —</option>`];
+    (lx.trackers || []).forEach(x => {
+      const other = linkedBy.get(Number(x.trackerId)); const taken = other && other.id !== t.id;
+      opts.push(`<option value="${x.trackerId}" ${cur === Number(x.trackerId) ? 'selected' : ''} ${taken ? 'disabled' : ''}>${escapeHtml(x.name || 'tracker ' + x.trackerId)}${x.vin ? ' · VIN ' + escapeHtml(x.vin) : ''}${x.deviceNumber ? ' · IMEI ' + escapeHtml(x.deviceNumber) : ''}${taken ? ` (on ${escapeHtml(other.truckNum)})` : ''}${x.active === false ? ' (inactive)' : ''}</option>`);
+    });
+    if (cur != null && !seen.has(cur)) opts.push(`<option value="${cur}" selected>tracker ${cur} (not heard from yet)</option>`);
+    return opts.join('');
+  };
+  const linkNote = (t) => {
+    if (!t.linxup) return '';
+    const tr = (lx.trackers || []).find(x => Number(x.trackerId) === Number(t.linxup.trackerId));
+    const bad = tr && ((t.linxup.vin && tr.vin && t.linxup.vin !== tr.vin) || (t.linxup.deviceNumber && tr.deviceNumber && t.linxup.deviceNumber !== tr.deviceNumber));
+    return `<div style="font-size:10.5px;color:${bad ? 'var(--A)' : 'var(--txt3)'};margin-top:3px">${bad ? '⚠ tracker now reports a different VIN/IMEI — moved? ' : ''}linked ${t.linxup.linkedAt ? new Date(t.linxup.linkedAt).toLocaleDateString() : ''}${tr && tr.latestAt ? ' · last position ' + new Date(tr.latestAt).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ' · no position yet'}${tr && tr.personName ? ' · Linxup driver ' + escapeHtml(tr.personName) : ''}</div>`;
+  };
+  const personOpts = (sel) => `<option value="">— none —</option>` + (lx.persons || []).map(p => `<option value="${p.personId}" ${Number(sel) === Number(p.personId) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')
+    + (sel != null && sel !== '' && !(lx.persons || []).some(p => Number(p.personId) === Number(sel)) ? `<option value="${sel}" selected>person ${sel} (not seen yet)</option>` : '');
+
   // Trucks are VEHICLES: number, type, status, usual driver. No "label".
   const trucksRows = trucks.map(t => `
     <tr>
@@ -6547,6 +6719,7 @@ function paintFleet() {
       <td><select data-truck-id="${escapeAttr(t.id)}" data-field="status" ${inp}>
         ${tStatuses.map(st => `<option value="${st}" ${st === t.status ? 'selected' : ''}>${st}</option>`).join('')}</select></td>
       <td><select data-truck-id="${escapeAttr(t.id)}" data-field="defaultDriverId" ${inp}>${driverOpts(t.defaultDriverId)}</select></td>
+      <td>${lx.enabled ? `<select data-truck-id="${escapeAttr(t.id)}" data-field="linxupTrackerId" ${inp}>${trackerOpts(t)}</select>${linkNote(t)}` : '<span style="font-size:11px;color:var(--txt3)">Linxup off</span>'}</td>
       <td style="text-align:center"><input type="checkbox" data-truck-id="${escapeAttr(t.id)}" data-field="active" ${t.active !== false ? 'checked' : ''}></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn ghost" style="padding:5px 10px;font-size:11px" onclick="saveTruck('${escapeAttr(t.id)}')">Save</button>
@@ -6563,6 +6736,7 @@ function paintFleet() {
       <td><select data-driver="${escapeAttr(d.username)}" data-field="defaultTruckId" ${inp}>${truckOpts(d.defaultTruckId)}</select></td>
       <td><select data-driver="${escapeAttr(d.username)}" data-field="status" ${inp}>
         ${dStatuses.map(st => `<option value="${st}" ${st === d.status ? 'selected' : ''}>${st}</option>`).join('')}</select></td>
+      <td>${lx.enabled ? `<select data-driver="${escapeAttr(d.username)}" data-field="linxupPersonId" ${inp}>${personOpts(d.linxupPersonId)}</select>` : '<span style="font-size:11px;color:var(--txt3)">Linxup off</span>'}</td>
       <td><input type="password" data-driver="${escapeAttr(d.username)}" data-field="password" placeholder="leave blank to keep" ${inp}></td>
       <td style="text-align:center"><input type="checkbox" data-driver="${escapeAttr(d.username)}" data-field="active" ${d.active !== false ? 'checked' : ''}></td>
       <td style="text-align:right;white-space:nowrap">
@@ -6617,9 +6791,9 @@ function paintFleet() {
         </div>
         <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px">
           <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)"><tr>
-            ${th('Truck number')}${th('Type')}${th('Status', 'width:140px')}${th('Usual driver', 'width:160px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
+            ${th('Truck number')}${th('Type')}${th('Status', 'width:140px')}${th('Usual driver', 'width:160px')}${th('Linxup tracker', 'width:240px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
           </tr></thead>
-          <tbody>${trucksRows || `<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--txt3)">No trucks yet — click "Add Truck".</td></tr>`}</tbody>
+          <tbody>${trucksRows || `<tr><td colspan="7" style="padding:30px;text-align:center;color:var(--txt3)">No trucks yet — click "Add Truck".</td></tr>`}</tbody>
         </table></div>
       </div>
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden">
@@ -6632,9 +6806,9 @@ function paintFleet() {
         </div>
         <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:720px">
           <thead style="background:var(--bg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)"><tr>
-            ${th('Username', 'width:120px')}${th('Display name')}${th('Usual truck', 'width:140px')}${th('Status', 'width:120px')}${th('Password', 'width:170px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
+            ${th('Username', 'width:120px')}${th('Display name')}${th('Usual truck', 'width:140px')}${th('Status', 'width:120px')}${th('Linxup person', 'width:160px')}${th('Password', 'width:170px')}${th('Active', 'text-align:center;width:70px')}${th('', 'width:150px')}
           </tr></thead>
-          <tbody>${driversRows || `<tr><td colspan="7" style="padding:30px;text-align:center;color:var(--txt3)">No drivers yet — click "Add Driver".</td></tr>`}</tbody>
+          <tbody>${driversRows || `<tr><td colspan="8" style="padding:30px;text-align:center;color:var(--txt3)">No drivers yet — click "Add Driver".</td></tr>`}</tbody>
         </table></div>
         <div style="padding:10px 18px;font-size:11px;color:var(--txt3);background:var(--bg2);border-top:1px solid var(--bdr)">
           Drivers log in with their username + password. "off" hides a driver from Quick Assign for the day. Disabling keeps their history.
@@ -6670,6 +6844,13 @@ async function saveTruck(id) {
       truckNum: f('truckNum')?.value, type: f('type')?.value, status: f('status')?.value,
       defaultDriverId: f('defaultDriverId')?.value || null, active: !!f('active')?.checked,
     });
+    // The Linxup link is its own action (by tracker id), only when it changed.
+    const sel = f('linxupTrackerId');
+    if (sel) {
+      const cur = (fleetState.trucks || []).find(t => t.id === id);
+      const was = cur && cur.linxup ? String(cur.linxup.trackerId) : '';
+      if (sel.value !== was) await fleetCall('PUT', '/api/fleet/trucks/' + encodeURIComponent(id) + '/linxup', { trackerId: sel.value || null });
+    }
     toast('Truck saved', 'success');
     await loadAll(); renderFleet();
   } catch (e) { toast('Save failed: ' + e.message, 'error'); }
@@ -6743,6 +6924,7 @@ async function saveDriver(username) {
     displayName: f('displayName')?.value, defaultTruckId: f('defaultTruckId')?.value || null,
     status: f('status')?.value, active: !!f('active')?.checked,
   };
+  if (f('linxupPersonId')) body.linxupPersonId = f('linxupPersonId').value || null;
   if (f('password')?.value) body.password = f('password').value;
   try {
     await fleetCall('PUT', '/api/drivers/' + encodeURIComponent(username), body);
@@ -6893,7 +7075,7 @@ function fmPaintList() {
     <div class="fm-row ${t.driverId === fm.selected ? 'sel' : ''} ${t.statusKey === 'offline' ? 'offline' : ''}" data-driver="${escapeAttr(t.driverId)}" style="--fm-c:${fmColor(t)}" onclick="fmSelect('${escapeAttr(t.driverId)}', true)">
       <span class="fm-dot"></span>
       <div class="fm-row-main">
-        <div class="fm-row-name">🚚 ${escapeHtml(t.driverName)} — ${escapeHtml(t.truckNum || 'no truck')}</div>
+        <div class="fm-row-name">🚚 ${escapeHtml(t.driverName || 'No driver')} — ${escapeHtml(t.truckNum || 'no truck')}${t.gps ? `<span style="font-size:10px;color:#8fa3c7;font-weight:600"> · ${t.gps.source === 'linxup' ? 'Linxup' : 'Phone'}</span>` : ''}</div>
         <div class="fm-row-status">${escapeHtml(fmStatusText(t))}</div>
       </div>
       <div class="fm-row-age" data-age="${escapeAttr(t.driverId)}">${escapeHtml(fmAgeText(t))}</div>
@@ -7011,7 +7193,11 @@ function fmPaintCard() {
       ${l && l.tripStartedAt ? row('Trip started', new Date(l.tripStartedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
       ${t.since ? row('Stage since', new Date(t.since).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
       ${row('Updated', t.gps ? `${new Date(t.gps.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} (${fmAgeText(t).replace('Updated ', '').replace('Last seen ', '')})` : 'No GPS')}
+      ${row('GPS source', t.gps ? (t.gps.source === 'linxup' ? 'Linxup (truck tracker)' : 'Driver phone') : '')}
       ${t.gps && t.gps.accuracy != null ? row('GPS accuracy', `±${t.gps.accuracy} m`) : ''}
+      ${t.telematics && t.telematics.state !== 'not-linked' ? row('Linxup', `${t.telematics.label}${t.telematics.speed != null && t.telematics.state === 'moving' ? ` · ${Math.round(t.telematics.speed)} mph` : ''}${t.telematics.engineOn != null ? ` · engine ${t.telematics.engineOn ? 'on' : 'off'}` : ''}${t.telematics.odometer != null ? ` · odometer ${Math.round(t.telematics.odometer).toLocaleString()}` : ''}`) : ''}
+      ${t.telematics && t.telematics.address ? row('Near', t.telematics.address) : ''}
+      ${t.telematics && t.telematics.linxupDriver ? row('Linxup driver', t.telematics.linxupDriver.name + (t.telematics.driverMismatch ? ' ⚠ VBT has ' + (t.telematics.assignedDriverName || 'someone else') + ' assigned' : '')) : ''}
     </dl>`;
 }
 

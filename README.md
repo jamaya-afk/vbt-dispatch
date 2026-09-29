@@ -56,6 +56,25 @@ carlos / carlos123
 - **A failed save leaves nothing behind.** If the database refuses a write,
   the store rolls back to what is on disk and the caller is told; mutating
   requests run one at a time so a rollback never takes another change with it.
+- **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
+  posts truck positions to `/api/linxup/position` (and device status/update
+  messages to their own paths). A truck is linked to a tracker by id on
+  Drivers & Trucks; the board and the Fleet Map then show the truck's own
+  state (Moving / Idling / Stopped / At place / Stale / Offline) next to
+  VBT's, with the source named ("Linxup GPS" vs "Phone GPS"). Linxup's driver
+  is shown as information; a disagreement with VBT's assignment is an
+  attention item, never a reassignment. Telemetry lives in its own tables
+  (`linxup_*`), never in the dispatch store. See `LINXUP-INTEGRATION.md`.
+- **Linxup as evidence.** Geofence visits, stops, Linxup vehicle trips
+  (ignition cycles, not VBT trips) and usage hours are kept by event time and
+  read beside each VBT load: Load Details shows a LINXUP TELEMETRY section
+  (what the truck did at the yard and near the jobsite, its activity, and a
+  timeline with the driver's taps between Linxup's entries, every line naming
+  its source); the approval dialog gets one evidence line per trip; the board
+  shows the truck's last geofence. A yard is mapped to its Linxup geofence on
+  Vendors (a name match is only suggested). Disagreements — driver, pickup,
+  jobsite, location — are attention items. Telemetry never completes, arrives,
+  approves, assigns or bills anything.
 
 ## Files
 
@@ -160,6 +179,19 @@ QB_ENCRYPTION_KEY    # passphrase used to AES-256-GCM encrypt stored tokens
 `QB_REDIRECT_URI` must match exactly what is registered in the Intuit
 Developer dashboard for the chosen environment. Test in sandbox first; flip
 `QB_ENVIRONMENT=production` after the integration is verified.
+
+### Linxup environment variables
+
+```
+LINXUP_WEBHOOK_TOKEN        # bearer token Linxup presents on every webhook; unset = integration off
+LINXUP_WEBHOOK_TOKEN_NEXT   # optional second token accepted during a rotation
+LINXUP_COMPANY_ID           # the account's companyId; messages for any other company are refused
+```
+
+Register one URL per message type in Linxup: `https://<host>/api/linxup/position`,
+`/device-status`, `/device-update`, `/geofence-event`, `/trip`, `/stop`,
+`/usage-hours`, `/alert`, `/geofence-change`, `/media`. The first seven are
+interpreted; alerts, geofence changes and media are kept raw for the next phase.
 
 ### Sync Log
 

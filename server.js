@@ -319,7 +319,7 @@ function driverRoster() {
 function rosterDriver(id) {
   return (store.drivers || []).find(d => d.id === id) || null;
 }
-function upsertRosterDriver({ id, name, defaultTruckId, active, status, phone, notes }) {
+function upsertRosterDriver({ id, name, defaultTruckId, active, status, phone, notes, linxupPersonId }) {
   if (!Array.isArray(store.drivers)) store.drivers = [];
   let d = rosterDriver(id);
   if (!d) {
@@ -332,6 +332,9 @@ function upsertRosterDriver({ id, name, defaultTruckId, active, status, phone, n
   if (status !== undefined && DRIVER_STATUSES.includes(status)) d.status = status;
   if (phone !== undefined) d.phone = phone;
   if (notes !== undefined) d.notes = notes;
+  // Which Linxup person this driver is. Informational only: it lets the board
+  // say "Linxup reports Rigo in Truck #2" and flag a disagreement.
+  if (linxupPersonId !== undefined) d.linxupPersonId = (linxupPersonId === null || linxupPersonId === '') ? null : Number(linxupPersonId);
   return d;
 }
 // Roster + login state, for the Drivers & Trucks screen.
@@ -350,6 +353,7 @@ async function fleetDrivers() {
       defaultTruckId: d.defaultTruckId || null, status: d.status || 'available',
       active: d.active !== false, phone: d.phone || '', notes: d.notes || '',
       hasLogin: !!login, loginActive: login ? login.active : false,
+      linxupPersonId: d.linxupPersonId == null ? null : Number(d.linxupPersonId),
     };
   });
 }
@@ -882,6 +886,18 @@ function rollbackStore(err) {
   return true;
 }
 let testSaveFailLeft = null;   // test hook: fail this many saves, then behave again (null = until reset)
+
+// ── LINXUP TELEMETRY ─────────────────────────────────────────────────────────
+// Truck positions and tracker facts from Linxup's Push API (linxup.js). Off
+// unless LINXUP_WEBHOOK_TOKEN is set. Its data never enters the JSON store.
+const { Linxup } = require('./linxup');
+const linxup = new Linxup({
+  token: process.env.LINXUP_WEBHOOK_TOKEN || '', tokenNext: process.env.LINXUP_WEBHOOK_TOKEN_NEXT || '',
+  companyId: process.env.LINXUP_COMPANY_ID || null,
+  getPg: () => pg,
+  filePath: path.join(__dirname, 'telemetry.json'),
+  failWrites: () => testSaveMode === 'fail' && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD,
+});
 
 let saveChain = Promise.resolve();
 function saveData(opts) {
@@ -1896,6 +1912,7 @@ app.get('/healthz', async (req, res) => {
     lastRollbackAt: persistence.lastRollbackAt,
   },
   fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
+  linxup: linxup.health(),
   // merged in from the second /healthz the branch merge left behind — Express
   // only ever ran the first registration, so those fields were being dropped
   pgConnected: !!pg,
@@ -1952,7 +1969,7 @@ app.use('/api', (req, res, next) => {
 // (they talk to QuickBooks for seconds, must not stall the drivers' taps, and
 // keep their in-flight state on a failed save — it is their recovery record),
 // GPS pings, the QuickBooks connection routes and the test hooks.
-const WRITE_LOCK_EXEMPT = /^\/api\/(billing-batches\/[^/]+\/(send|retry|void)|vendor-bills\/[^/]+\/(send|retry|void)|driver-location|quickbooks\/|_test\/)/;
+const WRITE_LOCK_EXEMPT = /^\/api\/(billing-batches\/[^/]+\/(send|retry|void)|vendor-bills\/[^/]+\/(send|retry|void)|driver-location|linxup\/|quickbooks\/|_test\/)/;
 let writeLockTail = Promise.resolve();
 app.use('/api', (req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
@@ -1964,6 +1981,60 @@ app.use('/api', (req, res, next) => {
     res.once('close', () => { clearTimeout(timer); release(); });
     requestCtx.run({ keepOnFailure: false }, next);
   });
+});
+
+// ── LINXUP WEBHOOKS ──────────────────────────────────────────────────────────
+// Linxup POSTs here, one URL per message type. No session, no CSRF, outside
+// the write lock; a bearer token (constant-time compare) and the company id
+// are the gate. 200 only for what was stored (or was already stored); 503
+// when the telemetry store refused the write, so Linxup can retry.
+app.post('/api/linxup/:type', async (req, res) => {
+  const auth = linxup.authorize(req.headers);
+  if (!auth.ok) {
+    if (auth.status === 401) linxup.counters.unauthorized++;
+    return res.status(auth.status).json(auth.status === 404 ? { error: 'Not found' } : { error: 'Unauthorized' });
+  }
+  if (Number(req.headers['content-length'] || 0) > 2 * 1024 * 1024) return res.status(413).json({ error: 'Payload too large' });
+  const r = await linxup.handle(String(req.params.type || '').toLowerCase(), req.body);
+  res.status(r.status).json(r.json);
+});
+// The office's view of the integration (never the token).
+app.get('/api/linxup/health', reqMgr, (req, res) => res.json({ ...linxup.health(), recent: linxup.recent }));
+app.get('/api/linxup/trackers', reqMgr, (req, res) => {
+  const linked = new Map((store.trucks || []).filter(t => t.linxup && t.linxup.trackerId != null).map(t => [Number(t.linxup.trackerId), t]));
+  res.json({ enabled: linxup.enabled, trackers: linxup.listTrackers().map(t => ({ ...t, latest: linxup.latestFor(t.trackerId), linkedTruckId: linked.has(t.trackerId) ? linked.get(t.trackerId).id : null, linkedTruckNum: linked.has(t.trackerId) ? linked.get(t.trackerId).truckNum : '' })),
+    persons: linxup.listPersons() });
+});
+// L2: a load's telemetry evidence (live or archived), beside its VBT record.
+app.get('/api/loads/:id/telemetry', reqMgr, async (req, res) => {
+  const l = findLoadAnywhere(req.params.id);
+  if (!l) return res.status(404).json({ error: 'Load not found' });
+  res.json(await loadTelemetryEvidence(l));
+});
+// Linxup's geofences (learned from its events) and how they map to VBT yards.
+app.get('/api/linxup/geofences', reqMgr, (req, res) => {
+  const vendors = (store.vendors || []).filter(v => v.active !== false);
+  const byId = new Map(vendors.filter(v => v.linxupGeofenceId != null).map(v => [Number(v.linxupGeofenceId), v]));
+  const lc = s => String(s || '').trim().toLowerCase();
+  res.json({ enabled: linxup.enabled,
+    geofences: linxup.listGeofences().map(g => { const m = byId.get(g.geofenceId) || null; const s = m ? null : vendors.find(v => lc(v.name) === lc(g.name)) || null;
+      return { ...g, mappedVendorId: m ? m.id : null, mappedVendorName: m ? m.name : '', suggestedVendorId: s ? s.id : null, suggestedVendorName: s ? s.name : '' }; }),
+    vendors: vendors.map(v => ({ id: v.id, name: v.name, linxupGeofenceId: v.linxupGeofenceId ?? null })) });
+});
+// Map a VBT yard to a Linxup geofence by id (a manager's decision, saved on the vendor).
+app.put('/api/vendors/:id/linxup-geofence', reqMgr, async (req, res) => {
+  const v = (store.vendors || []).find(x => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Vendor not found' });
+  const gid = req.body?.geofenceId == null || req.body.geofenceId === '' ? null : Number(req.body.geofenceId);
+  if (gid != null && !Number.isFinite(gid)) return res.status(400).json({ error: 'geofenceId must be a number' });
+  if (gid != null && !linxup.geofence(gid)) return res.status(400).json({ error: 'Unknown Linxup geofence — VBT has not heard from it yet' });
+  const other = gid != null ? (store.vendors || []).find(x => x.id !== v.id && Number(x.linxupGeofenceId) === gid) : null;
+  if (other) return res.status(409).json({ error: `That geofence is already mapped to ${other.name}.` });
+  const before = v.linxupGeofenceId ?? null;
+  if (gid == null) delete v.linxupGeofenceId; else v.linxupGeofenceId = gid;
+  logAction(req.session.user, 'mapped-geofence', v.id, { vendor: v.name, from: before, to: gid, geofenceName: gid != null ? linxup.geofence(gid).name : '' });
+  await saveData();
+  res.json({ success: true, vendor: v, geofence: gid != null ? linxup.geofence(gid) : null });
 });
 
 // ── BACKUP / RESTORE (admin) ─────────────────────────────────────────────────
@@ -2068,6 +2139,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   });
   app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
   // 'fail' makes every save throw until set back to 'ok'.
+  app.post('/api/_test/linxup-prune', reqMgr, async (req, res) => { try { res.json(await linxup.prune(req.body?.now ? Number(req.body.now) : Date.now())); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft }); });
   app.get('/api/_test/today', (req, res) => res.json({ tz: OPERATING_TZ, today: todayStrAt(req.query.at ? new Date(String(req.query.at)) : new Date()) }));
   app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
@@ -2467,7 +2539,9 @@ function fleetWorkflowStatus({ load, trip, workRemains, hadWorkToday }) {
 
 function fleetLiveRows(now = Date.now()) {
   const today = todayStr();
-  return (store.drivers || []).filter(d => d.active !== false).map(d => {
+  const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === today);
+  const coveredTrucks = new Set();   // linked trucks already shown under a driver
+  const rows = (store.drivers || []).filter(d => d.active !== false).map(d => {
     const u = { truckId: d.id };
     const open = driverWorkdayLoads(u);
     const todays = store.loads.filter(l => l.truckId === d.id && !l.voided && l.deliveryDate === today);
@@ -2483,15 +2557,29 @@ function fleetLiveRows(now = Date.now()) {
     const otherOpen = load ? open.some(l => l.id !== load.id) : open.length > 0;
     const wf = fleetWorkflowStatus({ load, trip, workRemains: remainingOnLoad || otherOpen, hadWorkToday: todays.length > 0 });
 
-    const loc = (store.driverLocations || {})[d.id] || null;
-    const ageSeconds = loc ? Math.max(0, Math.round((now - Date.parse(loc.at)) / 1000)) : null;
-    const stale = !loc || ageSeconds * 1000 > FLEET_STALE_MS;
-    const live = !stale && d.status !== 'off';
-
     const po = load ? (store.pos.find(p => p.id === load.poId) || {}) : null;
     const truck = load ? getTruckForLoad(load) : null;
-    const usual = !truck && d.defaultTruckId ? (store.trucks || []).find(t => t.id === d.defaultTruckId) : null;
-    const vehicle = truck || usual || null;
+    const shiftRec = openShiftFor(d.id);
+    // The truck the driver is actually on: the load's, else the open day's.
+    const onTruck = truck || (shiftRec ? (store.trucks || []).find(t => t.id === shiftRec.truckId) || null : null);
+    const usual = !onTruck && d.defaultTruckId ? (store.trucks || []).find(t => t.id === d.defaultTruckId) : null;
+    const vehicle = onTruck || usual || null;
+
+    // GPS source, always named: Linxup from the truck the driver is on when it
+    // is linked and has reported; otherwise the driver's phone. Never merged.
+    const tel = onTruck ? truckTelematics(onTruck, load && load.truckUnitId === onTruck.id ? load : null, now, dayLoads) : null;
+    const phone = (store.driverLocations || {})[d.id] || null;
+    let loc = null;
+    if (tel && tel.at) {
+      coveredTrucks.add(onTruck.id);
+      loc = { lat: tel.lat, lng: tel.lng, accuracy: null, at: tel.at, ageSeconds: tel.ageSeconds, stale: tel.state === 'stale' || tel.state === 'offline', source: 'linxup',
+        speed: tel.speed, heading: tel.heading, engineOn: tel.engineOn, address: tel.address, place: tel.place };
+    } else if (phone) {
+      const ageSeconds = Math.max(0, Math.round((now - Date.parse(phone.at)) / 1000));
+      loc = { lat: phone.lat, lng: phone.lng, accuracy: phone.accuracy == null ? null : phone.accuracy, at: phone.at, ageSeconds, stale: ageSeconds * 1000 > FLEET_STALE_MS, source: 'phone' };
+    }
+    const stale = !loc || loc.stale;
+    const live = !stale && d.status !== 'off';
     const trailer = load ? getTrailerForLoad(load) : null;
     const tripNumber = load ? Math.min(activeTripIdx(load) + 1, Math.max(load.loadsAssigned || 1, 1)) : null;
     const tons = load ? loadTons(load) : null;
@@ -2503,7 +2591,8 @@ function fleetLiveRows(now = Date.now()) {
       driverStatus: d.status || 'available',        // roster: available | working | off
       truckUnitId: vehicle ? vehicle.id : null,
       truckNum: vehicle ? vehicle.truckNum : '',
-      truckIsAssigned: !!truck,                      // false = showing the driver's usual truck
+      truckIsAssigned: !!onTruck,                    // false = showing the driver's usual truck
+      telematics: tel,                               // Linxup on that truck, or null
       trailerId: trailer ? trailer.id : null,
       trailerNum: trailer ? trailer.number : '',
       shift: (() => { const s = openShiftFor(d.id); if (!s) return null; const sd = shiftDerived(s); return { id: s.id, startAt: s.startAt, truckNum: s.truckNum, trailerNum: s.trailerNum, startOdometer: s.startOdometer, onBreak: sd.openBreak, segment: sd.openSegment ? { id: sd.openSegment.id, customer: sd.openSegment.customer, originName: sd.openSegment.originName, destinationLabel: sd.openSegment.destinationLabel, odStart: sd.openSegment.odStart, timeStart: sd.openSegment.timeStart } : null }; })(),
@@ -2531,17 +2620,28 @@ function fleetLiveRows(now = Date.now()) {
         plannedTons: tons.plannedTons, actualTons: tons.actualTons, tickets: tons.tickets, tonsSource: tons.tonsSource,
         freightSegmentId: load.freightSegmentId || null,
       } : null,
-      gps: loc ? {
-        lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy == null ? null : loc.accuracy,
-        at: loc.at, ageSeconds, stale,
-      } : null,
+      gps: loc,
     };
   });
+  // Linked trucks nobody is on today still belong on the map: a truck row.
+  (store.trucks || []).filter(t => t.active && t.linxup && t.linxup.trackerId != null && !coveredTrucks.has(t.id)).forEach(t => {
+    const tel = truckTelematics(t, null, now, dayLoads);
+    if (!tel.at) return;
+    const quiet = tel.state === 'offline' || tel.state === 'stale';
+    rows.push({
+      driverId: 'truck:' + t.id, driverName: '', driverStatus: '', truckUnitId: t.id, truckNum: t.truckNum, truckIsAssigned: true, telematics: tel,
+      trailerId: null, trailerNum: '', shift: null,
+      status: quiet ? FLEET_STATUS.offline : tel.label, statusKey: quiet ? 'offline' : 'available',
+      workflowStatus: 'No driver on this truck today', workflowKey: 'available', since: null, live: !quiet, load: null,
+      gps: { lat: tel.lat, lng: tel.lng, accuracy: null, at: tel.at, ageSeconds: tel.ageSeconds, stale: quiet, source: 'linxup', speed: tel.speed, heading: tel.heading, engineOn: tel.engineOn, address: tel.address, place: tel.place },
+    });
+  });
+  return rows;
 }
 
 app.get('/api/fleet/live', reqMgr, (req, res) => {
   const rows = fleetLiveRows();
-  const version = crypto.createHash('sha1').update(rows.map(r => [r.driverId, r.statusKey, r.since, r.load?.id, r.gps?.at, r.gps?.stale,
+  const version = crypto.createHash('sha1').update(rows.map(r => [r.driverId, r.statusKey, r.since, r.load?.id, r.gps?.at, r.gps?.stale, r.gps?.source, r.telematics?.state,
     r.load?.pickup?.id, r.load?.pickup?.geo?.lat, r.load?.pickup?.geo?.lng, r.load?.destination?.geo?.lat, r.load?.destination?.geo?.lng].join(':')).join('|')).digest('hex').slice(0, 16);
   res.json({
     generatedAt: new Date().toISOString(),
@@ -5784,7 +5884,31 @@ app.get('/api/audit-log', reqMgr, (req, res) => {
 // board never goes blank.
 // GET /api/fleet — office only. Vehicles + the driver roster with login state.
 app.get('/api/fleet', reqMgr, async (req, res) => {
-  res.json({ trucks: store.trucks || [], trailers: store.trailers || [], drivers: await fleetDrivers(), truckStatuses: TRUCK_STATUSES, trailerStatuses: TRAILER_STATUSES, driverStatuses: DRIVER_STATUSES });
+  res.json({ trucks: store.trucks || [], trailers: store.trailers || [], drivers: await fleetDrivers(), truckStatuses: TRUCK_STATUSES, trailerStatuses: TRAILER_STATUSES, driverStatuses: DRIVER_STATUSES,
+    linxup: { enabled: linxup.enabled, trackers: linxup.listTrackers(), persons: linxup.listPersons() } });
+});
+
+// Link a VBT truck to a Linxup tracker by id. The tracker's IMEI and VIN are
+// remembered so a later Device Update that contradicts them is flagged, not
+// silently accepted. One tracker links to one truck.
+app.put('/api/fleet/trucks/:id/linxup', reqMgr, async (req, res) => {
+  const t = (store.trucks || []).find(x => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Truck not found' });
+  const trackerId = req.body?.trackerId == null || req.body.trackerId === '' ? null : Number(req.body.trackerId);
+  const before = t.linxup ? { ...t.linxup } : null;
+  if (trackerId == null) {
+    delete t.linxup;
+  } else {
+    if (!Number.isFinite(trackerId)) return res.status(400).json({ error: 'trackerId must be a number' });
+    const other = (store.trucks || []).find(x => x.id !== t.id && x.linxup && Number(x.linxup.trackerId) === trackerId);
+    if (other) return res.status(409).json({ error: `That tracker is already linked to ${other.truckNum}. Unlink it there first.` });
+    const tr = linxup.tracker(trackerId);
+    t.linxup = { trackerId, name: tr ? tr.name : null, deviceNumber: tr ? tr.deviceNumber : null, deviceSerialNumber: tr ? tr.deviceSerialNumber : null, vin: tr ? tr.vin : null,
+      linkedAt: new Date().toISOString(), linkedBy: req.session.user.username, seen: !!tr };
+  }
+  logAction(req.session.user, trackerId == null ? 'unlinked-tracker' : 'linked-tracker', t.id, { truckNum: t.truckNum, before, after: t.linxup || null });
+  await saveData();
+  res.json({ success: true, truck: t });
 });
 
 // ── Trailers CRUD — independent of trucks ──
@@ -5907,7 +6031,8 @@ app.put('/api/drivers/:username', reqMgr, async (req, res) => {
   if (b.status !== undefined && !DRIVER_STATUSES.includes(b.status)) {
     return res.status(400).json({ error: `Status must be one of: ${DRIVER_STATUSES.join(', ')}` });
   }
-  upsertRosterDriver({ id: uname, name: b.displayName ?? b.name, defaultTruckId, active: b.active, status: b.status, phone: b.phone, notes: b.notes });
+  if (b.linxupPersonId !== undefined && b.linxupPersonId !== null && b.linxupPersonId !== '' && !Number.isFinite(Number(b.linxupPersonId))) return res.status(400).json({ error: 'linxupPersonId must be a number' });
+  upsertRosterDriver({ id: uname, name: b.displayName ?? b.name, defaultTruckId, active: b.active, status: b.status, phone: b.phone, notes: b.notes, linxupPersonId: b.linxupPersonId });
   if (pg) {
     const sets = []; const vals = []; let i = 1;
     if (b.displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(b.displayName).trim()); }
@@ -6991,6 +7116,187 @@ function boardLoadRow(l, holding) {
     tons: { plannedTons: tons.plannedTons, actualTons: tons.actualTons, tickets: tons.tickets, missingTickets: tons.missingTickets },
   };
 }
+// ── TELEMATICS ON THE BOARD ─────────────────────────────────────────────────
+// What Linxup says about a VBT truck, next to what VBT says. One rule, like
+// boardBucket: offline > stale > at place > moving > idling / stopped. VBT's
+// assignment is the truth; Linxup's driver is shown as "Linxup driver" and a
+// disagreement is an attention item, never a reassignment.
+const TEL_STALE_MS = 10 * 60 * 1000, TEL_OFFLINE_MS = 24 * 60 * 60 * 1000, TEL_MOVING_MPH = 3;
+const PLACE_RADIUS_M = { vendor: 250, jobsite: 300, yard: 250 };
+function metersBetween(aLat, aLng, bLat, bLng) {
+  const R = 6371000, toRad = x => x * Math.PI / 180;
+  const dLat = toRad(bLat - aLat), dLng = toRad(bLng - aLng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+// The nearest VBT place with saved coordinates: a yard/vendor pin or the
+// jobsite pin of a load on the board. Linxup's own fence (on the position)
+// wins when present; this is the fallback and the only source for jobsites.
+function nearestVbtPlace(lat, lng, dayLoads) {
+  let best = null;
+  const consider = (kind, id, name, geo, radius) => {
+    if (!geo || !validLatLng(geo.lat, geo.lng)) return;
+    const d = metersBetween(lat, lng, geo.lat, geo.lng);
+    if (d <= radius && (!best || d < best.distance)) best = { kind, id, name, distance: Math.round(d), source: 'vbt' };
+  };
+  (store.vendors || []).forEach(v => consider(v.id === 'vbt' ? 'yard' : 'vendor', v.id, v.name, v.geo, v.id === 'vbt' ? PLACE_RADIUS_M.yard : PLACE_RADIUS_M.vendor));
+  const poIds = new Set((dayLoads || []).map(l => l.poId));
+  (store.pos || []).filter(p => poIds.has(p.id)).forEach(p => consider('jobsite', p.id, [p.customer, p.city].filter(Boolean).join(' · ') || p.poNumber, p.geo, PLACE_RADIUS_M.jobsite));
+  return best;
+}
+function truckTelematics(truck, holdingLoad, now, dayLoads) {
+  const link = truck && truck.linxup && truck.linxup.trackerId != null ? truck.linxup : null;
+  if (!link) return { state: 'not-linked', label: 'Not linked', source: 'linxup', trackerId: null };
+  const tr = linxup.tracker(link.trackerId);
+  const p = linxup.latestFor(link.trackerId);
+  const base = { source: 'linxup', trackerId: Number(link.trackerId), trackerName: (tr && tr.name) || link.name || '', trackerActive: !tr || tr.active !== false,
+    inactiveSince: tr && tr.active === false ? tr.statusChangedAt : null };
+  // Did the tracker's own identity stop matching what was linked?
+  const mismatch = [];
+  if (tr && link.vin && tr.vin && link.vin !== tr.vin) mismatch.push(`VIN now ${tr.vin} (linked as ${link.vin})`);
+  if (tr && link.deviceNumber && tr.deviceNumber && link.deviceNumber !== tr.deviceNumber) mismatch.push(`device now ${tr.deviceNumber} (linked as ${link.deviceNumber})`);
+  base.trackerMismatch = mismatch.length ? mismatch.join('; ') : null;
+  // Linxup's driver: informational, mapped to a VBT driver only through
+  // linxupPersonId. The mirror holds the latest word (every Position and
+  // Device Update refreshes it; a Device Update without a person clears it).
+  const personId = tr ? tr.personId : null;
+  const personName = tr ? tr.personName : null;
+  const mapped = personId != null ? (store.drivers || []).find(d => Number(d.linxupPersonId) === Number(personId)) : null;
+  base.linxupDriver = personId != null ? { personId, name: personName || String(personId), vbtDriverId: mapped ? mapped.id : null, vbtDriverName: mapped ? mapped.name : null } : null;
+  base.assignedDriverId = holdingLoad ? holdingLoad.truckId : null;
+  base.assignedDriverName = holdingLoad ? holdingLoad.driverName : '';
+  base.driverMismatch = !!(mapped && holdingLoad && holdingLoad.truckId && mapped.id !== holdingLoad.truckId);
+  // The most recent Linxup geofence visit on this truck (L2), for the board.
+  const lv = linxup.lastVisitFor(link.trackerId);
+  base.lastFence = lv ? { name: lv.geofenceName || `geofence ${lv.geofenceId}`, geofenceId: lv.geofenceId, enteredAt: lv.enteredAt, leftAt: lv.leftAt, minutes: lv.durationMin, source: 'Linxup geofence' } : null;
+  if (!p) return { ...base, state: 'offline', label: base.trackerActive ? 'No position yet' : 'Tracker inactive', at: null, ageSeconds: null };
+  const ageSeconds = Math.max(0, Math.round((now - Date.parse(p.at)) / 1000));
+  const fence = p.geofenceName ? { kind: 'fence', id: p.geofenceId, name: p.geofenceName, source: 'linxup' } : null;
+  const place = fence || nearestVbtPlace(p.lat, p.lng, dayLoads);
+  let state, label;
+  if (!base.trackerActive) { state = 'offline'; label = 'Tracker inactive'; }
+  else if (ageSeconds * 1000 > TEL_OFFLINE_MS) { state = 'offline'; label = 'Offline'; }
+  else if (p.engineOn !== false && ageSeconds * 1000 > TEL_STALE_MS) { state = 'stale'; label = 'Stale'; }
+  else if ((p.speed || 0) > TEL_MOVING_MPH) { state = 'moving'; label = 'Moving'; }
+  else if (place) { state = 'at-place'; label = `At ${place.name}`; }
+  else if (p.engineOn === false) { state = 'stopped'; label = 'Stopped'; }
+  else if (p.engineOn === true) { state = 'idling'; label = 'Idling'; }
+  else { state = 'stopped'; label = 'Stopped'; }
+  return { ...base, state, label, at: p.at, ageSeconds, lat: p.lat, lng: p.lng, speed: p.speed, heading: p.heading, direction: p.direction, engineOn: p.engineOn,
+    odometer: p.odometer, fuelLevel: p.fuelLevel, battery: p.battery, accuracy: p.accuracy, signal: p.signal, speeding: p.speeding,
+    address: p.addressLine || '', place: place ? place.name : null, placeKind: place ? place.kind : null, placeSource: place ? place.source : null };
+}
+// What needs a person, telemetry-wise. Informational: nothing here changes a record.
+function telemetryIssues(truckRows) {
+  const out = [];
+  for (const t of truckRows) {
+    const x = t.telematics; if (!x || x.state === 'not-linked') continue;
+    if (x.trackerMismatch) out.push({ truckId: t.id, truckNum: t.truckNum, kind: 'tracker-mismatch', text: `${t.truckNum}: its Linxup tracker now reports ${x.trackerMismatch}. Was it moved to another truck? Check the link.` });
+    if (x.driverMismatch) out.push({ truckId: t.id, truckNum: t.truckNum, kind: 'driver-mismatch', text: `Linxup reports ${x.linxupDriver.name} in ${t.truckNum}, but VBT has ${x.assignedDriverName || 'someone else'} assigned.` });
+    if (t.inUseOnLoadId && (x.state === 'stale' || x.state === 'offline')) out.push({ truckId: t.id, truckNum: t.truckNum, kind: x.state, text: `${t.truckNum} is on a load but its Linxup GPS is ${x.state === 'stale' ? `stale (${Math.round(x.ageSeconds / 60)} min)` : x.label.toLowerCase()}.` });
+  }
+  return out;
+}
+
+// ── LINXUP EVIDENCE FOR A LOAD (L2) ──────────────────────────────────────────
+// What the truck's own telemetry says about a load, beside what the driver's
+// taps say. Evidence only: nothing here writes to a load, a trip or a status.
+// Every line names its source (Linxup geofence · Linxup GPS · Linxup stop ·
+// Linxup vehicle trip · Linxup usage · VBT driver app). Attribution is by
+// truck and time: each VBT trip's window, start − 30 min to completed + 30 min
+// (or now), on the truck that trip ran on. A Linxup "vehicle trip" is an
+// ignition cycle and is never called a VBT trip.
+const EV_PAD_MS = 30 * 60 * 1000, EV_FAR_M = 30 * 1609, EV_LIVE_MS = 10 * 60 * 1000;
+// A vendor's Linxup fence: the manager's mapping first, else an exact name
+// match in the mirror, labelled so nobody mistakes a guess for a decision.
+function fenceForVendor(v) {
+  if (!v) return null;
+  if (v.linxupGeofenceId != null) { const g = linxup.geofence(v.linxupGeofenceId); return { geofenceId: Number(v.linxupGeofenceId), name: g ? g.name : v.name, confidence: 'mapped' }; }
+  const name = String(v.name || '').trim().toLowerCase();
+  const g = name ? linxup.listGeofences().find(x => String(x.name || '').trim().toLowerCase() === name) : null;
+  return g ? { geofenceId: g.geofenceId, name: g.name, confidence: 'name' } : null;
+}
+function nearWindow(positions, geo, radius) {
+  let first = null, last = null, count = 0;
+  for (const p of positions) { if (metersBetween(p.lat, p.lng, geo.lat, geo.lng) <= radius) { count++; if (!first) first = p.at; last = p.at; } }
+  return count ? { firstAt: first, lastAt: last, count, source: 'Linxup GPS' } : null;
+}
+const stopPublic  = s => ({ startAt: s.startAt, endAt: s.endAt, minutes: s.durationMin, type: s.stopType, address: s.addressLine || '', geofence: s.geofenceName || '', source: 'Linxup stop' });
+const vtripPublic = t => ({ startAt: t.startAt, endAt: t.endAt, minutes: t.durationMin, miles: t.distanceMi, authorizedMiles: t.authorizedMi, unauthorizedMiles: t.unauthorizedMi, from: t.startGeofenceName || t.startAddressLine || '', to: t.endGeofenceName || t.endAddressLine || '', source: 'Linxup vehicle trip' });
+const usagePublic = u => ({ startAt: u.startAt, endAt: u.endAt, minutes: u.durationMin, engineOn: u.engineOn, from: u.startGeofenceName || u.startAddressLine || '', to: u.endGeofenceName || u.endAddressLine || '', source: 'Linxup usage' });
+async function loadTelemetryEvidence(load, opts = {}) {
+  const now = opts.now || Date.now();
+  const po = findPoAnywhere(load.poId) || {};
+  const out = { loadId: load.id, poNumber: po.poNumber || '', customer: po.customer || '', enabled: linxup.enabled, linked: false, truckNum: '', current: null, trips: [], timeline: [], flags: [], note: '' };
+  if (!linxup.enabled) { out.note = 'Linxup is not connected.'; return out; }
+  const truckFor = trip => (store.trucks || []).find(t => t.id === ((trip && trip.truckUnitId) || load.truckUnitId)) || null;
+  const mainTruck = truckFor(null);
+  out.truckNum = mainTruck ? mainTruck.truckNum : '';
+  if (mainTruck && mainTruck.linxup && mainTruck.linxup.trackerId != null) { out.linked = true; out.current = truckTelematics(mainTruck, loadHoldsResources(load) ? load : null, now, []); }
+  const started = (load.trips || []).filter(t => t.timestamps && t.timestamps.start);
+  if (!started.length) { out.note = out.linked ? 'No VBT trip has started on this load yet; there is nothing to correlate.' : 'The truck on this load is not linked to a Linxup tracker.'; return out; }
+  const only = opts.tripIndexes ? new Set(opts.tripIndexes) : null;
+  const T = (ev, at, text, source, kind) => out.timeline.push({ at, text, source, kind, tripNum: ev.tripNum });
+  for (let i = 0; i < started.length; i++) {
+    if (only && !only.has(i)) continue;
+    const trip = started[i];
+    const truck = truckFor(trip);
+    const ts = trip.isoStamps || {};
+    const ev = { tripNum: trip.tripNum || i + 1, truckNum: truck ? truck.truckNum : '', linked: !!(truck && truck.linxup && truck.linxup.trackerId != null),
+      vbt: { start: ts.start || null, arrivedPickup: ts.arrivedPickup || null, loadedAt: ts.loadedAt || null, arrivedJobsite: ts.arrivedJobsite || null, completed: ts.completed || null, source: 'VBT driver app' },
+      pickup: null, jobsite: null, otherVisits: [], stops: [], vehicleTrips: [], usage: [], positions: 0, flags: [], note: '' };
+    out.trips.push(ev);
+    if (!ev.linked) { ev.note = 'The truck this trip ran on is not linked to a Linxup tracker.'; continue; }
+    out.linked = true;
+    const startMs = Date.parse(ts.start), endMs = ts.completed ? Date.parse(ts.completed) : now;
+    const from = startMs - EV_PAD_MS, to = Math.min(endMs + EV_PAD_MS, now);
+    const w = await linxup.window(truck.linxup.trackerId, from, to);
+    const pickup = resolvePickupYard(load, po, trip);
+    const vendor = (store.vendors || []).find(v => v.id === pickup.id) || null;
+    const fence = fenceForVendor(vendor);
+    const vendorGeo = vendor && vendor.geo && validLatLng(vendor.geo.lat, vendor.geo.lng) ? vendor.geo : null;
+    const jobGeo = po.geo && validLatLng(po.geo.lat, po.geo.lng) ? po.geo : null;
+    const pickupVisits = fence ? w.visits.filter(v => Number(v.geofenceId) === Number(fence.geofenceId)) : [];
+    const pickupGps = vendorGeo ? nearWindow(w.positions, vendorGeo, PLACE_RADIUS_M.vendor) : null;
+    const jobsiteGps = jobGeo ? nearWindow(w.positions, jobGeo, PLACE_RADIUS_M.jobsite) : null;
+    const near = (s, geo, r) => !!geo && s.lat != null && metersBetween(s.lat, s.lng, geo.lat, geo.lng) <= r;
+    const jobsiteStops = w.stops.filter(s => near(s, jobGeo, PLACE_RADIUS_M.jobsite));
+    const pickupStops = w.stops.filter(s => near(s, vendorGeo, PLACE_RADIUS_M.vendor) || (fence && s.geofenceId != null && Number(s.geofenceId) === Number(fence.geofenceId)));
+    ev.positions = w.positions.length;
+    ev.pickup = { name: pickup.name, fence: fence ? { geofenceId: fence.geofenceId, name: fence.name, confidence: fence.confidence } : null, pinned: !!vendorGeo,
+      visits: pickupVisits.map(v => ({ enteredAt: v.enteredAt, leftAt: v.leftAt, minutes: v.durationMin, source: 'Linxup geofence' })),
+      gps: pickupGps, stops: pickupStops.map(stopPublic),
+      evidence: pickupVisits.length ? 'geofence' : pickupGps ? 'gps' : (fence || vendorGeo) ? 'none' : 'no-reference' };
+    ev.jobsite = { name: [po.address, po.city].filter(Boolean).join(', ') || po.customer || 'Jobsite', pinned: !!jobGeo, gps: jobsiteGps, stops: jobsiteStops.map(stopPublic),
+      evidence: jobsiteGps ? 'gps' : jobGeo ? 'none' : 'no-reference' };
+    ev.otherVisits = w.visits.filter(v => !fence || Number(v.geofenceId) !== Number(fence.geofenceId)).map(v => ({ name: v.geofenceName, enteredAt: v.enteredAt, leftAt: v.leftAt, minutes: v.durationMin, source: 'Linxup geofence' }));
+    ev.stops = w.stops.map(stopPublic); ev.vehicleTrips = w.trips.map(vtripPublic); ev.usage = w.usage.map(usagePublic);
+    // Discrepancies — attention items, never a verdict. Only when the tracker
+    // did report during the trip (silence is not evidence of anything).
+    const tapPickup = ts.arrivedPickup || ts.loadedAt;
+    if (tapPickup && w.positions.length && ev.pickup.evidence === 'none')
+      ev.flags.push({ kind: 'pickup-mismatch', text: `Pickup telemetry mismatch — trip ${ev.tripNum}: the driver tapped Arrived at ${pickup.name} at ${fmtClock(tapPickup)}; Linxup shows no visit to ${fence ? fence.name : pickup.name} by ${truck.truckNum} in this trip's window (${w.positions.length} position${w.positions.length === 1 ? '' : 's'}).` });
+    if (ts.arrivedJobsite && w.positions.length && ev.jobsite.evidence === 'none')
+      ev.flags.push({ kind: 'jobsite-mismatch', text: `Jobsite telemetry mismatch — trip ${ev.tripNum}: the driver tapped Arrived at jobsite at ${fmtClock(ts.arrivedJobsite)}; Linxup never placed ${truck.truckNum} within ${PLACE_RADIUS_M.jobsite} m of the jobsite pin in this trip's window.` });
+    if (!ts.completed && out.current && out.current.at && out.current.ageSeconds * 1000 <= EV_LIVE_MS && jobGeo && vendorGeo) {
+      const dP = metersBetween(out.current.lat, out.current.lng, vendorGeo.lat, vendorGeo.lng), dJ = metersBetween(out.current.lat, out.current.lng, jobGeo.lat, jobGeo.lng);
+      if (dP > EV_FAR_M && dJ > EV_FAR_M) ev.flags.push({ kind: 'location-attention', text: `Location attention — ${truck.truckNum} is ${Math.round(Math.min(dP, dJ) / 1609)} mi from both ${pickup.name} and the jobsite while trip ${ev.tripNum} is open.` });
+    }
+    out.flags.push(...ev.flags);
+    // The timeline: Linxup's story and the driver's taps side by side, each line labelled.
+    pickupVisits.concat(w.visits.filter(v => !pickupVisits.includes(v))).forEach(v => { T(ev, v.enteredAt, `Entered ${v.geofenceName} geofence`, 'Linxup geofence', 'fence-enter'); if (v.leftAt) T(ev, v.leftAt, `Exited ${v.geofenceName} geofence (${v.durationMin} min inside)`, 'Linxup geofence', 'fence-exit'); });
+    if (pickupGps && !pickupVisits.length) { T(ev, pickupGps.firstAt, `GPS near ${pickup.name} (first of ${pickupGps.count} fixes)`, 'Linxup GPS', 'near-pickup'); if (pickupGps.lastAt !== pickupGps.firstAt) T(ev, pickupGps.lastAt, `GPS last near ${pickup.name}`, 'Linxup GPS', 'near-pickup'); }
+    if (jobsiteGps) { T(ev, jobsiteGps.firstAt, `GPS near jobsite (first of ${jobsiteGps.count} fixes)`, 'Linxup GPS', 'near-jobsite'); if (jobsiteGps.lastAt !== jobsiteGps.firstAt) T(ev, jobsiteGps.lastAt, 'GPS last near jobsite', 'Linxup GPS', 'near-jobsite'); }
+    w.stops.forEach(s => T(ev, s.startAt, `${s.stopType === 'idle' ? 'Idling' : s.stopType === 'off' ? 'Stopped, engine off' : 'Stop'}${s.durationMin != null ? ` ${s.durationMin} min` : ''} ${jobsiteStops.includes(s) ? 'near jobsite' : pickupStops.includes(s) ? `near ${pickup.name}` : s.geofenceName ? `in ${s.geofenceName}` : s.addressLine ? `at ${s.addressLine}` : ''}`.trim(), 'Linxup stop', 'stop'));
+    w.trips.forEach(t => { T(ev, t.startAt, `Linxup vehicle trip began${t.startGeofenceName ? ' at ' + t.startGeofenceName : t.startAddressLine ? ' at ' + t.startAddressLine : ''}`, 'Linxup vehicle trip', 'vehicle-trip'); if (t.endAt) T(ev, t.endAt, `Linxup vehicle trip ended${t.endGeofenceName ? ' at ' + t.endGeofenceName : t.endAddressLine ? ' at ' + t.endAddressLine : ''}${t.distanceMi != null ? ` · ${t.distanceMi} mi` : ''}${t.durationMin != null ? ` · ${t.durationMin} min` : ''}`, 'Linxup vehicle trip', 'vehicle-trip'); });
+    w.usage.forEach(u => T(ev, u.startAt, `Usage period, engine ${u.engineOn === false ? 'off' : 'on'}${u.durationMin != null ? ` · ${u.durationMin} min` : ''}`, 'Linxup usage', 'usage'));
+    [['start', 'Driver tapped Start trip'], ['arrivedPickup', 'Driver tapped Arrived at pickup'], ['loadedAt', 'Driver tapped Loaded'], ['arrivedJobsite', 'Driver tapped Arrived at jobsite'], ['completed', 'Driver tapped Trip complete']]
+      .forEach(([k, txt]) => { if (ts[k]) T(ev, ts[k], txt, 'VBT driver app', 'vbt'); });
+  }
+  out.timeline.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  return out;
+}
+
 // The office's live-refresh fingerprint: the day's loads plus everything the
 // attention row shows (submitted and ready-to-bill counts, the drivers' open
 // days), so the board refreshes when any of them change and only then.
@@ -7001,16 +7307,21 @@ function officeFingerprint(day) {
     'sub:' + live.filter(l => l.approvalStatus === 'submitted').length,
     'rtb:' + live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready').length,
     'sh:' + (store.shifts || []).filter(s => s.status === 'open').map(s => s.id + ':' + (s.truckId || '')).sort().join(','),
+    'lx:' + linxup.version,   // a new truck position or tracker change repaints the board
   ].join('|');
   return require('crypto').createHash('sha1').update(dispatchFingerprint(dayLoads) + '#' + extra).digest('hex').slice(0, 16);
 }
 
-app.get('/api/today', reqMgr, (req, res) => {
+app.get('/api/today', reqMgr, async (req, res) => {
   const today = todayStr();
   const day = req.query.date || today;
+  const now = Date.now();
   const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
   const holding = dayLoads.filter(loadHoldsResources);
   const loads = dayLoads.map(l => boardLoadRow(l, holding));
+  // Linxup, per truck: computed once here, shared by the truck, driver and load rows.
+  const telByTruck = new Map((store.trucks || []).filter(t => t.active).map(t => [t.id, truckTelematics(t, holding.find(l => l.truckUnitId === t.id) || null, now, dayLoads)]));
+  loads.forEach(l => { l.telematics = l.truckUnitId ? telByTruck.get(l.truckUnitId) || null : null; });
 
   // Drivers: their state comes from the loads that hold them today, plus what
   // they are doing right now and on which truck.
@@ -7033,6 +7344,9 @@ app.get('/api/today', reqMgr, (req, res) => {
       truckNum: truck ? truck.truckNum : (usual ? usual.truckNum : ''),
       truckIsUsual: !truck && !!usual,
       dayStartedAt: shift ? shift.startAt : null,
+      // Linxup on the truck this driver is actually on (a load's truck or the
+      // open shift's), never the "usual" truck.
+      telematics: truck ? telByTruck.get(truck.id) || null : null,
       currentLoadId: current ? current.id : null,
       stage: row ? (row.stage || 'Assigned') : (state === 'completed' ? 'Done for the day' : state === 'off' ? 'Off' : 'Available'),
       customer: row ? row.customer : '', poNumber: row ? row.poNumber : '',
@@ -7051,8 +7365,21 @@ app.get('/api/today', reqMgr, (req, res) => {
       id: t.id, truckNum: t.truckNum, type: t.type, status: t.status, state,
       inUseOnLoadId: l ? l.id : null, driverName: l ? (l.driverName || '') : '',
       available: !l && t.status === 'available',
+      telematics: telByTruck.get(t.id) || null,
     };
   });
+  const telIssues = telemetryIssues(trucks);
+  // L2: evidence flags for loads under way on linked trucks (the open trip only, to keep the board quick).
+  for (const l of holding) {
+    const started = (l.trips || []).filter(x => x.timestamps && x.timestamps.start);
+    const open = started.length && !started[started.length - 1].timestamps.completed;
+    const truck = l.truckUnitId ? (store.trucks || []).find(x => x.id === l.truckUnitId) : null;
+    if (!open || !truck || !truck.linxup || truck.linxup.trackerId == null) continue;
+    try {
+      const ev = await loadTelemetryEvidence(l, { now, tripIndexes: [started.length - 1] });
+      ev.flags.forEach(f => telIssues.push({ truckId: truck.id, truckNum: truck.truckNum, loadId: l.id, kind: f.kind, text: f.text }));
+    } catch (e) { console.error('[linxup] evidence failed for', l.id, e.message); }
+  }
   const trailerBusy = new Map();
   holding.forEach(l => { if (l.trailerId) trailerBusy.set(l.trailerId, l.id); });
   const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({
@@ -7107,7 +7434,10 @@ app.get('/api/today', reqMgr, (req, res) => {
       carriedOver: carried.length,
       availableDrivers: drivers.filter(d => d.available).length,
       availableTrucks: trucks.filter(t => t.available).length,
+      telemetry: telIssues.length,
     },
+    telemetryIssues: telIssues,
+    linxup: { enabled: linxup.enabled, linkedTrucks: trucks.filter(t => t.telematics && t.telematics.state !== 'not-linked').length },
   });
 });
 
@@ -7572,6 +7902,13 @@ const PORT = process.env.PORT || 3000;
     lastGoodJson = JSON.stringify(store);   // the rollback point until the first successful save
     await pruneLocationHistory();
     setInterval(pruneLocationHistory, 24 * 60 * 60 * 1000).unref();
+    // Telemetry tables and the in-memory latest positions; retention nightly.
+    try {
+      await linxup.init();
+      const lp = await linxup.prune(); if (lp.dropped || lp.thinned) console.log(`[linxup] retention: dropped ${lp.dropped}, thinned ${lp.thinned}`);
+      setInterval(() => linxup.prune().catch(e => console.error('[linxup] prune failed:', e.message)), 24 * 60 * 60 * 1000).unref();
+      console.log(`✓ Linxup telemetry ${linxup.enabled ? 'ON' : 'off (no LINXUP_WEBHOOK_TOKEN)'} — ${linxup.trackers.size} tracker(s) known`);
+    } catch (e) { console.error('[linxup] init failed (telemetry unavailable until restart):', e.message); }
   } catch (e) {
     // Fail SAFE, not fail closed: the process stays up so /healthz and the
     // dispatcher's screen show exactly what happened and an admin can restore

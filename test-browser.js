@@ -452,6 +452,76 @@ async function call(cookie, method, path, body) {
   chk('   ...row and marker greyed', stale.rowOffline && stale.markerOffline, true);
   chk('   ...last known location still on the map', stale.still, true);
   chk('   ...card keeps the workflow stage', /Stage Loaded \/ En Route/.test(stale.card), true);
+  console.log('── Office: Linxup telemetry beside VBT (L1) ──');
+  // Truck #12 is Beryle's (in progress). Its tracker reports Jesus Guzman, mapped to Rigo → a flag, never a reassignment.
+  const lxPost = (type, body) => fetch(B + '/api/linxup/' + type, { method: 'POST', headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.status);
+  const lxPos = (trackerId, extra) => ({ date: Date.now() - 20000, latitude: 36.7450, longitude: -119.7600, speed: 8, heading: 'S', direction: 180, odometer: 55959, engineOn: true,
+    address: { street: '7238 Landing Cove St', city: 'Bakersfield', stateCode: 'CA', postalCode: '93313' },
+    tracker: { trackerId, name: 'VBT #' + trackerId, deviceNumber: 'IMEI-' + trackerId, deviceSerialNumber: 'SN-' + trackerId },
+    company: { companyId: 1, name: 'Valley Best' }, fleet: { fleetId: 3, name: 'No Group' }, asset: { vin: 'VIN' + trackerId, make: 'Peterbilt', model: '567', year: 2026 }, ...extra });
+  chk('1. the webhook takes a Position for an unknown tracker (200) and refuses a bad token (401)',
+    `${await lxPost('position', lxPos(602, { person: { personId: 91, name: 'Jesus Guzman' } }))} ${await fetch(B + '/api/linxup/position', { method: 'POST', headers: { Authorization: 'Bearer nope', 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.status)}`, '200 401');
+  await call(mgr, 'PUT', '/api/fleet/trucks/truck-12/linxup', { trackerId: 602 });
+  await call(mgr, 'PUT', '/api/drivers/rigo', { linxupPersonId: 91 });
+  await lxPost('position', lxPos(601, { speed: 0, engineOn: true, date: Date.now() - 5000 }));   // a spare tracker, not linked to any truck
+  await page.evaluate(async () => { await loadAll(); goTab('today'); }); await page.waitForTimeout(900);
+  const lxb = await page.evaluate(() => {
+    const row = document.querySelector('.db-drv[data-driverid="beryle"]');
+    const tel = row && row.querySelector('.db-tel');
+    return { tel: tel ? tel.innerText.replace(/\s+/g, ' ').trim() : 'no line', flag: row ? Array.from(row.querySelectorAll('.db-flag')).map(f => f.innerText).join('|') : '',
+      stage: row ? row.querySelector('.db-drv-load').innerText.replace(/\s+/g, ' ') : '',
+      tiles: Array.from(document.querySelectorAll('#db-tiles .db-tile .l')).map(e => e.textContent.trim()).join('|'),
+      chip: ((Array.from(document.querySelectorAll('.db-truck')).find(e => /#12/.test(e.innerText)) || {}).innerText || '').replace(/\s+/g, ' ') };
+  });
+  chk('2. Beryle\'s row keeps VBT\'s stage and adds Linxup beside it: Moving · 8 mph S · engine on · odometer · GPS age · address · Linxup driver', `${/Loaded \/ en route/.test(lxb.stage)} ${/^Moving · 8 mph S · engine on · odo 55,959 · Linxup GPS \d+ s ago 7238 Landing Cove St, Bakersfield, CA 93313 Linxup driver: Jesus Guzman \(Rigo\)/.test(lxb.tel)}`, 'true true');
+  chk('   …the disagreement is a flag and a tile, not a reassignment', `${lxb.flag} | ${lxb.tiles.includes('Telemetry')}`, 'Linxup reports Jesus Guzman in Truck #12; VBT has Beryle assigned. | true');
+  chk('   the truck chip carries the Linxup state', /Truck #12 · Beryle MOVING/.test(lxb.chip), true);
+  const lxAssign = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id);
+  chk('   VBT\'s load still belongs to Beryle on Truck #12', `${lxAssign.truckId} ${lxAssign.truckUnitId}`, 'beryle truck-12');
+  await page.evaluate(() => goTab('fleet')); await page.waitForTimeout(700);
+  const lxf = await page.evaluate(() => ({ sel: (document.querySelector('[data-truck-id="truck-12"][data-field="linxupTrackerId"]') || {}).value,
+    opts: Array.from(document.querySelectorAll('[data-truck-id="truck-12"][data-field="linxupTrackerId"] option')).map(o => o.textContent.trim()).join('|'),
+    person: (document.querySelector('[data-driver="rigo"][data-field="linxupPersonId"]') || {}).value }));
+  chk('3. Drivers & Trucks: Truck #12 is linked to tracker 602 by id; the picker names trackers by name · VIN · IMEI; Rigo is mapped to the Linxup person', `${lxf.sel} | ${lxf.person} | ${lxf.opts}`, '602 | 91 | — not linked —|VBT #601 · VIN VIN601 · IMEI IMEI-601|VBT #602 · VIN VIN602 · IMEI IMEI-602');
+  await page.evaluate(() => goTab('map')); await page.waitForTimeout(1200);
+  const lxm = await page.evaluate(async () => { fmSelect('beryle', true); await new Promise(r => setTimeout(r, 400));
+    return { card: document.getElementById('fm-card').innerText.replace(/\s+/g, ' '), rows: Array.from(document.querySelectorAll('#fm-list .fm-row')).map(r => r.innerText.replace(/\s+/g, ' ').trim()).join(' || ') }; });
+  chk('4. Fleet Map: Beryle\'s marker is Linxup\'s, named as such, with the truck\'s own facts', `${/GPS source Linxup \(truck tracker\)/.test(lxm.card)} ${/Linxup Moving · 8 mph · engine on · odometer 55,959/.test(lxm.card)} ${/Beryle — Truck #12 · Linxup/.test(lxm.rows)}`, 'true true true');
+  chk('   no browser confirm() or prompt()', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
+
+  console.log('── Office: Linxup evidence beside the VBT load (L2) ──');
+  // Tracker 602 (Truck #12, Beryle's trip 1 from Vulcan): a visit to a fence named exactly "Vulcan", a stop and a vehicle trip.
+  const lxNow = Date.now(), co = { company: { companyId: 1 } }, tr602 = { tracker: { trackerId: 602, name: 'VBT #602' } };
+  await lxPost('geofence-event', { eventType: 'FENCE_ENTER', enterDateTime: lxNow - 900e3, geofence: { geofenceId: 21, name: 'Vulcan', fenceGroup: 'Yards' }, ...tr602, ...co });
+  await lxPost('geofence-event', { eventType: 'FENCE_EXIT', enterDateTime: lxNow - 900e3, exitDateTime: lxNow - 600e3, durationMinutes: 5, geofence: { geofenceId: 21, name: 'Vulcan', fenceGroup: 'Yards' }, ...tr602, ...co });
+  await lxPost('stop', { stopType: 'Idling', startDateTime: lxNow - 500e3, endDateTime: lxNow - 320e3, durationMinutes: 3, latitude: 36.7450, longitude: -119.7600, address: { street: '7238 Landing Cove St', city: 'Bakersfield', stateCode: 'CA' }, ...tr602, ...co });
+  await lxPost('trip', { startDateTime: lxNow - 600e3, endDateTime: lxNow - 500e3, distanceMiles: 2.1, authorizedMiles: 2.1, unauthorizedMiles: 0, durationMinutes: 2, authorized: true, startGeofence: { geofenceId: 21, name: 'Vulcan' }, endAddress: { street: '7238 Landing Cove St', city: 'Bakersfield', stateCode: 'CA' }, ...tr602, ...co });
+  await page.evaluate(async () => { await loadAll(); goTab('today'); }); await page.waitForTimeout(900);
+  const l2b = await page.evaluate(() => { const row = document.querySelector('.db-drv[data-driverid="beryle"]'); const tel = row && row.querySelector('.db-tel'); return tel ? tel.innerText.replace(/\s+/g, ' ').trim() : 'no line'; });
+  chk('1. the board row adds one line: Last geofence: Vulcan — entered h:mm, left h:mm (5 min)', /Last geofence: Vulcan — entered \d{1,2}:\d\d [AP]M, left \d{1,2}:\d\d [AP]M \(5 min\)/.test(l2b), true);
+  await page.evaluate(id => openLoadDetail(id), load.id); await page.waitForTimeout(900);
+  const l2d = await page.evaluate(() => { const el = document.getElementById('ld-telemetry'); if (!el) return null;
+    const txt = el.innerText.replace(/\s+/g, ' ').trim();
+    return { txt, head: el.querySelector('.ld-tel-head').innerText.replace(/\s+/g, ' ').trim(), blocks: el.querySelectorAll('.ld-tel-block').length, timeline: Array.from(el.querySelectorAll('.ld-tl')).map(r => Array.from(r.children).map(c => c.textContent.trim()).join(' ')), sources: Array.from(el.querySelectorAll('.ld-tl-src')).map(e => e.textContent) }; });
+  chk('2. Load Details carries a LINXUP TELEMETRY section beside VBT\'s record: Current, then Trip 1 with Pickup, Jobsite and Vehicle activity', l2d ? `${/^LINXUP TELEMETRY the truck's tracker · evidence, not the driver's record$/.test(l2d.head)} ${l2d.blocks} ${/Moving · 8 mph · engine on · Linxup GPS \d+ s ago · 7238 Landing Cove St/.test(l2d.txt)}` : 'no section', 'true 2 true');
+  chk('   pickup evidence: the fence visit, entered/exited/minutes, and that the fence was matched by NAME (nobody mapped it yet)', /Pickup — Vulcan · entered \d{1,2}:\d\d [AP]M · exited \d{1,2}:\d\d [AP]M · 5 min inside Linxup geofence \(matched by name\)/.test(l2d.txt), true);
+  chk('   jobsite: the PO has a pin (set earlier in this suite) and the tracker was never inside it — said plainly, never "confirmed"', `${/Jobsite · no Linxup activity within the jobsite pin during this trip Linxup GPS/.test(l2d.txt)} ${/confirmed/i.test(l2d.txt)}`, 'true false');
+  chk('   vehicle activity: the Linxup vehicle trip is called an ignition cycle, with its miles, and the stop', /Vehicle activity: 1 Linxup vehicle trip \(ignition cycles\) · 2\.1 mi · 1 stop Linxup/.test(l2d.txt), true);
+  chk('3. the telemetry timeline is chronological and every line names its source, with the driver\'s taps between Linxup\'s entries', `${l2d.timeline.length >= 7} ${[...new Set(l2d.sources)].sort().join('|')} ${l2d.timeline.some(t => /Driver tapped Arrived at pickup VBT driver app$/.test(t))} ${l2d.timeline.some(t => /Entered Vulcan geofence Linxup geofence$/.test(t))}`, 'true Linxup geofence|Linxup stop|Linxup vehicle trip|VBT driver app true true');
+  const l2load = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id);
+  chk('   reading the evidence changed nothing on the load: still Beryle, Truck #12, trip 1 loaded and not arrived', `${l2load.truckId} ${l2load.truckUnitId} ${!!l2load.trips[0].timestamps.loadedAt} ${l2load.trips[0].timestamps.arrivedJobsite || 'none'}`, 'beryle truck-12 true none');
+  await page.evaluate(() => document.querySelector('.modal-bg') && document.querySelector('.modal-bg').remove());
+  const l2a = await page.evaluate(async id => (await approvalTelemetryHtml(id)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(), load.id);
+  chk('4. the approval dialog gets a one-line Linxup evidence summary per trip', /^Linxup evidence Trip 1: Vulcan \d{1,2}:\d\d [AP]M–\d{1,2}:\d\d [AP]M \(geofence\) · no activity near the jobsite$/.test(l2a), true);
+  chk('   …and it is part of the approval confirmation', await page.evaluate(() => /const tel = await approvalTelemetryHtml\(l\.id\);/.test(confirmApproval.toString())), true);
+  await page.evaluate(() => { goTab('vendors'); switchVendorTab('vulcan'); }); await page.waitForTimeout(900);
+  const l2v = await page.evaluate(() => { const el = document.getElementById('v-fence'); const sel = document.getElementById('v-fence-sel'); return el ? { txt: el.innerText.replace(/\s+/g, ' ').trim(), value: sel && sel.value, opts: sel ? Array.from(sel.options).map(o => o.textContent.trim()).join('|') : '' } : null; });
+  chk('5. Vendors: the yard panel offers the learned Linxup geofences and only SUGGESTS the name match', l2v ? `${l2v.value === ''} ${l2v.opts} ${/Suggested by name: Vulcan — pick it and Save to confirm\./.test(l2v.txt)}` : 'no panel', 'true — not mapped —|Vulcan · Yards true');
+  await page.evaluate(() => { document.getElementById('v-fence-sel').value = '21'; return saveVendorFence('vulcan'); }); await page.waitForTimeout(900);
+  const l2m = await call(mgr, 'GET', '/api/linxup/geofences');
+  chk('   Save maps it (a manager\'s decision, audited); the panel now says visits count as pickup evidence', `${l2m.data.geofences.find(g => g.geofenceId === 21).mappedVendorId} ${await page.evaluate(() => /Geofence visits count as pickup evidence for this yard\./.test(document.getElementById('v-fence').innerText))}`, 'vulcan true');
+  chk('   no browser confirm() or prompt()', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
+
   await ctx.close();
 
   console.log('── Driver: phone view, no fleet access ──');
