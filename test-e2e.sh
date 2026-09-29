@@ -1433,6 +1433,15 @@ chk "   billed: Completed" "$(tod "[l['bucket'] for l in d['loads'] if l['id']==
 chk "   planning another day: its own loads, the same attention row" "$(tod "len(d['loads']), d['isToday'], d['attention']['awaitingApproval']==0 and d['attention']['carriedOver']==1" "?date=$TOMORROW")|$(tod "[l['id'] for l in d['loads']]==['$LY'], d['isToday']" "?date=$YESTERDAY")" "0 False True|True False"
 mg PUT /api/drivers/carlos '{"status":"available"}' >/dev/null; mg PUT /api/fleet/trucks/truck-2b '{"status":"available"}' >/dev/null
 
+echo
+echo "── 42. Conflicts are decided in the app: one dialog, Cancel or go ahead, never a browser confirm ──"
+CF=$(sed -n '/^function confirmConflicts/,/^async function postAssignment/p' public/index.html)
+chk "42 the conflict dialog is in the page (a Promise the caller awaits), not a native confirm()" "$(echo "$CF" | grep -c '[^a-zA-Z]confirm(')|$(echo "$CF" | grep -c 'return new Promise(resolve')|$(echo "$CF" | grep -c "id = 'conflict-modal'")" "0|1|1"
+chk "   it is titled for what collides and offers Cancel and the verb (Assign / Reassign / Move)" "$(grep -c "'driver-busy': 'Driver Already Assigned', 'truck-busy': 'Truck Already Assigned'" public/index.html)|$(echo "$CF" | grep -c 'id="conflict-cancel">Cancel<')|$(echo "$CF" | grep -c 'id="conflict-go">\${escapeHtml(verb)}<')" "1|1|1"
+chk "   Cancel is the default: focused, Escape, the × and the backdrop all cancel" "$(echo "$CF" | grep -c "conflict-cancel').focus()")|$(echo "$CF" | grep -c "e.key === 'Escape'")|$(echo "$CF" | grep -c "conflict-x').onclick = () => done(false)")|$(echo "$CF" | grep -c "e.target === el) done(false)")" "1|1|1|1"
+chk "   a go-ahead is resent with force and the typed reason; a Cancel is reported as cancelled" "$(grep -c "force: true, reason: c.reason || reason ||" public/index.html)|$(grep -c "d = { ...d, cancelled: true }" public/index.html)" "1|1"
+chk "   every assignment path (sheet, reassign modal, PO form, date move) stays quiet on Cancel" "$(grep -c '\.cancelled)' public/index.html)|$(grep -c 'postAssignment(' public/index.html)" "4|5"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes

@@ -23,6 +23,7 @@ function findChrome() {
 }
 
 let PASS = 0, FAIL = 0;
+let expectConflict = false;   // a test that deliberately provokes a 409 conflict sets this
 const chk = (name, got, want) => { const ok = String(got) === String(want); ok ? PASS++ : FAIL++; console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : ` — got '${got}' want '${want}'`}`); };
 
 // Plain HTTP helpers (node fetch) with a cookie jar per user.
@@ -64,11 +65,13 @@ async function call(cookie, method, path, body) {
       ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, geolocation: { latitude: 36.73, longitude: -119.78 }, permissions: ['geolocation'] }
       : { viewport: { width: 1280, height: 900 } });
     const page = await ctx.newPage();
+    // The app must never fall back to the browser's own confirm(); count any call.
+    await page.addInitScript(() => { window.__confirmCalls = 0; const orig = window.confirm.bind(window); window.confirm = (...a) => { window.__confirmCalls++; return orig(...a); }; });
     const requests = [];
     page.on('pageerror', e => problems.push(`[${user}] pageerror: ${e.message}`));
-    page.on('console', m => { if (m.type() === 'error' && !/ERR_CERT_AUTHORITY_INVALID|net::ERR_/.test(m.text())) problems.push(`[${user}] console.error: ${m.text().slice(0, 160)}`); });
+    page.on('console', m => { if (m.type() === 'error' && !/ERR_CERT_AUTHORITY_INVALID|net::ERR_/.test(m.text()) && !(expectConflict && /409/.test(m.text()))) problems.push(`[${user}] console.error: ${m.text().slice(0, 160)}`); });
     page.on('request', r => { if (r.url().startsWith(B)) requests.push(`${r.method()} ${r.url().replace(B, '')}`); else if (/googleapis\.com\/(?!css)|sheets\.google/.test(r.url())) problems.push(`[${user}] Google Sheets request: ${r.url()}`); });
-    page.on('response', r => { const u = r.url(); if (u.includes('/api/') && r.status() >= 400 && r.status() !== 202) problems.push(`[${user}] ${r.request().method()} ${u.replace(B, '')} -> ${r.status()}`); });
+    page.on('response', r => { const u = r.url(); if (u.includes('/api/') && r.status() >= 400 && r.status() !== 202 && !(expectConflict && r.status() === 409)) problems.push(`[${user}] ${r.request().method()} ${u.replace(B, '')} -> ${r.status()}`); });
     await page.goto(B + '/login');
     await page.fill('input[name=username]', user);
     await page.fill('input[name=password]', pass);
@@ -136,6 +139,38 @@ async function call(cookie, method, path, body) {
   chk('   sheet offers an optional trailer step listing 3B', await page.evaluate(() => { const t = document.getElementById('qa-sheet-bg').innerText; return /4 · Trailer/i.test(t) && /3B/.test(t); }), true);
   chk('no assignment written during the drop', requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length - writesBefore, 0);
   await page.evaluate(() => qaClose());
+
+  console.log('── Office: a conflict is decided in the app, never in a browser confirm ──');
+  // Beryle is mid-haul on PO 10482; putting Rigo's load (PO 10483) on Beryle collides.
+  expectConflict = true;
+  const assignsBefore = requests.filter(r => /\/assign$/.test(r)).length;
+  await page.evaluate(id => qaOpen(id), nl.id); await page.waitForTimeout(500);
+  const dlg = await page.evaluate(async () => {
+    qaSet('driverId', 'beryle');
+    qaConfirm();                                   // resolves only once the dialog is answered
+    await new Promise(r => setTimeout(r, 800));
+    const m = document.getElementById('conflict-modal'); if (!m) return null;
+    return { title: m.querySelector('h2').textContent.trim(), items: Array.from(m.querySelectorAll('li')).map(e => e.textContent).join(' | '),
+             buttons: Array.from(m.querySelectorAll('.modal-foot button')).map(b => b.textContent.trim()).join('|'), focus: document.activeElement && document.activeElement.id, nativeConfirmUsed: window.__confirmCalls || 0 };
+  });
+  chk('1. a 409 opens the in-app dialog, titled for what collides', dlg ? dlg.title : 'no dialog', 'Driver Already Assigned');
+  chk('   …naming exactly what collides', !!dlg && /Beryle is already mid-haul on .*PO 10482/.test(dlg.items), true);
+  chk('   …with Cancel and Reassign, Cancel focused', dlg ? `${dlg.buttons} ${dlg.focus}` : 'no dialog', 'Cancel|Reassign conflict-cancel');
+  await page.click('#conflict-cancel'); await page.waitForTimeout(500);
+  let cfAfter = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === nl.id);
+  chk('2. Cancel: dialog gone, sheet still open, no error toast, one request only, load untouched',
+    await page.evaluate(() => `${!document.getElementById('conflict-modal')} ${!!document.getElementById('qa-sheet-bg')} ${document.querySelectorAll('.toast.error').length}`) + ` ${requests.filter(r => /\/assign$/.test(r)).length - assignsBefore} ${cfAfter.truckId}`, 'true true 0 1 rigo');
+  await page.evaluate(() => { qaConfirm(); }); await page.waitForTimeout(600);
+  await page.fill('#conflict-reason', 'Rigo went home sick');
+  await page.click('#conflict-go'); await page.waitForTimeout(1000);
+  cfAfter = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === nl.id);
+  const cfAudit = ((await call(mgr, 'GET', '/api/audit-log?action=quick-assigned-load')).data.entries || []).find(e => e.target === nl.id && e.details && e.details.conflictsOverridden);
+  chk('3. Reassign with a reason: the load moves, sheet and dialog close, the override is audited with the reason',
+    `${cfAfter.truckId} ${await page.evaluate(() => !document.getElementById('qa-sheet-bg') && !document.getElementById('conflict-modal'))} ${cfAudit ? cfAudit.details.conflictsOverridden.types + ' / ' + cfAudit.details.conflictsOverridden.reason : 'no-cfAudit'}`, 'beryle true driver-busy / Rigo went home sick');
+  chk('   the browser\'s own confirm() was never called', await page.evaluate(() => window.__confirmCalls || 0), 0);
+  expectConflict = false;
+  await call(mgr, 'POST', `/api/loads/${nl.id}/assign`, { driverId: 'rigo' });   // back to Rigo for the rest of the run
+  await page.waitForTimeout(300);
 
   console.log('── Office: the dispatch board is the command center ──');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(700);

@@ -159,6 +159,12 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .modal-close:hover{background:var(--Rb);color:var(--R)}
 .modal-body{padding:18px 20px;display:flex;flex-direction:column;gap:12px;max-height:75vh;overflow-y:auto}
 .modal-foot{padding:14px 20px;border-top:1px solid var(--bdr);background:var(--bg2);display:flex;gap:8px;justify-content:flex-end;border-radius:0 0 var(--rl) var(--rl)}
+.conflict-modal{max-width:460px}
+.conflict-modal .modal-head{border-left:4px solid var(--A);border-radius:var(--rl) 0 0 0}
+.conflict-list{margin:0;padding:0 0 0 18px;font-size:13.5px;line-height:1.45;display:flex;flex-direction:column;gap:6px}
+.conflict-list li::marker{color:var(--A)}
+.conflict-hint{font-size:12.5px;color:var(--txt2);padding:10px 12px;background:var(--bg2);border-radius:var(--r)}
+.conflict-modal .modal-foot .btn{min-height:40px;padding:8px 20px;font-size:13px}
 
 .field{display:flex;flex-direction:column;gap:5px}
 .field label{font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
@@ -1709,7 +1715,7 @@ async function savePO() {
       poNumberState = { value: po.poNumber, exists: true, message: d.error };
       poStep(1); const msg = document.getElementById('po-number-msg'); msg.textContent = d.error; msg.className = 'po-inline bad';
       toast(d.error, 'error');
-    } else toast(d.error || `Save failed (status ${d.status || '?'})`, 'error');
+    } else if (!d.cancelled) toast(d.error || `Save failed (status ${d.status || '?'})`, 'error');
   } catch (e) {
     console.error('[savePO]', e); toast('Could not save PO: ' + (e.message || 'unknown error'), 'error');
     const btn = document.getElementById('po-save'); if (btn) { btn.disabled = false; btn.textContent = 'Save PO'; }
@@ -2273,19 +2279,23 @@ async function confirmReassign() {
 
   // Update loads in parallel
   document.getElementById('reassign-confirm-btn').disabled = true;
-  let success = 0, failed = 0;
+  let success = 0, failed = 0, leftAlone = 0;
   const reason = (document.getElementById('reassign-reason')?.value || '').trim();
   for (const id of loadIds) {
     // Same endpoint as Quick Assign, so the same validation, conflict check and audit apply.
     const d = await postAssignment(`/api/loads/${id}/assign`, { driverId: reassignTarget || null }, 'Reassign', reason);
-    if (d.ok) success++; else { failed++; if (d.error && loadIds.length === 1) toast(d.error, 'error'); }
+    if (d.ok) success++;
+    else if (d.cancelled) leftAlone++;                      // the dispatcher chose Cancel in the conflict dialog
+    else { failed++; if (d.error && loadIds.length === 1) toast(d.error, 'error'); }
   }
 
-  if (failed === 0) {
+  if (failed === 0 && leftAlone === 0) {
     const target = newTruck ? newTruck.label : 'Unassigned';
     toast(`Reassigned ${success} load${success !== 1 ? 's' : ''} to ${target}`, 'success');
+  } else if (failed === 0) {
+    if (success) toast(`Reassigned ${success}, left ${leftAlone} as ${leftAlone === 1 ? 'it was' : 'they were'}`, 'success');
   } else {
-    toast(`Reassigned ${success}, ${failed} failed`, failed > 0 ? 'error' : 'success');
+    toast(`Reassigned ${success}, ${failed} failed${leftAlone ? `, ${leftAlone} left as is` : ''}`, 'error');
   }
 
   closeReassign();
@@ -2418,7 +2428,7 @@ async function confirmMove() {
     closeMove();
     await loadAll();
     refreshCurrentView();
-  } else {
+  } else if (!d.cancelled) {
     toast(d.error || 'Move failed', 'error');
   }
 }
@@ -4275,17 +4285,63 @@ function qaClose() { const el = document.getElementById('qa-sheet-bg'); if (el) 
 
 // The server refuses an assignment that collides with work already on the
 // board (driver mid-haul elsewhere, truck on another driver's load) with 409
-// and the exact conflicts. The dispatcher sees them and chooses: Cancel, or
-// go ahead — which resends with `force` and is written to the audit log.
-function confirmConflicts(r, verb) {
-  if (!(r.status === 409 && Array.isArray(r.conflicts) && r.conflicts.length)) return false;
-  return confirm(r.conflicts.map(c => '• ' + c.message).join('\n') + `\n\nOK = ${verb} anyway · Cancel = leave it as it is`);
+// and the exact conflicts. The dispatcher sees them in the app — one dialog,
+// Cancel or go ahead, never a browser confirm() — and a go-ahead is resent
+// with `force` and the reason, so the override lands in the audit log.
+const CONFLICT_TITLE = {
+  'driver-busy': 'Driver Already Assigned', 'truck-busy': 'Truck Already Assigned',
+  'trailer-busy': 'Trailer Already Assigned', 'load-in-progress': 'Load In Progress',
+};
+function conflictTitle(conflicts) {
+  const types = [...new Set(conflicts.map(c => c.type))];
+  return types.length === 1 ? (CONFLICT_TITLE[types[0]] || 'Assignment Conflict') : 'Assignment Conflicts';
+}
+// Resolves to { go, reason }. Cancel is the default (focused, Escape, backdrop).
+function confirmConflicts(r, verb, reason) {
+  if (!(r.status === 409 && Array.isArray(r.conflicts) && r.conflicts.length)) return Promise.resolve({ go: false, reason: '' });
+  return new Promise(resolve => {
+    const old = document.getElementById('conflict-modal'); if (old) old.remove();
+    const el = document.createElement('div');
+    el.className = 'modal-bg'; el.id = 'conflict-modal'; el.style.zIndex = '500';
+    el.innerHTML = `
+      <div class="modal conflict-modal" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
+        <div class="modal-head"><h2 id="conflict-title">${escapeHtml(conflictTitle(r.conflicts))}</h2><button class="modal-close" id="conflict-x" aria-label="Cancel">&#215;</button></div>
+        <div class="modal-body">
+          <ul class="conflict-list">${r.conflicts.map(c => `<li>${escapeHtml(c.message)}</li>`).join('')}</ul>
+          <div class="conflict-hint"><b>Cancel</b> leaves everything as it is. <b>${escapeHtml(verb)}</b> goes ahead anyway; the override and your reason are written to the audit log.</div>
+          <div class="field"><label>Reason (optional)</label><input type="text" id="conflict-reason" placeholder="e.g. Rigo went home sick" value="${escapeAttr(reason || '')}" autocomplete="off"></div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn ghost" id="conflict-cancel">Cancel</button>
+          <button type="button" class="btn primary" id="conflict-go">${escapeHtml(verb)}</button>
+        </div>
+      </div>`;
+    const done = go => {
+      const typed = (el.querySelector('#conflict-reason')?.value || '').trim();
+      document.removeEventListener('keydown', onKey); el.remove();
+      resolve({ go, reason: typed });
+    };
+    const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); done(false); } };
+    el.querySelector('#conflict-x').onclick = () => done(false);
+    el.querySelector('#conflict-cancel').onclick = () => done(false);
+    el.querySelector('#conflict-go').onclick = () => done(true);
+    el.querySelector('#conflict-reason').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); done(true); } };
+    el.addEventListener('mousedown', e => { if (e.target === el) done(false); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(el);
+    el.querySelector('#conflict-cancel').focus();
+  });
 }
 // POST an assignment; on a conflict the dispatcher decides, and a "go ahead"
-// is resent with `force` so the override lands in the audit log.
+// is resent with `force` so the override lands in the audit log. A Cancel
+// comes back as { ok:false, cancelled:true } so callers stay quiet about it.
 async function postAssignment(url, body, verb, reason) {
   let d = await api('POST', url, body);
-  if (!d.ok && confirmConflicts(d, verb)) d = await api('POST', url, { ...body, force: true, reason: reason || 'dispatcher confirmed the conflict' });
+  if (!d.ok && d.status === 409 && Array.isArray(d.conflicts) && d.conflicts.length) {
+    const c = await confirmConflicts(d, verb, reason);
+    if (c.go) d = await api('POST', url, { ...body, force: true, reason: c.reason || reason || 'dispatcher confirmed the conflict' });
+    else d = { ...d, cancelled: true };
+  }
   return d;
 }
 
@@ -4296,7 +4352,7 @@ async function qaConfirm() {
   const r = await postAssignment(`/api/loads/${p.loadId}/assign`, {
     driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId, trailerId: p.trailerId || null,
   }, 'Reassign');
-  if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; return toast(r.error || 'Assign failed', 'error'); }
+  if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; if (!r.cancelled) toast(r.error || 'Assign failed', 'error'); return; }
   const who = r.load.driverName || 'Unassigned';
   const truck = r.truck ? r.truck.truckNum : 'no truck';
   const trailer = r.trailer ? ' + ' + r.trailer.number : '';
