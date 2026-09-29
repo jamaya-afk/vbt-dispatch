@@ -197,3 +197,16 @@ These change the shape of Phase 2 and should be answered before the driver flow 
 ## 7. What to do first
 
 Phase 0, in this order, each with an e2e assertion added: C3, C4, C9, C1, C8, C10 (all small), then C2, C5, C6, C7, C11. This closes every path to a wrong invoice or lost evidence and does not touch the UI. Phase 1 then collapses the two boards into one, fixes assignment from the Board, adds Edit PO and the approve confirm. Phase 2 is the driver simplification, after the owner answers §6.
+
+### Status
+
+- **Phase 0 — done** (commits "Phase 0: …" through "Phase 0 review fixes"). Every item in §5.1 is fixed with a regression test in `test-e2e.sh` §40, and the five-truck day in `test-scenario-day.sh` runs green.
+- **Phase 1 — done** (commits "Phase 1.1" … "Phase 1.6"), in the order proposed:
+  1. One dispatch board (`/api/today` computes every status once; the Board tab is gone) — e2e §41.
+  2. Assignment conflicts decided in an in-app dialog (Cancel / Reassign), never a browser `confirm()` — e2e §42.
+  3. Approval confirms the record (Driver · Truck · Pickup yard · Ticket · Delivery); a ⚠ item needs an explicit acknowledgement that is written down — e2e §43.
+  4. Edit PO with the propagation rules written in `PO-EDITING.md`; add a load to an existing order — e2e §44.
+  5. Billing visibility: amounts and totals in Ready to Bill, the Submitted → Approved → Ready to Bill → Billed → Archived strip, manual billing with a reference, Unbill (manual only, with a reason), Unarchive — e2e §45.
+  6. A failed save leaves nothing behind: the store rolls back to the last saved state and mutating requests run one at a time — e2e §46.
+  The browser suite (`test-browser.js`) covers each screen, and the five-truck scenario now asserts the rollback instead of the old "known limit".
+- **Remaining, by design or for later:** the QuickBooks and vendor-bill send/retry/void routes keep their in-flight state on a failed save (it is their recovery record); a re-billed load still needs its archive batch unarchived first (one click, with a reason); the driver-busy rule looks at the same day only; vendor bills are API-only; the driver screen (Phase 2) is unchanged.

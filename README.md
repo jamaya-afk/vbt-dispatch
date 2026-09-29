@@ -28,11 +28,54 @@ carlos / carlos123
 2. Reference `DATABASE_URL` from Postgres → your app's variables
 3. Deploy — data persists forever
 
+## The office day
+
+- **Dispatch** is the one board. Every status on it comes from the server
+  (`/api/today`), computed once with the same rule that refuses a conflicting
+  assignment: loads Unassigned → Assigned → In Progress → Awaiting Approval →
+  Ready to Bill → Completed; drivers Available / Assigned / In progress / Done /
+  Off; trucks Available / Assigned / In progress / In shop. The attention row
+  (unassigned, in progress, awaiting approval, ready to bill with its amount,
+  missing information, conflicts, carried over, free trucks and drivers) is
+  actionable: each tile filters the board or opens the screen that works it.
+- **Quick Assign** is Driver → Truck → Yard → (Trailer) → Confirm, from a card
+  or by dragging a load onto a driver. A conflict (driver mid-haul elsewhere,
+  truck or trailer on another driver's load) is shown in the app with Cancel
+  or go ahead; a go-ahead is written to the audit log with its reason.
+- **Approve** confirms five facts before a load locks: Driver, Truck, Pickup
+  yard, Ticket, Delivery. A ⚠ item can be approved anyway, and what was
+  missing stays on the load and in the audit log for billing to see.
+- **Edit PO** changes the order; the work follows only where it is still
+  operational. The rules are in [PO-EDITING.md](PO-EDITING.md). "Add a load"
+  puts more work on the same order with the same checks as the New PO form.
+- **Billing** reads Submitted → Approved → Ready to Bill → Billed → Archived.
+  Ready to Bill prices each load with the invoice engine. Manual billing asks
+  for the outside invoice reference; its undo is Unbill in History, with a
+  reason. A load billed through QuickBooks is released only by voiding its
+  batch. Unarchive brings an archive batch back exactly as it was.
+- **A failed save leaves nothing behind.** If the database refuses a write,
+  the store rolls back to what is on disk and the caller is told; mutating
+  requests run one at a time so a rollback never takes another change with it.
+
 ## Files
 
-- `server.js` — backend (~580 lines)
+- `server.js` — backend (Express, one in-memory store persisted as one Postgres row)
+- `qb.js` — QuickBooks Online client
 - `public/index.html` — frontend (single page app)
 - `public/logo.png` — VBC logo
+- `ASSESSMENT.md` — current state, roadmap and status; `PO-EDITING.md` — PO editing rules; `SPEC.md` — master specification and rules
+
+## Tests
+
+Three suites, run one at a time (they share `data.json` and stop any running
+server):
+
+```
+npm test                      # bash test-e2e.sh — API end to end (port 4600)
+PORT=4630 VBT_TEST_HOOKS=1 node server.js &   # then:
+node test-browser.js          # headless Chromium, office and driver screens
+npm run test:scenario         # a five-truck day, start to billing to restart
+```
 
 ## Data
 
