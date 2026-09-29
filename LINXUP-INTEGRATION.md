@@ -1,7 +1,11 @@
 # Linxup Push API V3 × VBT Dispatch — analysis and architecture proposal
 
-Status: **proposal, nothing implemented.** Written from the Linxup Push API V3
-message documentation and from the VBT code as it stands after Phase 1.
+Status: **L0 and L1 implemented** (`linxup.js`, the `/api/linxup/*` routes,
+the `linxup_*` tables, the link screens, the board and map lines; e2e §47 and
+the browser suite cover them). L2 and L3 remain proposals. Written from the
+Linxup Push API V3 message documentation and from the VBT code as it stands
+after Phase 1; the open questions in the "Assumptions" section below are
+still to be confirmed with Linxup before go-live.
 
 One sentence: **Linxup tells us where the trucks are and what the engines are
 doing; VBT decides what the work is, who is doing it, whether it is done, and
@@ -475,6 +479,51 @@ was idle" without anyone opening Linxup.
 **Never in scope:** completing, approving or billing anything from GPS;
 reassigning a driver from Linxup's `person`; editing Linxup from VBT; a
 general fleet-management product.
+
+---
+
+## Assumptions and open questions (confirm with Linxup before go-live)
+
+The code for L1 is written against the message documentation above and
+**nothing else**. Where the document is silent, the receiver takes the safest
+reading, listed here as the assumption it makes; each one is a question to
+put to Linxup, and the answer may change a line or two of code, never the
+design.
+
+| # | Question | What VBT assumes until answered |
+|---|---|---|
+| 1 | Exact webhook authentication: header name, format, one token per account? | A bearer token is accepted from `Authorization: Bearer <token>` or `Authentication: Bearer <token>` (also the bare token). Compared in constant time against `LINXUP_WEBHOOK_TOKEN` (and `…_NEXT` during rotation). Anything else → 401, counted, never explained. |
+| 2 | Does Linxup retry a failed delivery? | Unknown. VBT answers 503 when it could not persist so a retry, if any, has a reason to happen; it never answers 200 for something it did not store. |
+| 3 | Retry timing / backoff? | Unknown. Nothing in VBT depends on it. |
+| 4 | Is delivery order guaranteed? | **No.** Every write is order-independent: history keyed by (tracker, time), the latest position only moves forward in time, exits update their own enter row. |
+| 5 | What HTTP response does Linxup expect? | `200` with a small JSON body. `4xx` for bad requests (not retried), `503` for "could not store" (retry). |
+| 6 | Can the same message be delivered twice? | **Yes, assumed.** Natural keys make a second delivery a no-op, answered 200. |
+| 7 | Can messages arrive out of order? | **Yes, assumed** (see 4). |
+| 8 | Is there a pull API for the initial tracker list? | Unknown. L1 builds the tracker list from the messages themselves: a tracker exists in VBT the first time any message names it, and the link screen offers those. |
+| 9 | Is historical position backfill available? | Unknown. L1 keeps no gap-filling; a gap is simply a gap. |
+| 10 | Odometer units and source? | Displayed as received with no unit conversion, labelled "odometer (Linxup)". The map screenshot shows 55,959 for VBT #2, consistent with miles; not assumed in code. |
+| 11 | `fuelLevel` format and source? | Stored as the string received, shown only when present. The map shows "N/A" for VBT #2, so it will often be empty. `battery` looks like vehicle voltage ("13.70V" in the UI) and is stored as received. |
+| 12 | Position volume? | Planned for ~1/min/tracker while moving; VBT's ten trackers → ~6,000/day worst case, well within the retention plan. |
+| 13 | Are webhook source IP ranges published? | Unknown; no allowlist in L1. Token + company id are the gate. |
+| 14 | Is payload signing (HMAC) available? | Unknown; not assumed. If it is, it replaces the bearer token. |
+| 15 | Is there an API to create/update geofences? | Not in this document. Permanent places use Linxup fences created in the UI (two exist: **Fowler Yard** and **Delano yard**, both circles, notifying for all trackers); jobsites use VBT's own pins. |
+| 16 | Do media URLs need authentication or expire? | Unknown; L3 stores them and shows them to managers only; nothing is proxied. |
+| 17 | Is a Position sent while stopped / engine off? | Unknown. The board therefore does not call a truck "stale" just because it is quiet with the engine off: engine-off → **Stopped** (with the age shown); engine-on and quiet for 10 min → **Stale**; silent 24 h or tracker inactive → **Offline**. The Linxup map also shows an **Unplugged** state (tracker lost power) that the Push API document does not describe; VBT will learn it from Device Status if that is where it appears. |
+| 18 | Can `batchedPositions` hold points that need individual persistence? | Treated as breadcrumbs only: the string is stored with its position row and not expanded into rows. |
+| 19 | How is a message type identified? | One URL per type (`/api/linxup/<type>`). If only one URL is possible, `/api/linxup/event` classifies by shape as a fallback. |
+| 20 | Are payloads single objects or arrays? | Both are accepted; an array is processed element by element. |
+| 21 | Which `person` is on a message? | The driver Linxup currently associates with the tracker (e.g. "VBT #2 (Jesus Guzman)"). Shown as "Linxup driver: …"; never used to assign. |
+
+Facts taken from the account's own screens (not from the API document):
+ten trackers named "VBT #1" … "VBT #26", which do not map one-to-one to
+VBT's truck numbers — so links are made by id on a screen, not guessed from
+names; every tracker is a linxCam 2.0 dashcam; alert settings: high speed
+60 mph, idle 5 min, ignition alerts on, posted-speed +5 mph, low battery
+12 V, fuel fill-up and low-fuel alerts on, time zone Pacific; authorized
+hours Mon–Fri 3:00 AM–7:00 PM (this is what "authorized miles" means on a
+Trip); one truck produced 4,221 alerts in a month (a High Speed alert per
+minute while over 60 mph), so L3 must roll alerts up into episodes rather
+than list them.
 
 ---
 

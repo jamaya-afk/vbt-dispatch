@@ -14,7 +14,7 @@ chk() { # chk "name" actual expected
 }
 
 cd "$(dirname "$0")"
-rm -f data.json
+rm -f data.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 
@@ -914,7 +914,7 @@ chk "   trips ran all day long without a shift in every earlier section (legacy 
 
 echo "── 38. Freight Segment — the Cornelio 9/14/2026 packet, reproduced from the records ──"
 # Fresh server: the packet's ticket numbers are unique company-wide, so this day is built from nothing.
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-seg.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
@@ -1156,7 +1156,7 @@ chk "   Sept 15 history untouched throughout"                 "$(curl -s -b $M $
 echo
 echo "── 40. Phase 0 integrity: billing, attribution, deletion, archive, QuickBooks, vendor bills ──"
 # A fresh process and an empty store, so every fixture below is fully known.
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-p0.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1377,7 +1377,7 @@ import json;d=json.load(open('data.json'));print([l['notes'] for l in d['loads']
 
 echo
 echo "── 41. One dispatch board: every status from the server, one rule for who is busy ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-board.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F); YESTERDAY=$(date -d '-1 day' +%F); TOMORROW=$(date -d '+1 day' +%F)
@@ -1446,7 +1446,7 @@ chk "   every assignment path (sheet, reassign modal, PO form, date move) stays 
 
 echo
 echo "── 43. Approval confirms the record: Driver · Truck · Pickup yard · Ticket · Delivery ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-approve.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1484,7 +1484,7 @@ chk "   approve and reject are decided in the app: no prompt(), no confirm(); a 
 
 echo
 echo "── 44. Editing a PO: the order changes, the work follows only where it is still operational (PO-EDITING.md) ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-poedit.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
@@ -1542,7 +1542,7 @@ chk "   the screen: Edit PO from the PO card and the load detail; a date change 
 
 echo
 echo "── 45. Billing visibility: amounts, the state machine, guarded manual billing, unbill, unarchive ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-billing.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1592,7 +1592,7 @@ chk "   the screen: the state machine strip on Billing and History; manual billi
 
 echo
 echo "── 46. A failed save leaves nothing behind: the store rolls back to what is on disk, one write at a time ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-rollback.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
@@ -1640,6 +1640,103 @@ PY
 chk "   the hook reset itself after one failure: the next save is fine" "$(mgc PUT /api/loads/$LB '{"notes":"note C"}')|$(load $LB "l['notes']")" "200|note C"
 chk "   mutating requests run one at a time; QuickBooks send/retry/void, GPS pings and test hooks are exempt and keep their in-flight state (their recovery record)" "$(grep -c "^const WRITE_LOCK_EXEMPT = /^\\\\/api\\\\/(billing-batches" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: true }, next)" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: false }, next)" server.js)|$(grep -c "rollbackStore(e);" server.js)" "1|1|1|3"
 
+echo
+echo "── 47. Linxup telemetry (L1): positions in by webhook, trucks linked by id, VBT stays the operational truth ──"
+chk "47 without LINXUP_WEBHOOK_TOKEN the webhook path does not exist (404)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/linxup/position -H "$J" -d '{}')" "404"
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+(VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 node server.js > /tmp/vbt-test-linxup.log 2>&1 &)
+for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
+J='Content-Type: application/json'; TODAY=$(date +%F)
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+mgc() { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+lx()  { curl -s -H "Authorization: Bearer test-token" -H "$J" -X POST "$B/api/linxup/$1" -d "$2" "${@:3}"; }
+lxc() { curl -s -H "Authorization: Bearer test-token" -H "$J" -X POST "$B/api/linxup/$1" -d "$2" -o /dev/null -w '%{http_code}'; }
+tod() { curl -s -b $M "$B/api/today" | jq "$1"; }
+tel() { curl -s -b $M "$B/api/today" | python3 -c "import json,sys;d=json.load(sys.stdin);t=[x for x in d['trucks'] if x['id']=='$1'][0];x=t['telematics'];print($2)"; }
+trk() { curl -s -b $M "$B/api/linxup/trackers" | python3 -c "import json,sys;d=json.load(sys.stdin);t=[x for x in d['trackers'] if x['trackerId']==$1];t=t[0] if t else None;print($2)"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+loadof() { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and (l['truckId'] or '')=='${2:-}'][0]"; }
+ms() { echo $(( $(date +%s) * 1000 - ${1:-0} * 1000 )); }   # now minus N seconds, in epoch ms
+pos() { # trackerId date lat lng [extra json fields]
+  echo "{\"date\":$2,\"latitude\":$3,\"longitude\":$4,\"tracker\":{\"trackerId\":$1,\"name\":\"VBT #$1\",\"deviceNumber\":\"IMEI-$1\",\"deviceSerialNumber\":\"SN-$1\"},\"company\":{\"companyId\":1,\"name\":\"Valley Best\"},\"fleet\":{\"fleetId\":3,\"name\":\"No Group\"},\"asset\":{\"vin\":\"VIN$1\",\"make\":\"Peterbilt\",\"model\":\"567\",\"year\":2026}${5:+,$5}}"; }
+FULL='"altitude":91.5,"speed":8,"heading":"S","direction":180,"odometer":55959,"battery":"13.70","fuelLevel":"62%","accuracy":"good","signal":"strong","estimatedSpeedLimit":45,"speeding":false,"behaviourCode":"NORMAL","editDate":1790700000000,"engineOn":true,"batchedPositions":"1790699940000,36.70,-119.70,0.0","sensorData":[],"address":{"street":"7238 Landing Cove St","city":"Bakersfield","stateCode":"CA","postalCode":"93313","countryCode":"US"},"person":{"personId":77,"name":"Jesus Guzman"}'
+T0=$(ms 5)
+# ── The gate ──
+chk "   no token → 401; wrong token → 401; nothing is counted as received" "$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/linxup/position -H "$J" -d "$(pos 501 $T0 36.7 -119.7)")|$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/linxup/position -H "Authorization: Bearer nope" -H "$J" -d "$(pos 501 $T0 36.7 -119.7)")|$(curl -s -b $M $B/api/linxup/health | jq "d['counters']['received'], d['counters']['unauthorized']")" "401|401|0 2"
+chk "   the token is accepted from Authorization or Authentication, with or without 'Bearer'" "$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/linxup/position -H "Authentication: Bearer test-token" -H "$J" -d "$(pos 509 $T0 36.7 -119.7)")|$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/linxup/position -H "Authorization: test-token" -H "$J" -d "$(pos 509 $(ms 4) 36.7 -119.7)")" "200|200"
+chk "   another company's message is refused (403) and stored nowhere" "$(lx position "{\"date\":$T0,\"latitude\":36.7,\"longitude\":-119.7,\"tracker\":{\"trackerId\":599},\"company\":{\"companyId\":9}}" -w ' %{http_code}' | python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);print(c, json.loads(b)['error'])")|$(trk 599 "t")" "403 Message is not for this account|None"
+chk "   malformed payloads are 400, never stored: empty array, bad date, latitude out of range, no tracker" "$(lxc position '[]')|$(lxc position "{\"date\":\"yesterday\",\"latitude\":36.7,\"longitude\":-119.7,\"tracker\":{\"trackerId\":598},\"company\":{\"companyId\":1}}")|$(lxc position "{\"date\":$T0,\"latitude\":999,\"longitude\":-119.7,\"tracker\":{\"trackerId\":598},\"company\":{\"companyId\":1}}")|$(lxc position "{\"date\":$T0,\"latitude\":36.7,\"longitude\":-119.7,\"company\":{\"companyId\":1}}")|$(trk 598 "t")" "400|400|400|400|None"
+# ── Positions in ──
+R=$(lx position "$(pos 501 $T0 36.7 -119.7 "$FULL")")
+chk "   a Position is stored with every field the message carries (nothing useful thrown away)" "$(echo "$R" | jq "d['stored'], d['duplicates']")|$(trk 501 "t['name'], t['deviceNumber'], t['deviceSerialNumber'], t['vin'], t['make'], t['year'], t['fleetId'], t['personId'], t['personName'], t['active']")|$(trk 501 "(lambda p: (p['speed'], p['heading'], p['direction'], p['odometer'], p['battery'], p['fuelLevel'], p['accuracy'], p['signal'], p['estSpeedLimit'], p['speeding'], p['behaviorCode'], p['engineOn'], p['altitude'], p['addressLine'], p['address']['countryCode'], p['batched'][:13], p['editAt'][:4]))(t['latest'])")" "1 0|VBT #501 IMEI-501 SN-501 VIN501 Peterbilt 2026 3 77 Jesus Guzman True|(8, 'S', 180, 55959, '13.70', '62%', 'good', 'strong', 45, False, 'NORMAL', True, 91.5, '7238 Landing Cove St, Bakersfield, CA 93313', 'US', '1790699940000', '2026')"
+chk "   the same message again is a duplicate: answered 200, stored once" "$(lx position "$(pos 501 $T0 36.7 -119.7 "$FULL")" | jq "d['stored'], d['duplicates']")|$(curl -s -b $M $B/api/linxup/health | jq "d['counters']['stored'], d['counters']['duplicates']")" "0 1|3 1"
+chk "   an older fix arriving late is kept as history but never moves the truck backwards" "$(lx position "$(pos 501 $(ms 120) 36.0 -119.0 '"speed":40')" | jq "d['stored']")|$(trk 501 "t['latest']['lat'], t['latest']['speed']")" "1|36.7 8"
+chk "   two positions in one payload are two positions" "$(lx position "[$(pos 502 $(ms 3) 36.8 -119.8 '"speed":0,"engineOn":true'), $(pos 502 $(ms 2) 36.81 -119.81 '"speed":0,"engineOn":true')]" | jq "d['received'], d['stored']")" "2 2"
+chk "   an unknown tracker is mirrored and listed as unlinked; no VBT truck shows it" "$(trk 502 "t['linkedTruckId'], t['latestAt'] is not None")|$(tod "sorted(set(t['telematics']['state'] for t in d['trucks'])), d['linxup']['linkedTrucks']")" "None True|['not-linked'] 0"
+# ── Linking, by id ──
+chk "   link Truck #2 → tracker 501: the tracker's IMEI and VIN are remembered for later verification" "$(mg PUT /api/fleet/trucks/truck-2/linxup '{"trackerId":501}' | jq "d['success'], d['truck']['linxup']['trackerId'], d['truck']['linxup']['deviceNumber'], d['truck']['linxup']['vin'], d['truck']['linxup']['seen']")|$(curl -s -b $M "$B/api/audit-log?action=linked-tracker" | jq "d['entries'][0]['target']")" "True 501 IMEI-501 VIN501 True|truck-2"
+chk "   one tracker links to one truck (409); a non-numeric id is refused (400); the picker shows who has it" "$(mgc PUT /api/fleet/trucks/truck-4/linxup '{"trackerId":501}')|$(mgc PUT /api/fleet/trucks/truck-4/linxup '{"trackerId":"abc"}')|$(trk 501 "t['linkedTruckId'], t['linkedTruckNum']")" "409|400|truck-2 Truck #2"
+# ── On the board, beside VBT's own state ──
+P=$(mg POST /api/pos '{"po":{"poNumber":"LX-1","customer":"Linx Co","deliveryDate":"'"$TODAY"'","address":"9 Gate Rd","city":"Fresno","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":1,"vendorId":"vulcan"}]}' | jq "d['po']['id']"); LB=$(loadof $P beryle)
+chk "   Truck #2 on the board: VBT says assigned, Linxup says Moving 8 mph S, engine on, odometer, address, seconds ago" "$(tel truck-2 "t['state'], x['state'], x['label'], x['speed'], x['heading'], x['engineOn'], x['odometer'], x['address'], x['ageSeconds'] < 120, x['source'], x['trackerName']")" "assigned moving Moving 8 S True 55959 7238 Landing Cove St, Bakersfield, CA 93313 True linxup VBT #501"
+chk "   …the driver row and the load card carry the same line; VBT's bucket is untouched" "$(tod "[(x['telematics']['label'], x['truckNum']) for x in d['drivers'] if x['id']=='beryle'][0], [(l['bucket'], l['telematics']['state']) for l in d['loads'] if l['id']=='$LB'][0]")" "('Moving', 'Truck #2') ('assigned', 'moving')"
+chk "   Linxup's driver is shown as information (unmapped → no flag)" "$(tel truck-2 "x['linxupDriver']['name'], x['linxupDriver']['vbtDriverId'], x['driverMismatch']")|$(tod "d['attention']['telemetry']")" "Jesus Guzman None False|0"
+mg PUT /api/drivers/rigo '{"linxupPersonId":77}' >/dev/null
+chk "   once that person is mapped to Rigo, the disagreement is an attention item — and VBT's assignment is NOT changed" "$(tel truck-2 "x['linxupDriver']['vbtDriverName'], x['driverMismatch']")|$(tod "d['attention']['telemetry'], d['telemetryIssues'][0]['kind'], d['telemetryIssues'][0]['text']")|$(load $LB "l['truckId'], l['driverName']")" "Rigo True|1 driver-mismatch Linxup reports Jesus Guzman in Truck #2, but VBT has Beryle assigned.|beryle Beryle"
+# ── The telemetry states, one rule ──
+mg PUT /api/fleet/trucks/truck-4/linxup '{"trackerId":503}' >/dev/null
+lx position "$(pos 503 $(ms 60) 36.90 -119.90 '"speed":0,"engineOn":true')" >/dev/null
+chk "   engine on, not moving → Idling" "$(tel truck-4 "x['state'], x['label']")" "idling Idling"
+lx position "$(pos 503 $(ms 50) 36.90 -119.90 '"speed":0,"engineOn":false')" >/dev/null
+chk "   engine off → Stopped" "$(tel truck-4 "x['state']")" "stopped"
+lx position "$(pos 503 $(ms 40) 36.90 -119.90 '"speed":0,"engineOn":true,"geofence":{"geofenceId":9,"name":"Fowler Yard","fenceGroup":"Yards"}')" >/dev/null
+chk "   inside a Linxup geofence → At <fence>" "$(tel truck-4 "x['state'], x['label'], x['placeSource']")" "at-place At Fowler Yard linxup"
+mg PUT /api/vendors/vulcan/location '{"lat":36.95,"lng":-119.95}' >/dev/null
+lx position "$(pos 503 $(ms 30) 36.9505 -119.9505 '"speed":2,"engineOn":true')" >/dev/null
+chk "   within a VBT yard pin (no Linxup fence) → At <vendor>, from VBT's own coordinates" "$(tel truck-4 "x['state'], x['label'], x['placeSource'], x['placeKind']")" "at-place At Vulcan vbt vendor"
+mg PUT /api/pos/$P/location '{"lat":36.97,"lng":-119.97}' >/dev/null
+lx position "$(pos 503 $(ms 20) 36.9702 -119.9702 '"speed":0,"engineOn":true')" >/dev/null
+chk "   within a jobsite pin of a load on the board → At <customer · city>" "$(tel truck-4 "x['state'], x['label'], x['placeKind']")" "at-place At Linx Co · Fresno jobsite"
+lx position "$(pos 503 $(ms 10) 36.99 -119.99 '"speed":38,"engineOn":true')" >/dev/null
+chk "   moving again → Moving (speed wins over a nearby place)" "$(tel truck-4 "x['state']")" "moving"
+mg PUT /api/fleet/trucks/truck-14/linxup '{"trackerId":504}' >/dev/null; lx position "$(pos 504 $(ms 900) 36.5 -119.5 '"speed":30,"engineOn":true')" >/dev/null
+chk "   engine on and quiet for 15 min → Stale" "$(tel truck-14 "x['state'], x['ageSeconds'] >= 900")" "stale True"
+mg PUT /api/fleet/trucks/truck-12/linxup '{"trackerId":505}' >/dev/null; lx position "$(pos 505 $(ms 108000) 36.5 -119.5 '"speed":0,"engineOn":true')" >/dev/null
+chk "   silent for 30 h → Offline" "$(tel truck-12 "x['state'], x['label']")" "offline Offline"
+mg PUT /api/fleet/trucks/truck-2b/linxup '{"trackerId":506}' >/dev/null; lx position "$(pos 506 $(ms 900) 36.5 -119.5 '"speed":0,"engineOn":false')" >/dev/null
+chk "   engine off and quiet for 15 min → Stopped, not stale (a parked truck may not report)" "$(tel truck-2b "x['state']")" "stopped"
+chk "   a stale or offline truck that is on a load is an attention item; a parked free truck is not" "$(tod "sorted(i['kind'] for i in d['telemetryIssues'])")" "['driver-mismatch']"
+# ── Device Update / Device Status: nothing breaks, nothing is trusted blindly ──
+lx device-update '{"tracker":{"trackerId":501,"name":"VBT #2 (renamed)","deviceNumber":"IMEI-501","deviceSerialNumber":"SN-501"},"company":{"companyId":1},"fleet":{"fleetId":4,"name":"Dump"},"asset":{"vin":"VIN501","make":"Peterbilt","model":"567","year":2026}}' >/dev/null
+chk "   a rename changes the label only; the link and the driver flag stand (a Device Update without a person clears Linxup's driver)" "$(trk 501 "t['name'], t['fleetName'], t['personId']")|$(tel truck-2 "x['trackerName'], x['trackerMismatch'], x['linxupDriver'], x['driverMismatch']")" "VBT #2 (renamed) Dump None|VBT #2 (renamed) None None False"
+lx device-update '{"tracker":{"trackerId":501,"name":"VBT #2 (renamed)","deviceNumber":"IMEI-501","deviceSerialNumber":"SN-501"},"company":{"companyId":1},"person":{"personId":77,"name":"Jesus Guzman"},"asset":{"vin":"VIN-OTHER","make":"Peterbilt","model":"567","year":2026}}' >/dev/null
+chk "   the tracker now reports another VIN: flagged for the manager, the VBT truck is NOT changed" "$(tel truck-2 "x['trackerMismatch']")|$(tod "sorted(i['kind'] for i in d['telemetryIssues'] if i['truckId']=='truck-2')")|$(curl -s -b $M $B/api/data | jq "[t['linxup']['vin'] for t in d['fleet'] if t['id']=='truck-2'][0]")" "VIN now VIN-OTHER (linked as VIN501)|['driver-mismatch', 'tracker-mismatch']|VIN501"
+lx device-update '{"tracker":{"trackerId":501,"name":"VBT #2","deviceNumber":"IMEI-501","deviceSerialNumber":"SN-501"},"company":{"companyId":1},"person":{"personId":77,"name":"Jesus Guzman"},"asset":{"vin":"VIN501","make":"Peterbilt","model":"567","year":2026}}' >/dev/null
+lx device-status '{"statusChangeType":"INACTIVATE","tracker":{"trackerId":501,"name":"VBT #2"},"company":{"companyId":1}}' >/dev/null
+chk "   a deactivated tracker: Offline / tracker inactive, since when; activation restores it" "$(tel truck-2 "x['state'], x['label'], x['inactiveSince'] is not None, x['trackerMismatch']")|$(lx device-status '{"statusChangeType":"ACTIVATE","tracker":{"trackerId":501,"name":"VBT #2"},"company":{"companyId":1}}' >/dev/null; tel truck-2 "x['state']")" "offline Tracker inactive True None|moving"
+# ── Persistence failure: 503, nothing moved ──
+mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
+chk "   the telemetry store refuses the write → 503 with retry:true, and the truck did not move" "$(lx position "$(pos 501 $(ms 1) 35.0 -118.0 '"speed":50')" -w ' %{http_code}' | python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);print(c, json.loads(b)['retry'])")|$(tel truck-2 "x['lat'], x['speed']")|$(curl -s -b $M $B/api/linxup/health | jq "d['counters']['failed']")" "503 True|36.7 8|1"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   …and the same delivery succeeds once the store is back" "$(lx position "$(pos 501 $(ms 1) 35.0 -118.0 '"speed":50')" | jq "d['stored']")|$(tel truck-2 "x['lat'], x['speed']")" "1|35 50"
+# ── The map: source named, never merged ──
+curl -s -b $RG -H "$J" -X POST $B/api/driver-location -d '{"lat":36.60,"lng":-119.60,"accuracy":9}' -o /dev/null
+chk "   Fleet Map: Beryle's position comes from Linxup (Truck #2), Rigo's from his phone, and a linked truck with no driver is its own row" "$(curl -s -b $M $B/api/fleet/live | python3 -c "
+import json,sys;d=json.load(sys.stdin);r={x['driverId']:x for x in d['trucks']}
+print(r['beryle']['gps']['source'], r['beryle']['gps']['speed'], r['beryle']['telematics']['label'], '|', r['rigo']['gps']['source'], r['rigo']['gps']['accuracy'], '|', r['truck:truck-4']['truckNum'], r['truck:truck-4']['gps']['source'], r['truck:truck-4']['status'], r['truck:truck-4']['live'])")" "linxup 50 Moving | phone 9 | Truck #4 linxup Moving True"
+# ── Other message types: kept or dropped, never guessed ──
+chk "   trips/stops/alerts are accepted and kept raw for L2 (deferred); item tracking is dropped; an unknown type is 404" "$(lx trip '{"startDateTime":1790700000000,"endDateTime":1790703600000,"distanceMiles":13,"tracker":{"trackerId":501},"company":{"companyId":1}}' | jq "d['deferred']")|$(lx item-location '{"timestamp":1,"latitude":1,"longitude":1,"trackedItem":{"itemId":1},"company":{"id":1}}' | jq "d['dropped']")|$(lxc whatever '{}')|$(curl -s -b $M $B/api/linxup/health | jq "sorted(k for k in d['lastMessageAt'])")" "1|1|404|['device-status', 'device-update', 'item-location', 'position', 'trip']"
+chk "   the single-URL fallback classifies by shape; an unrecognizable body is 400" "$(lx event '{"stopType":"Idling","startDateTime":1790700000000,"endDateTime":1790700600000,"durationMinutes":10,"latitude":36.7,"longitude":-119.7,"tracker":{"trackerId":501},"company":{"companyId":1}}' | jq "d['type'], d['deferred']")|$(lxc event '{"hello":"world","company":{"companyId":1}}')" "event 1|400"
+# ── Retention ──
+D40=$(( ( $(ms 3456000) / 300000 ) * 300000 + 10000 )); D400=$(ms 34560000)   # 10 s into a 5-minute bucket, so the three points share it
+lx position "[$(pos 507 $D40 36.1 -119.1), $(pos 507 $((D40+60000)) 36.1 -119.1), $(pos 507 $((D40+120000)) 36.1 -119.1), $(pos 507 $D400 36.1 -119.1)]" >/dev/null
+chk "   retention: raw for 30 days, one point per 5 minutes to a year, gone after" "$(mg POST /api/_test/linxup-prune | jq "d['dropped'], d['thinned']")" "1 2"
+# ── Isolation ──
+chk "   the receiver runs outside sessions and the write lock; linxup.js never touches the dispatch store" "$(grep -c "app.post('/api/linxup/:type', async (req, res)" server.js)|$(grep -cF 'linxup\/|quickbooks' server.js)|$(grep -v '^\s*//' linxup.js | grep -c 'store\.')|$(grep -c "telemetry.json" .gitignore)" "1|1|0|1"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -1653,7 +1750,7 @@ chk "healthz reports the failing route and message" "$(curl -s $B/healthz | pyth
 chk "  ...and the 500 body carries the reference"  "$(curl -s --max-time 5 $B/api/_test/async-throw | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['ref'] in d['error'])")" "True"
 
 pkill -f "^node server.js" >/dev/null 2>&1
-rm -f data.json
+rm -f data.json telemetry.json
 
 echo "── 21. Postgres: a failed store read must NEVER cause a write ──"
 if [ -z "${TEST_DATABASE_URL:-}" ]; then
@@ -1697,7 +1794,7 @@ else
   chk "new driver can log in" "$(curl -s -c $ND -o /dev/null -w '%{redirect_url}' -X POST -d 'username=nadia&password=nadia123' $B2/login | sed 's|.*//[^/]*||')" "/app/"
   curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{
    "po":{"poNumber":"PG-NADIA","customer":"Nadia Co","deliveryDate":"'"$(date +%F)"'"},
-   "splits":[{"truckId":"nadia","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null
+   "splits":[{"truckId":"nadia","truckUnitId":"truck-12","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null   # truck-4 is on Rigo's PG-SECOND today: the same-day truck conflict rule (Phase 0) would refuse it
   chk "  ...and sees her own load, nobody else's" "$(curl -s -b $ND $B2/api/my-dispatch | python3 -c "import json,sys;ls=json.load(sys.stdin)['loads'];print(len(ls), ls[0]['poNumber'] if ls else '')")" "1 PG-NADIA"
   # ── Location history (driver_locations) ──
   chk "history table + indexes exist" "$($PSQL -c "select count(*) from pg_indexes where tablename='driver_locations' and indexname in ('driver_locations_driver_at','driver_locations_load_trip_at','driver_locations_at')")" "3"
@@ -1809,7 +1906,7 @@ chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%
 chk "fabricated hour:1 / mile:1 seeds are removed on load" "$(curl -s -b $M $B/api/costing/settings | python3 -c "import json,sys;u=json.load(sys.stdin)['unitConfig']['byUnit'];print('hour' in u, 'mile' in u, u['ton'])")" "False False 25"
 chk "batch stuck in 'syncing' at restart becomes failed" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'], b['mayExistInQuickBooks'])")" "failed True True"
 pkill -f "^node server.js" >/dev/null 2>&1
-rm -f data.json
+rm -f data.json telemetry.json
 
 [ "$SKIPPED" -gt 0 ] && SK=", $SKIPPED section(s) skipped" || SK=""
 echo "════ $PASS passed, $FAIL failed$SK ════"
