@@ -281,6 +281,7 @@ tr.bill-gap td{background:#fffdf5}
 .am-check{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .am-check .chk{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 9px;border-radius:20px;border:1px solid var(--Gd);background:var(--Gb);color:#0a7a3a}
 .am-check .chk.warn{border-color:var(--Ad);background:var(--Ab);color:var(--A)}
+.am-check .chk.block,.ask-check .chk.block{border-color:var(--Rd);background:var(--Rb);color:#b42318}.ask-check .chk.block .chk-ic{color:var(--R)}
 .am-check .chk-label{font-weight:700}
 .am-check .chk-val{color:inherit;opacity:.9}
 .am-check .chk.ok .chk-val:empty{display:none}
@@ -1274,15 +1275,13 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <button class="modal-close" onclick="closeIncomplete()">&#215;</button>
     </div>
     <div class="modal-body">
-      <p style="font-size:13px;color:var(--txt2);margin-bottom:8px">How many loads did you actually deliver?</p>
-      <p style="font-size:12px;color:var(--txt3);margin-bottom:14px">Out of <b id="inc-assigned">0</b> assigned. The remaining will be flagged for the manager to reassign or reschedule.</p>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:8px">Stop here and submit what was completed.</p>
+      <p style="font-size:12px;color:var(--txt3);margin-bottom:14px">VBT counts the trips you completed (Start → Arrived → Loaded → Arrived at jobsite → Complete). This submits that number out of <b id="inc-assigned">0</b> assigned; the rest is flagged for the office to reassign or reschedule.</p>
       <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin:18px 0">
-        <button class="inc-stepper" onclick="adjustIncomplete(-1)">−</button>
         <div style="text-align:center">
           <div id="inc-count" style="font-size:48px;font-weight:700;line-height:1;color:var(--A)">0</div>
-          <div style="font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;font-weight:600">loads delivered</div>
+          <div style="font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;font-weight:600">completed trips on record</div>
         </div>
-        <button class="inc-stepper" onclick="adjustIncomplete(1)">+</button>
       </div>
       <div id="inc-warn" style="display:none;padding:8px 12px;background:var(--Rb);border:1px solid var(--Rd);border-radius:var(--r);color:var(--R);font-size:12px;text-align:center"></div>
     </div>
@@ -2045,7 +2044,7 @@ function openLoadDetail(id) {
   if (l.pickup) html += `<dt style="color:var(--txt3)">Pickup Yard</dt><dd style="${l.pickup.isActual ? 'color:var(--A);font-weight:600' : ''}">${escapeHtml(l.pickup.name)}${l.pickup.isActual ? ' <span style="font-size:10px;color:var(--txt3)">(driver confirmed)</span>' : ''}</dd>`;
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
   if (l.trailer) html += `<dt style="color:var(--txt3)">Trailer</dt><dd>${escapeHtml(l.trailer.number)}${l.trailer.type ? ' · ' + escapeHtml(l.trailer.type) : ''}</dd>`;
-  if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}</dd>`;
+  if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}${(l.tons.openTickets || []).length ? ` <span style="font-size:11px;color:var(--A);font-weight:600">${l.tons.openTickets.length} ticket${l.tons.openTickets.length === 1 ? '' : 's'} loaded, not delivered${l.tons.openTons ? ` (${l.tons.openTons.toFixed(2)} t not counted)` : ''}</span>` : ''}</dd>`;
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
   html += `</dl>`;
   if (l.segments && l.segments.length) {
@@ -2978,10 +2977,6 @@ function tripCard(l) {
     <div class="action-hint required">Required before delivery</div>`;
   } else if (allTripsDone && hasSig && !submitted) {
     action = `<div style="display:flex;gap:8px;margin-bottom:8px">
-      <button class="trip-action incomplete" style="flex:1;background:var(--A);color:#fff" onclick="openIncompleteDialog('${l.loadId}', ${totalTrips})">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        Adjust Count
-      </button>
       <button class="trip-action complete" style="flex:1" onclick="tripAction('${l.loadId}', 'delivered')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><polyline points="20 6 9 17 4 12"/></svg>
         Submit (${totalTrips})
@@ -2996,7 +2991,7 @@ function tripCard(l) {
       Start Load ${next} of ${totalTrips}
     </button>
     <div class="action-hint">Heading back to the yard for the next load</div>
-    ${totalTrips > 1 && (l.loadsDelivered || 0) > 0 ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${l.loadsDelivered} of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips})}">Stop early — submit ${l.loadsDelivered} as incomplete</button>` : ''}`;
+    ${totalTrips > 1 && (Number(l.tripsCompleted) || 0) > 0 ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${Number(l.tripsCompleted) || 0} completed of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${Number(l.tripsCompleted) || 0} completed as incomplete</button>` : ''}`;
   } else if (!started && !submitted) {
     // Brand-new load, never started — same as "Start Load 1"
     action = `<button class="trip-action start" onclick="tripAction('${l.loadId}', 'start-trip')">
@@ -3061,10 +3056,6 @@ function tripCard(l) {
     <div class="action-hint required">Required before delivery</div>`;
   } else if (hasSig && totalTrips === 1 && !submitted) {
     action = `<div style="display:flex;gap:8px;margin-bottom:8px">
-      <button class="trip-action incomplete" style="flex:1;background:var(--A);color:#fff" onclick="openIncompleteDialog('${l.loadId}', ${totalTrips})">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        Incomplete
-      </button>
       <button class="trip-action complete" style="flex:1" onclick="tripAction('${l.loadId}', 'delivered')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><polyline points="20 6 9 17 4 12"/></svg>
         Submit
@@ -3127,30 +3118,19 @@ let incompleteLoadId = null;
 let incompleteAssigned = 0;
 let incompleteCount = 0;
 
-function openIncompleteDialog(loadId, assigned) {
+// "Stop early" submits the completed trips the server has on record for the
+// load — shown here, never edited. A count that could be typed was how a
+// phone once turned one haul into four on the invoice.
+function openIncompleteDialog(loadId, assigned, completed) {
   incompleteLoadId = loadId;
   incompleteAssigned = Number(assigned) || 0;
-  // Default to assigned-1 (since they're saying it's incomplete, not all done)
-  incompleteCount = Math.max(0, incompleteAssigned - 1);
+  incompleteCount = Math.max(0, Number(completed) || 0);
   document.getElementById('inc-assigned').textContent = incompleteAssigned;
   document.getElementById('inc-count').textContent = incompleteCount;
-  document.getElementById('inc-warn').style.display = 'none';
-  document.getElementById('incomplete-modal').style.display = 'flex';
-}
-
-function adjustIncomplete(delta) {
-  incompleteCount = Math.max(0, Math.min(incompleteAssigned, incompleteCount + delta));
-  document.getElementById('inc-count').textContent = incompleteCount;
   const warn = document.getElementById('inc-warn');
-  if (incompleteCount === 0) {
-    warn.style.display = 'block';
-    warn.textContent = 'You must deliver at least 1 load to submit. If you delivered nothing, ask the manager to cancel.';
-  } else if (incompleteCount === incompleteAssigned) {
-    warn.style.display = 'block';
-    warn.textContent = 'All loads delivered? Use Complete instead — it submits as fully done.';
-  } else {
-    warn.style.display = 'none';
-  }
+  warn.style.display = incompleteCount === 0 ? 'block' : 'none';
+  if (incompleteCount === 0) warn.textContent = 'No trip has been completed yet, so there is nothing to submit. If nothing was delivered, ask the office to cancel the load.';
+  document.getElementById('incomplete-modal').style.display = 'flex';
 }
 
 function closeIncomplete() {
@@ -3161,7 +3141,7 @@ function closeIncomplete() {
 async function confirmIncomplete() {
   if (!incompleteLoadId || incompleteCount <= 0) {
     document.getElementById('inc-warn').style.display = 'block';
-    document.getElementById('inc-warn').textContent = 'Please enter at least 1 load delivered.';
+    document.getElementById('inc-warn').textContent = 'No completed trip to submit.';
     return;
   }
 
@@ -3643,9 +3623,10 @@ function ticketSummaryHtml(l) {
   if (!trips.length && !(tons.missingTickets || []).length) return '';
   const rows = trips.map(t => {
     const src = t.ticket.photoUrl || t.ticket.photo;
+    const open = !(t.timestamps && t.timestamps.completed);   // loaded and ticketed, never delivered: on the record, not in the total
     return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;white-space:nowrap">#${escapeHtml(t.ticket.number)}
       <span style="color:var(--txt3)">${t.ticket.source === 'vbt' ? 'VBT' : 'supplier'}</span>
-      <b style="font-variant-numeric:tabular-nums">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t' : '—'}</b>
+      <b style="font-variant-numeric:tabular-nums;${open ? 'text-decoration:line-through;color:var(--txt3)' : ''}">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t' : '—'}</b>${open ? ' <span style="color:var(--A);font-weight:600">not delivered</span>' : ''}
       ${src ? `<img src="${src}" class="am-thumb" style="width:22px;height:22px" onclick="event.stopPropagation();showImage('${src}')" title="Ticket ${escapeHtml(t.ticket.number)}">` : ''}</span>`;
   }).join('');
   const missing = (tons.missingTickets || []).length ? `<span style="color:var(--R);font-weight:600">no ticket on load${tons.missingTickets.length === 1 ? '' : 's'} ${tons.missingTickets.join(', ')}</span>` : '';
@@ -3679,7 +3660,7 @@ const CHECK_ICON = { ok: '✓', warn: '⚠' };
 function approvalChecklistHtml(check, compact) {
   if (!check || !check.items) return '';
   return `<div class="${compact ? 'am-check' : 'ask-check'}">${check.items.map(i => `
-    <div class="chk ${i.ok ? 'ok' : 'warn'}" title="${escapeAttr(i.note || '')}">
+    <div class="chk ${i.ok ? 'ok' : i.block ? 'block' : 'warn'}" title="${escapeAttr(i.note || '')}">
       <span class="chk-ic">${i.ok ? CHECK_ICON.ok : CHECK_ICON.warn}</span>
       <span class="chk-label">${escapeHtml(i.label)}</span>
       <span class="chk-val">${escapeHtml(i.value || (i.ok ? '' : 'missing'))}</span>
@@ -3739,6 +3720,11 @@ async function approvalTelemetryHtml(loadId) {
 }
 async function confirmApproval(l, check) {
   const po = pos.find(p => p.id === l.poId) || {};
+  if (check && (check.blocking || []).length) {
+    // Not a gap to acknowledge: the record contradicts itself. Reject or void.
+    showInfoModal('This load cannot be approved', `<div class="ask-sub">PO ${escapeHtml(po.poNumber || '—')} · ${escapeHtml(po.customer || '')} · ${escapeHtml(l.driverName || '')}</div>${approvalChecklistHtml(check, false)}<div class="conflict-hint"><b>${escapeHtml(check.blocking.join('; '))}.</b></div>`);
+    return { go: false };
+  }
   const gaps = check ? check.items.filter(i => !i.ok).length : 0;
   const tel = await approvalTelemetryHtml(l.id);
   const body = `
@@ -3757,6 +3743,7 @@ async function approveLoad(id) {
   if (!first.go) return;
   let d = await api('POST', '/api/loads/' + id + '/approve', { acknowledge: !!(check && !check.ready) });
   if (d.ok) return after((d.approvedWithWarnings || []).length ? 'Approved with noted gaps & locked' : 'Approved & locked');
+  if (d.status === 409 && d.code === 'approval_blocked') { await confirmApproval(l, d.checklist); return; }
   if (d.status === 409 && d.code === 'approval_incomplete') {
     // The record changed since the page loaded: show the server's checklist and ask again.
     const again = await confirmApproval(l, d.checklist);
@@ -4064,6 +4051,7 @@ async function renderBillBatches() {
       'syncing':             { c: '#1f6feb', bg: '#e7f0ff', t: 'Syncing…' },
       'sent_to_quickbooks':  { c: '#0a8a3a', bg: '#e3f6e9', t: 'Sent to QB' },
       'failed':              { c: '#b42318', bg: '#fee4e2', t: 'Failed' },
+      'unknown':             { c: '#92400e', bg: '#fef3c7', t: 'External result unknown — reconcile' },
       'voided':              { c: '#71717a', bg: '#f4f4f5', t: 'Voided' },
     };
     const m = map[s] || map.ready_to_bill;
@@ -4085,8 +4073,9 @@ async function renderBillBatches() {
         <td style="font-size:11px;color:var(--txt2)">${b.createdAt ? new Date(b.createdAt).toLocaleString() : ''}</td>
         <td>
           ${b.syncStatus === 'failed' ? `<button class="btn ghost" onclick="retryBatch('${b.id}')">Retry</button>` : ''}
+          ${b.syncStatus === 'unknown' ? `<button class="btn ghost" onclick="retryBatch('${b.id}')" title="Ask QuickBooks whether the invoice exists. Nothing is sent until it answers.">Reconcile with QuickBooks</button>` : ''}
           ${b.syncStatus === 'ready_to_bill' ? `<button class="btn primary" onclick="sendBatch('${b.id}')">Send</button>` : ''}
-          ${(b.syncStatus === 'sent_to_quickbooks' || b.syncStatus === 'failed') ? `<button class="btn ghost" onclick="voidBatch('${b.id}')">Void</button>` : ''}
+          ${(b.syncStatus === 'sent_to_quickbooks' || b.syncStatus === 'failed' || b.syncStatus === 'unknown') ? `<button class="btn ghost" onclick="voidBatch('${b.id}')">Void</button>` : ''}
         </td>
       </tr>`).join('')}
     </tbody>
@@ -4107,6 +4096,9 @@ async function retryBatch(id) {
   // The interrupted send had already created the invoice: it was found in
   // QuickBooks and adopted. Nothing to send.
   if (rt.recovered) { toast(`Invoice ${rt.batch?.qbInvoiceNumber || rt.batch?.qbInvoiceId || ''} was already in QuickBooks — batch marked as sent`, 'success'); await loadAll(); renderBillBatches(); return; }
+  // An unknown result reconciled as "no invoice in QuickBooks": sending is
+  // allowed again, with the same requestid, and the person is told why.
+  if (rt.reconciled === 'not_found') toast('QuickBooks has no invoice for this batch — sending it now', 'info');
   const r = await api('POST', `/api/billing-batches/${id}/send`, {});
   if (r.ok) toast('Sent to QuickBooks', 'success'); else toast(r.error || 'Retry failed', 'error');
   renderBillBatches();
@@ -4117,6 +4109,17 @@ async function voidBatch(id) {
   const reason = prompt('Reason for voiding this batch (required)?');
   if (!reason || !reason.trim()) return;
   const body = { reason: reason.trim() };
+  if (b && b.syncStatus === 'unknown') {
+    // The invoice may exist. Void asks QuickBooks first; the only other way
+    // through is the operator's own statement, which goes on the record.
+    const check = confirm(`The QuickBooks result for this batch is unknown — the invoice may exist.\n\n`
+      + 'OK = Ask QuickBooks now (it must be connected). If the invoice is found it is voided there, then the loads are released.\n'
+      + 'Cancel = I checked QuickBooks myself and there is NO invoice for this batch.');
+    if (!check) {
+      if (!confirm('Confirm: you looked in QuickBooks and found no invoice for this batch. This statement is recorded in the sync log.')) return;
+      body.confirmedNoInvoiceInQuickBooks = true;
+    }
+  }
   if (b && b.qbInvoiceId) {
     // The loads only go back to Ready to Bill once the QuickBooks invoice is
     // voided too — either here, or by hand in QuickBooks first.

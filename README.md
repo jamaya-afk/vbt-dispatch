@@ -6,6 +6,11 @@ Clean rebuild — focused on the essentials.
 
 - **Manager** creates POs, assigns drivers, sees today's board, approves submitted loads, marks loads as billed
 - **Drivers** see their assigned trips with PO/customer/material info, follow guided flow: Start Trip → Arrived at Pickup → Upload Ticket Photo → Customer Signature → Complete Delivery
+- **A delivered load is a completed trip.** The delivered count on a load is
+  derived from its completed trips and can never be typed in: "Stop early"
+  submits exactly the trips completed so far, a load whose count disagrees
+  with its trips cannot be approved (reject or void it), and Ready to Bill and
+  vendor costing refuse to price it.
 - All steps auto-capture GPS + timestamps
 - Loads must have ticket photo + signature before delivery is allowed
 - Approved loads are locked and immutable
@@ -56,6 +61,14 @@ carlos / carlos123
 - **Edit PO** changes the order; the work follows only where it is still
   operational. The rules are in [PO-EDITING.md](PO-EDITING.md). "Add a load"
   puts more work on the same order with the same checks as the New PO form.
+- **Every change to a load goes through its own operation.** The generic load
+  update (`PUT /api/loads/:id`) accepts only notes, the planned count while the
+  load is still operational, and the ticket photo and signature. Driver, truck,
+  trailer and yard change through Quick Assign; the date through Move Date or
+  Edit PO; the delivered count, trips and stamps through the driver's trip
+  steps; approval, billing, void and their bookkeeping through their own
+  actions; prices are set at creation. Anything else is refused by name, with
+  the operation to use, and nothing is written.
 - **Billing** reads Submitted → Approved → Ready to Bill → Billed → Archived.
   Ready to Bill prices each load with the invoice engine. Manual billing asks
   for the outside invoice reference; its undo is Unbill in History, with a
@@ -64,6 +77,9 @@ carlos / carlos123
 - **A failed save leaves nothing behind.** If the database refuses a write,
   the store rolls back to what is on disk and the caller is told; mutating
   requests run one at a time so a rollback never takes another change with it.
+  The lock is held until the handler has finished its work and answered, not
+  until the connection closes: a phone that drops mid-save keeps the next
+  write waiting until that save has settled.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on
@@ -120,10 +136,14 @@ delivery and carries its own **ticket**, captured once when the driver taps
 Loaded at the yard (supplier scale ticket with net tons and photo, or a VBT
 internal ticket). Ticket numbers are unique across every trip on every load,
 live or archived. A load reports **planned tons** (quantity-per-load rule,
-25 t by default) and **actual tons** (sum of confirmed ticket tons) side by
-side; invoices use planned unless the customer's billing basis is set to
-"actual", and an actual-basis load with a delivered trip that has no ticket
-tons is never priced silently.
+25 t by default) and **actual tons** (sum of the ticket tons of its
+*completed* trips) side by side; invoices use planned unless the customer's
+billing basis is set to "actual", and an actual-basis load with a delivered
+trip that has no ticket tons is never priced silently. A ticket is proof of
+loading, not of delivery: a trip that was loaded and ticketed but never
+completed stays on the record as an open ticket, is shown at approval and in
+Load Details, and contributes nothing to the actual tons, the invoice or the
+freight segment total.
 
 Above the load sit the driver's day and the billable window:
 **Shift → Freight Segment → Load → Trip.** A **shift** is one driver's whole
@@ -164,6 +184,28 @@ automatically.
 
 Approved/sent loads are locked from deletion. Mistakes use **Void** (which
 reverses the local lock and optionally voids the invoice in QB) — never delete.
+
+### Three outcomes of a send, never two
+
+A create request to QuickBooks ends in one of three states, for invoice
+batches and vendor bills alike:
+
+- **Sent** — QuickBooks confirmed the document; its id is recorded and the
+  loads are marked billed.
+- **Failed** — QuickBooks definitively refused (a validation error), or the
+  request never left. Retry resets the batch and Send creates the document.
+- **External result unknown — reconcile** — the request may have reached
+  QuickBooks and VBT cannot tell whether the document exists: a timeout, a
+  dropped connection, a 5xx, an answer with no readable body, a restart
+  mid-send. Nothing assumes "nothing was created": Send is refused,
+  **Reconcile** asks QuickBooks for the document (found → adopted, the loads
+  billed; not found → ready to send again), Void asks QuickBooks first and
+  releases the loads only once it has answered (or once the operator states,
+  on the record, that they checked QuickBooks by hand). The loads stay on the
+  batch, so they cannot be billed twice, and no invoice id is written without
+  QuickBooks' word. Every create carries Intuit's `requestid` (the batch or
+  bill id) so a repeat of the same request is answered with the original
+  document rather than a second one.
 
 ### Setup
 

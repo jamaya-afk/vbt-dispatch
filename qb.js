@@ -186,11 +186,41 @@ async function timedFetch(url, opts, { mutating }) {
   }
 }
 
-async function qbFetch(conn, method, pathWithQuery, jsonBody, extraHeaders) {
+// ── OUTCOME CLASSIFICATION ──────────────────────────────────────────────────
+// Every error thrown for a mutating request carries `uncertain`:
+//   false → QuickBooks definitively did NOT create the document (a 4xx
+//           validation/auth answer, or a failure before the request left).
+//   true  → the request may have reached QuickBooks and VBT cannot tell
+//           whether the document exists: timeout, dropped connection, a body
+//           that could not be read or parsed, any 5xx, or a 2xx whose body
+//           carries no entity. The caller must reconcile before creating again.
+function httpOutcome(status, mutating) {
+  return { uncertain: !!mutating && Number(status) >= 500 };
+}
+function uncertainError(message, extra) {
+  const e = new Error(message);
+  e.uncertain = true;
+  return Object.assign(e, extra || {});
+}
+// A 2xx whose body has no entity: QuickBooks accepted the request, so the
+// document may well exist, but VBT holds no id for it.
+function noEntityError(type) {
+  return uncertainError(`QuickBooks accepted the ${type.toLowerCase()} request but its response carried no ${type.toLowerCase()} — the ${type.toLowerCase()} may exist`, { noEntity: true, statusCode: 200 });
+}
+
+// `opts.requestId`: Intuit's idempotency key, sent as the `requestid` query
+// parameter (≤ 50 characters, unique per company). A repeat of the same
+// request with the same requestid is answered with the original response
+// instead of creating a second document. Intuit does not document how long
+// it keeps a requestid, so this is a second line of defence; the local
+// "external result unknown" state and the lookup remain the guarantee.
+async function qbFetch(conn, method, pathWithQuery, jsonBody, extraHeaders, opts) {
   if (!conn || !conn.realmId) throw new Error('QuickBooks not connected (no realmId)');
+  const mutating = method !== 'GET';
   const access = await ensureFreshToken(conn);
   const sep = pathWithQuery.includes('?') ? '&' : '?';
-  const url = `${apiBase()}/v3/company/${conn.realmId}${pathWithQuery}${sep}minorversion=${QB_MINOR_VERSION}`;
+  const reqId = mutating && opts?.requestId ? `&requestid=${encodeURIComponent(String(opts.requestId).slice(0, 50))}` : '';
+  const url = `${apiBase()}/v3/company/${conn.realmId}${pathWithQuery}${sep}minorversion=${QB_MINOR_VERSION}${reqId}`;
   const headers = {
     'Authorization': `Bearer ${access}`,
     'Accept': 'application/json',
@@ -203,15 +233,29 @@ async function qbFetch(conn, method, pathWithQuery, jsonBody, extraHeaders) {
   } else if (jsonBody) {
     body = jsonBody;
   }
-  const r = await timedFetch(url, { method, headers, body }, { mutating: method !== 'GET' });
-  const text = await r.text();
-  let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  const r = await timedFetch(url, { method, headers, body }, { mutating });
+  let text;
+  try { text = await r.text(); }
+  catch (e) {
+    // The connection dropped while the answer was being read: the request
+    // itself was delivered and may have been processed.
+    const err = new Error(`QuickBooks answer could not be read (${e && e.message || e})`);
+    err.uncertain = mutating; err.statusCode = r.status;
+    throw err;
+  }
+  let data, parsed = true; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; parsed = false; }
   if (!r.ok) {
     const fault = data?.Fault?.Error?.[0];
     const msg = fault ? `${fault.Message}${fault.Detail ? ' — ' + fault.Detail : ''}` : (data?.error_description || data?.error || text.slice(0, 300));
     const err = new Error(`QB API ${method} ${pathWithQuery} → ${r.status}: ${msg}`);
     err.statusCode = r.status;
     err.responseBody = text;
+    err.uncertain = httpOutcome(r.status, mutating).uncertain;
+    throw err;
+  }
+  if (!parsed && mutating) {
+    const err = new Error(`QuickBooks answered ${r.status} with a body that could not be parsed`);
+    err.uncertain = true; err.statusCode = r.status; err.responseBody = text.slice(0, 300);
     throw err;
   }
   return data;
@@ -333,8 +377,10 @@ async function createInvoice(conn, args) {
     TxnDate: args.txnDate || undefined,
     BillEmail: args.billEmail ? { Address: args.billEmail } : undefined,
   };
-  const data = await qbFetch(conn, 'POST', `/invoice`, body);
-  return data?.Invoice || null;
+  const data = await qbFetch(conn, 'POST', `/invoice`, body, undefined, { requestId: args.requestId });
+  const inv = data?.Invoice;
+  if (!inv || !inv.Id) throw noEntityError('Invoice');
+  return inv;
 }
 
 // Current copy of an entity (needed for its SyncToken before a void/delete:
@@ -409,8 +455,10 @@ async function createBill(conn, args) {
     DocNumber: args.docNumber || undefined,
     TxnDate: args.txnDate || undefined,
   };
-  const data = await qbFetch(conn, 'POST', `/bill`, body);
-  return data?.Bill || null;
+  const data = await qbFetch(conn, 'POST', `/bill`, body, undefined, { requestId: args.requestId });
+  const bill = data?.Bill;
+  if (!bill || !bill.Id) throw noEntityError('Bill');
+  return bill;
 }
 
 // ── ATTACHMENTS ──────────────────────────────────────────────────────────────
@@ -499,6 +547,9 @@ module.exports = {
   findBillByDocNumber,
   attachToEntity,
   fetchRemoteAsBuffer,
+  httpOutcome,
+  uncertainError,
+  noEntityError,
   QB_ENVIRONMENT,
   QB_DEFAULT_ITEM,
 };

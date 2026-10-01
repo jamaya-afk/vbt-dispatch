@@ -468,16 +468,48 @@ function buildTicket(input, { by, existing } = {}) {
 // Planned vs actual tons on a load — derived, never stored. Planned stays the
 // existing quantity-per-load rule (25 t default) × delivered; actual is the sum
 // of confirmed ticket tons. They are reported side by side and never summed.
+// ── THE DELIVERED COUNT ─────────────────────────────────────────────────────
+// A delivered load is a completed trip: Start → Arrived at pickup → Loaded →
+// Arrived at jobsite → Complete, recorded by the driver's taps. The count on
+// the load is derived from those trips and can never be typed in. The only
+// loads where the record stands on its own are the ones from before per-trip
+// tracking, which have no trips[] at all. When a load's record and its trips
+// disagree (older data, or anything that bypassed the trip steps), nothing
+// downstream — approval, Ready to Bill, costing — trusts the record.
+// ONE definition of "completed": the trip carries its completion stamp (set by
+// trip-complete, or by the finalizer when the driver stopped at the jobsite).
+// The delivered count, the delivered tons, vendor costing and the freight
+// segment all read this predicate — never "has a ticket" or "trip exists".
+function tripIsCompleted(t) { return !!(t && t.timestamps && t.timestamps.completed); }
+function completedTripCount(l) { return (l.trips || []).filter(tripIsCompleted).length; }
+function deliveredRecord(l) {
+  const record = Number(l.loadsDelivered) || 0, completed = completedTripCount(l), perTrip = (l.trips || []).length > 0;
+  return { record, completed, perTrip, count: perTrip ? Math.min(record, completed) : record, mismatch: perTrip && record !== completed };
+}
+// The ONE tons calculation. Every screen, the approval checklist, Ready to
+// Bill, the invoice line and the freight segment read this.
+//   Delivered actual tons = ticket tons of COMPLETED trips only.
+// A ticket is proof of loading, not of delivery: a trip that was started,
+// arrived, loaded and ticketed but never completed stays on the record as an
+// open ticket and contributes zero tons, zero tickets and no ticket number
+// to anything that bills or approves. A pre-trip-tracking load (no trips)
+// has no tickets and reports planned tons from its delivered count, as before.
 function loadTons(l) {
   const trips = Array.isArray(l.trips) ? l.trips : [];
-  const delivered = Number(l.loadsDelivered) || 0;
-  const done = trips.filter(t => t.timestamps && t.timestamps.completed);
-  const ticketed = trips.filter(t => t.ticket && t.ticket.number);
+  const delivered = deliveredRecord(l).count;
+  const hasTicket = t => !!(t.ticket && t.ticket.number);
+  const done = trips.filter(tripIsCompleted);
+  const ticketed = done.filter(hasTicket);
   const withTons = ticketed.filter(t => t.ticket.netTons != null);
-  const actualTons = Math.round(withTons.reduce((s, t) => s + Number(t.ticket.netTons), 0) * 100) / 100;
+  const round2 = n => Math.round(n * 100) / 100;
+  const actualTons = round2(withTons.reduce((s, t) => s + Number(t.ticket.netTons), 0));
+  // Loaded and ticketed, not delivered: shown, never counted.
+  const openTickets = trips.filter(t => !tripIsCompleted(t) && hasTicket(t))
+    .map(t => ({ tripNum: t.tripNum, number: t.ticket.number, netTons: t.ticket.netTons == null ? null : Number(t.ticket.netTons), source: t.ticket.source }));
+  const openTons = round2(openTickets.reduce((s, t) => s + (t.netTons || 0), 0));
   const unit = unitKey(l.customerUnit || 'ton');
   const qty = unit === 'ton' ? ((l.tonsPerLoad ? Number(l.tonsPerLoad) : null) ?? qtyPerLoad('ton', l.material)) : null;
-  const plannedTons = qty != null ? Math.round(qty * delivered * 100) / 100 : null;
+  const plannedTons = qty != null ? round2(qty * delivered) : null;
   const sources = new Set(ticketed.map(t => t.ticket.source));
   const tonsSource = !withTons.length ? 'planned' : sources.size > 1 ? 'mixed' : [...sources][0];
   return {
@@ -486,9 +518,10 @@ function loadTons(l) {
     tripsCompleted: done.length,
     // Every completed trip has confirmed tons → the actual figure is complete.
     actualComplete: done.length > 0 && done.every(t => t.ticket && t.ticket.netTons != null),
-    missingTickets: done.filter(t => !t.ticket || !t.ticket.number).map(t => t.tripNum),
+    missingTickets: done.filter(t => !hasTicket(t)).map(t => t.tripNum),
     tonsSource,
     ticketNumbers: ticketed.map(t => t.ticket.number),
+    openTickets, openTons,
   };
 }
 // Billing basis is a per-customer choice. Default is planned (25 t rule);
@@ -911,6 +944,7 @@ function saveData(opts) {
 // honestly when the write does not happen.
 let testSaveMode = 'ok';
 let testSaveSkip = 0;   // 'fail' after this many successful saves (0 = immediately)
+let testSaveDelayMs = 0;   // every save waits this long first — opens the window the disconnect test needs
 
 async function writeStore({ rotatePrev = true } = {}) {
   // The single most important line in this file. If the store was never
@@ -922,6 +956,7 @@ async function writeStore({ rotatePrev = true } = {}) {
     persistence.lastError = msg;
     throw new Error(msg);
   }
+  if (testSaveDelayMs > 0 && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) await new Promise(r => setTimeout(r, testSaveDelayMs));
   if (testSaveMode === 'fail' && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD && testSaveSkip-- <= 0) {
     if (testSaveFailLeft != null && --testSaveFailLeft <= 0) { testSaveMode = 'ok'; testSaveFailLeft = null; }
     const e = new Error('test hook: simulated database write failure');
@@ -1255,25 +1290,28 @@ function normalizeStore() {
   if (!store.driverLocations || typeof store.driverLocations !== 'object') store.driverLocations = {};
   if (!Array.isArray(store.billingBatches)) store.billingBatches = [];
   // A batch still 'syncing' when the process starts was interrupted mid-send.
-  // The invoice may or may not exist in QuickBooks, so it becomes 'failed'
-  // with an explicit instruction rather than silently re-sendable.
+  // Without an invoice id the external result is UNKNOWN (the invoice may or
+  // may not exist in QuickBooks): the batch is parked for reconciliation, never
+  // silently re-sendable. With an invoice id the invoice is confirmed and only
+  // the finishing steps failed: 'failed', and Retry confirms it.
   store.billingBatches.forEach(b => {
     if (b.syncStatus === 'syncing') {
-      b.syncStatus = 'failed';
-      b.mayExistInQuickBooks = !b.qbInvoiceId;
-      b.errorMessage = 'Send was interrupted by a server restart. The invoice may or may not exist in QuickBooks; Retry checks there before creating one.';
+      if (b.qbInvoiceId) { b.syncStatus = 'failed'; b.mayExistInQuickBooks = false; b.errorMessage = `Send was interrupted by a server restart after invoice ${b.qbInvoiceNumber || b.qbInvoiceId} was created. Retry confirms it in QuickBooks; nothing is re-sent.`; }
+      else markExternalUnknown(b, 'invoice', { message: 'Send was interrupted by a server restart', kind: 'restart' });
       b.syncingSince = '';
     }
+    // Older data: a failed batch flagged "may exist" is an unknown result.
+    if (b.syncStatus === 'failed' && b.mayExistInQuickBooks && !b.qbInvoiceId) markExternalUnknown(b, 'invoice', { message: b.errorMessage || 'QuickBooks did not answer', kind: 'legacy_flag' });
   });
   if (!Array.isArray(store.qbSyncLog))      store.qbSyncLog = [];
   if (!Array.isArray(store.vendorBills))    store.vendorBills = [];
   store.vendorBills.forEach(b => {
     if (b.syncStatus === 'syncing') {
-      b.syncStatus = 'failed';
-      b.mayExistInQuickBooks = !b.qbBillId;
-      b.errorMessage = 'Send was interrupted by a server restart. The bill may or may not exist in QuickBooks; Retry checks there before creating one.';
+      if (b.qbBillId) { b.syncStatus = 'failed'; b.mayExistInQuickBooks = false; b.errorMessage = `Send was interrupted by a server restart after bill ${b.qbDocNumber || b.qbBillId} was created. Retry confirms it in QuickBooks; nothing is re-sent.`; }
+      else markExternalUnknown(b, 'bill', { message: 'Send was interrupted by a server restart', kind: 'restart' });
       b.syncingSince = '';
     }
+    if (b.syncStatus === 'failed' && b.mayExistInQuickBooks && !b.qbBillId) markExternalUnknown(b, 'bill', { message: b.errorMessage || 'QuickBooks did not answer', kind: 'legacy_flag' });
   });
 
   // Backfill load fields used by billing batches
@@ -1669,6 +1707,10 @@ function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride, mea
 // it is flagged, never silently billed on the planned figure.
 function revenueDetail(load) {
   const unit = unitKey(load.customerUnit || 'ton');
+  // Nothing is priced from a delivered count that disagrees with the trips.
+  const dr = deliveredRecord(load);
+  if (dr.mismatch) return { unit, rate: Number(load.customerRate) || 0, delivered: dr.record, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'planned',
+    reason: `the delivered count (${dr.record}) on ${load.id} does not match its completed trips (${dr.completed}) — reject or void the load before billing` };
   // Hour and mile customers: the measure comes from the load's CLOSED freight
   // segment(s), counted once per segment and attributed to the first load
   // in the segment. Other loads in the same segment carry zero, naming where
@@ -1691,13 +1733,13 @@ function revenueDetail(load) {
         if ((s.loadIds || [])[0] === load.id) measure += m || 0;
         else billedWith.push(`${s.loadIds[0]} on ${s.id}`);
       }
-      const d = computeAmount(load.customerRate, unit, load.loadsDelivered, load.material, load.tonsPerLoad, { [field]: measure });
+      const d = computeAmount(load.customerRate, unit, dr.count, load.material, load.tonsPerLoad, { [field]: measure });
       d.basis = 'segment'; d.segmentIds = segs.map(s => s.id);
       if (billedWith.length && measure === 0) d.reason = `${field} billed with ${billedWith.join(', ')}`;
       return d;
     }
   }
-  const d = computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
+  const d = computeAmount(load.customerRate, load.customerUnit || 'ton', dr.count, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
   d.basis = 'planned';
   if (d.unit !== 'ton') return d;
   const po = findPoAnywhere(load.poId) || {};
@@ -1749,7 +1791,7 @@ function loadCostLines(load, { unbilledOnly = false } = {}) {
     else { ln.amount += d.amount; ln.quantity += d.quantity; }
   };
   const unit = load.vendorUnit || 'ton';
-  const done = (load.trips || []).filter(t => t.timestamps && t.timestamps.completed);
+  const done = (load.trips || []).filter(tripIsCompleted);
   // A load-level claim (a bill created before trips were tracked one by one,
   // or a legacy load with no trip records) covers the whole load — and its
   // cost stays exactly what that bill charged (planned yard, planned rate),
@@ -1777,10 +1819,10 @@ function loadCostLines(load, { unbilledOnly = false } = {}) {
     else { const vr = resolveVendorRate(yardId, material); rate = vr.price; u = vr.unit; isDefault = vr.isDefault; }
     add({ yardId, rate, unit: u, isDefault, count: 1, tripNum: t.tripNum });
   }
-  // A hand-counted delivered total above the recorded trips (older loads, an
-  // "incomplete" submission) is costed at the planned yard and rate.
-  const extra = Math.max(0, (Number(load.loadsDelivered) || 0) - done.length);
-  if (extra && !(unbilledOnly && load.vendorBillExtraId)) add({ yardId: plannedId, rate: load.vendorRate, unit, isDefault: load.vendorRateIsDefault, count: extra, extra: true });
+  // A delivered count above the recorded trips is never costed: a load with
+  // trips pays its vendor for the trips that were completed, nothing else.
+  // (Loads from before per-trip tracking, with no trips at all, took the
+  // load-level branch above.)
   return [...lines.values()];
 }
 function costDetail(load) {
@@ -1965,6 +2007,13 @@ app.use('/api', (req, res, next) => {
 // change can be swept away with it. Reads never wait. For a five-truck fleet
 // the wait is milliseconds; a hung handler releases after 30 s regardless.
 //
+// The lock protects the handler's WORK — its mutation and its save — not the
+// connection. It is released when the handler ends its response (res.end runs
+// whether or not the client is still listening), never when the socket
+// closes: a phone that drops the connection mid-save keeps the lock until that
+// save has settled, so nothing can interleave with a write that may still
+// roll the store back.
+//
 // Exempt on purpose: the QuickBooks and vendor-bill send/retry/void routes
 // (they talk to QuickBooks for seconds, must not stall the drivers' taps, and
 // keep their in-flight state on a failed save — it is their recovery record),
@@ -1977,8 +2026,11 @@ app.use('/api', (req, res, next) => {
   let release; const held = new Promise(r => { release = r; });
   const wait = writeLockTail; writeLockTail = wait.then(() => held);
   wait.then(() => {
-    const timer = setTimeout(release, 30000);
-    res.once('close', () => { clearTimeout(timer); release(); });
+    let released = false;
+    const done = () => { if (released) return; released = true; clearTimeout(timer); release(); };
+    const timer = setTimeout(done, 30000);
+    const end = res.end;
+    res.end = function (...args) { const r = end.apply(this, args); done(); return r; };
     requestCtx.run({ keepOnFailure: false }, next);
   });
 });
@@ -2071,7 +2123,18 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   //   fail    — QuickBooks refuses (an HTTP 400 style error; nothing created)
   //   timeout — no answer, nothing created (the request never reached Intuit)
   //   lost    — no answer, but the entity WAS created (the response was lost)
-  const fakeQb = { mode: 'ok', billMode: 'ok', delayMs: 0, invoicesCreated: 0, invoicesVoided: 0, invoices: [], billsCreated: 0, billsDeleted: 0, bills: [] };
+  // The fake QuickBooks. `invoicesCreated` / `billsCreated` count documents
+  // that EXIST on the fake's side; `invoiceCreateCalls` / `billCreateCalls`
+  // count create requests received — the two differ exactly when a document
+  // was created and the answer lost, which is the case the UNKNOWN state is
+  // for. Modes: ok | slow | fail/http400 (refused, nothing created) | thrown
+  // (blew up before the request) | timeout (nothing created, no answer) |
+  // http503 (nothing created, ambiguous answer) | lost/reset (CREATED, answer
+  // lost) | http500 (CREATED, 5xx answer) | nobody (CREATED, 2xx with no body).
+  // Intuit's requestid replay is modelled: a create that repeats a requestid
+  // already on a document returns that document instead of a second one.
+  const fakeQb = { mode: 'ok', billMode: 'ok', delayMs: 0, invoicesCreated: 0, invoicesVoided: 0, invoices: [], billsCreated: 0, billsDeleted: 0, bills: [], invoiceCreateCalls: 0, billCreateCalls: 0, invoiceRequestIds: [], billRequestIds: [], replays: 0 };
+  const fakeHttp = (path, status) => { const e = new Error(`QB API POST ${path} → ${status}: ${status >= 500 ? 'Internal Server Error' : 'Bad Request'}`); e.statusCode = status; e.uncertain = qb.httpOutcome(status, true).uncertain; return e; };
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const noAnswer = what => { const e = new Error(`Fake QuickBooks: no answer while creating ${what} (socket hang up)`); e.uncertain = true; e.timeout = true; return e; };
   app.post('/api/_test/qb-fake', reqMgr, async (req, res) => {
@@ -2087,13 +2150,25 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     qb.findOrCreateCustomer = async (conn, c) => ({ customer: { Id: 'CUST-' + (c.name || 'x').replace(/\W/g, ''), DisplayName: c.name }, created: false });
     qb.findOrCreateVendor = async (conn, v) => ({ vendor: { Id: 'VEND-' + (v.name || 'x').replace(/\W/g, ''), DisplayName: v.name }, created: false });
     qb.createInvoice = async (conn, args) => {
-      if (fakeQb.mode === 'slow') await wait(fakeQb.delayMs || 1500);
-      if (fakeQb.mode === 'fail') { const e = new Error('Fake QuickBooks: invoice rejected'); e.statusCode = 400; throw e; }
-      if (fakeQb.mode === 'timeout') throw noAnswer('an invoice');
+      const m = fakeQb.mode;
+      fakeQb.invoiceCreateCalls++; fakeQb.invoiceRequestIds.push(args.requestId || '');
+      if (m === 'slow') await wait(fakeQb.delayMs || 1500);
+      // Intuit replays the original answer for a repeated requestid.
+      const prior = args.requestId && fakeQb.invoices.find(i => i.requestId === args.requestId);
+      if (prior && m === 'ok') { fakeQb.replays++; return prior; }
+      // Nothing created:
+      if (m === 'fail' || m === 'http400') { const e = new Error('Fake QuickBooks: invoice rejected'); e.statusCode = 400; e.uncertain = qb.httpOutcome(400, true).uncertain; throw e; }
+      if (m === 'thrown') throw new Error('Fake QuickBooks: item lookup blew up before the request was sent');
+      if (m === 'timeout') throw noAnswer('an invoice');
+      if (m === 'http503') throw fakeHttp('/invoice', 503);
+      // Created on QuickBooks' side…
       fakeQb.invoicesCreated++;
-      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: args.docNumber || String(1000 + fakeQb.invoicesCreated), memo: args.memo, lines: args.lines, PrivateNote: args.privateNote, CustomerRef: { value: String(args.qbCustomerId) } };
+      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: args.docNumber || String(1000 + fakeQb.invoicesCreated), memo: args.memo, lines: args.lines, PrivateNote: args.privateNote, CustomerRef: { value: String(args.qbCustomerId) }, requestId: args.requestId || '' };
       fakeQb.invoices.push(inv);
-      if (fakeQb.mode === 'lost') throw noAnswer('an invoice');
+      // …and the answer never reaches VBT, or reaches it unreadable.
+      if (m === 'lost' || m === 'reset') throw noAnswer('an invoice');
+      if (m === 'http500') throw fakeHttp('/invoice', 500);
+      if (m === 'nobody') throw qb.noEntityError('Invoice');
       return inv;
     };
     qb.findInvoiceForBatch = async (conn, { batchId }) => fakeQb.invoices.find(i => String(i.PrivateNote || '').includes(`batch ${batchId}`)) || null;
@@ -2104,13 +2179,21 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
       return { Id: id, status: 'Voided' };
     };
     qb.createBill = async (conn, args) => {
-      if (fakeQb.billMode === 'slow') await wait(fakeQb.delayMs || 1500);
-      if (fakeQb.billMode === 'fail') { const e = new Error('Fake QuickBooks: bill rejected'); e.statusCode = 400; throw e; }
-      if (fakeQb.billMode === 'timeout') throw noAnswer('a bill');
+      const m = fakeQb.billMode;
+      fakeQb.billCreateCalls++; fakeQb.billRequestIds.push(args.requestId || '');
+      if (m === 'slow') await wait(fakeQb.delayMs || 1500);
+      const prior = args.requestId && fakeQb.bills.find(b => b.requestId === args.requestId);
+      if (prior && m === 'ok') { fakeQb.replays++; return prior; }
+      if (m === 'fail' || m === 'http400') { const e = new Error('Fake QuickBooks: bill rejected'); e.statusCode = 400; e.uncertain = qb.httpOutcome(400, true).uncertain; throw e; }
+      if (m === 'thrown') throw new Error('Fake QuickBooks: account lookup blew up before the request was sent');
+      if (m === 'timeout') throw noAnswer('a bill');
+      if (m === 'http503') throw fakeHttp('/bill', 503);
       fakeQb.billsCreated++;
-      const bill = { Id: 'BILL-' + fakeQb.billsCreated, DocNumber: args.docNumber || '', lines: args.lines, PrivateNote: args.memo };
+      const bill = { Id: 'BILL-' + fakeQb.billsCreated, DocNumber: args.docNumber || '', lines: args.lines, PrivateNote: args.memo, requestId: args.requestId || '' };
       fakeQb.bills.push(bill);
-      if (fakeQb.billMode === 'lost') throw noAnswer('a bill');
+      if (m === 'lost' || m === 'reset') throw noAnswer('a bill');
+      if (m === 'http500') throw fakeHttp('/bill', 500);
+      if (m === 'nobody') throw qb.noEntityError('Bill');
       return bill;
     };
     qb.findBillByDocNumber = async (conn, docNumber) => fakeQb.bills.find(b => b.DocNumber === docNumber) || null;
@@ -2138,9 +2221,11 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     res.json({ ok: true, at: loc.at });
   });
   app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
+  // Plant a record the state machine would never produce (older data, a bypass), to prove the guards downstream.
+  app.post('/api/_test/set-load', reqMgr, async (req, res) => { const l = findLoadAnywhere(String(req.body?.id || '')); if (!l) return res.status(404).json({ error: 'no load' }); Object.assign(l, req.body?.fields || {}); await saveData(); res.json({ ok: true, load: l }); });
   // 'fail' makes every save throw until set back to 'ok'.
   app.post('/api/_test/linxup-prune', reqMgr, async (req, res) => { try { res.json(await linxup.prune(req.body?.now ? Number(req.body.now) : Date.now())); } catch (e) { res.status(500).json({ error: e.message }); } });
-  app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft }); });
+  app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; testSaveDelayMs = Math.max(0, Number(req.body?.delayMs || 0)); res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft, delayMs: testSaveDelayMs }); });
   app.get('/api/_test/today', (req, res) => res.json({ tz: OPERATING_TZ, today: todayStrAt(req.query.at ? new Date(String(req.query.at)) : new Date()) }));
   app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
   app.get('/api/_test/async-reject', (req, res) => Promise.reject(new Error('test: rejected promise')));
@@ -2772,6 +2857,7 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
       material: l.material,
       loadsAssigned: l.loadsAssigned,
       loadsDelivered: l.loadsDelivered,
+      tripsCompleted: completedTripCount(l),   // what "Stop early" will submit: the completed trips, never a typed number
       notes: po.notes || '',
       deliveryDate: l.deliveryDate,
       timestamps: l.timestamps || {},
@@ -3302,14 +3388,27 @@ app.delete('/api/pos/:id', reqMgr, async (req, res) => {
   res.json({ success: true });
 });
 
-// ── API: UPDATE LOAD (manager: anything | driver: limited) ──────────────────
-const PROTECTED_LOAD_FIELDS = new Set([
-  'id', 'poId',
-  'approvalStatus', 'approvedAt', 'approvedBy', 'submittedAt', 'rejectReason',
-  'billStatus', 'billedAt', 'billingBatchId', 'qbInvoiceId', 'qbInvoiceNumber',
-  'voided', 'voidedAt', 'voidedBy', 'voidReason', 'unvoidedAt', 'unvoidedBy',
-  'locked', 'trips', 'completedAt',
-]);
+// ── API: UPDATE LOAD (office: a short allowlist | driver: evidence only) ────
+// Everything that is an operation has its own route with its own rule —
+// conflict checks, the trip state machine, pricing at creation or yard
+// change, approval, billing, history — and is refused here with the route
+// to use. A generic update can therefore never bypass one, whoever calls it.
+const OFFICE_LOAD_FIELDS = new Set(['notes', 'loadsAssigned', 'pod', 'ticketImage', 'ticketImageUrl']);
+const LOAD_FIELD_ROUTE = {
+  truckId: 'Quick Assign (POST /api/loads/:id/assign)', truckUnitId: 'Quick Assign (POST /api/loads/:id/assign)', trailerId: 'Quick Assign (POST /api/loads/:id/assign)',
+  driverName: 'Quick Assign (POST /api/loads/:id/assign)', vendorId: 'Quick Assign (POST /api/loads/:id/assign)', vendorName: 'Quick Assign (POST /api/loads/:id/assign)',
+  deliveryDate: 'Move Date (POST /api/loads/move) or Edit PO', originalScheduledDate: 'Move Date (POST /api/loads/move)', moveHistory: 'Move Date (POST /api/loads/move)',
+  loadsDelivered: "the driver's trip steps (POST /api/loads/:id/trip-action)", trips: "the driver's trip steps", timestamps: "the driver's trip steps", isoStamps: "the driver's trip steps", gps: "the driver's trip steps",
+  isPartial: "the driver's trip steps", allTripsDone: "the driver's trip steps", actualYardId: "the driver's trip steps", actualYardName: "the driver's trip steps", status: 'derived from the trips and the approval',
+  approvalStatus: 'approve / reject', approvedAt: 'approve', approvedBy: 'approve', submittedAt: "the driver's submission", rejectReason: 'reject', approvalWarnings: 'approve', locked: 'approve / reject', completedAt: 'approve',
+  billStatus: 'Mark Billed / unbill / billing batches', billedAt: 'billing', billedBy: 'billing', billingBatchId: 'billing batches', qbInvoiceId: 'billing batches', qbInvoiceNumber: 'billing batches',
+  manualBillRef: 'Mark Billed', billHistory: 'billing', billStatusBeforeVoid: 'void / unvoid', vendorBillId: 'vendor bills', vendorBillIds: 'vendor bills', vendorBillExtraId: 'vendor bills', qbBillId: 'vendor bills',
+  voided: 'void / unvoid', voidedAt: 'void', voidedBy: 'void', voidReason: 'void', unvoidedAt: 'unvoid', unvoidedBy: 'unvoid',
+  material: 'delete the load and add it again on Edit PO (prices are set at creation)', unit: 'Vendors & Prices (set at creation)', pricePerUnit: 'Vendors & Prices (set at creation)',
+  customerRate: 'Vendors & Prices (set at creation or by Edit PO)', customerUnit: 'Vendors & Prices', customerRateIsDefault: 'Vendors & Prices', tonsPerLoad: 'Default Rates (set at creation)',
+  vendorRate: 'Vendors & Prices (set at creation or yard change)', vendorUnit: 'Vendors & Prices', vendorRateIsDefault: 'Vendors & Prices', vendorIsInternal: 'Vendors & Prices',
+  miles: 'the freight segment', hours: 'the freight segment', freightSegmentId: 'the freight segment', reassignHistory: 'Quick Assign', id: 'never', poId: 'never', createdAt: 'never', createdBy: 'never',
+};
 app.put('/api/loads/:id', reqAuth, async (req, res) => {
   const u = req.session.user;
   const idx = store.loads.findIndex(l => l.id === req.params.id);
@@ -3334,57 +3433,34 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     if (req.body.notes !== undefined) allowed.notes = req.body.notes;
     store.loads[idx] = { ...l, ...allowed };
   } else {
-    // Manager — most fields, but NEVER the state machine. Approval, billing,
-    // void and trip history change only through their own endpoints
-    // (/approve, /reject, /void, /unvoid, /trip-action, billing batches), so
-    // a generic update can neither approve work nor un-bill it.
-    const touched = Object.keys(req.body || {}).filter(k => PROTECTED_LOAD_FIELDS.has(k));
-    if (touched.length) {
+    // Office — the allowlist: notes; the planned count while the load is
+    // still operational (no trip started, nothing delivered — the Edit PO
+    // rule); the ticket photo and the signature, evidence the office may
+    // attach on the driver's behalf (approval still needs the driver's own
+    // submission). Anything else names the route that owns it, and nothing
+    // is written when any field is refused.
+    if (l.voided) return res.status(403).json({ error: 'Load is voided — unvoid it first' });
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    const refused = Object.keys(body).filter(k => !OFFICE_LOAD_FIELDS.has(k));
+    if (refused.length) {
       return res.status(400).json({
-        error: `These fields cannot be changed through a load update: ${touched.join(', ')}. Use the approve / reject / void / billing actions.`,
-        protectedFields: touched,
+        error: `These fields cannot be changed through a load update: ${refused.map(k => `${k} → ${LOAD_FIELD_ROUTE[k] || 'not editable'}`).join('; ')}.`,
+        protectedFields: refused, routes: Object.fromEntries(refused.map(k => [k, LOAD_FIELD_ROUTE[k] || 'not editable'])),
       });
     }
-    const updated = { ...l, ...req.body, id: l.id, poId: l.poId };
-    let auditAction = 'updated-load';
-    let auditDetails = { changes: Object.keys(req.body) };
-    if (req.body.trailerId !== undefined) {
-      const tr = req.body.trailerId ? (store.trailers || []).find(x => x.id === req.body.trailerId) : null;
-      if (req.body.trailerId && !tr) return res.status(400).json({ error: 'Unknown trailer' });
-      if (tr && tr.active === false) return res.status(400).json({ error: `Trailer ${tr.number} is deactivated` });
-      updated.trailerId = tr ? tr.id : null;
-      auditDetails.trailer = { from: (getTrailerForLoad(l) || {}).number || 'none', to: tr ? tr.number : 'none' };
+    const allowed = {}, details = { changes: [] };
+    if (body.loadsAssigned !== undefined) {
+      const n = Number(body.loadsAssigned);
+      if (!Number.isInteger(n) || n < 1) return res.status(400).json({ error: 'loadsAssigned must be a whole number of at least 1' });
+      if (!loadIsOperational(l)) return res.status(409).json({ error: 'The planned count can change only while the load is operational (no trip started, nothing delivered). Add or delete loads on the Edit PO screen instead.', code: 'not_operational' });
+      if (n !== l.loadsAssigned) { allowed.loadsAssigned = n; details.loadsAssigned = { from: l.loadsAssigned, to: n }; details.changes.push('loadsAssigned'); }
     }
-    if (req.body.vendorId !== undefined && req.body.vendorId !== l.vendorId) {
-      // Same rule as /assign: a new yard wins over the current-trip mirror
-      // and re-prices the load. Trip history is untouched.
-      const v = req.body.vendorId ? store.vendors.find(x => x.id === req.body.vendorId) : null;
-      if (req.body.vendorId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
-      updated.vendorName = v?.name || '';
-      updated.actualYardId = null;
-      updated.actualYardName = '';
-      if (v) {
-        const vr = resolveVendorRate(v.id, updated.material);
-        updated.vendorRate = vr.price; updated.vendorUnit = vr.unit; updated.vendorRateIsDefault = vr.isDefault;
-        updated.vendorIsInternal = !!vr.isInternal; updated.pricePerUnit = vr.price;
-      }
-      auditDetails.yard = { from: resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).name, to: v?.name || '' };
-    }
-    if (req.body.truckId !== undefined) {
-      const t = driverRoster().find(t => t.id === req.body.truckId);   // DRIVER
-      updated.driverName = t?.label || '';
-      updated.status = req.body.truckId ? 'active' : 'unassigned';
-      // Treat driver change as a separate action type
-      if (req.body.truckId !== l.truckId) {
-        auditAction = 'reassigned-load';
-        auditDetails = {
-          fromDriver: l.driverName || l.truckId || 'Unassigned',
-          toDriver:   updated.driverName || 'Unassigned',
-        };
-      }
-    }
-    store.loads[idx] = updated;
-    logAction(req.session.user, auditAction, l.id, auditDetails);
+    if (body.notes !== undefined) { allowed.notes = String(body.notes); details.changes.push('notes'); }
+    if (body.pod) { if (typeof body.pod !== 'object' || Array.isArray(body.pod)) return res.status(400).json({ error: 'pod must be an object' }); allowed.pod = { ...l.pod, ...body.pod }; details.changes.push('pod'); }
+    if (body.ticketImage) { allowed.ticketImage = String(body.ticketImage); allowed.ticketImageAt = new Date().toISOString(); details.changes.push('ticketImage'); }
+    if (body.ticketImageUrl) { allowed.ticketImageUrl = String(body.ticketImageUrl); allowed.ticketImageAt = new Date().toISOString(); allowed.ticketImage = ''; details.changes.push('ticketImageUrl'); }
+    store.loads[idx] = { ...l, ...allowed };
+    logAction(req.session.user, 'updated-load', l.id, details);
   }
   await saveData();
   res.json({ success: true, load: store.loads[idx] });
@@ -3614,7 +3690,7 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     if (!trip.timestamps?.arrivedJobsite) return res.status(400).json({ error: 'Must mark arrived at job site first' });
     if (trip.timestamps?.completed)        return res.status(400).json({ error: 'Trip already complete' });
     stampBoth('completed');
-    l.loadsDelivered = (l.loadsDelivered || 0) + 1;
+    l.loadsDelivered = completedTripCount(l);   // the count IS the completed trips
     notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'delivered', { user: u.username, trip, loadNum: l.loadsDelivered });
     // If that was the LAST trip, also stamp the load-level "completed" so the
     // existing board/status code recognizes the load as ready-to-submit.
@@ -3628,34 +3704,20 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     if (!l.pod?.signedBy || (!l.pod.signature && !l.pod.signatureUrl))
       return res.status(400).json({ error: 'Customer signature required' });
 
-    if (action === 'incomplete') {
-      // Driver is stopping early — close the active trip if it's mid-cycle but
-      // not yet completed. Then accept the partial count.
-      if (!trip.timestamps?.completed && trip.timestamps?.arrivedJobsite) {
-        stampBoth('completed');
-        l.loadsDelivered = (l.loadsDelivered || 0) + 1;
-      }
-      const reported = Math.max(0, Math.min(Number(req.body.delivered) || l.loadsDelivered || 0, l.loadsAssigned));
-      if (reported <= 0) return res.status(400).json({ error: 'How many loads did you deliver? Enter a number greater than 0.' });
-      l.loadsDelivered = reported;
-      l.isPartial = (reported < l.loadsAssigned);
-    } else {
-      // 'delivered' — backward compat with the single-trip flow: if the active
-      // trip hasn't been closed via trip-complete yet, close it now and count
-      // it. This also means a load with loadsAssigned=1 keeps its old
-      // "ticket → sig → submit" UX without needing a separate "Confirm Drop".
-      if (!trip.timestamps?.completed && trip.timestamps?.arrivedJobsite) {
-        stampBoth('completed');
-        l.loadsDelivered = (l.loadsDelivered || 0) + 1;
-      }
-      if (l.loadsDelivered >= l.loadsAssigned) {
-        l.loadsDelivered = l.loadsAssigned;
-        l.isPartial = false;
-      } else {
-        // Submitting before all trips done with no incomplete count — treat as partial
-        l.isPartial = true;
-      }
+    // The delivered count is the number of completed trips — a fact from the
+    // driver's taps, never a number typed into a dialog. A trip the driver is
+    // standing at the jobsite with is completed by this submission (the drop
+    // confirmation, as the single-trip flow always worked); a trip merely
+    // started or loaded is not a delivery and is not counted. "Stop early"
+    // ends the driver's work on the load with exactly what was completed.
+    if (!trip.timestamps?.completed && trip.timestamps?.arrivedJobsite) stampBoth('completed');
+    const completed = completedTripCount(l);
+    if (completed <= 0) return res.status(400).json({ error: 'No trip has been completed on this load yet, so there is nothing to submit. If nothing was delivered, ask the office to cancel the load.', code: 'nothing_delivered' });
+    if (action === 'incomplete' && req.body.delivered !== undefined && req.body.delivered !== null && Number(req.body.delivered) !== completed) {
+      return res.status(400).json({ error: `VBT counts ${completed} completed trip${completed === 1 ? '' : 's'} on this load. Stop early submits that number; it cannot be changed here.`, code: 'delivered_mismatch', completedTrips: completed });
     }
+    l.loadsDelivered = completed;
+    l.isPartial = completed < l.loadsAssigned;
 
     l.approvalStatus = 'submitted';
     l.submittedAt    = new Date().toISOString();
@@ -3800,7 +3862,9 @@ function segmentPublic(seg) {
   const trips = segmentTrips(seg);
   const loads = (seg.loadIds || []).map(findLoadAnywhere).filter(Boolean);
   const tons = loads.reduce((acc, l) => { const t = loadTons(l); acc.actual += t.actualTons; acc.planned += t.plannedTons || 0; return acc; }, { actual: 0, planned: 0 });
-  const tripTons = trips.reduce((s, x) => s + (x.trip.ticket && x.trip.ticket.netTons != null ? Number(x.trip.ticket.netTons) : 0), 0);
+  // Delivered tons only — the same rule as loadTons: a ticket on a trip that
+  // never completed is on the log's rows but not in the total.
+  const tripTons = trips.reduce((s, x) => s + (tripIsCompleted(x.trip) && x.trip.ticket && x.trip.ticket.netTons != null ? Number(x.trip.ticket.netTons) : 0), 0);
   const billableMinutes = seg.timeEnd ? Math.max(0, Math.round((Date.parse(seg.timeEnd) - Date.parse(seg.timeStart)) / 60000)) : null;
   return {
     ...seg,
@@ -3809,7 +3873,7 @@ function segmentPublic(seg) {
     billableMinutes,
     billableHours: billableMinutes == null ? null : Math.round(billableMinutes / 60 * 100) / 100,
     tripCount: trips.length,
-    tripsDelivered: trips.filter(x => x.trip.timestamps && x.trip.timestamps.completed).length,
+    tripsDelivered: trips.filter(x => tripIsCompleted(x.trip)).length,
     actualTons: Math.round(tripTons * 100) / 100,
     loadActualTons: Math.round(tons.actual * 100) / 100,
     plannedTons: Math.round(tons.planned * 100) / 100,
@@ -4357,9 +4421,12 @@ function approvalChecklist(l) {
   if (tons.missingTickets.length) ticketProblems.push(`no ticket on trip ${tons.missingTickets.join(', ')}`);
   if (customerBillingBasis(po.customer) === 'actual' && delivered > 0 && !tons.actualComplete)
     ticketProblems.push(`${po.customer} is billed on actual tons and ${Math.max(1, delivered - tons.ticketsWithTons)} ticket(s) have no tons`);
+  // A ticket on a trip that never completed is shown here so the approver
+  // sees it, and is counted nowhere: not in the tons, not on the invoice.
+  const openNote = tons.openTickets.map(t => `ticket #${t.number} on trip ${t.tripNum} was loaded but never delivered${t.netTons != null ? ` (${t.netTons} t, not counted)` : ''}`).join('; ');
   items.push({ key: 'ticket', label: 'Ticket', ok: !ticketProblems.length,
     value: tons.tickets ? `${tons.tickets} ticket${tons.tickets === 1 ? '' : 's'}${tons.ticketsWithTons ? ` · ${tons.actualTons} t` : ''}` : ((l.ticketImage || l.ticketImageUrl) ? 'photo on file' : ''),
-    note: ticketProblems.join('; ') || (tons.plannedTons != null ? `planned ${tons.plannedTons} t${tons.ticketsWithTons ? `, actual ${tons.actualTons} t` : ''}` : '') });
+    note: [ticketProblems.join('; ') || (tons.plannedTons != null ? `planned ${tons.plannedTons} t${tons.ticketsWithTons ? `, actual ${tons.actualTons} t` : ''}` : ''), openNote].filter(Boolean).join('; ') });
   const signed = !!(pod.signedBy && (pod.signature || pod.signatureUrl));
   const deliveryProblems = [];
   if (!delivered) deliveryProblems.push('nothing delivered');
@@ -4367,8 +4434,16 @@ function approvalChecklist(l) {
   items.push({ key: 'delivery', label: 'Delivery', ok: !deliveryProblems.length,
     value: `${delivered}/${l.loadsAssigned} load${l.loadsAssigned === 1 ? '' : 's'}${l.isPartial ? ' (partial)' : ''}${signed ? ` · signed by ${pod.signedBy}` : ''}`,
     note: deliveryProblems.join('; ') || (l.isPartial ? 'submitted as incomplete by the driver' : '') });
+  // The delivered count must be the completed trips. A disagreement is not a
+  // gap a manager can acknowledge: it is refused until the record is corrected
+  // (reject so the driver re-submits, or void).
+  const dr = deliveredRecord(l);
+  if (dr.mismatch) items.push({ key: 'count', label: 'Delivered count', ok: false, block: true,
+    value: `${dr.record} submitted · ${dr.completed} completed trip${dr.completed === 1 ? '' : 's'} on record`,
+    note: 'the delivered count does not match the completed trips — cannot be approved; reject it so the driver re-submits, or void it' });
   const warnings = items.filter(i => !i.ok).map(i => `${i.label}: ${i.note}`);
-  return { items, warnings, ready: !warnings.length };
+  const blocking = items.filter(i => i.block).map(i => `${i.label}: ${i.note}`);
+  return { items, warnings, blocking, ready: !warnings.length };
 }
 
 app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
@@ -4379,6 +4454,9 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
   // The checklist is confirmed in the app; a load with a ⚠ item is approved
   // only with an explicit acknowledgement, and what was missing is recorded.
   const check = approvalChecklist(l);
+  if (check.blocking.length) {
+    return res.status(409).json({ error: `This load cannot be approved — ${check.blocking.join('; ')}.`, code: 'approval_blocked', checklist: check });
+  }
   if (!check.ready && req.body?.acknowledge !== true) {
     return res.status(409).json({ error: `This load is not complete — ${check.warnings.join('; ')}.`, code: 'approval_incomplete', checklist: check });
   }
@@ -4411,6 +4489,7 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
     actualTons:  tons.actualTons,
     tickets:     tons.ticketNumbers,
     missingTickets: tons.missingTickets,
+    ...(tons.openTickets.length ? { openTickets: tons.openTickets.map(t => t.number) } : {}),
     ...(check.ready ? {} : { approvedWithWarnings: check.warnings }),
   });
   await saveData();
@@ -4983,6 +5062,87 @@ app.get('/api/billing-batches/:id', reqMgr, (req, res) => {
 // Write a QuickBooks invoice back onto the batch and each of its loads. Used
 // by a normal send and by a retry that found the invoice QuickBooks created
 // during an interrupted send.
+// ── EXTERNAL RESULT UNKNOWN ─────────────────────────────────────────────────
+// The third outcome of a QuickBooks create, beside confirmed success and
+// confirmed failure: the request may have reached QuickBooks and VBT cannot
+// tell whether the document was created (timeout, dropped connection, 5xx,
+// an answer with no body or no entity, a restart mid-send). The batch or bill
+// is parked in syncStatus 'unknown' — "External result unknown — reconcile
+// before sending again" — and nothing may create a second document until
+// QuickBooks has been asked: Send is refused, Retry becomes a lookup, Void
+// looks up first, the loads stay claimed by the batch. The idempotency key
+// (Intuit's requestid, = our batch/bill id) is kept with the record.
+const EXTERNAL_UNKNOWN = 'unknown';
+function markExternalUnknown(b, kind, e) {
+  const doc = kind === 'bill' ? 'bill' : 'invoice';
+  b.syncStatus = EXTERNAL_UNKNOWN;
+  b.mayExistInQuickBooks = true;
+  b.syncingSince = '';
+  const prev = b.reconcile || {};
+  b.reconcile = {
+    reason: String(e?.message || 'QuickBooks did not answer'),
+    kind: e?.kind || (e?.timeout ? 'timeout' : e?.noEntity ? 'no_entity_in_response' : e?.statusCode ? `http_${e.statusCode}` : 'transport'),
+    statusCode: e?.statusCode || 0,
+    at: new Date().toISOString(),
+    requestId: b.id,                 // the requestid the create was sent with; a re-send reuses it
+    lookup: doc === 'bill' ? `Bill with DocNumber "${b.id.slice(0, 21)}"` : `Invoice whose private note contains "batch ${b.id}"${b.poNumber ? ` (DocNumber ${String(b.poNumber).slice(0, 21)})` : ''}`,
+    attempts: Number(prev.attempts) || 0,
+    result: '',
+    resolvedAt: '',
+  };
+  b.errorMessage = `External result unknown — QuickBooks may have created the ${doc} (${b.reconcile.reason}). Reconcile before sending again: "Reconcile" asks QuickBooks for ${b.reconcile.lookup}; nothing is re-sent until it answers.`;
+}
+function externalUnknownRefusal(b, kind) {
+  const doc = kind === 'bill' ? 'bill' : 'invoice';
+  return { error: `External result unknown — QuickBooks may already have this ${doc} (${b.reconcile?.reason || 'no answer'}). Reconcile first; nothing was sent.`, code: 'external_unknown', reconcile: b.reconcile || null };
+}
+// Reconcile an UNKNOWN send: ask QuickBooks whether the document exists.
+// Returns { status, body } to refuse with nothing changed (QuickBooks not
+// connected, or the lookup itself failed), or { found } once QuickBooks has
+// answered: found → the document is adopted (recorded on the batch/bill, the
+// loads marked billed) and nothing is re-created; not found → the unknown is
+// resolved as "does not exist" and a create is allowed again, carrying the
+// same requestid. An operator may instead state, on the record, that they
+// checked QuickBooks by hand and found no document.
+async function reconcileExternalUnknown(b, kind, user, { operatorStatement = false, reason = '' } = {}) {
+  const doc = kind === 'bill' ? 'bill' : 'invoice';
+  const findAction = kind === 'bill' ? 'find_bill' : 'find_invoice';
+  const now = new Date().toISOString();
+  b.reconcile = b.reconcile || { requestId: b.id, attempts: 0 };
+  b.reconcile.attempts = (Number(b.reconcile.attempts) || 0) + 1;
+  if (operatorStatement) {
+    b.reconcile.result = 'operator_confirmed_absent'; b.reconcile.resolvedAt = now; b.reconcile.resolvedBy = user;
+    b.mayExistInQuickBooks = false;
+    logQbSync({ actionType: findAction, relatedBatchId: b.id, requestSummary: `Operator states QuickBooks has no ${doc} for ${kind === 'bill' ? 'vendor bill' : 'batch'} ${b.id} (checked by hand): ${reason}`, user });
+    return { found: null };
+  }
+  const conn = store.qbConnection;
+  if (!conn?.realmId || conn.status !== 'connected') {
+    return { status: 409, body: { ...externalUnknownRefusal(b, kind), error: `External result unknown — QuickBooks may already have this ${doc}, and QuickBooks is not connected so it cannot be checked. Reconnect QuickBooks and reconcile, or state on the record that you checked QuickBooks and found no ${doc}. Nothing changed.` } };
+  }
+  let found = null;
+  try {
+    found = kind === 'bill'
+      ? await qb.findBillByDocNumber(conn, b.id.slice(0, 21))
+      : await qb.findInvoiceForBatch(conn, { docNumber: b.poNumber ? String(b.poNumber).slice(0, 21) : '', batchId: b.id, qbCustomerId: b.qbCustomerId });
+  } catch (e) {
+    logQbSync({ actionType: findAction, relatedBatchId: b.id, responseStatus: 'error', errorMessage: e.message, user });
+    return { status: 502, body: { error: `External result unknown — QuickBooks could not be checked for an existing ${doc}: ${e.message}. Nothing was sent and nothing changed; reconcile again in a moment.`, code: 'external_unknown', reconcile: b.reconcile } };
+  }
+  b.reconcile.resolvedAt = now; b.reconcile.resolvedBy = user;
+  if (found) {
+    b.reconcile.result = 'found';
+    if (kind === 'bill') recordQbBill(b, found, user); else recordInvoiceOnBatch(b, found, user);
+    logQbSync({ actionType: kind === 'bill' ? 'recover_bill' : 'recover_invoice', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: kind === 'bill' ? 'Bill' : 'Invoice', qbEntityId: found.Id,
+      requestSummary: `Reconciled: found ${doc} ${found.DocNumber || found.Id} in QuickBooks from the send whose result was unknown; adopted, nothing re-created`, user });
+    return { found };
+  }
+  b.reconcile.result = 'not_found';
+  b.mayExistInQuickBooks = false;
+  logQbSync({ actionType: findAction, relatedBatchId: b.id, requestSummary: `Reconciled: QuickBooks has no ${doc} for ${b.id}; creating again is allowed (same requestid ${b.id})`, user });
+  return { found: null };
+}
+
 function recordInvoiceOnBatch(b, invoice, user) {
   b.qbInvoiceId = invoice.Id;
   b.qbInvoiceNumber = invoice.DocNumber || '';
@@ -5022,6 +5182,7 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
     return res.status(409).json({ error: 'This batch is already being sent to QuickBooks. Wait for it to finish.', batch: b });
   }
   if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Cannot send a voided batch' });
+  if (b.syncStatus === EXTERNAL_UNKNOWN || (b.mayExistInQuickBooks && !b.qbInvoiceId)) return res.status(409).json({ ...externalUnknownRefusal(b, 'invoice'), batch: b });
   if (b.syncStatus === 'failed') return res.status(400).json({ error: 'This batch failed earlier. Use Retry, which checks it first.', batch: b });
   if ((b.lineItems || []).some(ln => ln.unconfigured || ln.amount == null)) {
     return res.status(400).json({ error: 'This batch has a line the costing engine could not price. It will not be sent as $0; void it, fix the pricing, and re-bill.' });
@@ -5084,8 +5245,10 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
       privateNote: `VBT Dispatch billing batch ${b.id}. PO ${b.poNumber}. Loads: ${b.loadIds.join(', ')}` + ((b.ticketNumbers || []).length ? `. Tickets: ${b.ticketNumbers.join(', ')}` : ''),
       docNumber: b.poNumber ? String(b.poNumber).slice(0, 21) : undefined,
       txnDate: b.deliveryEnd || b.deliveryStart || undefined,
+      // Idempotency key: the batch id, the same on every attempt for this batch.
+      requestId: b.id,
     });
-    if (!invoice?.Id) throw new Error('QuickBooks did not return an invoice ID');
+    if (!invoice?.Id) throw qb.noEntityError('Invoice');
     recordInvoiceOnBatch(b, invoice, user);
 
     logQbSync({
@@ -5153,29 +5316,32 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
     res.json({ success: true, batch: b });
   } catch (e) {
     console.error('[qb send]', e);
-    b.syncStatus = 'failed';
     b.syncingSince = '';
-    // No answer from QuickBooks (timeout, dropped connection) is not the same
-    // as a refusal: the invoice may have been created on Intuit's side. The
-    // batch remembers that, and Retry looks the invoice up before creating one.
-    b.mayExistInQuickBooks = !b.qbInvoiceId && !!e.uncertain;
-    b.errorMessage = b.qbInvoiceId
-      ? `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} was created in QuickBooks but finishing the batch failed: ${e.message}. Do not resend; void the batch to correct it.`
-      : b.mayExistInQuickBooks
-        ? `QuickBooks did not answer (${e.message}). The invoice may or may not have been created. Retry checks QuickBooks for it before creating another.`
-        : e.message;
+    // Three outcomes, never two. The invoice is confirmed (its id is on the
+    // batch) and only a later step failed → 'failed', Retry confirms it.
+    // QuickBooks definitively refused → 'failed', retryable. Anything that
+    // may have reached QuickBooks without a readable answer → UNKNOWN: parked
+    // for reconciliation, never "nothing was created".
+    if (b.qbInvoiceId) {
+      b.syncStatus = 'failed'; b.mayExistInQuickBooks = false;
+      b.errorMessage = `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} was created in QuickBooks but finishing the batch failed: ${e.message}. Do not resend; Retry confirms the invoice, or void the batch to correct it.`;
+    } else if (e.uncertain) {
+      markExternalUnknown(b, 'invoice', e);
+    } else {
+      b.syncStatus = 'failed'; b.mayExistInQuickBooks = false; b.errorMessage = e.message;
+    }
     if (store.qbConnection) store.qbConnection.lastError = e.message;
     logQbSync({
       actionType: 'create_invoice',
       relatedBatchId: b.id,
       relatedLoadIds: b.loadIds,
       responseStatus: 'error',
-      errorMessage: e.message,
+      errorMessage: b.syncStatus === EXTERNAL_UNKNOWN ? `External result unknown: ${e.message}` : e.message,
       statusCode: e.statusCode || 0,
       user,
     });
     await saveData();
-    res.status(500).json({ error: e.message, batch: b });
+    res.status(b.syncStatus === EXTERNAL_UNKNOWN ? 502 : 500).json({ error: b.errorMessage || e.message, code: b.syncStatus === EXTERNAL_UNKNOWN ? 'external_unknown' : undefined, batch: b });
   }
 });
 
@@ -5189,6 +5355,17 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
   if (!reason) return res.status(400).json({ error: 'Reason required' });
 
   if (b.syncStatus === 'syncing') return res.status(409).json({ error: 'This batch is being sent right now. Wait for it to finish, then void it.' });
+
+  // UNKNOWN result: the invoice may exist. Void never releases the loads on
+  // an assumption — QuickBooks is asked first (or the operator states, on the
+  // record, that they checked and found none). Found → adopted, then voided
+  // there like any sent batch below. Not found → QuickBooks answered; the
+  // void proceeds. Not connected or lookup failed → refused, nothing changed.
+  if (b.syncStatus === EXTERNAL_UNKNOWN || (b.mayExistInQuickBooks && !b.qbInvoiceId)) {
+    const r = await reconcileExternalUnknown(b, 'invoice', req.session.user.username, { operatorStatement: req.body?.confirmedNoInvoiceInQuickBooks === true, reason });
+    if (r.status) { await saveData(); return res.status(r.status).json(r.body); }
+    if (r.found) { logAction(req.session.user, 'recovered-billing-batch', b.id, { invoiceId: r.found.Id, invoiceNumber: r.found.DocNumber || '', during: 'void' }); await saveData(); }
+  }
 
   // A batch that has a QuickBooks invoice can only be voided here if that
   // invoice is voided too — otherwise the loads would go back to Ready to
@@ -5248,7 +5425,7 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
 app.post('/api/billing-batches/:id/retry', reqMgr, async (req, res) => {
   const b = store.billingBatches.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Batch not found' });
-  if (b.syncStatus !== 'failed') return res.status(400).json({ error: 'Only failed batches can be retried' });
+  if (b.syncStatus !== 'failed' && b.syncStatus !== EXTERNAL_UNKNOWN) return res.status(400).json({ error: 'Only a failed batch, or one whose QuickBooks result is unknown, can be retried' });
   const user = req.session.user.username;
   if (b.qbInvoiceId) {
     // The invoice exists; the batch failed AFTER it was created (the save or
@@ -5266,39 +5443,30 @@ app.post('/api/billing-batches/:id/retry', reqMgr, async (req, res) => {
     await saveData();
     return res.json({ success: true, recovered: true, batch: b });
   }
-  // The failed send got no answer from QuickBooks (or the process restarted
-  // mid-send): look the invoice up there first. Found → adopt it, mark the
-  // loads billed, and nothing is re-created. Not found → safe to send again.
-  if (b.mayExistInQuickBooks) {
-    const conn = store.qbConnection;
-    if (!conn?.realmId || conn.status !== 'connected') {
-      return res.status(400).json({ error: 'QuickBooks is not connected, so it cannot be checked for an invoice from the interrupted send. Reconnect QuickBooks, then retry.' });
-    }
-    let found = null;
-    try {
-      found = await qb.findInvoiceForBatch(conn, { docNumber: b.poNumber ? String(b.poNumber).slice(0, 21) : '', batchId: b.id, qbCustomerId: b.qbCustomerId });
-    } catch (e) {
-      logQbSync({ actionType: 'find_invoice', relatedBatchId: b.id, responseStatus: 'error', errorMessage: e.message, user });
-      return res.status(502).json({ error: `Could not check QuickBooks for an existing invoice: ${e.message}. Nothing was sent; retry in a moment.` });
-    }
-    if (found) {
-      recordInvoiceOnBatch(b, found, user);
-      logQbSync({ actionType: 'recover_invoice', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Invoice', qbEntityId: found.Id, requestSummary: `Found invoice ${found.DocNumber || found.Id} in QuickBooks from the interrupted send; batch marked sent, nothing re-created. Ticket and signature attachments were not uploaded — add them in QuickBooks if needed.`, user });
-      logAction(req.session.user, 'recovered-billing-batch', b.id, { invoiceId: found.Id, invoiceNumber: found.DocNumber || '' });
+  // UNKNOWN result (no answer, 5xx, no body, restart mid-send): Retry is a
+  // reconciliation, not a re-send. QuickBooks is asked for the invoice first.
+  // Found → adopted, loads billed, nothing re-created. Not found → QuickBooks
+  // answered; the batch goes back to ready and the client sends again with
+  // the same requestid. Not connected / lookup failed → refused, unchanged.
+  let reconciled;
+  if (b.syncStatus === EXTERNAL_UNKNOWN || b.mayExistInQuickBooks) {
+    const r = await reconcileExternalUnknown(b, 'invoice', user);
+    if (r.status) { await saveData(); return res.status(r.status).json(r.body); }
+    if (r.found) {
+      logAction(req.session.user, 'recovered-billing-batch', b.id, { invoiceId: r.found.Id, invoiceNumber: r.found.DocNumber || '' });
       await saveData();
-      return res.json({ success: true, recovered: true, batch: b });
+      return res.json({ success: true, recovered: true, reconciled: 'found', batch: b });
     }
-    b.mayExistInQuickBooks = false;
-    logQbSync({ actionType: 'find_invoice', relatedBatchId: b.id, requestSummary: 'No invoice found in QuickBooks for the interrupted send; safe to create', user });
+    reconciled = b.reconcile?.result || 'not_found';
   }
   // Reset so the client can POST /send again.
   b.syncStatus = 'ready_to_bill';
   b.errorMessage = '';
   b.syncingSince = '';
-  logAction(req.session.user, 'retry-billing-batch', b.id, {});
+  logAction(req.session.user, 'retry-billing-batch', b.id, reconciled ? { reconciled } : {});
   await saveData();
   // The client POSTs /send after /retry; the reset is confirmed here.
-  res.json({ success: true, batch: b });
+  res.json({ success: true, reconciled, batch: b });
 });
 
 // ── VENDOR BILLS (PAYABLES) ─────────────────────────────────────────────────
@@ -5467,6 +5635,7 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
   if (b.qbBillId) return res.status(400).json({ error: `Already sent (QuickBooks bill ${b.qbDocNumber || b.qbBillId}). Void it to correct it.` });
   if (b.syncStatus === 'syncing') return res.status(409).json({ error: 'This bill is already being sent to QuickBooks. Wait for it to finish.', bill: b });
   if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Cannot send a voided bill' });
+  if (b.syncStatus === EXTERNAL_UNKNOWN || (b.mayExistInQuickBooks && !b.qbBillId)) return res.status(409).json({ ...externalUnknownRefusal(b, 'bill'), bill: b });
   if (b.syncStatus === 'failed') return res.status(400).json({ error: 'This bill failed earlier. Use Retry, which checks QuickBooks first.', bill: b });
   if ((b.lineItems || []).some(ln => ln.unconfigured || ln.amount == null)) return res.status(400).json({ error: 'This bill has a line that could not be priced. It will not be sent as $0; void it, add the vendor price, and bill again.' });
   const conn = store.qbConnection;
@@ -5492,8 +5661,9 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
       memo,
       docNumber: b.id.slice(0, 21),
       txnDate: b.deliveryEnd || b.deliveryStart || undefined,
+      requestId: b.id,   // idempotency key, the same on every attempt for this bill
     });
-    if (!bill?.Id) throw new Error('QuickBooks did not return a bill ID');
+    if (!bill?.Id) throw qb.noEntityError('Bill');
     recordQbBill(b, bill, user);
     b.syncingSince = '';
     logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Bill', qbEntityId: bill.Id, requestSummary: `Bill for ${b.vendorName} — $${b.totalAmount.toFixed(2)}`, user });
@@ -5502,17 +5672,22 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
     res.json({ success: true, bill: b });
   } catch (e) {
     console.error('[vendor bill send]', e);
-    b.syncStatus = 'failed';
     b.syncingSince = '';
-    // No answer from QuickBooks is not the same as a refusal: the bill may
-    // have been created. Retry looks it up by our document number first.
-    b.mayExistInQuickBooks = !!e.uncertain;
-    b.errorMessage = b.mayExistInQuickBooks
-      ? `QuickBooks did not answer (${e.message}). The bill may or may not have been created. Retry checks QuickBooks for it before creating another.`
-      : e.message;
-    logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, responseStatus: 'error', errorMessage: e.message, statusCode: e.statusCode || 0, user });
+    // Same three outcomes as an invoice batch: bill confirmed but a later step
+    // failed → 'failed' (Retry confirms it); QuickBooks refused → 'failed',
+    // retryable; may have reached QuickBooks without a readable answer →
+    // UNKNOWN, parked for reconciliation, never "nothing was created".
+    if (b.qbBillId) {
+      b.syncStatus = 'failed'; b.mayExistInQuickBooks = false;
+      b.errorMessage = `Bill ${b.qbDocNumber || b.qbBillId} was created in QuickBooks but finishing the vendor bill failed: ${e.message}. Do not resend; Retry confirms the bill, or void it to correct it.`;
+    } else if (e.uncertain) {
+      markExternalUnknown(b, 'bill', e);
+    } else {
+      b.syncStatus = 'failed'; b.mayExistInQuickBooks = false; b.errorMessage = e.message;
+    }
+    logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, responseStatus: 'error', errorMessage: b.syncStatus === EXTERNAL_UNKNOWN ? `External result unknown: ${e.message}` : e.message, statusCode: e.statusCode || 0, user });
     await saveData();
-    res.status(500).json({ error: e.message, bill: b });
+    res.status(b.syncStatus === EXTERNAL_UNKNOWN ? 502 : 500).json({ error: b.errorMessage || e.message, code: b.syncStatus === EXTERNAL_UNKNOWN ? 'external_unknown' : undefined, bill: b });
   }
 });
 
@@ -5522,34 +5697,43 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
 app.post('/api/vendor-bills/:id/retry', reqMgr, async (req, res) => {
   const b = store.vendorBills.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Bill not found' });
-  if (b.syncStatus !== 'failed') return res.status(400).json({ error: 'Only failed bills can be retried' });
-  if (b.qbBillId) return res.status(409).json({ error: `Bill ${b.qbDocNumber || b.qbBillId} already exists in QuickBooks for this vendor bill. Retrying would create a second one; void it instead.` });
+  if (b.syncStatus !== 'failed' && b.syncStatus !== EXTERNAL_UNKNOWN) return res.status(400).json({ error: 'Only a failed bill, or one whose QuickBooks result is unknown, can be retried' });
   const user = req.session.user.username;
-  if (b.mayExistInQuickBooks) {
+  if (b.qbBillId) {
+    // The bill exists; the send failed AFTER it was created. Confirm it in
+    // QuickBooks and mark the vendor bill sent — never a second bill.
     const conn = store.qbConnection;
-    if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks is not connected, so it cannot be checked for a bill from the interrupted send. Reconnect QuickBooks, then retry.' });
-    let found = null;
-    try { found = await qb.findBillByDocNumber(conn, b.id.slice(0, 21)); }
-    catch (e) {
-      logQbSync({ actionType: 'find_bill', relatedBatchId: b.id, responseStatus: 'error', errorMessage: e.message, user });
-      return res.status(502).json({ error: `Could not check QuickBooks for an existing bill: ${e.message}. Nothing was sent; retry in a moment.` });
-    }
-    if (found) {
-      recordQbBill(b, found, user);
-      logQbSync({ actionType: 'recover_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Bill', qbEntityId: found.Id, requestSummary: `Found bill ${found.DocNumber || found.Id} in QuickBooks from the interrupted send; marked sent, nothing re-created`, user });
-      logAction(req.session.user, 'recovered-vendor-bill', b.id, { qbBillId: found.Id });
+    if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: `Bill ${b.qbDocNumber || b.qbBillId} exists for this vendor bill, but QuickBooks is not connected to confirm it. Reconnect QuickBooks, then retry; nothing is re-sent.` });
+    let bill = null;
+    try { bill = await qb.getEntity(conn, 'Bill', b.qbBillId); }
+    catch (e) { return res.status(502).json({ error: `Could not confirm bill ${b.qbDocNumber || b.qbBillId} in QuickBooks: ${e.message}. Nothing changed; retry in a moment.` }); }
+    if (!bill) return res.status(409).json({ error: `Bill ${b.qbDocNumber || b.qbBillId} is recorded on this vendor bill but QuickBooks does not have it. Void the vendor bill (stating it was already removed in QuickBooks) and bill again.` });
+    recordQbBill(b, bill, user);
+    logQbSync({ actionType: 'recover_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Bill', qbEntityId: bill.Id, requestSummary: `Confirmed bill ${bill.DocNumber || bill.Id} in QuickBooks after an interrupted finish; nothing re-created`, user });
+    logAction(req.session.user, 'recovered-vendor-bill', b.id, { qbBillId: bill.Id });
+    await saveData();
+    return res.json({ success: true, recovered: true, bill: b });
+  }
+  // UNKNOWN result: Retry is a reconciliation. QuickBooks is asked for a bill
+  // with our document number first; found → adopted, never re-created; not
+  // found → back to ready, the client sends again with the same requestid.
+  let reconciled;
+  if (b.syncStatus === EXTERNAL_UNKNOWN || b.mayExistInQuickBooks) {
+    const r = await reconcileExternalUnknown(b, 'bill', user);
+    if (r.status) { await saveData(); return res.status(r.status).json(r.body); }
+    if (r.found) {
+      logAction(req.session.user, 'recovered-vendor-bill', b.id, { qbBillId: r.found.Id });
       await saveData();
-      return res.json({ success: true, recovered: true, bill: b });
+      return res.json({ success: true, recovered: true, reconciled: 'found', bill: b });
     }
-    b.mayExistInQuickBooks = false;
-    logQbSync({ actionType: 'find_bill', relatedBatchId: b.id, requestSummary: 'No bill found in QuickBooks for the interrupted send; safe to create', user });
+    reconciled = b.reconcile?.result || 'not_found';
   }
   b.syncStatus = 'ready';
   b.errorMessage = '';
   b.syncingSince = '';
-  logAction(req.session.user, 'retry-vendor-bill', b.id, {});
+  logAction(req.session.user, 'retry-vendor-bill', b.id, reconciled ? { reconciled } : {});
   await saveData();
-  res.json({ success: true, bill: b });
+  res.json({ success: true, reconciled, bill: b });
 });
 
 // Void a vendor bill: releases its trips so a corrected bill can be built.
@@ -5563,6 +5747,14 @@ app.post('/api/vendor-bills/:id/void', reqMgr, async (req, res) => {
   const reason = String(req.body?.reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'Reason required' });
   const user = req.session.user.username;
+  // UNKNOWN result: the bill may exist in QuickBooks. Void asks QuickBooks
+  // first (or takes the operator's statement, on the record, that they
+  // checked and found none); found → adopted and removed there below.
+  if (b.syncStatus === EXTERNAL_UNKNOWN || (b.mayExistInQuickBooks && !b.qbBillId)) {
+    const r = await reconcileExternalUnknown(b, 'bill', user, { operatorStatement: req.body?.confirmedNoBillInQuickBooks === true, reason });
+    if (r.status) { await saveData(); return res.status(r.status).json(r.body); }
+    if (r.found) { logAction(req.session.user, 'recovered-vendor-bill', b.id, { qbBillId: r.found.Id, during: 'void' }); await saveData(); }
+  }
   let qbDeleted = false;
   if (b.qbBillId) {
     if (req.body?.alreadyDeletedInQuickBooks === true) {

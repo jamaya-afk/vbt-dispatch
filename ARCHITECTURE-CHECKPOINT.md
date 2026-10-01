@@ -41,6 +41,7 @@ is still more complicated than it needs to be.
 ## 1. CRITICAL — could corrupt operational or billing data
 
 ### C1. "Stop early" lets a driver submit more loads than were hauled, and approval does not notice
+**Status: FIXED 2026-10-01** (commit following this review). Rule enforced: the delivered count is the number of completed trips (`completedTripCount`/`deliveredRecord` in `server.js`); Stop early submits exactly that and refuses any other number (`400 delivered_mismatch`); nothing can be submitted with no completed trip (`400 nothing_delivered`); a load whose count disagrees with its trips is refused at approval even with an acknowledgement (`409 approval_blocked`), is not priceable in Ready to Bill, and costs only its completed trips. The phone dialog shows the completed trips and offers nothing to adjust. Tests: e2e §50, §40 R1 (rewritten to the new rule), browser driver section.
 Verified live. The driver's Stop-early dialog defaults to **assigned − 1**
 (`public/index.html` `openIncompleteDialog`: `incompleteCount = Math.max(0,
 incompleteAssigned - 1)`), and the server accepts any count up to
@@ -77,6 +78,42 @@ unless a definitive validation error came back; on Void of a batch that may
 exist, run the lookup first and refuse to release the loads until QuickBooks
 answers.
 
+**Status: FIXED 2026-10-01** (CRITICAL 4 commit). A QuickBooks create now has
+three outcomes, never two. `qb.js` classifies every mutating request:
+`uncertain: false` only for a definitive 4xx or a failure before the request
+left; `uncertain: true` for a timeout, a dropped connection, a body that could
+not be read or parsed, any 5xx, and a 2xx whose body carries no entity
+(`httpOutcome`, `noEntityError`). The server has an explicit state for the
+third outcome: `syncStatus: 'unknown'` — "External result unknown — reconcile
+before sending again" — on billing batches and vendor bills, with a `reconcile`
+record (reason, kind, the `requestid` the create carried, the exact lookup, the
+attempts and the result). An unknown batch or bill: Send → `409
+external_unknown`; Retry is a reconciliation (QuickBooks is asked for the
+document; found → adopted and the loads billed, not found → ready again, the
+re-send carrying the same requestid; QuickBooks unreachable or the lookup
+failed → refused, nothing changed); Void looks up first and never releases the
+loads on an assumption (found → voided/deleted in QuickBooks, then released;
+not found → released; unreachable → `409`; or the operator states on the
+record that they checked QuickBooks by hand: `confirmedNoInvoiceInQuickBooks`
+/ `confirmedNoBillInQuickBooks`). The load keeps its `billingBatchId`, so it
+cannot join another batch, and no invoice id is ever recorded without
+QuickBooks' word. A restart mid-send parks the batch as unknown (with an id,
+`failed` — Retry confirms it). Idempotency: every create carries Intuit's
+`requestid` query parameter (= the batch / bill id; Intuit replays the
+original answer for a repeated requestid). Intuit does not document how long a
+requestid is kept, so it is the second line of defence; the unknown state and
+the DocNumber / private-note lookup remain the guarantee. Probed before/after:
+invoice created, answer lost, manager voids and bills again — before: `failed`,
+void released the loads with no lookup, re-send created a second invoice (2
+live); after: `unknown`, void with QuickBooks unreachable `409`, void with it
+connected found and voided the invoice in QuickBooks, re-send created one (1
+live). Tests: e2e §53 (confirmed success, confirmed failure, thrown, timeout,
+created-and-lost, 5xx after creation, 5xx with nothing created, 2xx with no
+body, retry / void / re-bill while unknown, operator statement, simultaneous
+sends, second-send refusal — for invoices and for vendor bills); §40 C6 and
+the restart test rewritten to the new state; the fake QuickBooks counts create
+requests received separately from documents that exist.
+
 ### C3. The office branch of the generic load update spreads the request body into the load
 Verified by code (`server.js` `PUT /api/loads/:id`, office branch: `const
 updated = { ...l, ...req.body, id: l.id, poId: l.poId }` behind a short
@@ -90,6 +127,27 @@ change replaces the audit details). No office screen calls this route today
 corruption path. Fix shape: a whitelist like the driver branch (notes, trailer
 through the assign rule), everything else refused.
 
+**Status: FIXED 2026-10-01** (CRITICAL 2 commit). The office branch of
+`PUT /api/loads/:id` is now a strict allowlist: `notes`; `loadsAssigned` only
+while the load is operational (the Edit PO rule — no trip started, nothing
+delivered; otherwise `409 not_operational`); `pod`, `ticketImage` and
+`ticketImageUrl` (evidence the office may attach on the driver's behalf, as the
+driver branch already allowed). Every other field is refused with
+`400` naming the field and the operation that owns it (`routes` in the
+response): driver / truck / trailer / yard → Quick Assign; date → Move Date or
+Edit PO; delivered count, trips, stamps, GPS, actual yard, status → the
+driver's trip steps; approval, billing, void, bookkeeping, history, pricing
+snapshots, ids → their own actions or never. A request with one refused field
+writes nothing. A voided load answers `403`; a locked load still answers `403`.
+Probed before/after on the same fixture (driver, truck, delivered count, date,
+history arrays, pricing, vendor-bill bookkeeping, status: all `200` and written
+before; all `400` and untouched after). Tests: e2e §51, §22 loop extended; §8,
+§29 and §44 fixtures moved off the bypass (test hook or Quick Assign). No
+office screen called the route, so no UI change. Owner note: there is no
+dedicated office operation that hand-sets a per-load customer rate (prices are
+set at creation and by Edit PO propagation); the PO-edit "hand-set price stays"
+rule is still tested with a planted fixture.
+
 ### C4. Actual-tons customers can be billed for a trip that was loaded but never delivered
 Verified by code (`server.js` `loadTons`: `actualTons` sums every trip with a
 ticket, not every completed trip; `revenueDetail` bills `rate × actualTons`
@@ -98,6 +156,34 @@ captured at the scale) and the truck breaks down; the driver submits
 `incomplete` with 2 delivered; the invoice includes trip 3's tons while the
 vendor side counts 2 trips. Fix shape: sum tons of completed trips only, and
 show the loaded-but-undelivered ticket on the approval checklist.
+
+**Status: FIXED 2026-10-01** (CRITICAL 3 commit). Rule enforced: delivered
+actual tons = ticket tons of completed trips only, using the one completion
+predicate from CRITICAL 1 (`tripIsCompleted` in `server.js`, read by
+`completedTripCount`, `loadTons`, `loadCostLines` and the freight segment).
+`loadTons` is the single calculation; `actualTons`, `tickets`,
+`ticketsWithTons`, `ticketNumbers` and `tonsSource` now describe completed
+trips, and a ticket on a trip that never completed is returned as
+`openTickets` / `openTons` — shown in Load Details, on the approval ticket row
+("ticket #N on trip 2 was loaded but never delivered (26 t, not counted)") and
+recorded in the approval audit, counted nowhere. Consumers that follow it
+without their own formula: Load Details and the approvals ticket summary, the
+Dispatch board row, the Fleet Map row, the driver's phone, Ready to Bill and
+the invoice line (`revenueDetail`), the billing batch line and its ticket
+numbers, the approve audit, the freight segment's `actualTons` (was its own
+all-tickets sum) and the Freight Bill total. Vendor costing already costed
+completed trips only (actual yard per trip, planned tons) and is unchanged.
+Pre-trip-tracking loads (no trips) are unchanged: no tickets, planned tons from
+the delivered count, and an actual-basis one is still not priced. Probed
+before/after on one completed trip (24.5 t) plus one loaded, ticketed,
+undelivered trip (26 t) for an actual-basis customer: before 50.5 t, 2 tickets,
+invoice $1,262.50 with both ticket numbers; after 24.5 t, 1 ticket, invoice
+$612.50 with the delivered ticket only; vendor cost 1 trip both times. Tests:
+e2e §52; §36 check 8 rewritten (running tons on the Fleet Map while load 4 is
+en route are now 70.84 / 3 tickets, with the current ticket shown beside them).
+Owner note: material loaded at a vendor yard and never delivered is now neither
+billed nor costed and is only shown; whether it should block approval or be
+costed to the vendor is an owner decision, not made here.
 
 ---
 
@@ -133,6 +219,7 @@ show the loaded-but-undelivered ticket on the approval checklist.
 
 ### Persistence, identity and two office users
 - **I26. The write lock is released when the client disconnects.** Verified by code (`res.once('close', () => { … release(); })`): a phone that drops the connection mid-save lets the next locked request run concurrently; if the first save then fails, the rollback wipes the second request's change while it reports success.
+  **Status: FIXED 2026-10-01** (Persistence #1 commit). The lock is acquired by the `/api` middleware for every non-GET request that is not exempt (one promise chain, FIFO), and is now released when the handler ends its response — `res.end` is wrapped, and it runs whether or not the client is still connected — or after the 30 s fallback; the socket's `close` event no longer releases it. Reproduced before/after with the save-mode hook's new `delayMs`: a request that drops its connection 0.5 s into a 1.5 s save that then fails, followed at once by a second write. Before: the second write entered during the first's save, reported `200`, and its change was gone from memory and disk (the rollback took it). After: the second write waited for the first save to settle and roll back, then landed in memory and on disk, and its answer carries it. Still true: a handler that never answers releases after 30 s (the one way the lock can be released while work is in flight — a hung database write; documented, not changed). Test: e2e §46, two checks.
 - **I27. A restore can undo itself, and backups are one step deep.** Verified by code: `lastGoodJson` is refreshed only on successful saves and at boot, never by `restoreFromBackup`; if the audit save right after a restore fails, memory rolls back to the pre-restore data and the next save writes it over the restored row. `store_before_restore` is written but cannot be restored through the API. `store_prev` is rotated by every save made for a person (each driver tap, each of the three saves in a QuickBooks send) and `store_boot` is overwritten on every boot, so the undo window after a wrong delete is seconds.
 - **I28. Seed records come back on every boot.** Verified by code: the seed vehicles and seed drivers are re-added when missing, and the seed logins are re-inserted with their default passwords (`ON CONFLICT DO NOTHING`) if they were deleted. A driver the office removed reappears, active, after a redeploy.
 - **I29. Quick Assign resends the board's resolved yard and re-prices the load every time.** Verified by code: the sheet sends `{driverId, truckUnitId, yardId, trailerId}` from the board snapshot, where `yardId` is the resolved pickup (which can be the driver's last actual yard); the server treats any `yardId` as a yard change, clears `actualYardId` and re-prices `vendorRate` from today's list. Changing only the driver silently turns the last actual yard into the planned yard; with two users, a 12-second-old board reverts the other user's yard and trailer.

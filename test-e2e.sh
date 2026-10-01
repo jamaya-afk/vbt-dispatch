@@ -184,7 +184,9 @@ curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
 CL=$(curl -s -b $M $B/api/data | python3 -c "
 import json,sys
 print([l['id'] for l in json.load(sys.stdin)['loads'] if l['material']=='3/4 Rock' and l['truckId']=='matthew'][0])")
-curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$CL -d '{"loadsDelivered":2}' -o /dev/null
+# Two delivered loads on record (planted with the test hook: the office update no longer
+# accepts loadsDelivered — CRITICAL 2 — and this fixture is older, trip-less data).
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/set-load -d "{\"id\":\"$CL\",\"fields\":{\"loadsDelivered\":2}}" -o /dev/null
 chk "profitability cost = 38x25x2 + one Vulcan trip on the VBT-planned load" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grand']['cost']))")" "2850"
 chk "material-costs agrees"        "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grandTotal']))")" "2850"
 chk "  ...the Vulcan trip on the VBT-planned load is costed to Vulcan" "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;v=json.load(sys.stdin)['vendors']['vulcan'];print(v['totalLoads'], int(v['totalCost']))")" "3 2850"
@@ -417,8 +419,8 @@ import json,sys;d=json.load(sys.stdin)
 po=[p for p in d['pos'] if p['poNumber']=='SM-CHK'][0]
 print([x for x in d['loads'] if x['poId']==po['id']][0]['id']); print(po['id'])")
 SML=$(echo "$SM"|sed -n 1p); SMP=$(echo "$SM"|sed -n 2p)
-for F in approvalStatus billStatus voided locked billingBatchId trips qbInvoiceId; do
-  case $F in trips) V='[]';; voided|locked) V='true';; *) V='"approved"';; esac
+for F in approvalStatus billStatus voided locked billingBatchId trips qbInvoiceId truckId truckUnitId deliveryDate loadsDelivered customerRate manualBillRef; do
+  case $F in trips) V='[]';; voided|locked) V='true';; loadsDelivered|customerRate) V='1';; *) V='"approved"';; esac
   chk "PUT $F rejected (400)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/$SML -d "{\"$F\":$V}")" "400"
 done
 chk "  ...and the load is still pending/unlocked" "$(curl -s -b $M $B/api/data | python3 -c "
@@ -604,9 +606,10 @@ echo "── 29. One pickup-yard source for every office screen ──"
 curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"YARD-1","customer":"Yard Co","deliveryDate":"'"$(date +%F)"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","material":"Base Rock","loadsAssigned":1,"vendorId":"vulcan"}]}' -o /dev/null
 YL=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='YARD-1'][0];print([l['id'] for l in d['loads'] if l['poId']==po['id']][0])")
 chk "office load carries resolved pickup (vendor wins over PO plan)" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$YL'][0];print(l['pickup']['id'], l['pickup']['name'])")" "vulcan Vulcan"
-curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$YL -d '{"vendorId":"cemex"}' -o /dev/null
+# The yard changes through Quick Assign (the generic load update refuses vendorId — CRITICAL 2).
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$YL/assign -d '{"yardId":"cemex"}' -o /dev/null
 YP=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$YL'][0];print(l['pickup']['name'], l['vendorName'], l.get('actualYardId'), l['vendorRateIsDefault'])")
-chk "generic PUT of vendorId re-resolves, clears mirror, re-prices" "$YP" "CEMEX CEMEX None False"
+chk "yard change through Quick Assign re-resolves, clears mirror, re-prices" "$YP" "CEMEX CEMEX None False"
 chk "profitability uses the same resolver" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;d=json.load(sys.stdin);print(any('CEMEX' in (v.get('name') or '') for v in d['byVendor']))")" "True"
 chk "no independent yard label left in the UI" "$(grep -cE "l\.vendorName \|\| po\.pickup|l\.actualYardName \|\| \(l\.vendorName\)|l\.actualYardName \|\| l\.pickup" public/index.html)" "0"
 chk "no hand-rolled yard chain left on the server" "$(grep -cE "l\.actualYardId \|\| l\.vendorId|l\.vendorId \|\| l\.yardId" server.js)" "0"
@@ -803,7 +806,7 @@ ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' 
 ca '{"action":"start-trip"}' -o /dev/null; ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" -o /dev/null
 ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432920","netTons":23.80,"photo":"'"$PNG"'"}}' -o /dev/null
 curl -s -b $CD -H "$J" -X POST $B/api/driver-location -d '{"lat":37.05,"lng":-119.95,"accuracy":9}' -o /dev/null
-chk "8. Fleet Map row: trailer 3B, current ticket, running actual tons" "$(curl -s -b $M $B/api/fleet/live | jq "[(r['trailerNum'], r['truckNum'], r['load']['currentTicket']['number'], r['load']['currentTicket']['netTons'], r['load']['actualTons'], r['load']['tickets'], r['status']) for r in d['trucks'] if r['driverId']=='cornelio'][0]")" "('3B', 'Truck #3', '37432920', 23.8, 94.64, 4, 'Loaded / En Route')"
+chk "8. Fleet Map row: trailer 3B, current ticket, running actual tons" "$(curl -s -b $M $B/api/fleet/live | jq "[(r['trailerNum'], r['truckNum'], r['load']['currentTicket']['number'], r['load']['currentTicket']['netTons'], r['load']['actualTons'], r['load']['tickets'], r['status']) for r in d['trucks'] if r['driverId']=='cornelio'][0]")" "('3B', 'Truck #3', '37432920', 23.8, 70.84, 3, 'Loaded / En Route')"
 ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
 chk "9. four tickets: 23.20 + 23.19 + 24.45 + 23.80 = 94.64 actual; planned stays 4 × 25 = 100" "$(cl "l['tons']['ticketNumbers'], l['tons']['actualTons'], l['tons']['plannedTons'], l['tons']['tonsSource'], l['tons']['actualComplete'], l['tons']['missingTickets']")" "['37432733', '37432799', '37432862', '37432920'] 94.64 100 supplier True []"
 chk "   Today board carries trailer and tons"        "$(curl -s -b $M $B/api/today | jq "[(l['trailerNum'], l['tons']['actualTons'], l['tons']['plannedTons']) for l in d['loads'] if l['id']=='$CL'][0]")" "('3B', 94.64, 100)"
@@ -1278,7 +1281,7 @@ chk "   once Keith's Dirt price is on file the haul is costed at it (\$15 x 25)"
 chk "   send the Vulcan bill → sent; sending it again is refused; retry on a sent bill is refused" "$(mg POST /api/vendor-bills/$VBV/send | jq "d['bill']['syncStatus'], d['bill']['qbBillId']")|$(mgc POST /api/vendor-bills/$VBV/send)|$(mgc POST /api/vendor-bills/$VBV/retry)" "sent BILL-1|400|400"
 VB2=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$L5\"]}" | jq "d['bills'][0]['id']")
 mg POST /api/_test/qb-fake '{"billMode":"lost"}' >/dev/null
-chk "   QuickBooks creates the bill but the answer is lost → failed, flagged 'may exist'" "$(mgc POST /api/vendor-bills/$VB2/send)|$(curl -s -b $M $B/api/vendor-bills | jq "[(b['syncStatus'], b['mayExistInQuickBooks']) for b in d['items'] if b['id']=='$VB2'][0]")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsCreated']")" "500|('failed', True)|2"
+chk "   QuickBooks creates the bill but the answer is lost → external result UNKNOWN (502), flagged 'may exist'" "$(mgc POST /api/vendor-bills/$VB2/send)|$(curl -s -b $M $B/api/vendor-bills | jq "[(b['syncStatus'], b['mayExistInQuickBooks']) for b in d['items'] if b['id']=='$VB2'][0]")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsCreated']")" "502|('unknown', True)|2"
 mg POST /api/_test/qb-fake '{"billMode":"ok"}' >/dev/null
 chk "   Retry finds it in QuickBooks and adopts it — no second bill"        "$(mg POST /api/vendor-bills/$VB2/retry | jq "d['recovered'], d['bill']['syncStatus'], d['bill']['qbBillId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsCreated']")" "True sent BILL-2|2"
 chk "   voiding a sent bill removes it in QuickBooks first, then releases the trip" "$(mg POST /api/vendor-bills/$VB2/void '{"reason":"wrong price"}' | jq "d['success'], d['qbDeleted']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsDeleted']")|$(load $L5 "l['trips'][0].get('vendorBillId',''), l['qbBillId']")" "True True|1| "
@@ -1286,17 +1289,17 @@ chk "   voiding a sent bill removes it in QuickBooks first, then releases the tr
 # ── C6. Invoices: QuickBooks answers, times out, or accepts and loses the answer ──
 B1=$(mg POST /api/billing-batches "{\"loadIds\":[\"$L1\"]}" | jq "d['batches'][0]['id']")
 mg POST /api/_test/qb-fake '{"mode":"lost"}' >/dev/null
-chk "C6 VBT loses QuickBooks' answer after the invoice was created → failed + 'may exist', load not billed yet" "$(mgc POST /api/billing-batches/$B1/send)|$(curl -s -b $M $B/api/billing-batches/$B1 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], d['batch']['qbInvoiceId']")|$(load $L1 "l['billStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "500|failed True |ready|1"
-chk "   send on that batch says use Retry"                                  "$(mgc POST /api/billing-batches/$B1/send)" "400"
+chk "C6 VBT loses QuickBooks' answer after the invoice was created → external result UNKNOWN (502) + 'may exist', load not billed yet" "$(mgc POST /api/billing-batches/$B1/send)|$(curl -s -b $M $B/api/billing-batches/$B1 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], d['batch']['qbInvoiceId']")|$(load $L1 "l['billStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "502|unknown True |ready|1"
+chk "   send on that batch is refused: external result unknown, reconcile first (409)" "$(mgc POST /api/billing-batches/$B1/send)" "409"
 mg POST /api/_test/qb-fake '{"mode":"ok","connected":false}' >/dev/null
-chk "   Retry with QuickBooks disconnected refuses (cannot check) — nothing sent" "$(mgc POST /api/billing-batches/$B1/retry)|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "400|1"
+chk "   Retry with QuickBooks disconnected refuses (cannot check, 409) — nothing sent, still unknown" "$(mgc POST /api/billing-batches/$B1/retry)|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")|$(curl -s -b $M $B/api/billing-batches/$B1 | jq "d['batch']['syncStatus']")" "409|1|unknown"
 mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
 chk "   Retry finds the invoice in QuickBooks and adopts it: batch sent, load billed, still ONE invoice" "$(mg POST /api/billing-batches/$B1/retry | jq "d['recovered'], d['batch']['syncStatus'], d['batch']['qbInvoiceId']")|$(load $L1 "l['billStatus'], l['qbInvoiceId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "True sent_to_quickbooks INV-1|billed INV-1|1"
 chk "   ...recorded in the sync log"                                        "$(curl -s -b $M "$B/api/qb-sync-log?batchId=$B1" | jq "sorted(set(e['actionType'] for e in d['items']))")" "['create_invoice', 'find_customer', 'recover_invoice']"
 mg POST /api/billing-batches/$B1/void '{"reason":"test the timeout path next"}' >/dev/null
 B2=$(mg POST /api/billing-batches "{\"loadIds\":[\"$L1\"]}" | jq "d['batches'][0]['id']")
 mg POST /api/_test/qb-fake '{"mode":"timeout"}' >/dev/null
-chk "   QuickBooks times out before anything is created → failed + 'may exist'" "$(mgc POST /api/billing-batches/$B2/send)|$(curl -s -b $M $B/api/billing-batches/$B2 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks']")" "500|failed True"
+chk "   QuickBooks times out before anything is created → external result UNKNOWN too (VBT cannot tell the two apart)" "$(mgc POST /api/billing-batches/$B2/send)|$(curl -s -b $M $B/api/billing-batches/$B2 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks']")" "502|unknown True"
 mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
 chk "   Retry finds nothing, resets the batch; send creates the one invoice" "$(mg POST /api/billing-batches/$B2/retry | jq "d.get('recovered'), d['batch']['syncStatus']")|$(mg POST /api/billing-batches/$B2/send | jq "d['batch']['qbInvoiceId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "None ready_to_bill|INV-2|2"
 mg POST /api/billing-batches/$B2/void '{"reason":"refresh test"}' >/dev/null
@@ -1350,8 +1353,11 @@ P10=$(newpo '{"po":{"poNumber":"P0-10","customer":"Phase Zero Co","deliveryDate"
 MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
 dr $MA $L10 '{"action":"start-trip"}' >/dev/null; dr $MA $L10 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $MA $L10 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $MA $L10 '{"action":"arrived-jobsite"}' >/dev/null; dr $MA $L10 '{"action":"trip-complete"}' >/dev/null
 curl -s -b $MA -H "$J" -X PUT $B/api/loads/$L10 -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
-dr $MA $L10 '{"action":"incomplete","delivered":2}' >/dev/null; mg POST /api/loads/$L10/approve >/dev/null
-chk "R1 one recorded trip + one hand-counted load → billed once as 2 loads; nothing left to bill; void releases both" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}" | jq "d['groups'][0]['lineItems'][0]['loads'], d['groups'][0]['totalAmount']")|$(VBX=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$L10\"]}" | jq "d['bills'][0]['id']"); mgc POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}"; echo -n '|'; mg POST /api/vendor-bills/$VBX/void '{"reason":"check"}' >/dev/null; mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}" | jq "d['groups'][0]['lineItems'][0]['loads']")" "2 1100|400|2"
+# (Rule changed by the architecture checkpoint, CRITICAL 1: a hand-counted remainder is no longer
+#  accepted — the delivered count is the completed trips, so this load bills once as ONE load.)
+chk "R1 a hand-counted remainder is refused (400 delivered_mismatch); Stop early submits the one completed trip" "$(dr $MA $L10 '{"action":"incomplete","delivered":2}' | jq "d['code'], d['completedTrips']")|$(dr $MA $L10 '{"action":"incomplete","delivered":1}' | jq "d['success']")|$(load $L10 "l['loadsDelivered'], l['isPartial'], l['approvalStatus']")" "delivered_mismatch 1|True|1 True submitted"
+mg POST /api/loads/$L10/approve '{"acknowledge":true}' >/dev/null
+chk "R1 one recorded trip bills once as 1 load; nothing left to bill; void releases it" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}" | jq "d['groups'][0]['lineItems'][0]['loads'], d['groups'][0]['totalAmount']")|$(VBX=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$L10\"]}" | jq "d['bills'][0]['id']"); mgc POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}"; echo -n '|'; mg POST /api/vendor-bills/$VBX/void '{"reason":"check"}' >/dev/null; mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L10\"]}" | jq "d['groups'][0]['lineItems'][0]['loads']")" "1 550|400|1"
 TOMORROW=$(date -d '+1 day' +%F)
 P11=$(newpo '{"po":{"poNumber":"P0-11","customer":"Phase Zero Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"carlos","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}'); P11=${P11%% *}; L11=$(loadof $P11)
 mg POST /api/pos '{"po":{"poNumber":"P0-12","customer":"Phase Zero Co","deliveryDate":"'"$TOMORROW"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' >/dev/null
@@ -1480,7 +1486,7 @@ chk "   with the manager's acknowledgement the incomplete one approves, and the 
 chk "   …and in the audit log" "$(curl -s -b $M "$B/api/audit-log?action=approved-load" | jq "[e['details'].get('approvedWithWarnings') for e in d['entries'] if e['target']=='$LM'][0], [e['details'].get('approvedWithWarnings') for e in d['entries'] if e['target']=='$LB'][0]")" "['Truck: no truck recorded on this load'] None"
 chk "   an approved load carries no checklist any more (it is locked)" "$(appr $LM "a")" "None"
 AP=$(sed -n '/^async function approveLoad/,/^\/\/ ── BILLING/p' public/index.html)
-chk "   approve and reject are decided in the app: no prompt(), no confirm(); a stale page re-asks with the server's checklist" "$(echo "$AP" | grep -c 'prompt(\|[^a-zA-Z]confirm(')|$(echo "$AP" | grep -c 'confirmApproval(l, d.checklist)')|$(grep -c 'approvalChecklistHtml(l.approval, true)' public/index.html)|$(grep -c 'acknowledge: !!(check && !check.ready)' public/index.html)" "0|1|1|1"
+chk "   approve and reject are decided in the app: no prompt(), no confirm(); a stale page re-asks with the server's checklist (and a blocked load shows it too)" "$(echo "$AP" | grep -c 'prompt(\|[^a-zA-Z]confirm(')|$(echo "$AP" | grep -c 'confirmApproval(l, d.checklist)')|$(grep -c 'approvalChecklistHtml(l.approval, true)' public/index.html)|$(grep -c 'acknowledge: !!(check && !check.ready)' public/index.html)" "0|2|1|1"
 
 echo
 echo "── 44. Editing a PO: the order changes, the work follows only where it is still operational (PO-EDITING.md) ──"
@@ -1508,7 +1514,9 @@ P=$(mg POST /api/pos '{"po":{"poNumber":"E44-1","customer":"Edit Co","deliveryDa
 LB=$(loadof $P beryle); LM=$(loadof $P matthew); LR=$(loadof $P rigo); LU=$(loadof $P "")
 mg PUT /api/pos/$P/location '{"lat":36.7,"lng":-119.7}' >/dev/null
 dr $BE $LB '{"action":"start-trip"}' >/dev/null
-mg PUT /api/loads/$LR '{"customerRate":40}' >/dev/null
+# A hand-set price is planted with the test hook: no office operation sets a per-load customer rate
+# (prices come from Vendors & Prices at creation; the generic load update refuses customerRate — CRITICAL 2).
+mg POST /api/_test/set-load "{\"id\":\"$LR\",\"fields\":{\"customerRate\":40}}" >/dev/null
 PC=$(mg POST /api/pos '{"po":{"poNumber":"E44-C","customer":"Other Co","deliveryDate":"'"$TOMORROW"'","plannedVendorId":"vbt"},"splits":[{"truckId":"carlos","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
 chk "44 only the order's own fields go through a PO update; status, materials and the pin are derived or have their own action" "$(mg PUT /api/pos/$P '{"status":"completed","notes":"x"}' -w ' %{http_code}' | code "d['rejectedFields']")|$(po $P "p['status'], repr(p['notes'])")" "400 ['status']|active ''"
 R=$(mg PUT /api/pos/$P "{\"deliveryDate\":\"$TOMORROW\",\"reason\":\"pour moved\"}")
@@ -1638,6 +1646,23 @@ print(sorted([a,b]), mem==winner, disk==mem)
 PY
 )" "['200', '503'] True True"
 chk "   the hook reset itself after one failure: the next save is fine" "$(mgc PUT /api/loads/$LB '{"notes":"note C"}')|$(load $LB "l['notes']")" "200|note C"
+# Persistence #1 (I26) — the lock protects the save, not the socket. A phone that drops the connection
+# mid-save must not let the next write interleave with a save that then fails and rolls the store back.
+# Before the fix: the dropped request released the lock on 'close', the next write entered, the
+# first save failed, the rollback swept the second change away — and the second request said 200.
+mg POST /api/_test/save-mode '{"mode":"fail","count":1,"delayMs":1500}' >/dev/null     # every save waits 1.5 s; the next one fails
+DROPPED=$(curl -s -b $M -H "$J" -X PUT $B/api/loads/$LB -d '{"notes":"dropped mid-save"}' --max-time 0.5 -o /dev/null -w '%{http_code}')
+NEXT=$(curl -s -b $M -H "$J" -X PUT $B/api/loads/$LB -d '{"notes":"note D"}' -w ' %{http_code} %{time_total}')
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   a client that drops mid-save (curl gave up: 000) does not release the lock: the next write waits for that save to settle and roll back, then lands in memory AND on disk, and its own answer carries it" "$DROPPED|$(python3 - "$NEXT" "$(load $LB "l['notes']")" "$LB" <<'PY'
+import sys,json
+raw=sys.argv[1]; mem=sys.argv[2]; lid=sys.argv[3]
+body,code,secs=raw.rsplit(' ',2); d=json.loads(body)
+disk=[l['notes'] for l in json.load(open('data.json'))['loads'] if l['id']==lid][0]
+print(code, float(secs) >= 1.0, d.get('success'), d['load']['notes'], mem, disk)
+PY
+)" "000|200 True True note D note D note D"
+chk "   …exactly one rollback (the dropped write's); the lock is released by the handler ending its response, never by the socket closing" "$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R0")|$(grep -c "res.once('close', () => { clearTimeout(timer); release(); })" server.js)|$(grep -c "res.end = function (...args) { const r = end.apply(this, args); done(); return r; };" server.js)" "8|0|1"
 chk "   mutating requests run one at a time; QuickBooks send/retry/void, GPS pings and test hooks are exempt and keep their in-flight state (their recovery record)" "$(grep -c "^const WRITE_LOCK_EXEMPT = /^\\\\/api\\\\/(billing-batches" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: true }, next)" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: false }, next)" server.js)|$(grep -c "rollbackStore(e);" server.js)" "1|1|1|3"
 
 echo
@@ -1903,6 +1928,244 @@ chk "   a restart changes nothing: the calendar is the loads, and the loads were
 chk "   the screen: Calendar is in the sidebar beside Dispatch with Day / Week / Month, a date picker and the board's own Load Details; the old Board tab is still gone" "$(grep -c 'data-tab="calendar"' public/index.html)|$(grep -c 'id="sec-calendar"' public/index.html)|$(grep -c "data-cal-view=" public/index.html)|$(grep -c 'id="cal-pick"' public/index.html)|$(sed -n '/^let calView/,/^let todayData/p' public/index.html | grep -o "openLoadDetail(\|openEditPO(" | wc -l)|$(grep -c 'data-tab="board"' public/index.html)|$(grep -o "=== 'calendar'" public/index.html | wc -l)" "1|1|1|1|3|0|3"
 rm -f $BE
 
+echo
+echo "── 50. CRITICAL 1 — the delivered count is the completed trips, never a number from a dialog ──"
+jq() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+mg()  { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" "${@:4}"; }
+mgc() { curl -s -b $M -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+dr()  { curl -s -b "$1" -H "$J" -X POST $B/api/loads/$2/trip-action -d "$3" "${@:4}"; }
+load() { curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);l=[x for x in d['loads'] if x['id']=='$1'][0];print($2)"; }
+rtb() { curl -s -b $M "$B/api/ready-to-bill" | jq "$1"; }
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+# The exact probe that became four delivered loads: 5 assigned, 1 completed, Stop early with the dialog's old default (4).
+P=$(mg POST /api/pos '{"po":{"poNumber":"C1-1","customer":"Rate Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"3/4 Rock","loadsAssigned":5,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][0]")
+dr $MA $L '{"action":"start-trip"}' >/dev/null; dr $MA $L '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $MA $L "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $MA $L '{"action":"arrived-jobsite"}' >/dev/null; dr $MA $L '{"action":"trip-complete"}' >/dev/null
+curl -s -b $MA -H "$J" -X PUT $B/api/loads/$L -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+chk "50 the driver's phone is told the completed trips (1), and the card no longer offers a count to adjust" "$(curl -s -b $MA $B/api/my-dispatch | jq "[(l['tripsCompleted'], l['loadsDelivered']) for l in d['loads'] if l['loadId']=='$L'][0]")|$(grep -c 'function adjustIncomplete\|inc-stepper"' public/index.html)|$(grep -c "openIncompleteDialog('\${l.loadId}', \${totalTrips}, \${Number(l.tripsCompleted) || 0})" public/index.html)" "(1, 1)|0|1"
+chk "   Stop early with 4 (the old dialog default) is refused: 400 delivered_mismatch naming the 1 completed trip; the load is untouched" "$(dr $MA $L '{"action":"incomplete","delivered":4}' -w ' %{http_code}' | python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, d['code'], d['completedTrips'])")|$(load $L "l['loadsDelivered'], l['approvalStatus'], l['locked']")" "400 delivered_mismatch 1|1 pending False"
+chk "   Stop early with no count, or with the true count, submits exactly the completed trips: 1 of 5, partial" "$(dr $MA $L '{"action":"incomplete","delivered":1}' | jq "d['success']")|$(load $L "l['loadsDelivered'], l['loadsAssigned'], l['isPartial'], l['approvalStatus'], len(l['trips'])")" "True|1 5 True submitted 1"
+chk "   the checklist says 1/5 (partial), approval goes through, and Ready to Bill prices ONE load (25 t × \$25), the vendor bill ONE load" "$(load $L "[i['value'] for i in l['approval']['items'] if i['key']=='delivery'][0], l['approval']['blocking']")|$(mg POST /api/loads/$L/approve '{}' | jq "d['success']")|$(rtb "[(x['amount'], x['basis']) for x in d['items'] if x['id']=='$L']")|$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L\"]}" | jq "[(li['loads'], li['amount']) for g in d['groups'] for li in g['lineItems']]")" "1/5 loads (partial) · signed by Site Foreman []|True|[(625, 'planned')]|[(1, 950)]"
+# A trip the driver is standing at the jobsite with is completed by the submission; a trip merely loaded is not.
+P2=$(mg POST /api/pos '{"po":{"poNumber":"C1-2","customer":"Rate Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"Sand","loadsAssigned":4,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L2=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P2'][0]")
+dr $RG $L2 '{"action":"start-trip"}' >/dev/null; dr $RG $L2 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $RG $L2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $RG $L2 '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $L2 '{"action":"trip-complete"}' >/dev/null
+dr $RG $L2 '{"action":"start-trip"}' >/dev/null; dr $RG $L2 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $RG $L2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null
+curl -s -b $RG -H "$J" -X PUT $B/api/loads/$L2 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"S\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+chk "   trip 2 loaded but never at the jobsite: Stop early submits 1, the loaded trip stays open on the record (not a delivery)" "$(dr $RG $L2 '{"action":"incomplete"}' | jq "d['success']")|$(load $L2 "l['loadsDelivered'], l['isPartial'], [bool(t['timestamps'].get('completed')) for t in l['trips']]")" "True|1 True [True, False]"
+P3=$(mg POST /api/pos '{"po":{"poNumber":"C1-3","customer":"Rate Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"Sand","loadsAssigned":3,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L3=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P3'][0]")
+dr $MA $L3 '{"action":"start-trip"}' >/dev/null; dr $MA $L3 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $MA $L3 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $MA $L3 '{"action":"arrived-jobsite"}' >/dev/null
+curl -s -b $MA -H "$J" -X PUT $B/api/loads/$L3 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"S\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+chk "   at the jobsite with trip 1 not yet confirmed: Stop early is the drop confirmation — trip 1 completes, 1 of 3 submitted" "$(dr $MA $L3 '{"action":"incomplete"}' | jq "d['success']")|$(load $L3 "l['loadsDelivered'], [bool(t['timestamps'].get('completed')) for t in l['trips']]")" "True|1 [True]"
+P4=$(mg POST /api/pos '{"po":{"poNumber":"C1-4","customer":"Rate Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"Sand","loadsAssigned":2,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L4=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P4'][0]")
+dr $RG $L4 '{"action":"start-trip"}' >/dev/null; dr $RG $L4 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $RG $L4 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null
+curl -s -b $RG -H "$J" -X PUT $B/api/loads/$L4 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"S\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+chk "   nothing completed yet: neither Stop early nor Submit can file a delivery (400 nothing_delivered)" "$(dr $RG $L4 '{"action":"incomplete","delivered":1}' | jq "d['code']")|$(dr $RG $L4 '{"action":"delivered"}' | jq "d['code']")|$(load $L4 "l['approvalStatus'], l['loadsDelivered']")" "nothing_delivered|nothing_delivered|pending 0"
+# Older data that already disagrees (planted with the test hook): approval is refused outright, Ready to Bill will not price it, costing pays only the trips.
+mg POST /api/_test/set-load "{\"id\":\"$L2\",\"fields\":{\"loadsDelivered\":3}}" >/dev/null
+chk "   a submitted load whose count disagrees with its trips cannot be approved, even acknowledged (409 approval_blocked, red item)" "$(mg POST /api/loads/$L2/approve '{"acknowledge":true}' -w ' %{http_code}' | python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, d['code'], [(i['key'], i['block'], i['value']) for i in d['checklist']['items'] if i.get('block')])")|$(load $L2 "l['approvalStatus']")" "409 approval_blocked [('count', True, '3 submitted · 1 completed trip on record')]|submitted"
+mg POST /api/_test/set-load "{\"id\":\"$L\",\"fields\":{\"loadsDelivered\":4}}" >/dev/null
+chk "   an approved load whose count was inflated is not priceable (the reason names the trips), costing pays 1 trip, and it cannot be batched" "$(rtb "[(x['priceable'], x['priceReason']) for x in d['items'] if x['id']=='$L']")|$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L\"]}" | jq "[li['loads'] for g in d['groups'] for li in g['lineItems']]")|$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L\"]}")" "[(False, 'the delivered count (4) on $L does not match its completed trips (1) — reject or void the load before billing')]|[1]|400"
+chk "   the increment is gone: every delivered count on the server is derived from the completed trips" "$(grep -c "loadsDelivered = (l.loadsDelivered || 0) + 1" server.js)|$(grep -c "l.loadsDelivered = completed" server.js)|$(grep -c "^function completedTripCount\|^function deliveredRecord" server.js)" "0|2|2"
+rm -f $MA $RG
+
+echo "── 51. CRITICAL 2 — the office load update is an allowlist; every operation keeps its own route ──"
+# Before this fix the office branch spread the request body into the load: one curl with an office
+# session set the driver, truck, delivered count, date, prices, bookkeeping and history with no
+# conflict check and a bare audit entry. Now notes, the planned count (while operational), the ticket
+# photo and the signature go through; everything else is refused naming the operation that owns it,
+# and a request with one refused field writes nothing.
+pc() { python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, $1)"; }
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+CA=$(mktemp); curl -s -c $CA -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
+P=$(mg POST /api/pos '{"po":{"poNumber":"C2-1","customer":"Allow Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":3,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+L1=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P' and l['truckId']=='beryle'][0]")
+L2=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P' and not l['truckId']][0]")
+deny() { chk "   $1" "$(mg PUT /api/loads/$L1 "$2" -w ' %{http_code}' | pc "d['protectedFields'], d['routes'][d['protectedFields'][0]]")|$(load $L1 "$3")" "$4"; }
+chk "51 fixture: Beryle on Truck #2, 3 loads, today, pending, unpriced" "$(load $L1 "l['truckId'], l['truckUnitId'], l['loadsAssigned'], l['loadsDelivered'], l['deliveryDate']=='$TODAY', l['approvalStatus'], l['billStatus']")" "beryle truck-2 3 0 True pending not-ready"
+deny "1. driver → refused, Quick Assign named, load unchanged"              '{"truckId":"rigo"}'                                        "l['truckId'], l['driverName']"                                         "400 ['truckId'] Quick Assign (POST /api/loads/:id/assign)|beryle Beryle"
+deny "2. truck → refused, Quick Assign named"                               '{"truckUnitId":"truck-4"}'                                 "l['truckUnitId']"                                                      "400 ['truckUnitId'] Quick Assign (POST /api/loads/:id/assign)|truck-2"
+deny "   trailer and yard → refused, Quick Assign named (it owns the conflict check and the re-price)" '{"trailerId":"trailer-1","vendorId":"cemex"}' "l.get('trailerId'), l['vendorId'], l['vendorName']"      "400 ['trailerId', 'vendorId'] Quick Assign (POST /api/loads/:id/assign)|None vbt VBT Yard"
+deny "3. delivered count → refused, routed to the driver's trip steps"      '{"loadsDelivered":3}'                                      "l['loadsDelivered']"                                                   "400 ['loadsDelivered'] the driver's trip steps (POST /api/loads/:id/trip-action)|0"
+deny "4. delivery date → refused, routed to Move Date / Edit PO"            "{\"deliveryDate\":\"$TOMORROW\"}"                          "l['deliveryDate']=='$TODAY', l.get('moveHistory')"                     "400 ['deliveryDate'] Move Date (POST /api/loads/move) or Edit PO|True None"
+deny "5. approval state → refused, routed to approve / reject"              '{"approvalStatus":"approved","locked":true,"approvedBy":"me"}' "l['approvalStatus'], l['locked'], l.get('approvedBy') or None"      "400 ['approvalStatus', 'locked', 'approvedBy'] approve / reject|pending False None"
+deny "6. billing fields → refused, routed to billing"                       '{"billStatus":"billed","manualBillRef":"INV-1","billingBatchId":"BB-1","qbInvoiceId":"9"}' "l['billStatus'], l.get('manualBillRef'), l.get('billingBatchId'), l.get('qbInvoiceId')" "400 ['billStatus', 'manualBillRef', 'billingBatchId', 'qbInvoiceId'] Mark Billed / unbill / billing batches|not-ready None None None"
+deny "7. trip ownership and history → refused (trips, stamps, move and reassign history)" '{"trips":[{"n":1,"timestamps":{"completed":"x"}}],"timestamps":{"completed":"x"},"moveHistory":[{"x":1}],"reassignHistory":[{"x":1}]}' "len(l.get('trips') or []), l.get('timestamps'), l.get('moveHistory'), l.get('reassignHistory')" "400 ['trips', 'timestamps', 'moveHistory', 'reassignHistory'] the driver's trip steps|0 {} None None"
+deny "8. pricing and costing snapshot → refused (set at creation / Vendors & Prices)" '{"customerRate":1,"vendorRate":1,"tonsPerLoad":1,"pricePerUnit":1}' "l['customerRate'], l['vendorRate'], l['tonsPerLoad']"                "400 ['customerRate', 'vendorRate', 'tonsPerLoad', 'pricePerUnit'] Vendors & Prices (set at creation or by Edit PO)|25 0 25"
+deny "   vendor-bill and void bookkeeping → refused"                        '{"vendorBillId":"VB-1","billHistory":[{"x":1}],"billStatusBeforeVoid":"ready","qbBillId":"7","voided":true}' "l.get('vendorBillId'), l.get('billHistory'), l['voided']"       "400 ['vendorBillId', 'billHistory', 'billStatusBeforeVoid', 'qbBillId', 'voided'] vendor bills|None None False"
+deny "   status, driver name and derived progress → refused"                '{"status":"completed","driverName":"Nobody","isPartial":true,"allTripsDone":true,"actualYardId":"cemex"}' "l['status'], l['driverName'], l.get('isPartial'), l.get('actualYardId')" "400 ['status', 'driverName', 'isPartial', 'allTripsDone', 'actualYardId'] derived from the trips and the approval|active Beryle None None"
+deny "   identity → refused (id, poId, createdAt are never editable)"       '{"id":"X","poId":"Y","createdAt":"z"}'                     "l['id']=='$L1', l['poId']=='$P'"                                       "400 ['id', 'poId', 'createdAt'] never|True True"
+deny "   one refused field in a mixed body: only truckId is reported, and nothing is written — not even the (allowed) notes" '{"notes":"smuggled","truckId":"rigo"}' "repr(l.get('notes') or ''), l['truckId']" "400 ['truckId'] Quick Assign (POST /api/loads/:id/assign)|'' beryle"
+chk "   legitimate: notes → 200, stored"                                    "$(mgc PUT /api/loads/$L1 '{"notes":"gate code 4321"}')|$(load $L1 "l['notes']")" "200|gate code 4321"
+chk "   legitimate: planned count while operational → 200, audited old → new" "$(mgc PUT /api/loads/$L1 '{"loadsAssigned":4}')|$(load $L1 "l['loadsAssigned']")|$(curl -s -b $M "$B/api/audit-log?action=updated-load" | jq "[e['details'] for e in d['entries'] if e['target']=='$L1'][0]")" "200|4|{'changes': ['loadsAssigned'], 'loadsAssigned': {'from': 3, 'to': 4}}"
+chk "   planned count must be a whole number ≥ 1 (0 and 'abc' → 400)"       "$(mgc PUT /api/loads/$L1 '{"loadsAssigned":0}') $(mgc PUT /api/loads/$L1 '{"loadsAssigned":"abc"}')|$(load $L1 "l['loadsAssigned']")" "400 400|4"
+chk "   legitimate: office may attach the signature and ticket photo (merged, stamped)" "$(mgc PUT /api/loads/$L1 "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Office on behalf\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}")|$(load $L1 "l['pod']['signedBy'], bool(l['ticketImage']), bool(l.get('ticketImageAt'))")" "200|Office on behalf True True"
+# The same changes still work through the operations that own them.
+chk "   routed: yard through Quick Assign → 200, re-resolved and re-priced (Dirt has no CEMEX price, so the default is flagged)" "$(mgc POST /api/loads/$L1/assign '{"yardId":"cemex"}')|$(load $L1 "l['vendorId'], l['vendorName'], l['vendorRateIsDefault']")" "200|cemex CEMEX True"
+chk "   routed: date through Move Date (reason required) → 200, history kept" "$(mgc POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$L1\",\"newDate\":\"$TOMORROW\",\"reason\":\"pour moved\"}") $(mgc POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$L1\",\"newDate\":\"$TODAY\",\"reason\":\"pour back\"}")|$(load $L1 "l['deliveryDate']=='$TODAY', len(l['moveHistory']), l['moveHistory'][0]['reason']")" "200 200|True 2 pour moved"
+chk "   routed: driver and truck through Quick Assign → 200, reassign history written" "$(mgc POST /api/loads/$L1/assign '{"driverId":"carlos","truckUnitId":"truck-2b","force":true,"reason":"regression fixture"}')|$(load $L1 "l['truckId'], l['truckUnitId'], l['driverName']")" "200|carlos truck-2b Carlos"
+# Once a trip has started the planned count belongs to Edit PO's add/delete rule; notes are still fine.
+dr $CA $L1 '{"action":"start-trip"}' >/dev/null
+chk "   not operational (trip started): planned count → 409 not_operational, unchanged; notes still 200" "$(mg PUT /api/loads/$L1 '{"loadsAssigned":5}' -w ' %{http_code}' | pc "d['code']")|$(load $L1 "l['loadsAssigned']")|$(mgc PUT /api/loads/$L1 '{"notes":"still fine"}')" "409 not_operational|4|200"
+chk "   the driver branch is unchanged: progress → 400, signature → 200"    "$(curl -s -b $CA -H "$J" -X PUT $B/api/loads/$L1 -d '{"loadsDelivered":2}' -o /dev/null -w '%{http_code}') $(curl -s -b $CA -H "$J" -X PUT $B/api/loads/$L1 -d "{\"pod\":{\"signedBy\":\"Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null -w '%{http_code}')" "400 200"
+mg POST /api/loads/$L2/void '{"reason":"never happened"}' >/dev/null
+chk "   a voided load refuses even notes (403); a locked load still does (§22)" "$(mgc PUT /api/loads/$L2 '{"notes":"x"}')" "403"
+chk "   static: no request body is spread into a load anywhere on the server; the allowlist is exactly five fields; only the driver phone calls the route" "$(grep -c '{ \.\.\.l, \.\.\.req\.body' server.js)|$(grep -c "OFFICE_LOAD_FIELDS = new Set(\['notes', 'loadsAssigned', 'pod', 'ticketImage', 'ticketImageUrl'\])" server.js)|$(grep -c "api('PUT', '/api/loads/' + currentLoadId" public/index.html)" "0|1|2"
+rm -f $BE $CA
+
+echo "── 52. CRITICAL 3 — delivered actual tons are the completed trips' tickets; a loaded, undelivered ticket counts nowhere ──"
+# One completed trip (24.50 t) and one trip started, at the yard, loaded and ticketed (26.00 t) but
+# never delivered, for a customer billed on actual tons. Before this fix every consumer said 50.5 t
+# and the invoice carried both tickets; the vendor side costed one trip.
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+tk() { echo "{\"source\":\"supplier\",\"number\":\"$1\",\"netTons\":$2,\"photo\":\"$PNG\"}"; }
+mg POST /api/customers '{"name":"Scale Co","billingBasis":"actual"}' >/dev/null
+P=$(mg POST /api/pos '{"po":{"poNumber":"C3-1","customer":"Scale Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"3/4 Rock","loadsAssigned":3,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][0]")
+curl -s -b $MA -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-4","odometer":950000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' -o /dev/null   # a day, so a freight segment opens at the first pickup
+dr $MA $L '{"action":"start-trip"}' >/dev/null; dr $MA $L '{"action":"arrived-pickup","yardId":"vulcan","odometer":950010}' >/dev/null; dr $MA $L "{\"action\":\"loaded\",\"ticket\":$(tk C3-1001 24.5)}" >/dev/null; dr $MA $L '{"action":"arrived-jobsite"}' >/dev/null; dr $MA $L '{"action":"trip-complete"}' >/dev/null
+dr $MA $L '{"action":"start-trip"}' >/dev/null; dr $MA $L '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $MA $L "{\"action\":\"loaded\",\"ticket\":$(tk C3-1002 26.0)}" >/dev/null
+chk "52 fixture: trip 1 completed with 24.5 t, trip 2 loaded and ticketed with 26 t, not completed" "$(load $L "[(t['tripNum'], bool(t['timestamps'].get('completed')), t['ticket']['number'], t['ticket']['netTons']) for t in l['trips']]")" "[(1, True, 'C3-1001', 24.5), (2, False, 'C3-1002', 26)]"
+chk "   the one calculation: actual 24.5 t from 1 ticket; the open ticket is listed, not counted" "$(load $L "l['tons']['actualTons'], l['tons']['tickets'], l['tons']['ticketsWithTons'], l['tons']['ticketNumbers'], l['tons']['tonsSource'], l['tons']['actualComplete'], [(o['tripNum'], o['number'], o['netTons']) for o in l['tons']['openTickets']], l['tons']['openTons']")" "24.5 1 1 ['C3-1001'] supplier True [(2, 'C3-1002', 26)] 26"
+chk "   Fleet Map row: delivered tons 24.5 from 1 ticket, the en-route ticket shown beside them" "$(curl -s -b $M $B/api/fleet/live | jq "[(r['load']['actualTons'], r['load']['tickets'], r['load']['currentTicket']['number'], r['load']['currentTicket']['netTons']) for r in d['trucks'] if r['driverId']=='matthew'][0]")" "(24.5, 1, 'C3-1002', 26)"
+chk "   driver phone and Dispatch board agree" "$(curl -s -b $MA $B/api/my-dispatch | jq "[(l['tons']['actualTons'], l['tons']['tickets']) for l in d['loads'] if l['loadId']=='$L'][0]")|$(curl -s -b $M $B/api/today | jq "[(l['tons']['actualTons'], l['tons']['tickets']) for l in d['loads'] if l['id']=='$L'][0]")" "(24.5, 1)|(24.5, 1)"
+FS=$(load $L "l.get('freightSegmentId')")
+chk "   freight segment: 2 trips, 1 delivered, 24.5 t actual (both tickets stay on the log's rows)" "$(curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['tripCount'], d['segment']['tripsDelivered'], d['segment']['actualTons'], d['segment']['loadActualTons'], d['segment']['plannedTons'], d['segment']['ticketNumbers']")" "2 1 24.5 24.5 25 ['C3-1001', 'C3-1002']"
+# The truck breaks down: Stop early files the one completed trip (CRITICAL 1), the office approves.
+curl -s -b $MA -H "$J" -X PUT $B/api/loads/$L -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+chk "   Stop early: 1 of 3 delivered, submitted; the open trip stays on the record" "$(dr $MA $L '{"action":"incomplete","delivered":1}' | jq "d['success']")|$(load $L "l['loadsDelivered'], l['isPartial'], l['approvalStatus'], len(l['trips'])")" "True|1 True submitted 2"
+chk "   approval ticket row: 1 ticket · 24.5 t, and the approver is told about the undelivered ticket" "$(load $L "[(i['ok'], i['value'], i['note']) for i in l['approval']['items'] if i['key']=='ticket'][0]")" "(True, '1 ticket · 24.5 t', 'planned 25 t, actual 24.5 t; ticket #C3-1002 on trip 2 was loaded but never delivered (26 t, not counted)')"
+chk "   approved; the audit freezes 24.5 t, the delivered ticket, and names the open one" "$(mg POST /api/loads/$L/approve '{}' | jq "d['success']")|$(curl -s -b $M "$B/api/audit-log?action=approved-load" | jq "[(e['details']['actualTons'], e['details']['tickets'], e['details']['openTickets']) for e in d['entries'] if e['target']=='$L'][0]")" "True|(24.5, ['C3-1001'], ['C3-1002'])"
+chk "   Ready to Bill prices 24.5 t × \$25 = \$612.50 on the actual basis (was \$1,262.50)" "$(rtb "[(x['priceable'], x['amount'], x['basis']) for x in d['items'] if x['id']=='$L'][0]")" "(True, 612.5, 'actual')"
+chk "   invoice preview: 24.5 t, 1 ticket, \$612.50; only the delivered ticket number is behind the invoice" "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$L\"]}" | jq "[(li['tons'], li['tickets'], li['amount']) for li in d['groups'][0]['lineItems']], d['groups'][0]['ticketNumbers']")" "[(24.5, 1, 612.5)] ['C3-1001']"
+chk "   vendor side unchanged: the completed trip at Vulcan, planned tons (1 load, \$950); the undelivered trip is not costed" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L\"]}" | jq "d['groups'][0]['lineItems'][0]['loads'], d['groups'][0]['totalAmount']")" "1 950"
+# All trips completed → every ticket counts.
+P2=$(mg POST /api/pos '{"po":{"poNumber":"C3-2","customer":"Scale Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L2=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P2'][0]")
+for T in "C3-2001 20.0" "C3-2002 21.5"; do set -- $T; dr $RG $L2 '{"action":"start-trip"}' >/dev/null; dr $RG $L2 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $RG $L2 "{\"action\":\"loaded\",\"ticket\":$(tk $1 $2)}" >/dev/null; dr $RG $L2 '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $L2 '{"action":"trip-complete"}' >/dev/null; done
+chk "   all trips completed: 20 + 21.5 = 41.5 t from 2 tickets, nothing open" "$(load $L2 "l['tons']['actualTons'], l['tons']['tickets'], l['tons']['ticketNumbers'], l['tons']['openTickets'], l['tons']['actualComplete']")" "41.5 2 ['C3-2001', 'C3-2002'] [] True"
+# No completed trip: loaded and ticketed is still zero delivered tons, and nothing can be filed.
+P3=$(mg POST /api/pos '{"po":{"poNumber":"C3-3","customer":"Scale Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":1,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L3=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P3'][0]")
+dr $BE $L3 '{"action":"start-trip"}' >/dev/null; dr $BE $L3 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $BE $L3 "{\"action\":\"loaded\",\"ticket\":$(tk C3-3001 22.0)}" >/dev/null
+curl -s -b $BE -H "$J" -X PUT $B/api/loads/$L3 -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+chk "   loaded + ticketed, nothing completed: 0 t, 0 tickets, source planned, the ticket open; Stop early is refused (nothing_delivered)" "$(load $L3 "l['tons']['actualTons'], l['tons']['tickets'], l['tons']['tonsSource'], l['tons']['plannedTons'], [o['number'] for o in l['tons']['openTickets']]")|$(dr $BE $L3 '{"action":"incomplete","delivered":1}' | jq "d['code']")" "0 0 planned 0 ['C3-3001']|nothing_delivered"
+# Pre-trip-tracking record (no trips at all): unchanged compatibility — no tickets, planned tons from the count, never priced on actual.
+P4=$(mg POST /api/pos '{"po":{"poNumber":"C3-4","customer":"Scale Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L4=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P4'][0]")
+mg POST /api/_test/set-load "{\"id\":\"$L4\",\"fields\":{\"loadsDelivered\":2,\"approvalStatus\":\"approved\",\"locked\":true,\"status\":\"completed\",\"billStatus\":\"ready\"}}" >/dev/null
+chk "   legacy load, no trips: 0 actual, planned 50 from the count, no open tickets; Ready to Bill still refuses to price it on actual tons" "$(load $L4 "len(l['trips']), l['tons']['actualTons'], l['tons']['tickets'], l['tons']['plannedTons'], l['tons']['openTickets'], l['tons']['tonsSource']")|$(rtb "[(x['priceable'], x['priceReason'].startswith('Scale Co is billed on actual ticket tons, but 2 of 2 delivered loads')) for x in d['items'] if x['id']=='$L4'][0]")" "0 0 0 50 [] planned|(False, True)"
+chk "   static: one completion predicate — no inline copy left in the tons, cost or segment paths" "$(grep -c "function tripIsCompleted" server.js)|$(grep -cE "filter\(t => t\.timestamps && t\.timestamps\.completed\)" server.js)" "1|0"
+rm -f $MA $RG $BE
+
+echo "── 53. CRITICAL 4 — a QuickBooks answer VBT cannot read is an UNKNOWN result, never 'nothing was created' ──"
+# Three outcomes of a create: confirmed success, confirmed failure (retryable), and UNKNOWN — the
+# request may have reached QuickBooks. An unknown batch or bill is parked: Send is refused, Retry
+# is a lookup, Void looks up first, the load stays claimed, no id is invented. The fake QuickBooks
+# models each case, including "document created, answer lost", and counts create REQUESTS received
+# separately from documents that exist — the two must never drift apart because of VBT.
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+mkl() { # mkl PONUM MATERIAL YARD → one approved, ready-to-bill load for Ambig Co (planned basis)
+  local P L; P=$(mg POST /api/pos '{"po":{"poNumber":"'"$1"'","customer":"Ambig Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"'"$3"'"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"'"$2"'","loadsAssigned":1,"vendorId":"'"$3"'"}]}' | jq "d['po']['id']")
+  L=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][0]")
+  dr $RG $L '{"action":"start-trip"}' >/dev/null; dr $RG $L "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null; dr $RG $L "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $RG $L '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $L '{"action":"trip-complete"}' >/dev/null
+  curl -s -b $RG -H "$J" -X PUT $B/api/loads/$L -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+  dr $RG $L '{"action":"delivered"}' >/dev/null; mg POST /api/loads/$L/approve >/dev/null; echo $L; }
+nb() { mg POST /api/billing-batches "{\"loadIds\":[\"$1\"]}" | jq "(d.get('batches') or [{}])[0].get('id') or d.get('error')"; }
+nv() { mg POST /api/vendor-bills "{\"loadIds\":[\"$1\"]}" | jq "(d.get('bills') or [{}])[0].get('id') or d.get('error')"; }
+fk() { curl -s -b $M $B/api/_test/qb-fake | jq "$1"; }
+bt() { curl -s -b $M $B/api/billing-batches/$1 | jq "$2"; }
+vb() { curl -s -b $M $B/api/vendor-bills | jq "[$2 for b in d['items'] if b['id']=='$1'][0]"; }
+qbm() { mg POST /api/_test/qb-fake "{\"mode\":\"$1\"${2:+,$2}}" >/dev/null; }
+mg POST /api/customers '{"name":"Ambig Co"}' >/dev/null
+qbm ok; IC0=$(fk "d['invoicesCreated']"); CC0=$(fk "d['invoiceCreateCalls']")
+inv() { fk "(d['invoicesCreated']-$IC0, d['invoiceCreateCalls']-$CC0)"; }   # (documents that exist, create requests received) since the section began
+# 1. Confirmed success, and the second-send refusals that already existed.
+L1=$(mkl C4-1 Dirt vbt); B1=$(nb $L1)
+chk "53 1. confirmed success: sent, invoice id recorded, load billed, requestid = batch id" "$(mgc POST /api/billing-batches/$B1/send)|$(bt $B1 "d['batch']['syncStatus'], d['batch']['qbInvoiceId']!='', d['batch']['mayExistInQuickBooks']")|$(load $L1 "l['billStatus']")|$(fk "d['invoiceRequestIds'][-1]=='$B1'")|$(inv)" "200|sent_to_quickbooks True False|billed|True|(1, 1)"
+chk "   11. second send, retry and re-batch of a sent load are refused (400 400 400); one invoice" "$(mgc POST /api/billing-batches/$B1/send) $(mgc POST /api/billing-batches/$B1/retry) $(mgc POST /api/billing-batches "{\"loadIds\":[\"$L1\"]}")|$(inv)" "400 400 400|(1, 1)"
+# 2. Confirmed failure (QuickBooks said 400): retryable, nothing invented.
+L2=$(mkl C4-2 Dirt vbt); B2=$(nb $L2); qbm fail
+chk "   2. confirmed failure (400): 500, failed, not 'may exist', no id, load still claimed by the batch" "$(mgc POST /api/billing-batches/$B2/send)|$(bt $B2 "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], repr(d['batch']['qbInvoiceId'])")|$(load $L2 "l['billStatus'], l['billingBatchId']=='$B2'")|$(inv)" "500|failed False ''|ready True|(1, 2)"
+qbm ok
+chk "   …a known failure stays retryable: Retry resets, Send creates the one invoice" "$(mg POST /api/billing-batches/$B2/retry | jq "d['success'], d.get('reconciled'), d['batch']['syncStatus']")|$(mgc POST /api/billing-batches/$B2/send)|$(inv)" "True None ready_to_bill|200|(2, 3)"
+# 3. Thrown before the request left: a failure, retryable.
+L3=$(mkl C4-3 Dirt vbt); B3=$(nb $L3); qbm thrown
+chk "   3. thrown before the request was sent: failed, retryable" "$(mgc POST /api/billing-batches/$B3/send)|$(bt $B3 "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks']")|$(qbm ok; mg POST /api/billing-batches/$B3/retry | jq "d['batch']['syncStatus']")|$(mgc POST /api/billing-batches/$B3/send)|$(inv)" "500|failed False|ready_to_bill|200|(3, 5)"
+# 4. Timeout: nothing was created, but VBT cannot know that → UNKNOWN; reconcile says 'not found'; the re-send carries the same requestid.
+L4=$(mkl C4-4 Dirt vbt); B4=$(nb $L4); qbm timeout
+chk "   4. timeout → 502 external_unknown; batch 'unknown', may exist, no id invented; load claimed, not billed" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code'], d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], repr(d['batch']['qbInvoiceId']), d['batch']['reconcile']['kind'], d['batch']['reconcile']['requestId']=='$B4'")|$(load $L4 "l['billStatus'], l['billingBatchId']=='$B4'")|$(inv)" "502 external_unknown unknown True '' timeout True|ready True|(3, 6)"
+chk "   …Send is refused (409 external_unknown), the load cannot join another batch (400), Ready to Bill shows it as batched" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code']")|$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L4\"]}")|$(rtb "[x['billingBatchId']=='$B4' for x in d['items'] if x['id']=='$L4']")|$(inv)" "409 external_unknown|400|[True]|(3, 6)"
+qbm ok '"connected":false'
+chk "   …Retry with QuickBooks disconnected: 409, still unknown, no create request" "$(mgc POST /api/billing-batches/$B4/retry)|$(bt $B4 "d['batch']['syncStatus'], d['batch']['reconcile']['attempts']")|$(inv)" "409|unknown 1|(3, 6)"
+qbm ok
+chk "   …Retry = reconcile: QuickBooks has no invoice → 'not_found', back to ready; Send creates it with the SAME requestid" "$(mg POST /api/billing-batches/$B4/retry | jq "d['reconciled'], d['batch']['syncStatus'], d['batch']['reconcile']['result']")|$(mgc POST /api/billing-batches/$B4/send)|$(fk "d['invoiceRequestIds'][-1]==d['invoiceRequestIds'][-2]=='$B4'")|$(inv)" "not_found ready_to_bill not_found|200|True|(4, 7)"
+# 5. Connection lost AFTER QuickBooks created the invoice: the case the state exists for.
+L5=$(mkl C4-5 Dirt vbt); B5=$(nb $L5); qbm lost
+chk "   5. invoice created, answer lost → unknown; QuickBooks holds 1 more invoice than VBT knows about; no false id, load not billed" "$(mgc POST /api/billing-batches/$B5/send)|$(bt $B5 "d['batch']['syncStatus'], repr(d['batch']['qbInvoiceId'])")|$(load $L5 "l['billStatus'], l['billingBatchId']=='$B5'")|$(inv)" "502|unknown ''|ready True|(5, 8)"
+qbm ok '"connected":false'
+chk "   …8. Void while unknown with QuickBooks unreachable: 409, nothing released, nothing sent" "$(mg POST /api/billing-batches/$B5/void '{"reason":"bill again"}' -w ' %{http_code}' | pc "d['code']")|$(bt $B5 "d['batch']['syncStatus']")|$(load $L5 "l['billStatus'], l['billingBatchId']=='$B5'")|$(inv)" "409 external_unknown|unknown|ready True|(5, 8)"
+chk "   …9. re-bill attempt while unknown is refused; Send still refused" "$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L5\"]}") $(mgc POST /api/billing-batches/$B5/send)|$(inv)" "400 409|(5, 8)"
+qbm ok
+chk "   …7. Retry = reconcile: the invoice is found and adopted — batch sent, load billed, NO second create request" "$(mg POST /api/billing-batches/$B5/retry | jq "d['recovered'], d['reconciled'], d['batch']['syncStatus'], d['batch']['qbInvoiceId']!=''")|$(load $L5 "l['billStatus'], l['qbInvoiceId']!=''")|$(inv)" "True found sent_to_quickbooks True|billed True|(5, 8)"
+chk "   …the sync log says what happened: create error 'External result unknown', then recover_invoice" "$(curl -s -b $M "$B/api/qb-sync-log?batchId=$B5" | jq "[(e['actionType'], e['responseStatus'], 'External result unknown' in (e.get('errorMessage') or '')) for e in d['items'] if e['actionType'] in ('create_invoice','recover_invoice')]")" "[('recover_invoice', 'success', False), ('create_invoice', 'error', True)]"
+# 6. QuickBooks answered 500 after creating the invoice; Void reconciles, voids THERE, then releases — one live invoice at the end.
+L6=$(mkl C4-6 Dirt vbt); B6=$(nb $L6); qbm http500; VO0=$(fk "d['invoicesVoided']")
+chk "   6. 5xx after the invoice was created → unknown (kind http_500), may exist" "$(mgc POST /api/billing-batches/$B6/send)|$(bt $B6 "d['batch']['syncStatus'], d['batch']['reconcile']['kind'], d['batch']['reconcile']['statusCode']")|$(inv)" "502|unknown http_500 500|(6, 9)"
+qbm ok
+chk "   …8. Void while unknown with QuickBooks connected: looks up first, finds the invoice, voids it in QuickBooks, then releases the load" "$(mg POST /api/billing-batches/$B6/void '{"reason":"wrong price"}' | jq "d['success'], d['qbVoided'], d['batch']['syncStatus'], d['batch']['qbInvoiceId']!='', d['batch']['reconcile']['result']")|$(fk "d['invoicesVoided']-$VO0")|$(load $L6 "l['billStatus'], repr(l['billingBatchId'])")|$(inv)" "True True voided True found|1|ready ''|(6, 9)"
+B6b=$(nb $L6)
+chk "   …re-billed after the void: one more invoice, and exactly ONE live invoice for the load (2 created, 1 voided)" "$(mgc POST /api/billing-batches/$B6b/send)|$(inv)|$(fk "d['invoicesVoided']-$VO0")" "200|(7, 10)|1"
+# 7. 2xx with no body: QuickBooks accepted it, VBT has no id → unknown, reconciled by lookup.
+L7=$(mkl C4-7 Dirt vbt); B7=$(nb $L7); qbm nobody
+chk "   7. 2xx with no readable invoice in the body → unknown (no_entity_in_response), nothing assumed; reconcile adopts it, no second create" "$(mgc POST /api/billing-batches/$B7/send)|$(bt $B7 "d['batch']['syncStatus'], d['batch']['reconcile']['kind']")|$(qbm ok; mg POST /api/billing-batches/$B7/retry | jq "d['recovered'], d['batch']['syncStatus']")|$(inv)" "502|unknown no_entity_in_response|True sent_to_quickbooks|(8, 11)"
+# 8. 503 with nothing created: still unknown to VBT; the lookup settles it.
+L8=$(mkl C4-8 Dirt vbt); B8=$(nb $L8); qbm http503
+chk "   5xx with nothing created → unknown (http_503); reconcile 'not_found'; the send that follows reuses the requestid" "$(mgc POST /api/billing-batches/$B8/send)|$(bt $B8 "d['batch']['syncStatus'], d['batch']['reconcile']['kind']")|$(qbm ok; mg POST /api/billing-batches/$B8/retry | jq "d['reconciled']")|$(mgc POST /api/billing-batches/$B8/send)|$(fk "d['invoiceRequestIds'][-1]==d['invoiceRequestIds'][-2]=='$B8'")|$(inv)" "502|unknown http_503|not_found|200|True|(9, 13)"
+# 9. Operator reconciliation: QuickBooks cannot be reached; the operator checked by hand and found no invoice. On the record.
+L9=$(mkl C4-9 Dirt vbt); B9=$(nb $L9); qbm timeout; mgc POST /api/billing-batches/$B9/send >/dev/null; qbm ok '"connected":false'
+chk "   operator statement 'no invoice in QuickBooks' releases an unknown batch, and is written to the sync log" "$(mg POST /api/billing-batches/$B9/void '{"reason":"outage; checked QuickBooks by hand","confirmedNoInvoiceInQuickBooks":true}' | jq "d['success'], d['batch']['syncStatus'], d['batch']['reconcile']['result']")|$(load $L9 "l['billStatus'], repr(l['billingBatchId'])")|$(curl -s -b $M "$B/api/qb-sync-log?batchId=$B9" | jq "any('checked by hand' in e['requestSummary'] for e in d['items'])")" "True voided operator_confirmed_absent|ready ''|True"
+qbm ok
+# 10. Simultaneous sends of one batch: one 200, one 409, one invoice (the pre-existing guard).
+L10=$(mkl C4-10 Dirt vbt); B10=$(nb $L10); qbm slow '"delayMs":1200'
+R1=$(mktemp); R2=$(mktemp); mgc POST /api/billing-batches/$B10/send > $R1 & sleep 0.2; mgc POST /api/billing-batches/$B10/send > $R2 & wait
+chk "   10. simultaneous sends: one 200, one 409, one create request" "$(cat $R1 $R2 | tr -d '\n' | fold -w3 | sort | tr '\n' ' ')|$(inv)" "200 409 |(10, 15)"
+qbm ok
+# ── Vendor bills: the same three outcomes ──
+BC0=$(fk "d['billsCreated']"); BK0=$(fk "d['billCreateCalls']"); BD0=$(fk "d['billsDeleted']")
+bills() { fk "(d['billsCreated']-$BC0, d['billCreateCalls']-$BK0)"; }
+qbb() { mg POST /api/_test/qb-fake "{\"billMode\":\"$1\"${2:+,$2}}" >/dev/null; }
+V1=$(mkl C4-V1 "3/4 Rock" vulcan); VB1=$(nv $V1)
+chk "   bills 1. confirmed success; second send and retry refused; requestid = bill id" "$(mgc POST /api/vendor-bills/$VB1/send)|$(vb $VB1 "(b['syncStatus'], b['qbBillId']!='')")|$(mgc POST /api/vendor-bills/$VB1/send) $(mgc POST /api/vendor-bills/$VB1/retry)|$(fk "d['billRequestIds'][-1]=='$VB1'")|$(bills)" "200|('sent', True)|400 400|True|(1, 1)"
+V2=$(mkl C4-V2 "3/4 Rock" vulcan); VB2=$(nv $V2); qbb fail
+chk "   bills 2. confirmed failure: failed, retryable; 3. thrown: failed, retryable" "$(mgc POST /api/vendor-bills/$VB2/send)|$(vb $VB2 "(b['syncStatus'], b['mayExistInQuickBooks'])")|$(qbb ok; mg POST /api/vendor-bills/$VB2/retry | jq "d['bill']['syncStatus']")|$(qbb thrown; mgc POST /api/vendor-bills/$VB2/send)|$(vb $VB2 "b['syncStatus']")|$(qbb ok; mg POST /api/vendor-bills/$VB2/retry | jq "d['bill']['syncStatus']")|$(mgc POST /api/vendor-bills/$VB2/send)|$(bills)" "500|('failed', False)|ready|500|failed|ready|200|(2, 4)"
+V4=$(mkl C4-V4 "3/4 Rock" vulcan); VB4=$(nv $V4); qbb timeout
+chk "   bills 4. timeout → unknown; Send 409; Retry disconnected 409; reconcile not_found → ready; Send reuses the requestid" "$(mgc POST /api/vendor-bills/$VB4/send)|$(vb $VB4 "(b['syncStatus'], b['mayExistInQuickBooks'], b['reconcile']['kind'])")|$(mgc POST /api/vendor-bills/$VB4/send)|$(qbb ok '"connected":false'; mgc POST /api/vendor-bills/$VB4/retry)|$(qbb ok; mg POST /api/vendor-bills/$VB4/retry | jq "d['reconciled'], d['bill']['syncStatus']")|$(mgc POST /api/vendor-bills/$VB4/send)|$(fk "d['billRequestIds'][-1]==d['billRequestIds'][-2]=='$VB4'")|$(bills)" "502|('unknown', True, 'timeout')|409|409|not_found ready|200|True|(3, 6)"
+V5=$(mkl C4-V5 "3/4 Rock" vulcan); VB5=$(nv $V5); qbb lost
+chk "   bills 5. bill created, answer lost → unknown; the trip stays claimed; Void disconnected 409; re-bill refused" "$(mgc POST /api/vendor-bills/$VB5/send)|$(vb $VB5 "(b['syncStatus'], b['qbBillId']=='')")|$(load $V5 "l['trips'][0]['vendorBillId']=='$VB5'")|$(qbb ok '"connected":false'; mg POST /api/vendor-bills/$VB5/void '{"reason":"again"}' -w ' %{http_code}' | pc "d['code']")|$(mgc POST /api/vendor-bills "{\"loadIds\":[\"$V5\"]}")|$(bills)" "502|('unknown', True)|True|409 external_unknown|400|(4, 7)"
+qbb ok
+chk "   …bills 7. Retry = reconcile by our document number: found, adopted, no second create" "$(mg POST /api/vendor-bills/$VB5/retry | jq "d['recovered'], d['reconciled'], d['bill']['syncStatus'], d['bill']['qbBillId']!=''")|$(load $V5 "l['qbBillId']!=''")|$(bills)" "True found sent True|True|(4, 7)"
+V6=$(mkl C4-V6 "3/4 Rock" vulcan); VB6=$(nv $V6); qbb http500
+chk "   bills 6. 5xx after creation → unknown; 8. Void connected: found → removed in QuickBooks → released; one live bill after re-billing" "$(mgc POST /api/vendor-bills/$VB6/send)|$(vb $VB6 "b['reconcile']['kind']")|$(qbb ok; mg POST /api/vendor-bills/$VB6/void '{"reason":"wrong price"}' | jq "d['success'], d['qbDeleted'], d['bill']['syncStatus'], d['bill']['reconcile']['result']")|$(fk "d['billsDeleted']-$BD0")|$(load $V6 "l['trips'][0].get('vendorBillId',''), l['qbBillId']")|$(VB6b=$(nv $V6); mgc POST /api/vendor-bills/$VB6b/send)|$(bills)" "502|http_500|True True voided found|1| |200|(6, 9)"
+V7=$(mkl C4-V7 "3/4 Rock" vulcan); VB7=$(nv $V7); qbb nobody
+chk "   bills 7. 2xx with no bill in the body → unknown (no_entity_in_response); reconcile adopts it, no second create" "$(mgc POST /api/vendor-bills/$VB7/send)|$(vb $VB7 "b['reconcile']['kind']")|$(qbb ok; mg POST /api/vendor-bills/$VB7/retry | jq "d['recovered'], d['bill']['syncStatus']")|$(bills)" "502|no_entity_in_response|True sent|(7, 10)"
+V8=$(mkl C4-V8 "3/4 Rock" vulcan); VB8=$(nv $V8); qbb http503
+chk "   bills: 503 with nothing created → unknown (http_503); reconcile not_found → ready; Send creates it with the same requestid" "$(mgc POST /api/vendor-bills/$VB8/send)|$(vb $VB8 "(b['syncStatus'], b['reconcile']['kind'])")|$(qbb ok; mg POST /api/vendor-bills/$VB8/retry | jq "d['reconciled'], d['bill']['syncStatus']")|$(mgc POST /api/vendor-bills/$VB8/send)|$(fk "d['billRequestIds'][-1]==d['billRequestIds'][-2]=='$VB8'")|$(bills)" "502|('unknown', 'http_503')|not_found ready|200|True|(8, 12)"
+V9=$(mkl C4-V9 "3/4 Rock" vulcan); VB9=$(nv $V9); qbb timeout; mgc POST /api/vendor-bills/$VB9/send >/dev/null; qbb ok '"connected":false'
+chk "   bills: operator statement 'no bill in QuickBooks' releases an unknown bill, on the record" "$(mg POST /api/vendor-bills/$VB9/void '{"reason":"outage; checked by hand","confirmedNoBillInQuickBooks":true}' | jq "d['success'], d['bill']['syncStatus'], d['bill']['reconcile']['result']")|$(load $V9 "l['trips'][0].get('vendorBillId','')")|$(curl -s -b $M "$B/api/qb-sync-log?batchId=$VB9" | jq "any('checked by hand' in e['requestSummary'] for e in d['items'])")" "True voided operator_confirmed_absent||True"
+qbb ok
+V10=$(mkl C4-V10 "3/4 Rock" vulcan); VB10=$(nv $V10); qbb slow '"delayMs":1200'
+R1=$(mktemp); R2=$(mktemp); mgc POST /api/vendor-bills/$VB10/send > $R1 & sleep 0.2; mgc POST /api/vendor-bills/$VB10/send > $R2 & wait
+chk "   bills 10. simultaneous sends: one 200, one 409, one create request" "$(cat $R1 $R2 | tr -d '\n' | fold -w3 | sort | tr '\n' ' ')|$(bills)" "200 409 |(9, 14)"
+qbb ok
+chk "   static: the client sends Intuit's requestid on every create; the server never writes 'failed' for an uncertain error" "$(grep -c "requestid=" qb.js)|$(grep -c "requestId: b.id" server.js)|$(grep -c "markExternalUnknown(b, " server.js)" "1|4|7"
+rm -f $RG
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -2079,7 +2342,7 @@ curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/n
 chk "legacy approved load is locked after normalize" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='L-OLD'][0]['locked'])")" "True"
 chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/L-OLD -d '{"material":"Sand"}')" "403"
 chk "fabricated hour:1 / mile:1 seeds are removed on load" "$(curl -s -b $M $B/api/costing/settings | python3 -c "import json,sys;u=json.load(sys.stdin)['unitConfig']['byUnit'];print('hour' in u, 'mile' in u, u['ton'])")" "False False 25"
-chk "batch stuck in 'syncing' at restart becomes failed" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'], b['mayExistInQuickBooks'])")" "failed True True"
+chk "batch stuck in 'syncing' at restart (no invoice id) becomes external-result-unknown" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'], b['mayExistInQuickBooks'])")" "unknown True True"
 pkill -f "^node server.js" >/dev/null 2>&1
 rm -f data.json telemetry.json
 
