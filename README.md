@@ -6,6 +6,11 @@ Clean rebuild — focused on the essentials.
 
 - **Manager** creates POs, assigns drivers, sees today's board, approves submitted loads, marks loads as billed
 - **Drivers** see their assigned trips with PO/customer/material info, follow guided flow: Start Trip → Arrived at Pickup → Upload Ticket Photo → Customer Signature → Complete Delivery
+- **A delivered load is a completed trip.** The delivered count on a load is
+  derived from its completed trips and can never be typed in: "Stop early"
+  submits exactly the trips completed so far, a load whose count disagrees
+  with its trips cannot be approved (reject or void it), and Ready to Bill and
+  vendor costing refuse to price it.
 - All steps auto-capture GPS + timestamps
 - Loads must have ticket photo + signature before delivery is allowed
 - Approved loads are locked and immutable

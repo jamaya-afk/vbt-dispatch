@@ -569,6 +569,13 @@ async function call(cookie, method, path, body) {
   }));
   chk('driver view renders', dv.driverTab, true);
   chk('   driver cannot see the Fleet Map tab', dv.mapNav, 0);
+  // CRITICAL 1: "Stop early" shows the completed trips on record and offers nothing to adjust; the server refuses any other number.
+  const inc = await d.page.evaluate(id => { openIncompleteDialog(id, 3, 1); const m = document.getElementById('incomplete-modal');
+    const out = { shown: getComputedStyle(m).display !== 'none', count: document.getElementById('inc-count').textContent, steppers: m.querySelectorAll('.inc-stepper, button[onclick*="adjustIncomplete"]').length, txt: m.innerText.replace(/\s+/g, ' ') }; closeIncomplete(); return out; }, load.id);
+  chk('   Stop early: the dialog shows 1 completed trip on record, no +/− to change it', `${inc.shown} ${inc.count} ${inc.steppers} ${/completed trips on record/i.test(inc.txt)} ${/How many loads/.test(inc.txt)}`, 'true 1 0 true false');
+  await call(drv, 'PUT', `/api/loads/${load.id}`, { pod: { signedBy: 'Site Foreman', signature: PNG, signedAt: new Date().toISOString() } });   // signature on file, so the count is the only thing refused
+  const incApi = await call(drv, 'POST', `/api/loads/${load.id}/trip-action`, { action: 'incomplete', delivered: 2 });
+  chk('   …and the server refuses a typed 2 against 1 completed trip (400 delivered_mismatch); the load is unchanged', `${incApi.status} ${incApi.data.code} ${(await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id).loadsDelivered}`, '400 delivered_mismatch 1');
   chk('   driver phone posted its own GPS', d.requests.some(r => r === 'POST /api/driver-location'), true);
   console.log('── Driver: Start day ──');
   chk('day card offers Start day before anything else', await d.page.evaluate(() => /Your day has not started/.test(document.getElementById('day-card').innerText)), true);

@@ -41,6 +41,7 @@ is still more complicated than it needs to be.
 ## 1. CRITICAL — could corrupt operational or billing data
 
 ### C1. "Stop early" lets a driver submit more loads than were hauled, and approval does not notice
+**Status: FIXED 2026-10-01** (commit following this review). Rule enforced: the delivered count is the number of completed trips (`completedTripCount`/`deliveredRecord` in `server.js`); Stop early submits exactly that and refuses any other number (`400 delivered_mismatch`); nothing can be submitted with no completed trip (`400 nothing_delivered`); a load whose count disagrees with its trips is refused at approval even with an acknowledgement (`409 approval_blocked`), is not priceable in Ready to Bill, and costs only its completed trips. The phone dialog shows the completed trips and offers nothing to adjust. Tests: e2e §50, §40 R1 (rewritten to the new rule), browser driver section.
 Verified live. The driver's Stop-early dialog defaults to **assigned − 1**
 (`public/index.html` `openIncompleteDialog`: `incompleteCount = Math.max(0,
 incompleteAssigned - 1)`), and the server accepts any count up to

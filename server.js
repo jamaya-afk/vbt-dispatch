@@ -468,9 +468,22 @@ function buildTicket(input, { by, existing } = {}) {
 // Planned vs actual tons on a load — derived, never stored. Planned stays the
 // existing quantity-per-load rule (25 t default) × delivered; actual is the sum
 // of confirmed ticket tons. They are reported side by side and never summed.
+// ── THE DELIVERED COUNT ─────────────────────────────────────────────────────
+// A delivered load is a completed trip: Start → Arrived at pickup → Loaded →
+// Arrived at jobsite → Complete, recorded by the driver's taps. The count on
+// the load is derived from those trips and can never be typed in. The only
+// loads where the record stands on its own are the ones from before per-trip
+// tracking, which have no trips[] at all. When a load's record and its trips
+// disagree (older data, or anything that bypassed the trip steps), nothing
+// downstream — approval, Ready to Bill, costing — trusts the record.
+function completedTripCount(l) { return (l.trips || []).filter(t => t.timestamps && t.timestamps.completed).length; }
+function deliveredRecord(l) {
+  const record = Number(l.loadsDelivered) || 0, completed = completedTripCount(l), perTrip = (l.trips || []).length > 0;
+  return { record, completed, perTrip, count: perTrip ? Math.min(record, completed) : record, mismatch: perTrip && record !== completed };
+}
 function loadTons(l) {
   const trips = Array.isArray(l.trips) ? l.trips : [];
-  const delivered = Number(l.loadsDelivered) || 0;
+  const delivered = deliveredRecord(l).count;
   const done = trips.filter(t => t.timestamps && t.timestamps.completed);
   const ticketed = trips.filter(t => t.ticket && t.ticket.number);
   const withTons = ticketed.filter(t => t.ticket.netTons != null);
@@ -1669,6 +1682,10 @@ function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride, mea
 // it is flagged, never silently billed on the planned figure.
 function revenueDetail(load) {
   const unit = unitKey(load.customerUnit || 'ton');
+  // Nothing is priced from a delivered count that disagrees with the trips.
+  const dr = deliveredRecord(load);
+  if (dr.mismatch) return { unit, rate: Number(load.customerRate) || 0, delivered: dr.record, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'planned',
+    reason: `the delivered count (${dr.record}) on ${load.id} does not match its completed trips (${dr.completed}) — reject or void the load before billing` };
   // Hour and mile customers: the measure comes from the load's CLOSED freight
   // segment(s), counted once per segment and attributed to the first load
   // in the segment. Other loads in the same segment carry zero, naming where
@@ -1691,13 +1708,13 @@ function revenueDetail(load) {
         if ((s.loadIds || [])[0] === load.id) measure += m || 0;
         else billedWith.push(`${s.loadIds[0]} on ${s.id}`);
       }
-      const d = computeAmount(load.customerRate, unit, load.loadsDelivered, load.material, load.tonsPerLoad, { [field]: measure });
+      const d = computeAmount(load.customerRate, unit, dr.count, load.material, load.tonsPerLoad, { [field]: measure });
       d.basis = 'segment'; d.segmentIds = segs.map(s => s.id);
       if (billedWith.length && measure === 0) d.reason = `${field} billed with ${billedWith.join(', ')}`;
       return d;
     }
   }
-  const d = computeAmount(load.customerRate, load.customerUnit || 'ton', load.loadsDelivered, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
+  const d = computeAmount(load.customerRate, load.customerUnit || 'ton', dr.count, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
   d.basis = 'planned';
   if (d.unit !== 'ton') return d;
   const po = findPoAnywhere(load.poId) || {};
@@ -1777,10 +1794,10 @@ function loadCostLines(load, { unbilledOnly = false } = {}) {
     else { const vr = resolveVendorRate(yardId, material); rate = vr.price; u = vr.unit; isDefault = vr.isDefault; }
     add({ yardId, rate, unit: u, isDefault, count: 1, tripNum: t.tripNum });
   }
-  // A hand-counted delivered total above the recorded trips (older loads, an
-  // "incomplete" submission) is costed at the planned yard and rate.
-  const extra = Math.max(0, (Number(load.loadsDelivered) || 0) - done.length);
-  if (extra && !(unbilledOnly && load.vendorBillExtraId)) add({ yardId: plannedId, rate: load.vendorRate, unit, isDefault: load.vendorRateIsDefault, count: extra, extra: true });
+  // A delivered count above the recorded trips is never costed: a load with
+  // trips pays its vendor for the trips that were completed, nothing else.
+  // (Loads from before per-trip tracking, with no trips at all, took the
+  // load-level branch above.)
   return [...lines.values()];
 }
 function costDetail(load) {
@@ -2138,6 +2155,8 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     res.json({ ok: true, at: loc.at });
   });
   app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
+  // Plant a record the state machine would never produce (older data, a bypass), to prove the guards downstream.
+  app.post('/api/_test/set-load', reqMgr, async (req, res) => { const l = findLoadAnywhere(String(req.body?.id || '')); if (!l) return res.status(404).json({ error: 'no load' }); Object.assign(l, req.body?.fields || {}); await saveData(); res.json({ ok: true, load: l }); });
   // 'fail' makes every save throw until set back to 'ok'.
   app.post('/api/_test/linxup-prune', reqMgr, async (req, res) => { try { res.json(await linxup.prune(req.body?.now ? Number(req.body.now) : Date.now())); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft }); });
@@ -2772,6 +2791,7 @@ app.get('/api/my-dispatch', reqAuth, (req, res) => {
       material: l.material,
       loadsAssigned: l.loadsAssigned,
       loadsDelivered: l.loadsDelivered,
+      tripsCompleted: completedTripCount(l),   // what "Stop early" will submit: the completed trips, never a typed number
       notes: po.notes || '',
       deliveryDate: l.deliveryDate,
       timestamps: l.timestamps || {},
@@ -3614,7 +3634,7 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     if (!trip.timestamps?.arrivedJobsite) return res.status(400).json({ error: 'Must mark arrived at job site first' });
     if (trip.timestamps?.completed)        return res.status(400).json({ error: 'Trip already complete' });
     stampBoth('completed');
-    l.loadsDelivered = (l.loadsDelivered || 0) + 1;
+    l.loadsDelivered = completedTripCount(l);   // the count IS the completed trips
     notifyLoadEvent(l, store.pos.find(p => p.id === l.poId), 'delivered', { user: u.username, trip, loadNum: l.loadsDelivered });
     // If that was the LAST trip, also stamp the load-level "completed" so the
     // existing board/status code recognizes the load as ready-to-submit.
@@ -3628,34 +3648,20 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
     if (!l.pod?.signedBy || (!l.pod.signature && !l.pod.signatureUrl))
       return res.status(400).json({ error: 'Customer signature required' });
 
-    if (action === 'incomplete') {
-      // Driver is stopping early — close the active trip if it's mid-cycle but
-      // not yet completed. Then accept the partial count.
-      if (!trip.timestamps?.completed && trip.timestamps?.arrivedJobsite) {
-        stampBoth('completed');
-        l.loadsDelivered = (l.loadsDelivered || 0) + 1;
-      }
-      const reported = Math.max(0, Math.min(Number(req.body.delivered) || l.loadsDelivered || 0, l.loadsAssigned));
-      if (reported <= 0) return res.status(400).json({ error: 'How many loads did you deliver? Enter a number greater than 0.' });
-      l.loadsDelivered = reported;
-      l.isPartial = (reported < l.loadsAssigned);
-    } else {
-      // 'delivered' — backward compat with the single-trip flow: if the active
-      // trip hasn't been closed via trip-complete yet, close it now and count
-      // it. This also means a load with loadsAssigned=1 keeps its old
-      // "ticket → sig → submit" UX without needing a separate "Confirm Drop".
-      if (!trip.timestamps?.completed && trip.timestamps?.arrivedJobsite) {
-        stampBoth('completed');
-        l.loadsDelivered = (l.loadsDelivered || 0) + 1;
-      }
-      if (l.loadsDelivered >= l.loadsAssigned) {
-        l.loadsDelivered = l.loadsAssigned;
-        l.isPartial = false;
-      } else {
-        // Submitting before all trips done with no incomplete count — treat as partial
-        l.isPartial = true;
-      }
+    // The delivered count is the number of completed trips — a fact from the
+    // driver's taps, never a number typed into a dialog. A trip the driver is
+    // standing at the jobsite with is completed by this submission (the drop
+    // confirmation, as the single-trip flow always worked); a trip merely
+    // started or loaded is not a delivery and is not counted. "Stop early"
+    // ends the driver's work on the load with exactly what was completed.
+    if (!trip.timestamps?.completed && trip.timestamps?.arrivedJobsite) stampBoth('completed');
+    const completed = completedTripCount(l);
+    if (completed <= 0) return res.status(400).json({ error: 'No trip has been completed on this load yet, so there is nothing to submit. If nothing was delivered, ask the office to cancel the load.', code: 'nothing_delivered' });
+    if (action === 'incomplete' && req.body.delivered !== undefined && req.body.delivered !== null && Number(req.body.delivered) !== completed) {
+      return res.status(400).json({ error: `VBT counts ${completed} completed trip${completed === 1 ? '' : 's'} on this load. Stop early submits that number; it cannot be changed here.`, code: 'delivered_mismatch', completedTrips: completed });
     }
+    l.loadsDelivered = completed;
+    l.isPartial = completed < l.loadsAssigned;
 
     l.approvalStatus = 'submitted';
     l.submittedAt    = new Date().toISOString();
@@ -4367,8 +4373,16 @@ function approvalChecklist(l) {
   items.push({ key: 'delivery', label: 'Delivery', ok: !deliveryProblems.length,
     value: `${delivered}/${l.loadsAssigned} load${l.loadsAssigned === 1 ? '' : 's'}${l.isPartial ? ' (partial)' : ''}${signed ? ` · signed by ${pod.signedBy}` : ''}`,
     note: deliveryProblems.join('; ') || (l.isPartial ? 'submitted as incomplete by the driver' : '') });
+  // The delivered count must be the completed trips. A disagreement is not a
+  // gap a manager can acknowledge: it is refused until the record is corrected
+  // (reject so the driver re-submits, or void).
+  const dr = deliveredRecord(l);
+  if (dr.mismatch) items.push({ key: 'count', label: 'Delivered count', ok: false, block: true,
+    value: `${dr.record} submitted · ${dr.completed} completed trip${dr.completed === 1 ? '' : 's'} on record`,
+    note: 'the delivered count does not match the completed trips — cannot be approved; reject it so the driver re-submits, or void it' });
   const warnings = items.filter(i => !i.ok).map(i => `${i.label}: ${i.note}`);
-  return { items, warnings, ready: !warnings.length };
+  const blocking = items.filter(i => i.block).map(i => `${i.label}: ${i.note}`);
+  return { items, warnings, blocking, ready: !warnings.length };
 }
 
 app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
@@ -4379,6 +4393,9 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
   // The checklist is confirmed in the app; a load with a ⚠ item is approved
   // only with an explicit acknowledgement, and what was missing is recorded.
   const check = approvalChecklist(l);
+  if (check.blocking.length) {
+    return res.status(409).json({ error: `This load cannot be approved — ${check.blocking.join('; ')}.`, code: 'approval_blocked', checklist: check });
+  }
   if (!check.ready && req.body?.acknowledge !== true) {
     return res.status(409).json({ error: `This load is not complete — ${check.warnings.join('; ')}.`, code: 'approval_incomplete', checklist: check });
   }

@@ -281,6 +281,7 @@ tr.bill-gap td{background:#fffdf5}
 .am-check{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .am-check .chk{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 9px;border-radius:20px;border:1px solid var(--Gd);background:var(--Gb);color:#0a7a3a}
 .am-check .chk.warn{border-color:var(--Ad);background:var(--Ab);color:var(--A)}
+.am-check .chk.block,.ask-check .chk.block{border-color:var(--Rd);background:var(--Rb);color:#b42318}.ask-check .chk.block .chk-ic{color:var(--R)}
 .am-check .chk-label{font-weight:700}
 .am-check .chk-val{color:inherit;opacity:.9}
 .am-check .chk.ok .chk-val:empty{display:none}
@@ -1274,15 +1275,13 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <button class="modal-close" onclick="closeIncomplete()">&#215;</button>
     </div>
     <div class="modal-body">
-      <p style="font-size:13px;color:var(--txt2);margin-bottom:8px">How many loads did you actually deliver?</p>
-      <p style="font-size:12px;color:var(--txt3);margin-bottom:14px">Out of <b id="inc-assigned">0</b> assigned. The remaining will be flagged for the manager to reassign or reschedule.</p>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:8px">Stop here and submit what was completed.</p>
+      <p style="font-size:12px;color:var(--txt3);margin-bottom:14px">VBT counts the trips you completed (Start → Arrived → Loaded → Arrived at jobsite → Complete). This submits that number out of <b id="inc-assigned">0</b> assigned; the rest is flagged for the office to reassign or reschedule.</p>
       <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin:18px 0">
-        <button class="inc-stepper" onclick="adjustIncomplete(-1)">−</button>
         <div style="text-align:center">
           <div id="inc-count" style="font-size:48px;font-weight:700;line-height:1;color:var(--A)">0</div>
-          <div style="font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;font-weight:600">loads delivered</div>
+          <div style="font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;font-weight:600">completed trips on record</div>
         </div>
-        <button class="inc-stepper" onclick="adjustIncomplete(1)">+</button>
       </div>
       <div id="inc-warn" style="display:none;padding:8px 12px;background:var(--Rb);border:1px solid var(--Rd);border-radius:var(--r);color:var(--R);font-size:12px;text-align:center"></div>
     </div>
@@ -2978,10 +2977,6 @@ function tripCard(l) {
     <div class="action-hint required">Required before delivery</div>`;
   } else if (allTripsDone && hasSig && !submitted) {
     action = `<div style="display:flex;gap:8px;margin-bottom:8px">
-      <button class="trip-action incomplete" style="flex:1;background:var(--A);color:#fff" onclick="openIncompleteDialog('${l.loadId}', ${totalTrips})">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        Adjust Count
-      </button>
       <button class="trip-action complete" style="flex:1" onclick="tripAction('${l.loadId}', 'delivered')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><polyline points="20 6 9 17 4 12"/></svg>
         Submit (${totalTrips})
@@ -2996,7 +2991,7 @@ function tripCard(l) {
       Start Load ${next} of ${totalTrips}
     </button>
     <div class="action-hint">Heading back to the yard for the next load</div>
-    ${totalTrips > 1 && (l.loadsDelivered || 0) > 0 ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${l.loadsDelivered} of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips})}">Stop early — submit ${l.loadsDelivered} as incomplete</button>` : ''}`;
+    ${totalTrips > 1 && (Number(l.tripsCompleted) || 0) > 0 ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${Number(l.tripsCompleted) || 0} completed of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${Number(l.tripsCompleted) || 0} completed as incomplete</button>` : ''}`;
   } else if (!started && !submitted) {
     // Brand-new load, never started — same as "Start Load 1"
     action = `<button class="trip-action start" onclick="tripAction('${l.loadId}', 'start-trip')">
@@ -3061,10 +3056,6 @@ function tripCard(l) {
     <div class="action-hint required">Required before delivery</div>`;
   } else if (hasSig && totalTrips === 1 && !submitted) {
     action = `<div style="display:flex;gap:8px;margin-bottom:8px">
-      <button class="trip-action incomplete" style="flex:1;background:var(--A);color:#fff" onclick="openIncompleteDialog('${l.loadId}', ${totalTrips})">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        Incomplete
-      </button>
       <button class="trip-action complete" style="flex:1" onclick="tripAction('${l.loadId}', 'delivered')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><polyline points="20 6 9 17 4 12"/></svg>
         Submit
@@ -3127,30 +3118,19 @@ let incompleteLoadId = null;
 let incompleteAssigned = 0;
 let incompleteCount = 0;
 
-function openIncompleteDialog(loadId, assigned) {
+// "Stop early" submits the completed trips the server has on record for the
+// load — shown here, never edited. A count that could be typed was how a
+// phone once turned one haul into four on the invoice.
+function openIncompleteDialog(loadId, assigned, completed) {
   incompleteLoadId = loadId;
   incompleteAssigned = Number(assigned) || 0;
-  // Default to assigned-1 (since they're saying it's incomplete, not all done)
-  incompleteCount = Math.max(0, incompleteAssigned - 1);
+  incompleteCount = Math.max(0, Number(completed) || 0);
   document.getElementById('inc-assigned').textContent = incompleteAssigned;
   document.getElementById('inc-count').textContent = incompleteCount;
-  document.getElementById('inc-warn').style.display = 'none';
-  document.getElementById('incomplete-modal').style.display = 'flex';
-}
-
-function adjustIncomplete(delta) {
-  incompleteCount = Math.max(0, Math.min(incompleteAssigned, incompleteCount + delta));
-  document.getElementById('inc-count').textContent = incompleteCount;
   const warn = document.getElementById('inc-warn');
-  if (incompleteCount === 0) {
-    warn.style.display = 'block';
-    warn.textContent = 'You must deliver at least 1 load to submit. If you delivered nothing, ask the manager to cancel.';
-  } else if (incompleteCount === incompleteAssigned) {
-    warn.style.display = 'block';
-    warn.textContent = 'All loads delivered? Use Complete instead — it submits as fully done.';
-  } else {
-    warn.style.display = 'none';
-  }
+  warn.style.display = incompleteCount === 0 ? 'block' : 'none';
+  if (incompleteCount === 0) warn.textContent = 'No trip has been completed yet, so there is nothing to submit. If nothing was delivered, ask the office to cancel the load.';
+  document.getElementById('incomplete-modal').style.display = 'flex';
 }
 
 function closeIncomplete() {
@@ -3161,7 +3141,7 @@ function closeIncomplete() {
 async function confirmIncomplete() {
   if (!incompleteLoadId || incompleteCount <= 0) {
     document.getElementById('inc-warn').style.display = 'block';
-    document.getElementById('inc-warn').textContent = 'Please enter at least 1 load delivered.';
+    document.getElementById('inc-warn').textContent = 'No completed trip to submit.';
     return;
   }
 
@@ -3679,7 +3659,7 @@ const CHECK_ICON = { ok: '✓', warn: '⚠' };
 function approvalChecklistHtml(check, compact) {
   if (!check || !check.items) return '';
   return `<div class="${compact ? 'am-check' : 'ask-check'}">${check.items.map(i => `
-    <div class="chk ${i.ok ? 'ok' : 'warn'}" title="${escapeAttr(i.note || '')}">
+    <div class="chk ${i.ok ? 'ok' : i.block ? 'block' : 'warn'}" title="${escapeAttr(i.note || '')}">
       <span class="chk-ic">${i.ok ? CHECK_ICON.ok : CHECK_ICON.warn}</span>
       <span class="chk-label">${escapeHtml(i.label)}</span>
       <span class="chk-val">${escapeHtml(i.value || (i.ok ? '' : 'missing'))}</span>
@@ -3739,6 +3719,11 @@ async function approvalTelemetryHtml(loadId) {
 }
 async function confirmApproval(l, check) {
   const po = pos.find(p => p.id === l.poId) || {};
+  if (check && (check.blocking || []).length) {
+    // Not a gap to acknowledge: the record contradicts itself. Reject or void.
+    showInfoModal('This load cannot be approved', `<div class="ask-sub">PO ${escapeHtml(po.poNumber || '—')} · ${escapeHtml(po.customer || '')} · ${escapeHtml(l.driverName || '')}</div>${approvalChecklistHtml(check, false)}<div class="conflict-hint"><b>${escapeHtml(check.blocking.join('; '))}.</b></div>`);
+    return { go: false };
+  }
   const gaps = check ? check.items.filter(i => !i.ok).length : 0;
   const tel = await approvalTelemetryHtml(l.id);
   const body = `
@@ -3757,6 +3742,7 @@ async function approveLoad(id) {
   if (!first.go) return;
   let d = await api('POST', '/api/loads/' + id + '/approve', { acknowledge: !!(check && !check.ready) });
   if (d.ok) return after((d.approvedWithWarnings || []).length ? 'Approved with noted gaps & locked' : 'Approved & locked');
+  if (d.status === 409 && d.code === 'approval_blocked') { await confirmApproval(l, d.checklist); return; }
   if (d.status === 409 && d.code === 'approval_incomplete') {
     // The record changed since the page loaded: show the server's checklist and ask again.
     const again = await confirmApproval(l, d.checklist);
