@@ -806,7 +806,7 @@ ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' 
 ca '{"action":"start-trip"}' -o /dev/null; ca "{\"action\":\"arrived-pickup\",\"yardId\":\"$VM\"}" -o /dev/null
 ca '{"action":"loaded","ticket":{"source":"supplier","number":"37432920","netTons":23.80,"photo":"'"$PNG"'"}}' -o /dev/null
 curl -s -b $CD -H "$J" -X POST $B/api/driver-location -d '{"lat":37.05,"lng":-119.95,"accuracy":9}' -o /dev/null
-chk "8. Fleet Map row: trailer 3B, current ticket, running actual tons" "$(curl -s -b $M $B/api/fleet/live | jq "[(r['trailerNum'], r['truckNum'], r['load']['currentTicket']['number'], r['load']['currentTicket']['netTons'], r['load']['actualTons'], r['load']['tickets'], r['status']) for r in d['trucks'] if r['driverId']=='cornelio'][0]")" "('3B', 'Truck #3', '37432920', 23.8, 94.64, 4, 'Loaded / En Route')"
+chk "8. Fleet Map row: trailer 3B, current ticket, running actual tons" "$(curl -s -b $M $B/api/fleet/live | jq "[(r['trailerNum'], r['truckNum'], r['load']['currentTicket']['number'], r['load']['currentTicket']['netTons'], r['load']['actualTons'], r['load']['tickets'], r['status']) for r in d['trucks'] if r['driverId']=='cornelio'][0]")" "('3B', 'Truck #3', '37432920', 23.8, 70.84, 3, 'Loaded / En Route')"
 ca '{"action":"arrived-jobsite"}' -o /dev/null; ca '{"action":"trip-complete"}' -o /dev/null
 chk "9. four tickets: 23.20 + 23.19 + 24.45 + 23.80 = 94.64 actual; planned stays 4 × 25 = 100" "$(cl "l['tons']['ticketNumbers'], l['tons']['actualTons'], l['tons']['plannedTons'], l['tons']['tonsSource'], l['tons']['actualComplete'], l['tons']['missingTickets']")" "['37432733', '37432799', '37432862', '37432920'] 94.64 100 supplier True []"
 chk "   Today board carries trailer and tons"        "$(curl -s -b $M $B/api/today | jq "[(l['trailerNum'], l['tons']['actualTons'], l['tons']['plannedTons']) for l in d['loads'] if l['id']=='$CL'][0]")" "('3B', 94.64, 100)"
@@ -1998,6 +1998,53 @@ mg POST /api/loads/$L2/void '{"reason":"never happened"}' >/dev/null
 chk "   a voided load refuses even notes (403); a locked load still does (§22)" "$(mgc PUT /api/loads/$L2 '{"notes":"x"}')" "403"
 chk "   static: no request body is spread into a load anywhere on the server; the allowlist is exactly five fields; only the driver phone calls the route" "$(grep -c '{ \.\.\.l, \.\.\.req\.body' server.js)|$(grep -c "OFFICE_LOAD_FIELDS = new Set(\['notes', 'loadsAssigned', 'pod', 'ticketImage', 'ticketImageUrl'\])" server.js)|$(grep -c "api('PUT', '/api/loads/' + currentLoadId" public/index.html)" "0|1|2"
 rm -f $BE $CA
+
+echo "── 52. CRITICAL 3 — delivered actual tons are the completed trips' tickets; a loaded, undelivered ticket counts nowhere ──"
+# One completed trip (24.50 t) and one trip started, at the yard, loaded and ticketed (26.00 t) but
+# never delivered, for a customer billed on actual tons. Before this fix every consumer said 50.5 t
+# and the invoice carried both tickets; the vendor side costed one trip.
+MA=$(mktemp); curl -s -c $MA -X POST -d "username=matthew&password=matthew123" $B/login -o /dev/null
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+tk() { echo "{\"source\":\"supplier\",\"number\":\"$1\",\"netTons\":$2,\"photo\":\"$PNG\"}"; }
+mg POST /api/customers '{"name":"Scale Co","billingBasis":"actual"}' >/dev/null
+P=$(mg POST /api/pos '{"po":{"poNumber":"C3-1","customer":"Scale Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"matthew","truckUnitId":"truck-4","material":"3/4 Rock","loadsAssigned":3,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][0]")
+curl -s -b $MA -H "$J" -X POST $B/api/shifts/start -d '{"truckId":"truck-4","odometer":950000,"inspection":{"satisfactory":true},"signature":"'"$PNG"'"}' -o /dev/null   # a day, so a freight segment opens at the first pickup
+dr $MA $L '{"action":"start-trip"}' >/dev/null; dr $MA $L '{"action":"arrived-pickup","yardId":"vulcan","odometer":950010}' >/dev/null; dr $MA $L "{\"action\":\"loaded\",\"ticket\":$(tk C3-1001 24.5)}" >/dev/null; dr $MA $L '{"action":"arrived-jobsite"}' >/dev/null; dr $MA $L '{"action":"trip-complete"}' >/dev/null
+dr $MA $L '{"action":"start-trip"}' >/dev/null; dr $MA $L '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $MA $L "{\"action\":\"loaded\",\"ticket\":$(tk C3-1002 26.0)}" >/dev/null
+chk "52 fixture: trip 1 completed with 24.5 t, trip 2 loaded and ticketed with 26 t, not completed" "$(load $L "[(t['tripNum'], bool(t['timestamps'].get('completed')), t['ticket']['number'], t['ticket']['netTons']) for t in l['trips']]")" "[(1, True, 'C3-1001', 24.5), (2, False, 'C3-1002', 26)]"
+chk "   the one calculation: actual 24.5 t from 1 ticket; the open ticket is listed, not counted" "$(load $L "l['tons']['actualTons'], l['tons']['tickets'], l['tons']['ticketsWithTons'], l['tons']['ticketNumbers'], l['tons']['tonsSource'], l['tons']['actualComplete'], [(o['tripNum'], o['number'], o['netTons']) for o in l['tons']['openTickets']], l['tons']['openTons']")" "24.5 1 1 ['C3-1001'] supplier True [(2, 'C3-1002', 26)] 26"
+chk "   Fleet Map row: delivered tons 24.5 from 1 ticket, the en-route ticket shown beside them" "$(curl -s -b $M $B/api/fleet/live | jq "[(r['load']['actualTons'], r['load']['tickets'], r['load']['currentTicket']['number'], r['load']['currentTicket']['netTons']) for r in d['trucks'] if r['driverId']=='matthew'][0]")" "(24.5, 1, 'C3-1002', 26)"
+chk "   driver phone and Dispatch board agree" "$(curl -s -b $MA $B/api/my-dispatch | jq "[(l['tons']['actualTons'], l['tons']['tickets']) for l in d['loads'] if l['loadId']=='$L'][0]")|$(curl -s -b $M $B/api/today | jq "[(l['tons']['actualTons'], l['tons']['tickets']) for l in d['loads'] if l['id']=='$L'][0]")" "(24.5, 1)|(24.5, 1)"
+FS=$(load $L "l.get('freightSegmentId')")
+chk "   freight segment: 2 trips, 1 delivered, 24.5 t actual (both tickets stay on the log's rows)" "$(curl -s -b $M $B/api/freight-segments/$FS | jq "d['segment']['tripCount'], d['segment']['tripsDelivered'], d['segment']['actualTons'], d['segment']['loadActualTons'], d['segment']['plannedTons'], d['segment']['ticketNumbers']")" "2 1 24.5 24.5 25 ['C3-1001', 'C3-1002']"
+# The truck breaks down: Stop early files the one completed trip (CRITICAL 1), the office approves.
+curl -s -b $MA -H "$J" -X PUT $B/api/loads/$L -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+chk "   Stop early: 1 of 3 delivered, submitted; the open trip stays on the record" "$(dr $MA $L '{"action":"incomplete","delivered":1}' | jq "d['success']")|$(load $L "l['loadsDelivered'], l['isPartial'], l['approvalStatus'], len(l['trips'])")" "True|1 True submitted 2"
+chk "   approval ticket row: 1 ticket · 24.5 t, and the approver is told about the undelivered ticket" "$(load $L "[(i['ok'], i['value'], i['note']) for i in l['approval']['items'] if i['key']=='ticket'][0]")" "(True, '1 ticket · 24.5 t', 'planned 25 t, actual 24.5 t; ticket #C3-1002 on trip 2 was loaded but never delivered (26 t, not counted)')"
+chk "   approved; the audit freezes 24.5 t, the delivered ticket, and names the open one" "$(mg POST /api/loads/$L/approve '{}' | jq "d['success']")|$(curl -s -b $M "$B/api/audit-log?action=approved-load" | jq "[(e['details']['actualTons'], e['details']['tickets'], e['details']['openTickets']) for e in d['entries'] if e['target']=='$L'][0]")" "True|(24.5, ['C3-1001'], ['C3-1002'])"
+chk "   Ready to Bill prices 24.5 t × \$25 = \$612.50 on the actual basis (was \$1,262.50)" "$(rtb "[(x['priceable'], x['amount'], x['basis']) for x in d['items'] if x['id']=='$L'][0]")" "(True, 612.5, 'actual')"
+chk "   invoice preview: 24.5 t, 1 ticket, \$612.50; only the delivered ticket number is behind the invoice" "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$L\"]}" | jq "[(li['tons'], li['tickets'], li['amount']) for li in d['groups'][0]['lineItems']], d['groups'][0]['ticketNumbers']")" "[(24.5, 1, 612.5)] ['C3-1001']"
+chk "   vendor side unchanged: the completed trip at Vulcan, planned tons (1 load, \$950); the undelivered trip is not costed" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L\"]}" | jq "d['groups'][0]['lineItems'][0]['loads'], d['groups'][0]['totalAmount']")" "1 950"
+# All trips completed → every ticket counts.
+P2=$(mg POST /api/pos '{"po":{"poNumber":"C3-2","customer":"Scale Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L2=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P2'][0]")
+for T in "C3-2001 20.0" "C3-2002 21.5"; do set -- $T; dr $RG $L2 '{"action":"start-trip"}' >/dev/null; dr $RG $L2 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $RG $L2 "{\"action\":\"loaded\",\"ticket\":$(tk $1 $2)}" >/dev/null; dr $RG $L2 '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $L2 '{"action":"trip-complete"}' >/dev/null; done
+chk "   all trips completed: 20 + 21.5 = 41.5 t from 2 tickets, nothing open" "$(load $L2 "l['tons']['actualTons'], l['tons']['tickets'], l['tons']['ticketNumbers'], l['tons']['openTickets'], l['tons']['actualComplete']")" "41.5 2 ['C3-2001', 'C3-2002'] [] True"
+# No completed trip: loaded and ticketed is still zero delivered tons, and nothing can be filed.
+P3=$(mg POST /api/pos '{"po":{"poNumber":"C3-3","customer":"Scale Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"3/4 Rock","loadsAssigned":1,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L3=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P3'][0]")
+dr $BE $L3 '{"action":"start-trip"}' >/dev/null; dr $BE $L3 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null; dr $BE $L3 "{\"action\":\"loaded\",\"ticket\":$(tk C3-3001 22.0)}" >/dev/null
+curl -s -b $BE -H "$J" -X PUT $B/api/loads/$L3 -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+chk "   loaded + ticketed, nothing completed: 0 t, 0 tickets, source planned, the ticket open; Stop early is refused (nothing_delivered)" "$(load $L3 "l['tons']['actualTons'], l['tons']['tickets'], l['tons']['tonsSource'], l['tons']['plannedTons'], [o['number'] for o in l['tons']['openTickets']]")|$(dr $BE $L3 '{"action":"incomplete","delivered":1}' | jq "d['code']")" "0 0 planned 0 ['C3-3001']|nothing_delivered"
+# Pre-trip-tracking record (no trips at all): unchanged compatibility — no tickets, planned tons from the count, never priced on actual.
+P4=$(mg POST /api/pos '{"po":{"poNumber":"C3-4","customer":"Scale Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vulcan"},"splits":[{"truckId":"","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}]}' | jq "d['po']['id']")
+L4=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P4'][0]")
+mg POST /api/_test/set-load "{\"id\":\"$L4\",\"fields\":{\"loadsDelivered\":2,\"approvalStatus\":\"approved\",\"locked\":true,\"status\":\"completed\",\"billStatus\":\"ready\"}}" >/dev/null
+chk "   legacy load, no trips: 0 actual, planned 50 from the count, no open tickets; Ready to Bill still refuses to price it on actual tons" "$(load $L4 "len(l['trips']), l['tons']['actualTons'], l['tons']['tickets'], l['tons']['plannedTons'], l['tons']['openTickets'], l['tons']['tonsSource']")|$(rtb "[(x['priceable'], x['priceReason'].startswith('Scale Co is billed on actual ticket tons, but 2 of 2 delivered loads')) for x in d['items'] if x['id']=='$L4'][0]")" "0 0 0 50 [] planned|(False, True)"
+chk "   static: one completion predicate — no inline copy left in the tons, cost or segment paths" "$(grep -c "function tripIsCompleted" server.js)|$(grep -cE "filter\(t => t\.timestamps && t\.timestamps\.completed\)" server.js)" "1|0"
+rm -f $MA $RG $BE
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.

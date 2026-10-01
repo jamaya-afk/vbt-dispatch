@@ -2044,7 +2044,7 @@ function openLoadDetail(id) {
   if (l.pickup) html += `<dt style="color:var(--txt3)">Pickup Yard</dt><dd style="${l.pickup.isActual ? 'color:var(--A);font-weight:600' : ''}">${escapeHtml(l.pickup.name)}${l.pickup.isActual ? ' <span style="font-size:10px;color:var(--txt3)">(driver confirmed)</span>' : ''}</dd>`;
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
   if (l.trailer) html += `<dt style="color:var(--txt3)">Trailer</dt><dd>${escapeHtml(l.trailer.number)}${l.trailer.type ? ' · ' + escapeHtml(l.trailer.type) : ''}</dd>`;
-  if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}</dd>`;
+  if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}${(l.tons.openTickets || []).length ? ` <span style="font-size:11px;color:var(--A);font-weight:600">${l.tons.openTickets.length} ticket${l.tons.openTickets.length === 1 ? '' : 's'} loaded, not delivered${l.tons.openTons ? ` (${l.tons.openTons.toFixed(2)} t not counted)` : ''}</span>` : ''}</dd>`;
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
   html += `</dl>`;
   if (l.segments && l.segments.length) {
@@ -3623,9 +3623,10 @@ function ticketSummaryHtml(l) {
   if (!trips.length && !(tons.missingTickets || []).length) return '';
   const rows = trips.map(t => {
     const src = t.ticket.photoUrl || t.ticket.photo;
+    const open = !(t.timestamps && t.timestamps.completed);   // loaded and ticketed, never delivered: on the record, not in the total
     return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;white-space:nowrap">#${escapeHtml(t.ticket.number)}
       <span style="color:var(--txt3)">${t.ticket.source === 'vbt' ? 'VBT' : 'supplier'}</span>
-      <b style="font-variant-numeric:tabular-nums">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t' : '—'}</b>
+      <b style="font-variant-numeric:tabular-nums;${open ? 'text-decoration:line-through;color:var(--txt3)' : ''}">${t.ticket.netTons != null ? t.ticket.netTons.toFixed(2) + ' t' : '—'}</b>${open ? ' <span style="color:var(--A);font-weight:600">not delivered</span>' : ''}
       ${src ? `<img src="${src}" class="am-thumb" style="width:22px;height:22px" onclick="event.stopPropagation();showImage('${src}')" title="Ticket ${escapeHtml(t.ticket.number)}">` : ''}</span>`;
   }).join('');
   const missing = (tons.missingTickets || []).length ? `<span style="color:var(--R);font-weight:600">no ticket on load${tons.missingTickets.length === 1 ? '' : 's'} ${tons.missingTickets.join(', ')}</span>` : '';

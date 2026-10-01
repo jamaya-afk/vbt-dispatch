@@ -384,7 +384,9 @@ async function call(cookie, method, path, body) {
   chk('9. card shows PO / customer / material / load / trip / pickup / destination',
     /PO 10482.*Customer ABC Materials.*Material 3\/4 Rock.*Load 1 of 3.*Trip 1.*Pickup Vulcan.*Destination 500 Main St, Merced/.test(sel.card), true);
   chk('   card shows GPS accuracy and update time', /GPS accuracy ±7 m/.test(sel.card) && /Updated/.test(sel.card), true);
-  chk('   card shows trailer, the current ticket and running actual tons', /Trailer 3B.*Ticket #37432733 · 23\.20 t.*Actual tons 23\.20 t from 1 ticket/.test(sel.card), true);
+  // The ticket was captured at the scale but trip 1 is still en route: it is the current ticket,
+  // not delivered tons (CRITICAL 3 — actual tons are the completed trips' tickets).
+  chk('   card shows trailer and the current ticket, and no delivered tons yet', /Trailer 3B.*Ticket #37432733 · 23\.20 t/.test(sel.card) && !/Actual tons/.test(sel.card), true);
   // marker click → same selection state
   await page.evaluate(() => fmSelect('rigo', true));
   await page.evaluate(() => { fm.markers.beryle.fire('click'); });

@@ -121,6 +121,34 @@ captured at the scale) and the truck breaks down; the driver submits
 vendor side counts 2 trips. Fix shape: sum tons of completed trips only, and
 show the loaded-but-undelivered ticket on the approval checklist.
 
+**Status: FIXED 2026-10-01** (CRITICAL 3 commit). Rule enforced: delivered
+actual tons = ticket tons of completed trips only, using the one completion
+predicate from CRITICAL 1 (`tripIsCompleted` in `server.js`, read by
+`completedTripCount`, `loadTons`, `loadCostLines` and the freight segment).
+`loadTons` is the single calculation; `actualTons`, `tickets`,
+`ticketsWithTons`, `ticketNumbers` and `tonsSource` now describe completed
+trips, and a ticket on a trip that never completed is returned as
+`openTickets` / `openTons` — shown in Load Details, on the approval ticket row
+("ticket #N on trip 2 was loaded but never delivered (26 t, not counted)") and
+recorded in the approval audit, counted nowhere. Consumers that follow it
+without their own formula: Load Details and the approvals ticket summary, the
+Dispatch board row, the Fleet Map row, the driver's phone, Ready to Bill and
+the invoice line (`revenueDetail`), the billing batch line and its ticket
+numbers, the approve audit, the freight segment's `actualTons` (was its own
+all-tickets sum) and the Freight Bill total. Vendor costing already costed
+completed trips only (actual yard per trip, planned tons) and is unchanged.
+Pre-trip-tracking loads (no trips) are unchanged: no tickets, planned tons from
+the delivered count, and an actual-basis one is still not priced. Probed
+before/after on one completed trip (24.5 t) plus one loaded, ticketed,
+undelivered trip (26 t) for an actual-basis customer: before 50.5 t, 2 tickets,
+invoice $1,262.50 with both ticket numbers; after 24.5 t, 1 ticket, invoice
+$612.50 with the delivered ticket only; vendor cost 1 trip both times. Tests:
+e2e §52; §36 check 8 rewritten (running tons on the Fleet Map while load 4 is
+en route are now 70.84 / 3 tickets, with the current ticket shown beside them).
+Owner note: material loaded at a vendor yard and never delivered is now neither
+billed nor costed and is only shown; whether it should block approval or be
+costed to the vendor is an owner decision, not made here.
+
 ---
 
 ## 2. IMPORTANT — could cause dispatcher or user errors

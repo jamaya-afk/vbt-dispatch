@@ -476,21 +476,40 @@ function buildTicket(input, { by, existing } = {}) {
 // tracking, which have no trips[] at all. When a load's record and its trips
 // disagree (older data, or anything that bypassed the trip steps), nothing
 // downstream — approval, Ready to Bill, costing — trusts the record.
-function completedTripCount(l) { return (l.trips || []).filter(t => t.timestamps && t.timestamps.completed).length; }
+// ONE definition of "completed": the trip carries its completion stamp (set by
+// trip-complete, or by the finalizer when the driver stopped at the jobsite).
+// The delivered count, the delivered tons, vendor costing and the freight
+// segment all read this predicate — never "has a ticket" or "trip exists".
+function tripIsCompleted(t) { return !!(t && t.timestamps && t.timestamps.completed); }
+function completedTripCount(l) { return (l.trips || []).filter(tripIsCompleted).length; }
 function deliveredRecord(l) {
   const record = Number(l.loadsDelivered) || 0, completed = completedTripCount(l), perTrip = (l.trips || []).length > 0;
   return { record, completed, perTrip, count: perTrip ? Math.min(record, completed) : record, mismatch: perTrip && record !== completed };
 }
+// The ONE tons calculation. Every screen, the approval checklist, Ready to
+// Bill, the invoice line and the freight segment read this.
+//   Delivered actual tons = ticket tons of COMPLETED trips only.
+// A ticket is proof of loading, not of delivery: a trip that was started,
+// arrived, loaded and ticketed but never completed stays on the record as an
+// open ticket and contributes zero tons, zero tickets and no ticket number
+// to anything that bills or approves. A pre-trip-tracking load (no trips)
+// has no tickets and reports planned tons from its delivered count, as before.
 function loadTons(l) {
   const trips = Array.isArray(l.trips) ? l.trips : [];
   const delivered = deliveredRecord(l).count;
-  const done = trips.filter(t => t.timestamps && t.timestamps.completed);
-  const ticketed = trips.filter(t => t.ticket && t.ticket.number);
+  const hasTicket = t => !!(t.ticket && t.ticket.number);
+  const done = trips.filter(tripIsCompleted);
+  const ticketed = done.filter(hasTicket);
   const withTons = ticketed.filter(t => t.ticket.netTons != null);
-  const actualTons = Math.round(withTons.reduce((s, t) => s + Number(t.ticket.netTons), 0) * 100) / 100;
+  const round2 = n => Math.round(n * 100) / 100;
+  const actualTons = round2(withTons.reduce((s, t) => s + Number(t.ticket.netTons), 0));
+  // Loaded and ticketed, not delivered: shown, never counted.
+  const openTickets = trips.filter(t => !tripIsCompleted(t) && hasTicket(t))
+    .map(t => ({ tripNum: t.tripNum, number: t.ticket.number, netTons: t.ticket.netTons == null ? null : Number(t.ticket.netTons), source: t.ticket.source }));
+  const openTons = round2(openTickets.reduce((s, t) => s + (t.netTons || 0), 0));
   const unit = unitKey(l.customerUnit || 'ton');
   const qty = unit === 'ton' ? ((l.tonsPerLoad ? Number(l.tonsPerLoad) : null) ?? qtyPerLoad('ton', l.material)) : null;
-  const plannedTons = qty != null ? Math.round(qty * delivered * 100) / 100 : null;
+  const plannedTons = qty != null ? round2(qty * delivered) : null;
   const sources = new Set(ticketed.map(t => t.ticket.source));
   const tonsSource = !withTons.length ? 'planned' : sources.size > 1 ? 'mixed' : [...sources][0];
   return {
@@ -499,9 +518,10 @@ function loadTons(l) {
     tripsCompleted: done.length,
     // Every completed trip has confirmed tons → the actual figure is complete.
     actualComplete: done.length > 0 && done.every(t => t.ticket && t.ticket.netTons != null),
-    missingTickets: done.filter(t => !t.ticket || !t.ticket.number).map(t => t.tripNum),
+    missingTickets: done.filter(t => !hasTicket(t)).map(t => t.tripNum),
     tonsSource,
     ticketNumbers: ticketed.map(t => t.ticket.number),
+    openTickets, openTons,
   };
 }
 // Billing basis is a per-customer choice. Default is planned (25 t rule);
@@ -1766,7 +1786,7 @@ function loadCostLines(load, { unbilledOnly = false } = {}) {
     else { ln.amount += d.amount; ln.quantity += d.quantity; }
   };
   const unit = load.vendorUnit || 'ton';
-  const done = (load.trips || []).filter(t => t.timestamps && t.timestamps.completed);
+  const done = (load.trips || []).filter(tripIsCompleted);
   // A load-level claim (a bill created before trips were tracked one by one,
   // or a legacy load with no trip records) covers the whole load — and its
   // cost stays exactly what that bill charged (planned yard, planned rate),
@@ -3796,7 +3816,9 @@ function segmentPublic(seg) {
   const trips = segmentTrips(seg);
   const loads = (seg.loadIds || []).map(findLoadAnywhere).filter(Boolean);
   const tons = loads.reduce((acc, l) => { const t = loadTons(l); acc.actual += t.actualTons; acc.planned += t.plannedTons || 0; return acc; }, { actual: 0, planned: 0 });
-  const tripTons = trips.reduce((s, x) => s + (x.trip.ticket && x.trip.ticket.netTons != null ? Number(x.trip.ticket.netTons) : 0), 0);
+  // Delivered tons only — the same rule as loadTons: a ticket on a trip that
+  // never completed is on the log's rows but not in the total.
+  const tripTons = trips.reduce((s, x) => s + (tripIsCompleted(x.trip) && x.trip.ticket && x.trip.ticket.netTons != null ? Number(x.trip.ticket.netTons) : 0), 0);
   const billableMinutes = seg.timeEnd ? Math.max(0, Math.round((Date.parse(seg.timeEnd) - Date.parse(seg.timeStart)) / 60000)) : null;
   return {
     ...seg,
@@ -3805,7 +3827,7 @@ function segmentPublic(seg) {
     billableMinutes,
     billableHours: billableMinutes == null ? null : Math.round(billableMinutes / 60 * 100) / 100,
     tripCount: trips.length,
-    tripsDelivered: trips.filter(x => x.trip.timestamps && x.trip.timestamps.completed).length,
+    tripsDelivered: trips.filter(x => tripIsCompleted(x.trip)).length,
     actualTons: Math.round(tripTons * 100) / 100,
     loadActualTons: Math.round(tons.actual * 100) / 100,
     plannedTons: Math.round(tons.planned * 100) / 100,
@@ -4353,9 +4375,12 @@ function approvalChecklist(l) {
   if (tons.missingTickets.length) ticketProblems.push(`no ticket on trip ${tons.missingTickets.join(', ')}`);
   if (customerBillingBasis(po.customer) === 'actual' && delivered > 0 && !tons.actualComplete)
     ticketProblems.push(`${po.customer} is billed on actual tons and ${Math.max(1, delivered - tons.ticketsWithTons)} ticket(s) have no tons`);
+  // A ticket on a trip that never completed is shown here so the approver
+  // sees it, and is counted nowhere: not in the tons, not on the invoice.
+  const openNote = tons.openTickets.map(t => `ticket #${t.number} on trip ${t.tripNum} was loaded but never delivered${t.netTons != null ? ` (${t.netTons} t, not counted)` : ''}`).join('; ');
   items.push({ key: 'ticket', label: 'Ticket', ok: !ticketProblems.length,
     value: tons.tickets ? `${tons.tickets} ticket${tons.tickets === 1 ? '' : 's'}${tons.ticketsWithTons ? ` · ${tons.actualTons} t` : ''}` : ((l.ticketImage || l.ticketImageUrl) ? 'photo on file' : ''),
-    note: ticketProblems.join('; ') || (tons.plannedTons != null ? `planned ${tons.plannedTons} t${tons.ticketsWithTons ? `, actual ${tons.actualTons} t` : ''}` : '') });
+    note: [ticketProblems.join('; ') || (tons.plannedTons != null ? `planned ${tons.plannedTons} t${tons.ticketsWithTons ? `, actual ${tons.actualTons} t` : ''}` : ''), openNote].filter(Boolean).join('; ') });
   const signed = !!(pod.signedBy && (pod.signature || pod.signatureUrl));
   const deliveryProblems = [];
   if (!delivered) deliveryProblems.push('nothing delivered');
@@ -4418,6 +4443,7 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
     actualTons:  tons.actualTons,
     tickets:     tons.ticketNumbers,
     missingTickets: tons.missingTickets,
+    ...(tons.openTickets.length ? { openTickets: tons.openTickets.map(t => t.number) } : {}),
     ...(check.ready ? {} : { approvedWithWarnings: check.warnings }),
   });
   await saveData();
