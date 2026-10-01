@@ -77,6 +77,9 @@ carlos / carlos123
 - **A failed save leaves nothing behind.** If the database refuses a write,
   the store rolls back to what is on disk and the caller is told; mutating
   requests run one at a time so a rollback never takes another change with it.
+  The lock is held until the handler has finished its work and answered, not
+  until the connection closes: a phone that drops mid-save keeps the next
+  write waiting until that save has settled.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on

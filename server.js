@@ -944,6 +944,7 @@ function saveData(opts) {
 // honestly when the write does not happen.
 let testSaveMode = 'ok';
 let testSaveSkip = 0;   // 'fail' after this many successful saves (0 = immediately)
+let testSaveDelayMs = 0;   // every save waits this long first — opens the window the disconnect test needs
 
 async function writeStore({ rotatePrev = true } = {}) {
   // The single most important line in this file. If the store was never
@@ -955,6 +956,7 @@ async function writeStore({ rotatePrev = true } = {}) {
     persistence.lastError = msg;
     throw new Error(msg);
   }
+  if (testSaveDelayMs > 0 && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) await new Promise(r => setTimeout(r, testSaveDelayMs));
   if (testSaveMode === 'fail' && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD && testSaveSkip-- <= 0) {
     if (testSaveFailLeft != null && --testSaveFailLeft <= 0) { testSaveMode = 'ok'; testSaveFailLeft = null; }
     const e = new Error('test hook: simulated database write failure');
@@ -2005,6 +2007,13 @@ app.use('/api', (req, res, next) => {
 // change can be swept away with it. Reads never wait. For a five-truck fleet
 // the wait is milliseconds; a hung handler releases after 30 s regardless.
 //
+// The lock protects the handler's WORK — its mutation and its save — not the
+// connection. It is released when the handler ends its response (res.end runs
+// whether or not the client is still listening), never when the socket
+// closes: a phone that drops the connection mid-save keeps the lock until that
+// save has settled, so nothing can interleave with a write that may still
+// roll the store back.
+//
 // Exempt on purpose: the QuickBooks and vendor-bill send/retry/void routes
 // (they talk to QuickBooks for seconds, must not stall the drivers' taps, and
 // keep their in-flight state on a failed save — it is their recovery record),
@@ -2017,8 +2026,11 @@ app.use('/api', (req, res, next) => {
   let release; const held = new Promise(r => { release = r; });
   const wait = writeLockTail; writeLockTail = wait.then(() => held);
   wait.then(() => {
-    const timer = setTimeout(release, 30000);
-    res.once('close', () => { clearTimeout(timer); release(); });
+    let released = false;
+    const done = () => { if (released) return; released = true; clearTimeout(timer); release(); };
+    const timer = setTimeout(done, 30000);
+    const end = res.end;
+    res.end = function (...args) { const r = end.apply(this, args); done(); return r; };
     requestCtx.run({ keepOnFailure: false }, next);
   });
 });
@@ -2213,7 +2225,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   app.post('/api/_test/set-load', reqMgr, async (req, res) => { const l = findLoadAnywhere(String(req.body?.id || '')); if (!l) return res.status(404).json({ error: 'no load' }); Object.assign(l, req.body?.fields || {}); await saveData(); res.json({ ok: true, load: l }); });
   // 'fail' makes every save throw until set back to 'ok'.
   app.post('/api/_test/linxup-prune', reqMgr, async (req, res) => { try { res.json(await linxup.prune(req.body?.now ? Number(req.body.now) : Date.now())); } catch (e) { res.status(500).json({ error: e.message }); } });
-  app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft }); });
+  app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; testSaveDelayMs = Math.max(0, Number(req.body?.delayMs || 0)); res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft, delayMs: testSaveDelayMs }); });
   app.get('/api/_test/today', (req, res) => res.json({ tz: OPERATING_TZ, today: todayStrAt(req.query.at ? new Date(String(req.query.at)) : new Date()) }));
   app.get('/api/_test/async-throw', async (req, res) => { throw new Error('test: async throw'); });
   app.get('/api/_test/async-reject', (req, res) => Promise.reject(new Error('test: rejected promise')));

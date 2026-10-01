@@ -1646,6 +1646,23 @@ print(sorted([a,b]), mem==winner, disk==mem)
 PY
 )" "['200', '503'] True True"
 chk "   the hook reset itself after one failure: the next save is fine" "$(mgc PUT /api/loads/$LB '{"notes":"note C"}')|$(load $LB "l['notes']")" "200|note C"
+# Persistence #1 (I26) — the lock protects the save, not the socket. A phone that drops the connection
+# mid-save must not let the next write interleave with a save that then fails and rolls the store back.
+# Before the fix: the dropped request released the lock on 'close', the next write entered, the
+# first save failed, the rollback swept the second change away — and the second request said 200.
+mg POST /api/_test/save-mode '{"mode":"fail","count":1,"delayMs":1500}' >/dev/null     # every save waits 1.5 s; the next one fails
+DROPPED=$(curl -s -b $M -H "$J" -X PUT $B/api/loads/$LB -d '{"notes":"dropped mid-save"}' --max-time 0.5 -o /dev/null -w '%{http_code}')
+NEXT=$(curl -s -b $M -H "$J" -X PUT $B/api/loads/$LB -d '{"notes":"note D"}' -w ' %{http_code} %{time_total}')
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   a client that drops mid-save (curl gave up: 000) does not release the lock: the next write waits for that save to settle and roll back, then lands in memory AND on disk, and its own answer carries it" "$DROPPED|$(python3 - "$NEXT" "$(load $LB "l['notes']")" "$LB" <<'PY'
+import sys,json
+raw=sys.argv[1]; mem=sys.argv[2]; lid=sys.argv[3]
+body,code,secs=raw.rsplit(' ',2); d=json.loads(body)
+disk=[l['notes'] for l in json.load(open('data.json'))['loads'] if l['id']==lid][0]
+print(code, float(secs) >= 1.0, d.get('success'), d['load']['notes'], mem, disk)
+PY
+)" "000|200 True True note D note D note D"
+chk "   …exactly one rollback (the dropped write's); the lock is released by the handler ending its response, never by the socket closing" "$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R0")|$(grep -c "res.once('close', () => { clearTimeout(timer); release(); })" server.js)|$(grep -c "res.end = function (...args) { const r = end.apply(this, args); done(); return r; };" server.js)" "8|0|1"
 chk "   mutating requests run one at a time; QuickBooks send/retry/void, GPS pings and test hooks are exempt and keep their in-flight state (their recovery record)" "$(grep -c "^const WRITE_LOCK_EXEMPT = /^\\\\/api\\\\/(billing-batches" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: true }, next)" server.js)|$(grep -c "requestCtx.run({ keepOnFailure: false }, next)" server.js)|$(grep -c "rollbackStore(e);" server.js)" "1|1|1|3"
 
 echo
