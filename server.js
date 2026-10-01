@@ -830,7 +830,8 @@ async function snapshotBootStore() {
   } catch (e) { console.warn('store_boot snapshot skipped:', e.message); }
 }
 
-const RESTORE_KEYS = ['store_prev', 'store_boot'];
+// store_before_restore is restorable too, so a restore is itself undoable.
+const RESTORE_KEYS = ['store_prev', 'store_boot', 'store_before_restore'];
 async function listBackups() {
   if (!pg) return [];
   const r = await pg.query(`SELECT key, length(value) AS bytes, updated_at FROM dispatch_data WHERE key = 'store' OR key LIKE 'store_%' ORDER BY key`);
@@ -838,29 +839,65 @@ async function listBackups() {
   return r.rows.map(row => ({ key: row.key, bytes: Number(row.bytes), updatedAt: row.updated_at }));
 }
 
-// Restore the live store from a backup row. Safe by construction:
-//   1. the current 'store' row (whatever state it is in) is copied to
-//      'store_before_restore' first, so the restore itself is reversible;
-//   2. the backup is parsed and validated BEFORE anything is written;
-//   3. the in-memory store is reloaded from the database afterwards, which
+// Restore the live store from a backup row. Atomic from the application's
+// point of view, and serialized with every other write of the row:
+//   1. a QuickBooks send in flight refuses the restore — its batch state
+//      lives in memory and would be replaced underneath it;
+//   2. the whole operation runs in the write queue (queueWrite), so no save
+//      can interleave with it, and any save queued after it serializes the
+//      store as the restore left it;
+//   3. the backup is parsed and normalized exactly as boot would, BEFORE
+//      anything is written — a backup that cannot be installed changes nothing;
+//   4. one transaction: the current 'store' row → 'store_before_restore'
+//      (so the restore is itself undoable), the backup → 'store'. Both or
+//      neither. Until it commits, memory and the rollback point are untouched;
+//   5. only after the commit is memory replaced (in place), and the restored
+//      state becomes the rollback point — so a later failed save rolls back
+//      to the RESTORED state, never to the data the restore replaced. This
 //      also clears the locked state if the process booted with a bad row.
 async function restoreFromBackup(key) {
   if (!pg) throw new Error('Restore requires Postgres');
   if (!RESTORE_KEYS.includes(key)) throw new Error(`Unknown backup "${key}"`);
-  const r = await pg.query('SELECT value FROM dispatch_data WHERE key = $1', [key]);
-  if (!r.rows.length) throw new Error(`Backup "${key}" does not exist`);
-  const candidate = parseStoreRow(r.rows[0].value);   // validate first
-  await pg.query(`
-    INSERT INTO dispatch_data(key, value, updated_at)
-    SELECT 'store_before_restore', value, now() FROM dispatch_data WHERE key = 'store'
-    ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
-  `);
-  await pg.query(
-    "INSERT INTO dispatch_data(key, value, updated_at) VALUES('store', $1, now()) ON CONFLICT(key) DO UPDATE SET value = $1, updated_at = now()",
-    [r.rows[0].value]
-  );
-  await loadData();
-  return { restoredFrom: key, pos: (candidate.pos || []).length, loads: (candidate.loads || []).length };
+  const inFlight = [...(store.billingBatches || []), ...(store.vendorBills || [])].filter(b => b && b.syncStatus === 'syncing').map(b => b.id);
+  if (inFlight.length) throw Object.assign(new Error(`A QuickBooks send is in flight (${inFlight.join(', ')}). Wait for it to finish, then restore.`), { code: 'send_in_flight' });
+  return queueWrite(async () => {
+    const r = await pg.query('SELECT value FROM dispatch_data WHERE key = $1', [key]);
+    if (!r.rows.length) throw Object.assign(new Error(`Backup "${key}" does not exist`), { code: 'no_backup' });
+    const candidate = parseStoreRow(r.rows[0].value);
+    // Normalize the candidate the way loadData would, by standing it in for
+    // the live store for the duration of one synchronous call. Nothing else
+    // runs in between, so no reader can see the stand-in.
+    const live = store; store = candidate;
+    let restoredJson;
+    try { normalizeStore(); restoredJson = JSON.stringify(store); } finally { store = live; }
+    const counts = { pos: (candidate.pos || []).length, loads: (candidate.loads || []).length };
+    if (testWriteShouldFail()) { const e = new Error('test hook: simulated database write failure'); e.code = 'ECONNRESET'; throw e; }
+    const client = await pg.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`
+        INSERT INTO dispatch_data(key, value, updated_at)
+        SELECT 'store_before_restore', value, now() FROM dispatch_data WHERE key = 'store'
+        ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+      `);
+      await client.query(
+        "INSERT INTO dispatch_data(key, value, updated_at) VALUES('store', $1, now()) ON CONFLICT(key) DO UPDATE SET value = $1, updated_at = now()",
+        [restoredJson]
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+    // Committed. Memory, the rollback point and the lock state follow.
+    replaceStoreContents(candidate);
+    lastGoodJson = restoredJson;
+    persistence.loaded = true; persistence.loadError = '';
+    persistence.lastSaveOk = true; persistence.lastSaveAt = new Date().toISOString(); persistence.lastError = ''; persistence.degradedSince = '';
+    return { restoredFrom: key, ...counts };
+  });
 }
 
 // Persistence health, surfaced to /healthz and to the dispatcher's screen.
@@ -906,12 +943,17 @@ const persistence = {
 const { AsyncLocalStorage } = require('async_hooks');
 const requestCtx = new AsyncLocalStorage();
 let lastGoodJson = null;
+// Replace what the live store holds — in place, never by reassigning `store`:
+// every function reads the module variable, and a request in flight may hold
+// a reference to the object. Used by the rollback and by a restore.
+function replaceStoreContents(next) {
+  for (const k of Object.keys(store)) delete store[k];
+  Object.assign(store, next);
+}
 function rollbackStore(err) {
   const ctx = requestCtx.getStore();
   if ((ctx && ctx.keepOnFailure) || !lastGoodJson) return false;
-  const fresh = JSON.parse(lastGoodJson);
-  for (const k of Object.keys(store)) delete store[k];
-  Object.assign(store, fresh);
+  replaceStoreContents(JSON.parse(lastGoodJson));
   persistence.rollbacks++;
   persistence.lastRollbackAt = new Date().toISOString();
   if (err && !err.userMessage) err.userMessage = 'Unable to save — the database did not accept the write. Your change was not applied; please try again.';
@@ -933,11 +975,16 @@ const linxup = new Linxup({
 });
 
 let saveChain = Promise.resolve();
-function saveData(opts) {
-  const run = () => writeStore(opts || {});
+// Every write of the store row goes through this one queue — each ordinary
+// save, and a restore — so no two writes of the row can ever interleave, and
+// a save queued after a restore serializes the store as the restore left it.
+function queueWrite(run) {
   const p = saveChain.then(run, run);
   saveChain = p.catch(() => {});
   return p;
+}
+function saveData(opts) {
+  return queueWrite(() => writeStore(opts || {}));
 }
 // Test hook only (VBT_TEST_HOOKS=1, never production): 'fail' makes the next
 // saves throw a database-style error, to prove handlers roll back and answer
@@ -945,6 +992,14 @@ function saveData(opts) {
 let testSaveMode = 'ok';
 let testSaveSkip = 0;   // 'fail' after this many successful saves (0 = immediately)
 let testSaveDelayMs = 0;   // every save waits this long first — opens the window the disconnect test needs
+// Test hook only: should this database write be refused? Counts down the
+// "after" skip and the remaining failures exactly as the save-mode hook says.
+// Asked by every write of the store row — an ordinary save and a restore.
+function testWriteShouldFail() {
+  if (!(testSaveMode === 'fail' && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD && testSaveSkip-- <= 0)) return false;
+  if (testSaveFailLeft != null && --testSaveFailLeft <= 0) { testSaveMode = 'ok'; testSaveFailLeft = null; }
+  return true;
+}
 
 async function writeStore({ rotatePrev = true } = {}) {
   // The single most important line in this file. If the store was never
@@ -957,8 +1012,7 @@ async function writeStore({ rotatePrev = true } = {}) {
     throw new Error(msg);
   }
   if (testSaveDelayMs > 0 && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) await new Promise(r => setTimeout(r, testSaveDelayMs));
-  if (testSaveMode === 'fail' && process.env.VBT_TEST_HOOKS === '1' && !IS_PROD && testSaveSkip-- <= 0) {
-    if (testSaveFailLeft != null && --testSaveFailLeft <= 0) { testSaveMode = 'ok'; testSaveFailLeft = null; }
+  if (testWriteShouldFail()) {
     const e = new Error('test hook: simulated database write failure');
     e.code = 'ECONNRESET';
     persistence.lastSaveOk = false;
@@ -2101,14 +2155,22 @@ app.post('/api/admin/restore', reqAdmin, async (req, res) => {
   const { from, confirm } = req.body || {};
   if (!RESTORE_KEYS.includes(from)) return res.status(400).json({ error: `from must be one of ${RESTORE_KEYS.join(', ')}` });
   if (confirm !== 'RESTORE') return res.status(400).json({ error: 'Pass confirm: "RESTORE" to replace the live dispatch data with this backup' });
-  try {
-    const result = await restoreFromBackup(from);
-    logAction(req.session.user, 'restore-backup', from, { pos: result.pos, loads: result.loads });
-    await saveData();   // persists the audit entry; also proves the store is writable again
-    res.json({ success: true, ...result, loaded: persistence.loaded });
-  } catch (e) {
-    res.status(409).json({ error: e.message, loaded: persistence.loaded });
+  let result;
+  try { result = await restoreFromBackup(from); }
+  catch (e) {
+    // Nothing changed: the live row, the backups, memory and the rollback point are as they were.
+    return res.status(409).json({ error: e.message, code: e.code || 'restore_failed', restored: false, loaded: persistence.loaded });
   }
+  logAction(req.session.user, 'restore-backup', from, { pos: result.pos, loads: result.loads });
+  try { await saveData(); }   // the audit entry; the restore itself is already on record
+  catch (e) {
+    // The restore is committed and in memory — the failed save rolled memory
+    // back to exactly the restored state, which is now the rollback point.
+    // Only the audit entry is missing. Say that; never "the restore failed".
+    return res.json({ success: true, ...result, loaded: persistence.loaded, auditSaved: false,
+      warning: `Restored. The audit entry could not be saved (${e.message}); the restored data is in the database and in memory.` });
+  }
+  res.json({ success: true, ...result, loaded: persistence.loaded, auditSaved: true });
 });
 
 // Test-only hooks. Never mounted in production; used by test-e2e.sh to prove

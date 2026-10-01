@@ -2309,6 +2309,56 @@ else
   chk "damaged row kept as store_before_restore" "$($PSQL -c "select value from dispatch_data where key='store_before_restore'")" "{not json"
   chk "real PO is back after restore" "$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;print(len([p for p in json.load(sys.stdin)['pos'] if p['poNumber']=='PG-REAL']))")" "1"
   chk "writes work again after restore" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"PG-AFTER","customer":"After Restore","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "200"
+  # ── Persistence #2 (I27): a restore is atomic, serialized with every other write, and becomes the rollback point ──
+  r2hook() { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/save-mode -d "$1" -o /dev/null; }
+  r2po()   { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"'"$1"'","customer":"Restore Co","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null -w '%{http_code}'; }
+  r2rst()  { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/admin/restore -d "{\"from\":\"$1\",\"confirm\":\"RESTORE\"}" -w ' %{http_code}'; }
+  r2mem()  { curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R2-'))))"; }
+  r2row()  { $PSQL -c "select value from dispatch_data where key='$1'" | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R2-'))))" 2>/dev/null || echo "unreadable"; }
+  r2md5()  { $PSQL -c "select md5(value) from dispatch_data where key='$1'"; }
+  r2code() { python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, $1)"; }
+  r2po R2-A >/dev/null; r2po R2-B >/dev/null
+  chk "P2 fixture: two writes; store_prev holds the state before the last one" "$(r2mem)|$(r2row store)|$(r2row store_prev)" "A,B|A,B|A"
+  chk "   5. normal write, then restore (store_prev): 200, audit saved; memory = row = A; the replaced state is kept as store_before_restore, which is restorable" "$(r2rst store_prev | r2code "d['success'], d['restoredFrom'], d['auditSaved']")|$(r2mem)|$(r2row store)|$(r2row store_before_restore)|$(curl -s -b $PM $B2/api/admin/backups | python3 -c "import json,sys;print('store_before_restore' in json.load(sys.stdin)['restorable'])")" "200 True store_prev True|A|A|A,B|True"
+  chk "   4. restore, then a normal write: it lands on the restored state, in memory and in the row" "$(r2po R2-C)|$(r2mem)|$(r2row store)" "200|A,C|A,C"
+  chk "   7. repeated restore: undo the restore (store_before_restore → A,B), then undo the undo (→ A,C); memory = row every time" "$(r2rst store_before_restore | r2code "d['success']")|$(r2mem)|$(r2row store)|$(r2rst store_before_restore | r2code "d['success']")|$(r2mem)|$(r2row store)|$(r2row store_before_restore)" "200 True|A,B|A,B|200 True|A,C|A,C|A,B"
+  ROW0=$(r2md5 store); BR0=$(r2md5 store_before_restore)
+  $PSQL -c "update dispatch_data set value='{not json' where key='store_prev'" >/dev/null
+  chk "   2. failed restore — a backup that will not parse: 409, restored:false, still loaded; memory, the row and store_before_restore untouched" "$(r2rst store_prev | r2code "d['restored'], d['loaded']")|$(r2mem)|$([ "$(r2md5 store)" = "$ROW0" ] && echo same || echo CHANGED)|$([ "$(r2md5 store_before_restore)" = "$BR0" ] && echo same || echo CHANGED)" "409 False True|A,C|same|same"
+  chk "   …an unknown backup name is refused (400); a missing one is 409 no_backup; the row is untouched" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/admin/restore -d '{"from":"store","confirm":"RESTORE"}')|$($PSQL -c "delete from dispatch_data where key='store_prev'" >/dev/null; r2rst store_prev | r2code "d['code']")|$([ "$(r2md5 store)" = "$ROW0" ] && echo same || echo CHANGED)" "400|409 no_backup|same"
+  r2hook '{"mode":"fail","count":1}'
+  chk "   3. the database refuses the restore's write: 409, restored:false; memory and the row untouched; the next normal write works and lands" "$(r2rst store_before_restore | r2code "d['restored']")|$(r2mem)|$([ "$(r2md5 store)" = "$ROW0" ] && echo same || echo CHANGED)|$(r2po R2-D)|$(r2mem)|$(r2row store)" "409 False|A,C|same|200|A,C,D|A,C,D"
+  # THE I27 MECHANISM: the restore commits, the save right after it (the audit entry) fails. Before: memory rolled back
+  # to the pre-restore data while the row held the restored data, and the next write put the pre-restore data back
+  # over the row — the restore undid itself, after answering 409.
+  r2hook '{"mode":"fail","after":1,"count":1}'      # the restore's own write goes through; the save after it fails
+  chk "   8. restore commits, the audit save fails: 200 with auditSaved:false and a warning (never 'the restore failed'); memory = row = the restored state (A,B), not the replaced one" "$(r2rst store_before_restore | r2code "d['success'], d['auditSaved'], d['warning'].startswith('Restored.')")|$(r2mem)|$(r2row store)|$(r2row store_before_restore)" "200 True False True|A,B|A,B|A,C,D"
+  chk "   9. …and the next normal write builds on the RESTORED state — nothing stale overwrites it; the failed audit save was counted as a rollback" "$(r2po R2-E)|$(r2mem)|$(r2row store)|$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['persistence']['rollbacks'] >= 1)")" "200|A,B,E|A,B,E|True"
+  # One queue for every write of the row. A writer in flight finishes first (its change is what the restore sets
+  # aside); a writer that arrives during the restore runs on the restored state.
+  r2hook '{"mode":"ok","delayMs":1000}'
+  rm -f /tmp/vbt-r2-w1 /tmp/vbt-r2-rs /tmp/vbt-r2-w2
+  r2po R2-F > /tmp/vbt-r2-w1 & sleep 0.3; r2rst store_before_restore > /tmp/vbt-r2-rs & sleep 0.3; r2po R2-G > /tmp/vbt-r2-w2 & wait
+  r2hook '{"mode":"ok"}'
+  chk "   6. restore with queued concurrent writes: the write in flight (F) lands first and is what the restore sets aside; the write queued behind the restore (G) lands on the restored state; memory = row" "$(cat /tmp/vbt-r2-w1)|$(cat /tmp/vbt-r2-rs | r2code "d['success']")|$(cat /tmp/vbt-r2-w2)|$(r2mem)|$(r2row store)|$(r2row store_before_restore)" "200|200 True|200|A,C,D,G|A,C,D,G|A,B,E,F"
+  # A QuickBooks send in flight holds its batch in memory; a restore would replace it underneath the send.
+  # Carlos on Truck #2B: a driver and truck nothing else in this section touches, so no same-day conflict.
+  CD2=$(mktemp); curl -s -c $CD2 -X POST -d "username=carlos&password=carlos123" $B2/login -o /dev/null
+  F1=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"R2-QB","customer":"Restore Co","deliveryDate":"'"$(date +%F)"'","plannedVendorId":"vbt"},"splits":[{"truckId":"carlos","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null -w '%{http_code}')
+  QL=$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='R2-QB'];print([l['id'] for l in d['loads'] if po and l['poId']==po[0]['id']][0] if po else '')")
+  d2() { curl -s -b $CD2 -H 'Content-Type: application/json' -X POST $B2/api/loads/$QL/trip-action -d "$1" -o /dev/null -w '%{http_code} '; }
+  F2=$(d2 '{"action":"start-trip"}'; d2 '{"action":"arrived-pickup","yardId":"vbt"}'; d2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}"; d2 '{"action":"arrived-jobsite"}'; d2 '{"action":"trip-complete"}')
+  F3=$(curl -s -b $CD2 -H 'Content-Type: application/json' -X PUT $B2/api/loads/$QL -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null -w '%{http_code}')
+  F4=$(d2 '{"action":"delivered"}'); F5=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/loads/$QL/approve -d '{}' -o /dev/null -w '%{http_code}')
+  BR=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches -d "{\"loadIds\":[\"$QL\"]}")
+  QB2=$(echo "$BR" | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('batches') or [{}])[0].get('id') or d.get('error'))")
+  chk "   fixture for the in-flight check: PO, five trip steps, signature, delivered, approve and batch all accepted" "$F1|$F2|$F3|$F4|$F5|${QB2:0:3}" "200|200 200 200 200 200 |200|200 |200|BB-"
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"slow","delayMs":1500}' -o /dev/null
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches/$QB2/send -d '{}' -o /dev/null & sleep 0.4
+  R2G=$(r2rst store_before_restore | r2code "d.get('code'), '$QB2' in d.get('error','')"); wait
+  chk "   a QuickBooks send in flight refuses the restore (409 send_in_flight, naming the batch); nothing changed, and the send finishes once" "$R2G|$(curl -s -b $PM $B2/api/billing-batches/$QB2 | python3 -c "import json,sys;b=json.load(sys.stdin)['batch'];print(b['syncStatus'], b['qbInvoiceId'])")|$(r2mem)" "409 send_in_flight True|sent_to_quickbooks INV-1|A,C,D,G,QB"
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+  chk "   static: one write queue for saves and restores; the restore writes both rows in one transaction; the restored state becomes the rollback point; no reload from the database inside a restore" "$(grep -c "^function queueWrite" server.js)|$(grep -c "return queueWrite(async () => {" server.js)|$(grep -c "lastGoodJson = restoredJson;" server.js)|$(grep -c "await loadData()" server.js)" "1|1|1|1"
   # A missing store row next to existing backups is a lost row, not a new company.
   pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
   $PSQL -c "delete from dispatch_data where key='store'" >/dev/null

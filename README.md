@@ -80,6 +80,14 @@ carlos / carlos123
   The lock is held until the handler has finished its work and answered, not
   until the connection closes: a phone that drops mid-save keeps the next
   write waiting until that save has settled.
+- **A restore is all or nothing.** An admin can restore `store_prev` (before
+  the last save), `store_boot` (when the process started) or
+  `store_before_restore` (what the last restore replaced, so a restore is
+  undoable). The backup is checked before anything is written; the current row
+  is set aside and the backup installed in one transaction; only then does
+  memory follow, and the restored state becomes the point a later failed save
+  rolls back to. A restore waits its turn behind any save in flight, is refused
+  while a QuickBooks send is running, and if it fails nothing has changed.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on

@@ -4174,7 +4174,7 @@ async function restoreBackupPrompt() {
   let info;
   try { info = await (await fetch('/api/admin/backups')).json(); } catch { alert('Could not list backups.'); return; }
   const lines = (info.backups || []).map(b => `${b.key}: ${(b.bytes / 1024).toFixed(1)} KB, written ${b.updatedAt ? new Date(b.updatedAt).toLocaleString() : 'unknown'}`);
-  const from = prompt(`Restore dispatch data from which backup?\n\n${lines.join('\n')}\n\nType store_prev or store_boot:`);
+  const from = prompt(`Restore dispatch data from which backup?\n\n${lines.join('\n')}\n\nType store_prev, store_boot or store_before_restore:`);
   if (!from) return;
   if (!(info.restorable || []).includes(from.trim())) { alert('Not a restorable backup: ' + from); return; }
   if (!confirm(`Replace the live dispatch data with "${from.trim()}"?\nThe current row is kept as store_before_restore.`)) return;
