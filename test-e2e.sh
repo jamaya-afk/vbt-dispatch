@@ -14,7 +14,7 @@ chk() { # chk "name" actual expected
 }
 
 cd "$(dirname "$0")"
-rm -f data.json telemetry.json
+rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 
@@ -917,7 +917,7 @@ chk "   trips ran all day long without a shift in every earlier section (legacy 
 
 echo "── 38. Freight Segment — the Cornelio 9/14/2026 packet, reproduced from the records ──"
 # Fresh server: the packet's ticket numbers are unique company-wide, so this day is built from nothing.
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-seg.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
@@ -1159,7 +1159,7 @@ chk "   Sept 15 history untouched throughout"                 "$(curl -s -b $M $
 echo
 echo "── 40. Phase 0 integrity: billing, attribution, deletion, archive, QuickBooks, vendor bills ──"
 # A fresh process and an empty store, so every fixture below is fully known.
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-p0.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1383,7 +1383,7 @@ import json;d=json.load(open('data.json'));print([l['notes'] for l in d['loads']
 
 echo
 echo "── 41. One dispatch board: every status from the server, one rule for who is busy ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-board.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F); YESTERDAY=$(date -d '-1 day' +%F); TOMORROW=$(date -d '+1 day' +%F)
@@ -1452,7 +1452,7 @@ chk "   every assignment path (sheet, reassign modal, PO form, date move) stays 
 
 echo
 echo "── 43. Approval confirms the record: Driver · Truck · Pickup yard · Ticket · Delivery ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-approve.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1490,7 +1490,7 @@ chk "   approve and reject are decided in the app: no prompt(), no confirm(); a 
 
 echo
 echo "── 44. Editing a PO: the order changes, the work follows only where it is still operational (PO-EDITING.md) ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-poedit.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
@@ -1550,7 +1550,7 @@ chk "   the screen: Edit PO from the PO card and the load detail; a date change 
 
 echo
 echo "── 45. Billing visibility: amounts, the state machine, guarded manual billing, unbill, unarchive ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-billing.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1600,7 +1600,7 @@ chk "   the screen: the state machine strip on Billing and History; manual billi
 
 echo
 echo "── 46. A failed save leaves nothing behind: the store rolls back to what is on disk, one write at a time ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-rollback.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
@@ -1668,7 +1668,7 @@ chk "   mutating requests run one at a time; QuickBooks send/retry/void, GPS pin
 echo
 echo "── 47. Linxup telemetry (L1): positions in by webhook, trucks linked by id, VBT stays the operational truth ──"
 chk "47 without LINXUP_WEBHOOK_TOKEN the webhook path does not exist (404)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/linxup/position -H "$J" -d '{}')" "404"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 node server.js > /tmp/vbt-test-linxup.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1882,7 +1882,7 @@ l2_suite() {
   chk "$TAG after a restart: the geofence mirror and mapping, the last visit per truck, and the archived load's evidence are all still there" "$(gf "sorted((g['geofenceId'], g['mappedVendorId'], g['suggestedVendorId']) for g in d['geofences'])")|$(tel truck-14 "x['lastFence']['name']")|$(tel truck-2 "x['lastFence']['name'], x['lastFence']['leftAt']")|$(ev $LB "len(T), len(t['otherVisits']), len(t['stops']), len(t['vehicleTrips']), len(t['usage']), t['jobsite']['gps']['count'], len(t2['pickup']['visits']), [f['kind'] for f in t['flags']]")|$(hl "d['geofences'], d['mode']")" "[(9, 'vulcan', None), (10, None, 'vbt'), (55, None, None)]|Vulcan Materials Fresno|geofence 55 None|2 3 1 1 1 1 1 ['pickup-mismatch']|3 $([ "$TAG" = 48 ] && echo file || echo postgres)"
   rm -f $M $BE
 }
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 node server.js > /tmp/vbt-test-linxup2.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 l2_suite $B 48 "pkill -f '^node server.js' >/dev/null 2>&1; sleep 1; (VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 node server.js > /tmp/vbt-test-linxup2.log 2>&1 &); for i in \$(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done"
@@ -2166,6 +2166,20 @@ qbb ok
 chk "   static: the client sends Intuit's requestid on every create; the server never writes 'failed' for an uncertain error" "$(grep -c "requestid=" qb.js)|$(grep -c "requestId: b.id" server.js)|$(grep -c "markExternalUnknown(b, " server.js)" "1|4|7"
 rm -f $RG
 
+echo "── 54. Persistence 3 — an id is never handed out twice: not after a failed save, not under concurrency, not after a restart ──"
+# LOAD-<n> and the auto PO number PO-<n> come from counters kept in the store AND as high-water marks outside it
+# (in memory, never rolled back; beside the store on disk — data-ids.json here, the id_high_water row on Postgres).
+maxload() { curl -s -b $M $B/api/data | jq "max((int(l['id'].split('-')[1]) for l in d['loads'] if l['id'].startswith('LOAD-')), default=0)"; }
+maxpo()   { curl -s -b $M $B/api/data | jq "max((int(p['poNumber'][3:]) for p in d['pos'] if p['poNumber'].startswith('PO-') and p['poNumber'][3:].isdigit()), default=1000)"; }
+po54()    { mg POST /api/pos '{"po":{"customer":"Id Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -w ' %{http_code}' | pc "d.get('po',{}).get('poNumber') or d.get('error','')[:14]"; }
+L0=$(maxload); P0=$(maxpo)
+chk "54 sequential creation: the next load id and the next auto PO number are one past the highest on record" "$(po54)|$(maxload) $(maxpo)" "200 PO-$((P0+1))|$((L0+1)) $((P0+1))"
+mg POST /api/_test/save-mode '{"mode":"fail","count":1}' >/dev/null
+chk "   failed save: the ids the failed creation took are consumed, never handed out again — the next creation skips them (load id and PO number); the marks on disk are past them" "$(po54)|$(po54)|$(maxload) $(maxpo)|$(python3 -c "import json;d=json.load(open('data-ids.json'));print(d['load'] >= $((L0+4)), d['po'] >= $((P0+4)))")" "503 Unable to save|200 PO-$((P0+3))|$((L0+3)) $((P0+3))|True True"
+rm -f /tmp/vbt-54-codes.txt; for i in $(seq 1 10); do mg POST /api/pos '{"po":{"customer":"Id Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":2,"vendorId":"vbt"}]}' -o /dev/null -w '%{http_code}\n' >> /tmp/vbt-54-codes.txt & done; wait
+chk "   concurrent creation: ten POs (two loads each) at once → ten 200s; every PO id, PO number and load id on record is distinct" "$(sort /tmp/vbt-54-codes.txt | uniq -c | tr -s ' \n' ' ')|$(curl -s -b $M $B/api/data | jq "len(set(p['id'] for p in d['pos']))==len(d['pos']), len(set(p['poNumber'] for p in d['pos']))==len(d['pos']), len(set(l['id'] for l in d['loads']))==len(d['loads']), len([p for p in d['pos'] if p['customer']=='Id Co'])")" " 10 200 |True True True 12"
+chk "   static: one load-id generator, one auto-PO-number generator, no timestamp-plus-random id left, the marks persist with every save in both modes, and are reconciled at boot, after a restore and before every id" "$(grep -c 'store.nextLoadId++' server.js)|$(grep -c 'store.nextPoNum++' server.js)|$(grep -c "Date.now() + '-' + Math.floor" server.js)|$(grep -c "'PO-' + Date.now()" server.js)|$(grep -c 'fs.writeFileSync(ID_HIGH_WATER_FILE' server.js)|$(grep -c "VALUES('id_high_water'" server.js)|$(grep -c 'reconcileIdCounters();' server.js)" "1|1|0|0|1|1|4"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -2179,7 +2193,7 @@ chk "healthz reports the failing route and message" "$(curl -s $B/healthz | pyth
 chk "  ...and the 500 body carries the reference"  "$(curl -s --max-time 5 $B/api/_test/async-throw | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['ref'] in d['error'])")" "True"
 
 pkill -f "^node server.js" >/dev/null 2>&1
-rm -f data.json telemetry.json
+rm -f data.json data-ids.json telemetry.json
 
 echo "── 21. Postgres: a failed store read must NEVER cause a write ──"
 if [ -z "${TEST_DATABASE_URL:-}" ]; then
@@ -2359,6 +2373,21 @@ else
   chk "   a QuickBooks send in flight refuses the restore (409 send_in_flight, naming the batch); nothing changed, and the send finishes once" "$R2G|$(curl -s -b $PM $B2/api/billing-batches/$QB2 | python3 -c "import json,sys;b=json.load(sys.stdin)['batch'];print(b['syncStatus'], b['qbInvoiceId'])")|$(r2mem)" "409 send_in_flight True|sent_to_quickbooks INV-1|A,C,D,G,QB"
   curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
   chk "   static: one write queue for saves and restores; the restore writes both rows in one transaction; the restored state becomes the rollback point; no reload from the database inside a restore" "$(grep -c "^function queueWrite" server.js)|$(grep -c "return queueWrite(async () => {" server.js)|$(grep -c "lastGoodJson = restoredJson;" server.js)|$(grep -c "await loadData()" server.js)" "1|1|1|1"
+  # ── Persistence #3 (I31): ids never rewind on Postgres — restore, repeated restore, failed save, restart ──
+  r3max() { curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(max((int(l['id'].split('-')[1]) for l in d['loads'] if l['id'].startswith('LOAD-')), default=0))"; }
+  r3hw()  { $PSQL -c "select value from dispatch_data where key='id_high_water'" | python3 -c "import json,sys;print(json.load(sys.stdin)['load'])"; }
+  r3po()  { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"'"$1"'","customer":"Restore Co","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null -w '%{http_code}'; }
+  r3po R3-A >/dev/null; A3=$(r3max); r3po R3-B >/dev/null; r3po R3-C >/dev/null; C3=$(r3max)
+  chk "P3 fixture: three loads in a row climb by one; the id_high_water row (its own row, never rotated or restored) is one past the newest" "$((C3-A3))|$(r3hw)" "2|$((C3+1))"
+  chk "   restore an older backup (store_prev = before the last creation): the newest load leaves the record, but the next id is NOT its id — it is past every id ever issued" "$(r2rst store_prev | r2code "d['success']")|$(r3max)|$(r3po R3-D)|$(r3max)" "200 True|$((C3-1))|200|$((C3+1))"
+  chk "   repeated restore (undo, create, restore again, create): every new id is unique and the high-water row only ever climbs" "$(r2rst store_before_restore | r2code "d['success']")|$(r3po R3-E)|$(r3max)|$(r2rst store_prev | r2code "d['success']")|$(r3po R3-F)|$(r3max)|$(r3hw)" "200 True|200|$((C3+2))|200 True|200|$((C3+3))|$((C3+4))"
+  r2hook '{"mode":"fail","count":1}'
+  chk "   failed save on Postgres: the id the failed creation took is consumed; the next creation skips it" "$(r3po R3-G)|$(r3po R3-H)|$(r3max)" "503|200|$((C3+5))"
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  (VBT_TEST_HOOKS=1 DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
+  chk "   after a restart the ids continue past the high-water row, not from a counter reset; the row follows" "$(r3po R3-I)|$(r3max)|$(r3hw)" "200|$((C3+6))|$((C3+7))"
   # A missing store row next to existing backups is a lost row, not a new company.
   pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
   $PSQL -c "delete from dispatch_data where key='store'" >/dev/null
@@ -2379,10 +2408,14 @@ else
 fi
 echo
 echo "── 23. Old data: approved-but-unlocked load becomes locked on load ──"
+rm -f data-ids.json   # a fresh legacy file: no high-water marks beside it yet
 cat > data.json <<'JSON'
-{"pos":[{"id":"PO-OLD","poNumber":"OLD-1","customer":"Legacy Co","deliveryDate":"2026-01-05","status":"completed"}],
+{"pos":[{"id":"PO-OLD","poNumber":"OLD-1","customer":"Legacy Co","deliveryDate":"2026-01-05","status":"completed"},
+        {"id":"PO-AUTO","poNumber":"PO-1050","customer":"Legacy Co","deliveryDate":"2026-01-06","status":"active"}],
  "loads":[{"id":"L-OLD","poId":"PO-OLD","truckId":"beryle","material":"Dirt","loadsAssigned":1,"loadsDelivered":1,
-           "deliveryDate":"2026-01-05","status":"completed","approvalStatus":"approved","locked":false,"billingBatchId":"BB-STUCK"}],
+           "deliveryDate":"2026-01-05","status":"completed","approvalStatus":"approved","locked":false,"billingBatchId":"BB-STUCK"},
+          {"id":"LOAD-7","poId":"PO-AUTO","truckId":null,"material":"Dirt","loadsAssigned":1,"loadsDelivered":0,"deliveryDate":"2026-01-06","status":"unassigned","approvalStatus":"pending"}],
+ "nextLoadId":3,"nextPoNum":1001,
  "billingBatches":[{"id":"BB-STUCK","loadIds":["L-OLD"],"syncStatus":"syncing","qbInvoiceId":"","customer":"Legacy Co","totalAmount":0,"lineItems":[]}],
  "unitConfig":{"byUnit":{"ton":25,"load":1,"hour":1,"mile":1},"byMaterial":{}}}
 JSON
@@ -2393,8 +2426,9 @@ chk "legacy approved load is locked after normalize" "$(curl -s -b $M $B/api/dat
 chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/L-OLD -d '{"material":"Sand"}')" "403"
 chk "fabricated hour:1 / mile:1 seeds are removed on load" "$(curl -s -b $M $B/api/costing/settings | python3 -c "import json,sys;u=json.load(sys.stdin)['unitConfig']['byUnit'];print('hour' in u, 'mile' in u, u['ton'])")" "False False 25"
 chk "batch stuck in 'syncing' at restart (no invoice id) becomes external-result-unknown" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'], b['mayExistInQuickBooks'])")" "unknown True True"
+chk "Persistence 3: a legacy file whose counters sit below its own records (nextLoadId 3 beside LOAD-7, nextPoNum 1001 beside PO-1050) boots and issues past them — LOAD-8, PO-1051 — and the marks on disk follow" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"customer":"Legacy Co","deliveryDate":"2026-01-07"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['po']['poNumber'])")|$(curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(sorted(l['id'] for l in d['loads'] if l['id'].startswith('LOAD-')))")|$(python3 -c "import json;d=json.load(open('data-ids.json'));print(d['load'], d['po'])")" "PO-1051|['LOAD-7', 'LOAD-8']|9 1052"
 pkill -f "^node server.js" >/dev/null 2>&1
-rm -f data.json telemetry.json
+rm -f data.json data-ids.json telemetry.json
 
 [ "$SKIPPED" -gt 0 ] && SK=", $SKIPPED section(s) skipped" || SK=""
 echo "════ $PASS passed, $FAIL failed$SK ════"

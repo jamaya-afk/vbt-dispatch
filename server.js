@@ -894,6 +894,11 @@ async function restoreFromBackup(key) {
     // Committed. Memory, the rollback point and the lock state follow.
     replaceStoreContents(candidate);
     lastGoodJson = restoredJson;
+    // The backup's counters are older than the ids issued since; the
+    // high-water marks (outside the row, untouched by this restore) win —
+    // read again here, because a process that booted locked never read them.
+    await loadIdHighWater();
+    reconcileIdCounters();
     persistence.loaded = true; persistence.loadError = '';
     persistence.lastSaveOk = true; persistence.lastSaveAt = new Date().toISOString(); persistence.lastError = ''; persistence.degradedSince = '';
     return { restoredFrom: key, ...counts };
@@ -1001,6 +1006,84 @@ function testWriteShouldFail() {
   return true;
 }
 
+// ── ID HIGH-WATER MARKS ──────────────────────────────────────────────────────
+// LOAD-<n> and the auto PO number PO-<n> come from counters. The counters live
+// in the store row so they travel with the data — but the row is restorable
+// (an older backup carries older counters) and a failed save rolls the
+// in-memory counters back. Neither may hand an id out twice. So the highest
+// value ever issued is also kept OUTSIDE the row: in memory for the life of
+// the process (never rolled back), and in its own dispatch_data row
+// 'id_high_water' (file mode: data-ids.json), written in the same transaction
+// as every save and never rotated, backed up or restored. A new id is the max
+// of the store counter, the high-water mark and the highest id on record,
+// live or archived — unique across restart, restore and failed saves.
+const ID_HIGH_WATER_FILE = path.join(__dirname, 'data-ids.json');
+const idHighWater = { load: 1, po: 1001 };
+function highestNumberedId(re, items) {
+  let max = 0;
+  for (const x of items) { const m = re.exec(String((x && x.id) || '')); if (m) max = Math.max(max, Number(m[1])); }
+  return max;
+}
+function highestAutoPoNumber() {
+  let max = 0;
+  for (const p of [...store.pos, ...posInArchive()]) { const m = /^PO-(\d+)$/.exec(String(p.poNumber || '').trim()); if (m) max = Math.max(max, Number(m[1])); }
+  return max;
+}
+// Bring the store counters and the high-water marks up to each other and to
+// what is on record. Run after boot, after a restore, and before every id.
+function reconcileIdCounters() {
+  const loadNext = Math.max(Number(store.nextLoadId) || 1, Number(idHighWater.load) || 1, highestNumberedId(/^LOAD-(\d+)$/, [...store.loads, ...loadsInArchive()]) + 1);
+  const poNext = Math.max(Number(store.nextPoNum) || 1001, Number(idHighWater.po) || 1001, highestAutoPoNumber() + 1);
+  store.nextLoadId = loadNext; idHighWater.load = loadNext;
+  store.nextPoNum = poNext; idHighWater.po = poNext;
+}
+function nextLoadId() {
+  reconcileIdCounters();
+  const n = store.nextLoadId++;
+  idHighWater.load = store.nextLoadId;
+  return `LOAD-${n}`;
+}
+function nextAutoPoNumber() {
+  reconcileIdCounters();
+  let n; do { n = store.nextPoNum++; } while (findPoByNumber(`PO-${n}`));
+  idHighWater.po = store.nextPoNum;
+  return `PO-${n}`;
+}
+async function loadIdHighWater() {
+  try {
+    let saved = null;
+    if (pg) { const r = await pg.query("SELECT value FROM dispatch_data WHERE key = 'id_high_water'"); if (r.rows.length) saved = JSON.parse(r.rows[0].value); }
+    else if (fs.existsSync(ID_HIGH_WATER_FILE)) saved = JSON.parse(fs.readFileSync(ID_HIGH_WATER_FILE, 'utf8'));
+    if (saved && typeof saved === 'object') {
+      idHighWater.load = Math.max(idHighWater.load, Number(saved.load) || 1);
+      idHighWater.po = Math.max(idHighWater.po, Number(saved.po) || 1001);
+    }
+  } catch (e) { console.warn('[ids] high-water marks could not be read (continuing from the records):', e.message); }
+}
+// Time-based ids. <prefix>-<ms>-<n>: the millisecond keeps ids apart across
+// restarts and restores, the per-process sequence keeps them apart within
+// one, and `exists` (for records kept in the store) makes a repeat impossible
+// even if the clock were set back.
+let idSeq = 0;
+function genId(prefix, exists) {
+  let id;
+  do { id = `${prefix}-${Date.now()}-${++idSeq}`; } while (exists && exists(id));
+  return id;
+}
+// <prefix>-<ms>, bumped past any id already on record (the PO id, the archive batch id).
+function uniqueTimeId(prefix, exists) {
+  let t = Date.now(), id = `${prefix}-${t}`;
+  while (exists(id)) id = `${prefix}-${++t}`;
+  return id;
+}
+// <prefix>-<slug>-<n> for trucks and trailers: the number is already unique
+// among them; the suffix is re-drawn until the id is too.
+function uniqueSlugId(prefix, text, exists) {
+  const slug = String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  let id; do { id = `${prefix}-${slug}-${Math.floor(Math.random() * 1000)}`; } while (exists(id));
+  return id;
+}
+
 async function writeStore({ rotatePrev = true } = {}) {
   // The single most important line in this file. If the store was never
   // successfully loaded, whatever is in memory is seed data or nothing, and
@@ -1039,6 +1122,12 @@ async function writeStore({ rotatePrev = true } = {}) {
           "INSERT INTO dispatch_data(key,value,updated_at) VALUES('store',$1,now()) ON CONFLICT(key) DO UPDATE SET value=$1, updated_at=now()",
           [j]
         );
+        // The id high-water marks ride in the same transaction, in their own
+        // row: never rotated into store_prev, never touched by a restore.
+        await client.query(
+          "INSERT INTO dispatch_data(key,value,updated_at) VALUES('id_high_water',$1,now()) ON CONFLICT(key) DO UPDATE SET value=$1, updated_at=now()",
+          [JSON.stringify(idHighWater)]
+        );
         await client.query('COMMIT');
       } catch (e) {
         await client.query('ROLLBACK').catch(() => {});
@@ -1069,6 +1158,7 @@ async function writeStore({ rotatePrev = true } = {}) {
     // instead of pretending the change was recorded.
     try {
       fs.writeFileSync(DATA_FILE, j);
+      fs.writeFileSync(ID_HIGH_WATER_FILE, JSON.stringify(idHighWater));
       persistence.lastSaveOk = true;
       persistence.lastSaveAt = new Date().toISOString();
       lastGoodJson = j;
@@ -1298,7 +1388,7 @@ function normalizeStore() {
         (p.customer || '').toLowerCase().trim() === name.toLowerCase()
       ) || {};
       store.customers.push({
-        id: 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+        id: genId('cust', id => (store.customers || []).some(c => c.id === id)),
         name,
         code: '',
         address: sample.address || '',
@@ -1316,7 +1406,7 @@ function normalizeStore() {
   }
   // Make sure customers all have required fields (in case loaded from older shape)
   store.customers.forEach(c => {
-    if (!c.id) c.id = 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
+    if (!c.id) c.id = genId('cust', id => (store.customers || []).some(x => x.id === id));
     if (c.active === undefined) c.active = true;
     if (!c.createdAt) c.createdAt = new Date().toISOString();
     if (!('qbCustomerId' in c)) c.qbCustomerId = '';
@@ -1489,7 +1579,7 @@ function logNotification(entry) {
   try {
     if (!Array.isArray(store.notificationLog)) store.notificationLog = [];
     store.notificationLog.push({
-      id: 'NTF-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+      id: genId('NTF'),
       at: new Date().toISOString(),
       event: entry.event,
       loadId: entry.loadId || '',
@@ -1925,7 +2015,7 @@ function logAction(user, action, target, details) {
       role = user.role || '';
     }
     const entry = {
-      id: 'AUD-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+      id: genId('AUD'),
       at: new Date().toISOString(),
       user: username,
       displayName,
@@ -3006,7 +3096,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     } else if (resolvedCustomer) {
       // Auto-add to the master. Use the address/city from this PO as initial fields.
       const newCust = {
-        id: 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+        id: genId('cust', id => (store.customers || []).some(c => c.id === id)),
         name: resolvedCustomer,
         code: '', address: po.address || '', city: po.city || '',
         phone: '', email: '', notes: '',
@@ -3023,7 +3113,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   if (poNumber) {
     if (findPoByNumber(poNumber)) return res.status(409).json({ error: duplicatePoMessage(poNumber), poNumber, duplicate: true });
   } else {
-    do { poNumber = `PO-${store.nextPoNum++}`; } while (findPoByNumber(poNumber));
+    poNumber = nextAutoPoNumber();
   }
   for (const sp of (splits || [])) {
     if (sp.truckUnitId && !(store.trucks || []).some(t => t.id === sp.truckUnitId)) return res.status(400).json({ error: `Unknown truck "${sp.truckUnitId}"` });
@@ -3062,7 +3152,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   }
   const newPo = {
     ...(inheritedGeo ? { geo: inheritedGeo } : {}),
-    id: 'PO-' + Date.now(),
+    id: uniqueTimeId('PO', id => !!findPoAnywhere(id)),
     poNumber,
     customer:        resolvedCustomer,
     job:             po.job || resolvedCustomer,
@@ -3155,7 +3245,7 @@ function makeLoadForPo(po, s) {
     console.warn('[make-load] price resolution failed, using fallback defaults:', e.message);
   }
   return {
-    id: 'LOAD-' + store.nextLoadId++,
+    id: nextLoadId(),
     poId: po.id,
     material: s.material,
     vendorId: s.vendorId || null,
@@ -3247,7 +3337,7 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
       if (!typed) return res.status(400).json({ error: 'Customer cannot be blank' });
       const existing = store.customers.find(c => String(c.name || '').toLowerCase().trim() === typed.toLowerCase());
       if (existing) customer = existing.name;
-      else { customer = typed; autoAddedCustomerId = 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000); }
+      else { customer = typed; autoAddedCustomerId = genId('cust', id => (store.customers || []).some(c => c.id === id)); }
     }
   }
   const next = { ...old, customer };
@@ -3967,7 +4057,7 @@ function validateSegmentWindow(shift, seg, { odStart, odEnd }, excludeId) {
 }
 function openSegment(shift, l, po, yard, { odometer, by, at }) {
   const seg = {
-    id: genId('FS'), shiftId: shift.id, date: shift.date,
+    id: genId('FS', id => (store.freightSegments || []).some(s => s.id === id)), shiftId: shift.id, date: shift.date,
     driverId: shift.driverId, driverName: shift.driverName,
     truckId: shift.truckId, truckNum: shift.truckNum, trailerId: shift.trailerId, trailerNum: shift.trailerNum,
     customer: po.customer || '', key: segmentKeyFor(po),
@@ -4217,7 +4307,7 @@ app.post('/api/shifts/start', reqAuth, async (req, res) => {
   const now = new Date().toISOString();
   const d = rosterDriver(u.truckId);
   const shift = {
-    id: genId('SH'), date: todayStr(),
+    id: genId('SH', id => (store.shifts || []).some(s => s.id === id)), date: todayStr(),
     driverId: u.truckId, driverName: (d && d.name) || u.displayName || u.username,
     truckId: truck.id, truckNum: truck.truckNum, startTruckId: truck.id, startTruckNum: truck.truckNum,
     trailerId: trailer ? trailer.id : null, trailerNum: trailer ? trailer.number : '',
@@ -4750,9 +4840,7 @@ app.post('/api/loads/:id/unbill', reqMgr, async (req, res) => {
 // click on a billing batch. Approved loads are locked from deletion; if a batch
 // is wrong, it is voided (not deleted), and a correction batch may be created.
 
-function genId(prefix) {
-  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-}
+// genId lives with the id high-water marks (see "ID HIGH-WATER MARKS" above).
 
 function logQbSync(entry) {
   try {
@@ -5042,7 +5130,7 @@ app.post('/api/billing-batches', reqMgr, async (req, res) => {
   const created = [];
   const now = new Date().toISOString();
   for (const g of groups) {
-    const batchId = genId('BB');
+    const batchId = genId('BB', id => store.billingBatches.some(b => b.id === id));
     const batch = {
       id: batchId,
       customer: g.customer,
@@ -5636,7 +5724,7 @@ app.post('/api/vendor-bills', reqMgr, async (req, res) => {
   const now = new Date().toISOString();
   for (const g of groups) {
     const bill = {
-      id: genId('VB'),
+      id: genId('VB', id => store.vendorBills.some(b => b.id === id)),
       vendorId: g.vendorId,
       vendorName: g.vendorName,
       deliveryStart: g.deliveryStart,
@@ -6033,7 +6121,7 @@ app.post('/api/vendors/:id/prices', reqMgr, async (req, res) => {
     return res.status(400).json({ error: 'That material already exists for this vendor' });
   }
   const newPrice = {
-    id: 'price-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+    id: genId('price', id => (store.vendorPrices[v.id] || []).some(p => p.id === id)),
     material: material.trim(),
     unit: (unit || '').trim(),
     price: Number(price) || 0,
@@ -6175,7 +6263,7 @@ app.post('/api/fleet/trailers', reqMgr, async (req, res) => {
   }
   if (defaultTruckId && !(store.trucks || []).some(t => t.id === defaultTruckId)) return res.status(400).json({ error: 'Unknown truck' });
   const trailer = {
-    id: 'trailer-' + num.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Math.floor(Math.random() * 1000),
+    id: uniqueSlugId('trailer', num, id => (store.trailers || []).some(t => t.id === id)),
     number: num,
     type: String(type || '').trim(),
     status: TRAILER_STATUSES.includes(status) ? status : 'available',
@@ -6368,7 +6456,7 @@ app.post('/api/customers', reqMgr, async (req, res) => {
     return res.status(400).json({ error: 'A customer with that name already exists' });
   }
   const newCust = {
-    id: 'cust-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+    id: genId('cust', id => (store.customers || []).some(c => c.id === id)),
     name: trimmed,
     code:    String(code    || '').trim(),
     address: String(address || '').trim(),
@@ -6504,7 +6592,7 @@ app.post('/api/customer-prices', reqMgr, async (req, res) => {
     return res.status(400).json({ error: 'That material already has a price for this customer' });
   }
   const newPrice = {
-    id: 'cprice-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+    id: genId('cprice', id => (store.customerPrices[key] || []).some(p => p.id === id)),
     material: material.trim(),
     unit: (unit || 'ton').trim(),
     price: Number(price) || 0,
@@ -7193,7 +7281,7 @@ app.post('/api/history/archive', reqMgr, async (req, res) => {
   });
   const archivedPos = store.pos.filter(p => fullyBilledPos.includes(p.id));
 
-  const batchId = 'BATCH-' + Date.now();
+  const batchId = uniqueTimeId('BATCH', id => (store.archive || []).some(b => b.batchId === id));
   store.archive.unshift({
     batchId,
     archivedAt: new Date().toISOString(),
@@ -7761,7 +7849,7 @@ app.post('/api/fleet/trucks', reqMgr, async (req, res) => {
     return res.status(400).json({ error: 'A truck with that number already exists' });
   }
   const truck = {
-    id: 'truck-' + num.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Math.floor(Math.random() * 1000),
+    id: uniqueSlugId('truck', num, id => (store.trucks || []).some(t => t.id === id)),
     truckNum: num,
     type: type || '',
     status: TRUCK_STATUSES.includes(status) ? status : 'available',
@@ -8211,6 +8299,11 @@ const PORT = process.env.PORT || 3000;
   try {
     await loadData();
     await snapshotBootStore();
+    // Ids never rewind: the counters in the row are raised to the high-water
+    // marks kept outside it and to the highest id on record before anything
+    // is issued. A rolled-back row or an older restore cannot reset them.
+    await loadIdHighWater();
+    reconcileIdCounters();
     lastGoodJson = JSON.stringify(store);   // the rollback point until the first successful save
     await pruneLocationHistory();
     setInterval(pruneLocationHistory, 24 * 60 * 60 * 1000).unref();

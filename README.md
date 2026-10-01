@@ -88,6 +88,12 @@ carlos / carlos123
   memory follow, and the restored state becomes the point a later failed save
   rolls back to. A restore waits its turn behind any save in flight, is refused
   while a QuickBooks send is running, and if it fails nothing has changed.
+- **An id is never handed out twice.** Load ids and auto PO numbers come from
+  counters that travel with the data, and from high-water marks kept outside
+  it (the `id_high_water` row, `data-ids.json` in file mode) that are never
+  rolled back, rotated or restored. A new id is always past the highest ever
+  issued: after a restart, after restoring an older backup, after a save that
+  failed. Every other id is time-based and checked against what is on record.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on
