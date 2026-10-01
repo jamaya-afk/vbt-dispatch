@@ -124,6 +124,63 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .db-chip.assigned{background:#dbeafe;color:#1d4ed8}
 .db-chip.in-progress{background:#fef3c7;color:#b45309}
 .db-chip.off,.db-chip.unavailable{background:var(--bg2);color:var(--txt3)}
+/* ── CALENDAR: scheduled work by date (planning), beside the Dispatch board (now) ── */
+#calendar-content{padding:16px 22px 28px}
+.cal-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.cal-nav{display:flex;align-items:center;gap:6px}
+.cal-nav button{width:34px;height:34px;border-radius:50%;border:1px solid var(--bdr2);background:var(--bg);cursor:pointer;font-size:15px;color:var(--txt2);transition:all .15s;font-family:var(--f)}
+.cal-nav button:hover{border-color:var(--I);color:var(--I);background:var(--Ib)}
+.cal-label{font-size:18px;font-weight:800;letter-spacing:-.01em;min-width:180px;text-align:center}
+.cal-today{font-size:11px;color:var(--I);background:var(--Ib);border:1px solid var(--Id);padding:5px 12px;border-radius:20px;cursor:pointer;font-family:var(--f);font-weight:600}
+.cal-today:hover{background:var(--I);color:#fff}
+.cal-pick{padding:6px 9px;border:1px solid var(--bdr2);border-radius:8px;font-family:var(--f);font-size:12.5px;background:var(--bg);color:var(--txt)}
+.cal-views{margin-left:auto;display:flex;gap:4px;background:var(--bg2);padding:3px;border-radius:20px}
+.cal-sum{font-size:12px;color:var(--txt2);margin-bottom:10px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.cal-legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--txt2)}
+.cal-legend span::before{content:'';display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px;background:var(--bdr2)}
+.cal-legend .b-unassigned::before{background:var(--A)}.cal-legend .b-assigned::before{background:var(--B)}.cal-legend .b-in-progress::before{background:#f59e0b}
+.cal-legend .b-awaiting-approval::before{background:var(--P)}.cal-legend .b-ready-to-bill::before{background:var(--T)}.cal-legend .b-completed::before{background:var(--G)}.cal-legend .b-archived::before{background:var(--txt3)}
+.cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+.cal-dow{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt3);font-weight:700;padding:0 6px 4px}
+.cal-cell{background:var(--bg);border:1px solid var(--bdr);border-radius:10px;min-height:118px;padding:6px;display:flex;flex-direction:column;gap:3px}
+.cal-cell.other{opacity:.5}
+.cal-cell.past{background:var(--bg2)}
+.cal-cell.today{border-color:var(--B);box-shadow:inset 0 0 0 1px var(--B)}
+.cal-cell.picked{outline:2px solid var(--I);outline-offset:1px}
+.cal-day{display:flex;align-items:baseline;justify-content:space-between;gap:4px;cursor:pointer;padding:2px 2px 4px}
+.cal-day b{font-size:14px}
+.cal-cell.today .cal-day b{background:var(--B);color:#fff;border-radius:50%;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;font-size:12px}
+.cal-day small{font-size:10px;color:var(--txt3);font-weight:600;text-align:right}
+.cal-more{font-size:10.5px;color:var(--B);cursor:pointer;font-weight:600;padding:2px}
+.cal-item{border:1px solid var(--bdr);border-left:3px solid var(--bdr2);border-radius:7px;background:var(--bg);padding:4px 6px;font-size:11px;cursor:pointer;line-height:1.3;transition:box-shadow .15s}
+.cal-item:hover{box-shadow:var(--shadow);border-color:var(--Bd)}
+.cal-item .c{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal-item .s{color:var(--txt2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal-item .st{font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+.cal-item.b-unassigned,.cal-row.b-unassigned{border-left-color:var(--A);background:var(--Ab)}.cal-item.b-unassigned .st{color:var(--A)}
+.cal-item.b-assigned,.cal-row.b-assigned{border-left-color:var(--B)}.cal-item.b-assigned .st{color:#1d4ed8}
+.cal-item.b-in-progress,.cal-row.b-in-progress{border-left-color:#f59e0b;background:#fffbeb}.cal-item.b-in-progress .st{color:#b45309}
+.cal-item.b-awaiting-approval,.cal-row.b-awaiting-approval{border-left-color:var(--P);background:var(--Pb)}.cal-item.b-awaiting-approval .st{color:#6d28d9}
+.cal-item.b-ready-to-bill,.cal-row.b-ready-to-bill{border-left-color:var(--T);background:var(--Tb)}.cal-item.b-ready-to-bill .st{color:var(--T)}
+.cal-item.b-completed,.cal-row.b-completed{border-left-color:var(--G);opacity:.85}.cal-item.b-completed .st{color:var(--G)}
+.cal-item.b-archived,.cal-row.b-archived{border-left-color:var(--bdr2);opacity:.65}.cal-item.b-archived .st{color:var(--txt3)}
+.cal-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
+.cal-col{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:8px;min-height:200px;display:flex;flex-direction:column;gap:6px}
+.cal-col.today{border-color:var(--B);box-shadow:inset 0 0 0 1px var(--B)}
+.cal-col-head{display:flex;justify-content:space-between;align-items:baseline;cursor:pointer;padding-bottom:4px;border-bottom:1px solid var(--bdr)}
+.cal-col-head b{font-size:13px}.cal-col-head small{font-size:10.5px;color:var(--txt3);font-weight:600}
+.cal-week .cal-item{font-size:11.5px;padding:6px 8px}
+.cal-daylist{display:flex;flex-direction:column;gap:10px}
+.cal-group{background:var(--bg);border:1px solid var(--bdr);border-radius:12px;padding:10px 12px;box-shadow:var(--shadow)}
+.cal-group-head{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;margin-bottom:8px}
+.cal-group-head .n{margin-left:auto;font-size:11px;color:var(--txt3);font-weight:600}
+.cal-row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:start;padding:8px 10px;border:1px solid var(--bdr);border-left:4px solid var(--bdr2);border-radius:9px;margin-bottom:6px;cursor:pointer;font-size:12.5px;background:var(--bg)}
+.cal-row:hover{border-color:var(--Bd);box-shadow:var(--shadow)}
+.cal-row .t{font-weight:700;font-size:13.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cal-row .d{color:var(--txt2);font-size:12px;margin-top:2px}
+.cal-row .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.cal-empty{padding:28px;text-align:center;color:var(--txt3);font-size:13px;background:var(--bg2);border:1px dashed var(--bdr2);border-radius:12px}
+@media(max-width:900px){.cal-grid,.cal-week{grid-template-columns:repeat(2,minmax(0,1fr))}.cal-cell{min-height:80px}.cal-views{margin-left:0}.cal-row{grid-template-columns:1fr}.cal-row .acts{justify-content:flex-start}}
 .db-trucks{display:flex;flex-wrap:wrap;gap:6px}
 .db-truck{font-size:11.5px;border:1px solid var(--bdr);border-radius:8px;padding:5px 9px;background:var(--bg)}
 .db-truck.available{border-color:var(--Gd);background:var(--Gb)}
@@ -766,6 +823,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <span>Dispatch</span>
         <span class="nav-badge" id="today-badge" style="display:none">0</span>
       </button>
+      <button class="nav-item" data-tab="calendar" onclick="goTab('calendar')" id="nav-calendar">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span>Calendar</span>
+      </button>
       <button class="nav-item" data-tab="map" onclick="goTab('map')" id="nav-map" style="display:none">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
         <span>Fleet Map</span>
@@ -828,6 +889,10 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
       <!-- DISPATCH BOARD -->
       <div class="section active" id="sec-today">
         <div id="today-content"></div>
+      </div>
+      <!-- CALENDAR: scheduled work by date (planning); the board is about now -->
+      <div class="section" id="sec-calendar">
+        <div id="calendar-content"></div>
       </div>
       <!-- PURCHASE ORDERS -->
       <div class="section" id="sec-pos">
@@ -1448,6 +1513,7 @@ function goTab(tab) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 
   if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch'; renderToday(); }
+  if (tab === 'calendar') { document.getElementById('sec-calendar').classList.add('active'); document.getElementById('page-title').textContent = 'Calendar'; renderCalendar(); }
   if (tab === 'pos')      { document.getElementById('sec-pos').classList.add('active'); document.getElementById('page-title').textContent = 'Purchase Orders'; renderPOsList(); }
   if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
@@ -1465,7 +1531,7 @@ function goTab(tab) {
 
   // Update topbar actions
   const actions = document.getElementById('topbar-actions');
-  if ((role === 'manager' || role === 'admin') && tab === 'today') {
+  if ((role === 'manager' || role === 'admin') && (tab === 'today' || tab === 'calendar')) {
     actions.innerHTML = `<button class="btn primary" onclick="openNewPO()">+ New PO</button>`;
   } else if (role === 'driver') {
     const isDark = document.body.classList.contains('drv-dark');
@@ -4315,6 +4381,143 @@ async function addLoadToPO() {
 
 // ── QUICK ASSIGN / TODAY'S DISPATCH ─────────────────────────────────────────
 // One screen, phone-first: see today, spot the unassigned, assign in seconds.
+// ── THE CALENDAR ─────────────────────────────────────────────────────────────
+// Scheduled work by date — the planning view. The Dispatch board answers
+// "what is happening right now"; this answers "what is scheduled for this
+// day, week or month". Every row comes from /api/calendar, which builds it
+// with the board's own row rule from each load's deliveryDate, so there is no
+// second schedule and nothing here recomputes a status. An item opens the
+// same Load Details and Edit PO the board uses. Telemetry is not shown here
+// and has no say over a date.
+let calView = 'month';          // 'day' | 'week' | 'month'
+let calDate = null;             // YYYY-MM-DD anchor; null = today
+let calData = null;             // the last /api/calendar answer
+const CAL_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const CAL_STATUS = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In progress', 'awaiting-approval': 'Awaiting approval', 'ready-to-bill': 'Approved', completed: 'Billed', archived: 'Archived' };
+function calAnchor() { return calDate || (calData && calData.today) || todayStr(); }
+function calAddDays(s, n) { const d = new Date(s + 'T12:00:00'); d.setDate(d.getDate() + n); return ymd(d); }
+function calRange() {
+  const a = calAnchor(), d = new Date(a + 'T12:00:00');
+  if (calView === 'day') return { from: a, to: a };
+  if (calView === 'week') { const from = calAddDays(a, -d.getDay()); return { from, to: calAddDays(from, 6) }; }
+  const first = new Date(d.getFullYear(), d.getMonth(), 1, 12), last = new Date(d.getFullYear(), d.getMonth() + 1, 0, 12);
+  return { from: calAddDays(ymd(first), -first.getDay()), to: calAddDays(ymd(last), 6 - last.getDay()), monthFirst: ymd(first), monthLast: ymd(last) };
+}
+async function renderCalendar() {
+  const wrap = document.getElementById('calendar-content'); if (!wrap) return;
+  if (!calData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading the calendar…</div>`;
+  const r = calRange();
+  const d = await api('GET', `/api/calendar?from=${r.from}&to=${r.to}`);
+  if (!d.ok) { wrap.innerHTML = `<div style="padding:24px;color:var(--R)">${escapeHtml(d.error || 'Failed to load the calendar')}</div>`; return; }
+  calData = d;
+  paintCalendar();
+}
+function calSetView(v) { calView = v; renderCalendar(); }
+function calGo(n) {
+  const a = calAnchor();
+  if (calView === 'month') { const d = new Date(a + 'T12:00:00'); d.setDate(1); d.setMonth(d.getMonth() + n); calDate = ymd(d); }
+  else calDate = calAddDays(a, n * (calView === 'week' ? 7 : 1));
+  renderCalendar();
+}
+function calToday() { calDate = null; renderCalendar(); }
+function calPick(v) { if (!/^\d{4}-\d{2}-\d{2}$/.test(v || '')) return; calDate = v; renderCalendar(); }
+function calOpenDay(date) { calDate = date; calView = 'day'; renderCalendar(); }
+function calOpen(id, archived) { if (archived) { goTab('history'); return; } openLoadDetail(id); }
+function calOnBoard(date) { dbDate = (calData && date === calData.today) ? null : date; dbFilter = 'all'; goTab('today'); }
+function calStatus(x) {
+  const k = x.archived ? 'archived' : x.bucket;
+  let label = k === 'in-progress' && x.stage ? x.stage : (CAL_STATUS[k] || k);
+  if (x.isPartial && !x.archived) label += ' · partial';
+  return { k, label };
+}
+function calItem(x, size) {
+  const s = calStatus(x);
+  const who = x.driverName ? `${escapeHtml(x.driverName)}${x.truckNum ? ' · ' + escapeHtml(x.truckNum) : ''}` : 'Unassigned';
+  const title = `${escapeHtml(x.customer)}${x.jobName && x.jobName !== x.customer ? ' — ' + escapeHtml(x.jobName) : ''}`;
+  return `<div class="cal-item b-${s.k}" data-load-id="${x.id}" onclick="calOpen('${x.id}', ${x.archived ? 'true' : 'false'})" title="PO ${escapeHtml(x.poNumber)} · ${escapeHtml(x.yardName || '')} → ${escapeHtml(x.destination || '')}">
+    <div class="c">${title}</div>
+    ${size === 'week'
+      ? `<div class="s">PO ${escapeHtml(x.poNumber)}${x.jobCode ? ' · ' + escapeHtml(x.jobCode) : ''} · ${escapeHtml(x.material)}</div><div class="s">${escapeHtml(x.yardName || '—')} → ${escapeHtml(x.city || x.destination || '—')}</div>`
+      : `<div class="s">PO ${escapeHtml(x.poNumber)} · ${escapeHtml(x.material)}</div>`}
+    <div class="s">${who} · ${x.loadsDelivered}/${x.loadsAssigned}</div>
+    <div class="st">${escapeHtml(s.label)}</div>
+  </div>`;
+}
+function paintCalendar() {
+  const d = calData; if (!d) return;
+  const r = calRange(), today = d.today, a = calAnchor();
+  const fmtMd = s => new Date(s + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const label = calView === 'month' ? new Date(a + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    : calView === 'week' ? `${fmtMd(r.from)} – ${fmtMd(r.to)}, ${r.to.slice(0, 4)}`
+    : new Date(a + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const rows = date => d.days[date] || [];
+  const all = Object.values(d.days).flat();
+  const scope = calView === 'month' ? all.filter(x => x.deliveryDate >= r.monthFirst && x.deliveryDate <= r.monthLast) : all;
+  const n = scope.length, un = scope.filter(x => x.bucket === 'unassigned' && !x.archived).length;
+  const sum = `${n} load${n === 1 ? '' : 's'} scheduled · ${scope.reduce((s, x) => s + (x.loadsDelivered || 0), 0)}/${scope.reduce((s, x) => s + (x.loadsAssigned || 0), 0)} delivered${un ? ` · <span style="color:var(--A);font-weight:700">${un} unassigned</span>` : ''}`;
+  let h = `<div class="cal-head">
+    <div class="cal-nav"><button type="button" onclick="calGo(-1)" aria-label="Previous">‹</button><span class="cal-label" id="cal-label">${escapeHtml(label)}</span><button type="button" onclick="calGo(1)" aria-label="Next">›</button></div>
+    ${a !== today ? `<button type="button" class="cal-today" onclick="calToday()">Today</button>` : ''}
+    <input type="date" class="cal-pick" id="cal-pick" value="${a}" onchange="calPick(this.value)" aria-label="Go to a date">
+    <div class="cal-views">${['day', 'week', 'month'].map(v => `<button type="button" class="view-btn ${calView === v ? 'active' : ''}" data-cal-view="${v}" onclick="calSetView('${v}')">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}</div>
+  </div>
+  <div class="cal-sum"><span id="cal-sum">${sum}</span><span class="cal-legend">${Object.entries(CAL_STATUS).map(([k, v]) => `<span class="b-${k}">${v}</span>`).join('')}</span></div>`;
+  if (calView === 'month') h += calMonthHtml(r, today, rows);
+  else if (calView === 'week') h += calWeekHtml(r, today, rows);
+  else h += calDayHtml(a, rows(a));
+  document.getElementById('calendar-content').innerHTML = h;
+}
+function calMonthHtml(r, today, rows) {
+  let h = `<div class="cal-grid">${CAL_DOW.map(x => `<div class="cal-dow">${x}</div>`).join('')}`;
+  for (let date = r.from; date <= r.to; date = calAddDays(date, 1)) {
+    const xs = rows(date), t = calData.totals[date];
+    const other = date < r.monthFirst || date > r.monthLast;
+    h += `<div class="cal-cell ${other ? 'other' : ''} ${date < today ? 'past' : ''} ${date === today ? 'today' : ''} ${date === calDate ? 'picked' : ''}" data-date="${date}">
+      <div class="cal-day" onclick="calOpenDay('${date}')" title="Open this day"><b>${Number(date.slice(8))}</b>${t ? `<small>${t.loads} load${t.loads === 1 ? '' : 's'} · ${t.loadsDelivered}/${t.loadsAssigned}${t.unassigned ? ` · <span style="color:var(--A)">${t.unassigned} unassigned</span>` : ''}</small>` : ''}</div>
+      ${xs.slice(0, 3).map(x => calItem(x, 'month')).join('')}
+      ${xs.length > 3 ? `<div class="cal-more" onclick="calOpenDay('${date}')">+${xs.length - 3} more</div>` : ''}
+    </div>`;
+  }
+  return h + '</div>';
+}
+function calWeekHtml(r, today, rows) {
+  let h = '<div class="cal-week">';
+  for (let date = r.from; date <= r.to; date = calAddDays(date, 1)) {
+    const xs = rows(date), dt = new Date(date + 'T12:00:00');
+    h += `<div class="cal-col ${date === today ? 'today' : ''}" data-date="${date}">
+      <div class="cal-col-head" onclick="calOpenDay('${date}')" title="Open this day"><b>${CAL_DOW[dt.getDay()]} ${dt.getDate()}</b><small>${xs.length ? `${xs.length} load${xs.length === 1 ? '' : 's'}` : '—'}</small></div>
+      ${xs.map(x => calItem(x, 'week')).join('') || '<div class="cal-empty" style="padding:14px">Nothing scheduled</div>'}
+    </div>`;
+  }
+  return h + '</div>';
+}
+function calDayHtml(date, xs) {
+  const onBoard = `<button type="button" class="btn ghost" style="padding:6px 12px;font-size:12px" onclick="calOnBoard('${date}')">Open this day on Dispatch →</button>`;
+  if (!xs.length) return `<div class="cal-sum">${onBoard}</div><div class="cal-empty">Nothing scheduled for this day.${(role === 'manager' || role === 'admin') ? ' Use + New PO to schedule work.' : ''}</div>`;
+  const groups = new Map();
+  xs.forEach(x => { const k = x.driverName || 'Unassigned'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); });
+  let h = `<div class="cal-sum">${onBoard}</div><div class="cal-daylist">`;
+  for (const [who, list] of groups) {
+    h += `<div class="cal-group"><div class="cal-group-head">${who === 'Unassigned' ? '<span style="color:var(--A)">⚠ Unassigned</span>' : escapeHtml(who)}${who !== 'Unassigned' && list[0].truckNum ? `<span class="db-chip">${escapeHtml(list[0].truckNum)}</span>` : ''}<span class="n">${list.length} load${list.length === 1 ? '' : 's'}</span></div>`;
+    for (const x of list) {
+      const s = calStatus(x);
+      h += `<div class="cal-row b-${s.k}" data-load-id="${x.id}" onclick="calOpen('${x.id}', ${x.archived ? 'true' : 'false'})">
+        <div>
+          <div class="t">${escapeHtml(x.customer)}${x.jobName && x.jobName !== x.customer ? `<span style="font-weight:500;color:var(--txt2)">— ${escapeHtml(x.jobName)}</span>` : ''}<span class="db-chip ${s.k === 'in-progress' ? 'in-progress' : s.k === 'assigned' ? 'assigned' : s.k === 'completed' ? 'completed' : ''}">${escapeHtml(s.label)}</span></div>
+          <div class="d">PO ${escapeHtml(x.poNumber)}${x.jobCode ? ' · ' + escapeHtml(x.jobCode) : ''} · ${escapeHtml(x.material)} · ${x.loadsDelivered}/${x.loadsAssigned} load${x.loadsAssigned === 1 ? '' : 's'}${x.tons && x.tons.plannedTons > 0 ? ` · ${Number(x.tons.plannedTons).toFixed(1)} t planned` : ''}</div>
+          <div class="d">Pickup <b>${escapeHtml(x.yardName || '—')}</b>${x.yardIsActual ? ' <span style="font-size:10px;color:var(--txt3)">(driver confirmed)</span>' : ''} → Jobsite <b>${escapeHtml(x.destination || '—')}</b></div>
+          <div class="d">Driver <b>${escapeHtml(x.driverName || 'Unassigned')}</b> · Truck <b>${escapeHtml(x.truckNum || '—')}</b>${x.trailerNum ? ` · Trailer <b>${escapeHtml(x.trailerNum)}</b>` : ''}${x.missing && x.missing.length ? ` · <span style="color:var(--A)">missing ${escapeHtml(x.missing.join(', '))}</span>` : ''}</div>
+        </div>
+        <div class="acts" onclick="event.stopPropagation()">${x.archived
+          ? `<button type="button" class="qa-btn ghost" onclick="goTab('history')">In History</button>`
+          : `<button type="button" class="qa-btn ghost" onclick="openLoadDetail('${x.id}')">Details</button><button type="button" class="qa-btn ghost" onclick="openEditPO('${x.poId}')">Edit PO</button>`}</div>
+      </div>`;
+    }
+    h += '</div>';
+  }
+  return h + '</div>';
+}
+
 let todayData = null;
 let qaPick = null;          // { loadId, driverId, truckUnitId, yardId }
 
@@ -4903,6 +5106,9 @@ async function liveCheck(force) {
       toast('Your assignments were updated', 'success');
     } else if (currentTab === 'today') {
       await renderToday();
+    } else if (currentTab === 'calendar') {
+      await loadAll();          // Load Details reads the client copy of the loads
+      await renderCalendar();
     } else {
       await loadAll();
     }
