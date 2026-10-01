@@ -1288,25 +1288,28 @@ function normalizeStore() {
   if (!store.driverLocations || typeof store.driverLocations !== 'object') store.driverLocations = {};
   if (!Array.isArray(store.billingBatches)) store.billingBatches = [];
   // A batch still 'syncing' when the process starts was interrupted mid-send.
-  // The invoice may or may not exist in QuickBooks, so it becomes 'failed'
-  // with an explicit instruction rather than silently re-sendable.
+  // Without an invoice id the external result is UNKNOWN (the invoice may or
+  // may not exist in QuickBooks): the batch is parked for reconciliation, never
+  // silently re-sendable. With an invoice id the invoice is confirmed and only
+  // the finishing steps failed: 'failed', and Retry confirms it.
   store.billingBatches.forEach(b => {
     if (b.syncStatus === 'syncing') {
-      b.syncStatus = 'failed';
-      b.mayExistInQuickBooks = !b.qbInvoiceId;
-      b.errorMessage = 'Send was interrupted by a server restart. The invoice may or may not exist in QuickBooks; Retry checks there before creating one.';
+      if (b.qbInvoiceId) { b.syncStatus = 'failed'; b.mayExistInQuickBooks = false; b.errorMessage = `Send was interrupted by a server restart after invoice ${b.qbInvoiceNumber || b.qbInvoiceId} was created. Retry confirms it in QuickBooks; nothing is re-sent.`; }
+      else markExternalUnknown(b, 'invoice', { message: 'Send was interrupted by a server restart', kind: 'restart' });
       b.syncingSince = '';
     }
+    // Older data: a failed batch flagged "may exist" is an unknown result.
+    if (b.syncStatus === 'failed' && b.mayExistInQuickBooks && !b.qbInvoiceId) markExternalUnknown(b, 'invoice', { message: b.errorMessage || 'QuickBooks did not answer', kind: 'legacy_flag' });
   });
   if (!Array.isArray(store.qbSyncLog))      store.qbSyncLog = [];
   if (!Array.isArray(store.vendorBills))    store.vendorBills = [];
   store.vendorBills.forEach(b => {
     if (b.syncStatus === 'syncing') {
-      b.syncStatus = 'failed';
-      b.mayExistInQuickBooks = !b.qbBillId;
-      b.errorMessage = 'Send was interrupted by a server restart. The bill may or may not exist in QuickBooks; Retry checks there before creating one.';
+      if (b.qbBillId) { b.syncStatus = 'failed'; b.mayExistInQuickBooks = false; b.errorMessage = `Send was interrupted by a server restart after bill ${b.qbDocNumber || b.qbBillId} was created. Retry confirms it in QuickBooks; nothing is re-sent.`; }
+      else markExternalUnknown(b, 'bill', { message: 'Send was interrupted by a server restart', kind: 'restart' });
       b.syncingSince = '';
     }
+    if (b.syncStatus === 'failed' && b.mayExistInQuickBooks && !b.qbBillId) markExternalUnknown(b, 'bill', { message: b.errorMessage || 'QuickBooks did not answer', kind: 'legacy_flag' });
   });
 
   // Backfill load fields used by billing batches
@@ -2108,7 +2111,18 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   //   fail    — QuickBooks refuses (an HTTP 400 style error; nothing created)
   //   timeout — no answer, nothing created (the request never reached Intuit)
   //   lost    — no answer, but the entity WAS created (the response was lost)
-  const fakeQb = { mode: 'ok', billMode: 'ok', delayMs: 0, invoicesCreated: 0, invoicesVoided: 0, invoices: [], billsCreated: 0, billsDeleted: 0, bills: [] };
+  // The fake QuickBooks. `invoicesCreated` / `billsCreated` count documents
+  // that EXIST on the fake's side; `invoiceCreateCalls` / `billCreateCalls`
+  // count create requests received — the two differ exactly when a document
+  // was created and the answer lost, which is the case the UNKNOWN state is
+  // for. Modes: ok | slow | fail/http400 (refused, nothing created) | thrown
+  // (blew up before the request) | timeout (nothing created, no answer) |
+  // http503 (nothing created, ambiguous answer) | lost/reset (CREATED, answer
+  // lost) | http500 (CREATED, 5xx answer) | nobody (CREATED, 2xx with no body).
+  // Intuit's requestid replay is modelled: a create that repeats a requestid
+  // already on a document returns that document instead of a second one.
+  const fakeQb = { mode: 'ok', billMode: 'ok', delayMs: 0, invoicesCreated: 0, invoicesVoided: 0, invoices: [], billsCreated: 0, billsDeleted: 0, bills: [], invoiceCreateCalls: 0, billCreateCalls: 0, invoiceRequestIds: [], billRequestIds: [], replays: 0 };
+  const fakeHttp = (path, status) => { const e = new Error(`QB API POST ${path} → ${status}: ${status >= 500 ? 'Internal Server Error' : 'Bad Request'}`); e.statusCode = status; e.uncertain = qb.httpOutcome(status, true).uncertain; return e; };
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const noAnswer = what => { const e = new Error(`Fake QuickBooks: no answer while creating ${what} (socket hang up)`); e.uncertain = true; e.timeout = true; return e; };
   app.post('/api/_test/qb-fake', reqMgr, async (req, res) => {
@@ -2124,13 +2138,25 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     qb.findOrCreateCustomer = async (conn, c) => ({ customer: { Id: 'CUST-' + (c.name || 'x').replace(/\W/g, ''), DisplayName: c.name }, created: false });
     qb.findOrCreateVendor = async (conn, v) => ({ vendor: { Id: 'VEND-' + (v.name || 'x').replace(/\W/g, ''), DisplayName: v.name }, created: false });
     qb.createInvoice = async (conn, args) => {
-      if (fakeQb.mode === 'slow') await wait(fakeQb.delayMs || 1500);
-      if (fakeQb.mode === 'fail') { const e = new Error('Fake QuickBooks: invoice rejected'); e.statusCode = 400; throw e; }
-      if (fakeQb.mode === 'timeout') throw noAnswer('an invoice');
+      const m = fakeQb.mode;
+      fakeQb.invoiceCreateCalls++; fakeQb.invoiceRequestIds.push(args.requestId || '');
+      if (m === 'slow') await wait(fakeQb.delayMs || 1500);
+      // Intuit replays the original answer for a repeated requestid.
+      const prior = args.requestId && fakeQb.invoices.find(i => i.requestId === args.requestId);
+      if (prior && m === 'ok') { fakeQb.replays++; return prior; }
+      // Nothing created:
+      if (m === 'fail' || m === 'http400') { const e = new Error('Fake QuickBooks: invoice rejected'); e.statusCode = 400; e.uncertain = qb.httpOutcome(400, true).uncertain; throw e; }
+      if (m === 'thrown') throw new Error('Fake QuickBooks: item lookup blew up before the request was sent');
+      if (m === 'timeout') throw noAnswer('an invoice');
+      if (m === 'http503') throw fakeHttp('/invoice', 503);
+      // Created on QuickBooks' side…
       fakeQb.invoicesCreated++;
-      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: args.docNumber || String(1000 + fakeQb.invoicesCreated), memo: args.memo, lines: args.lines, PrivateNote: args.privateNote, CustomerRef: { value: String(args.qbCustomerId) } };
+      const inv = { Id: 'INV-' + fakeQb.invoicesCreated, DocNumber: args.docNumber || String(1000 + fakeQb.invoicesCreated), memo: args.memo, lines: args.lines, PrivateNote: args.privateNote, CustomerRef: { value: String(args.qbCustomerId) }, requestId: args.requestId || '' };
       fakeQb.invoices.push(inv);
-      if (fakeQb.mode === 'lost') throw noAnswer('an invoice');
+      // …and the answer never reaches VBT, or reaches it unreadable.
+      if (m === 'lost' || m === 'reset') throw noAnswer('an invoice');
+      if (m === 'http500') throw fakeHttp('/invoice', 500);
+      if (m === 'nobody') throw qb.noEntityError('Invoice');
       return inv;
     };
     qb.findInvoiceForBatch = async (conn, { batchId }) => fakeQb.invoices.find(i => String(i.PrivateNote || '').includes(`batch ${batchId}`)) || null;
@@ -2141,13 +2167,21 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
       return { Id: id, status: 'Voided' };
     };
     qb.createBill = async (conn, args) => {
-      if (fakeQb.billMode === 'slow') await wait(fakeQb.delayMs || 1500);
-      if (fakeQb.billMode === 'fail') { const e = new Error('Fake QuickBooks: bill rejected'); e.statusCode = 400; throw e; }
-      if (fakeQb.billMode === 'timeout') throw noAnswer('a bill');
+      const m = fakeQb.billMode;
+      fakeQb.billCreateCalls++; fakeQb.billRequestIds.push(args.requestId || '');
+      if (m === 'slow') await wait(fakeQb.delayMs || 1500);
+      const prior = args.requestId && fakeQb.bills.find(b => b.requestId === args.requestId);
+      if (prior && m === 'ok') { fakeQb.replays++; return prior; }
+      if (m === 'fail' || m === 'http400') { const e = new Error('Fake QuickBooks: bill rejected'); e.statusCode = 400; e.uncertain = qb.httpOutcome(400, true).uncertain; throw e; }
+      if (m === 'thrown') throw new Error('Fake QuickBooks: account lookup blew up before the request was sent');
+      if (m === 'timeout') throw noAnswer('a bill');
+      if (m === 'http503') throw fakeHttp('/bill', 503);
       fakeQb.billsCreated++;
-      const bill = { Id: 'BILL-' + fakeQb.billsCreated, DocNumber: args.docNumber || '', lines: args.lines, PrivateNote: args.memo };
+      const bill = { Id: 'BILL-' + fakeQb.billsCreated, DocNumber: args.docNumber || '', lines: args.lines, PrivateNote: args.memo, requestId: args.requestId || '' };
       fakeQb.bills.push(bill);
-      if (fakeQb.billMode === 'lost') throw noAnswer('a bill');
+      if (m === 'lost' || m === 'reset') throw noAnswer('a bill');
+      if (m === 'http500') throw fakeHttp('/bill', 500);
+      if (m === 'nobody') throw qb.noEntityError('Bill');
       return bill;
     };
     qb.findBillByDocNumber = async (conn, docNumber) => fakeQb.bills.find(b => b.DocNumber === docNumber) || null;
@@ -5016,6 +5050,87 @@ app.get('/api/billing-batches/:id', reqMgr, (req, res) => {
 // Write a QuickBooks invoice back onto the batch and each of its loads. Used
 // by a normal send and by a retry that found the invoice QuickBooks created
 // during an interrupted send.
+// ── EXTERNAL RESULT UNKNOWN ─────────────────────────────────────────────────
+// The third outcome of a QuickBooks create, beside confirmed success and
+// confirmed failure: the request may have reached QuickBooks and VBT cannot
+// tell whether the document was created (timeout, dropped connection, 5xx,
+// an answer with no body or no entity, a restart mid-send). The batch or bill
+// is parked in syncStatus 'unknown' — "External result unknown — reconcile
+// before sending again" — and nothing may create a second document until
+// QuickBooks has been asked: Send is refused, Retry becomes a lookup, Void
+// looks up first, the loads stay claimed by the batch. The idempotency key
+// (Intuit's requestid, = our batch/bill id) is kept with the record.
+const EXTERNAL_UNKNOWN = 'unknown';
+function markExternalUnknown(b, kind, e) {
+  const doc = kind === 'bill' ? 'bill' : 'invoice';
+  b.syncStatus = EXTERNAL_UNKNOWN;
+  b.mayExistInQuickBooks = true;
+  b.syncingSince = '';
+  const prev = b.reconcile || {};
+  b.reconcile = {
+    reason: String(e?.message || 'QuickBooks did not answer'),
+    kind: e?.kind || (e?.timeout ? 'timeout' : e?.noEntity ? 'no_entity_in_response' : e?.statusCode ? `http_${e.statusCode}` : 'transport'),
+    statusCode: e?.statusCode || 0,
+    at: new Date().toISOString(),
+    requestId: b.id,                 // the requestid the create was sent with; a re-send reuses it
+    lookup: doc === 'bill' ? `Bill with DocNumber "${b.id.slice(0, 21)}"` : `Invoice whose private note contains "batch ${b.id}"${b.poNumber ? ` (DocNumber ${String(b.poNumber).slice(0, 21)})` : ''}`,
+    attempts: Number(prev.attempts) || 0,
+    result: '',
+    resolvedAt: '',
+  };
+  b.errorMessage = `External result unknown — QuickBooks may have created the ${doc} (${b.reconcile.reason}). Reconcile before sending again: "Reconcile" asks QuickBooks for ${b.reconcile.lookup}; nothing is re-sent until it answers.`;
+}
+function externalUnknownRefusal(b, kind) {
+  const doc = kind === 'bill' ? 'bill' : 'invoice';
+  return { error: `External result unknown — QuickBooks may already have this ${doc} (${b.reconcile?.reason || 'no answer'}). Reconcile first; nothing was sent.`, code: 'external_unknown', reconcile: b.reconcile || null };
+}
+// Reconcile an UNKNOWN send: ask QuickBooks whether the document exists.
+// Returns { status, body } to refuse with nothing changed (QuickBooks not
+// connected, or the lookup itself failed), or { found } once QuickBooks has
+// answered: found → the document is adopted (recorded on the batch/bill, the
+// loads marked billed) and nothing is re-created; not found → the unknown is
+// resolved as "does not exist" and a create is allowed again, carrying the
+// same requestid. An operator may instead state, on the record, that they
+// checked QuickBooks by hand and found no document.
+async function reconcileExternalUnknown(b, kind, user, { operatorStatement = false, reason = '' } = {}) {
+  const doc = kind === 'bill' ? 'bill' : 'invoice';
+  const findAction = kind === 'bill' ? 'find_bill' : 'find_invoice';
+  const now = new Date().toISOString();
+  b.reconcile = b.reconcile || { requestId: b.id, attempts: 0 };
+  b.reconcile.attempts = (Number(b.reconcile.attempts) || 0) + 1;
+  if (operatorStatement) {
+    b.reconcile.result = 'operator_confirmed_absent'; b.reconcile.resolvedAt = now; b.reconcile.resolvedBy = user;
+    b.mayExistInQuickBooks = false;
+    logQbSync({ actionType: findAction, relatedBatchId: b.id, requestSummary: `Operator states QuickBooks has no ${doc} for ${kind === 'bill' ? 'vendor bill' : 'batch'} ${b.id} (checked by hand): ${reason}`, user });
+    return { found: null };
+  }
+  const conn = store.qbConnection;
+  if (!conn?.realmId || conn.status !== 'connected') {
+    return { status: 409, body: { ...externalUnknownRefusal(b, kind), error: `External result unknown — QuickBooks may already have this ${doc}, and QuickBooks is not connected so it cannot be checked. Reconnect QuickBooks and reconcile, or state on the record that you checked QuickBooks and found no ${doc}. Nothing changed.` } };
+  }
+  let found = null;
+  try {
+    found = kind === 'bill'
+      ? await qb.findBillByDocNumber(conn, b.id.slice(0, 21))
+      : await qb.findInvoiceForBatch(conn, { docNumber: b.poNumber ? String(b.poNumber).slice(0, 21) : '', batchId: b.id, qbCustomerId: b.qbCustomerId });
+  } catch (e) {
+    logQbSync({ actionType: findAction, relatedBatchId: b.id, responseStatus: 'error', errorMessage: e.message, user });
+    return { status: 502, body: { error: `External result unknown — QuickBooks could not be checked for an existing ${doc}: ${e.message}. Nothing was sent and nothing changed; reconcile again in a moment.`, code: 'external_unknown', reconcile: b.reconcile } };
+  }
+  b.reconcile.resolvedAt = now; b.reconcile.resolvedBy = user;
+  if (found) {
+    b.reconcile.result = 'found';
+    if (kind === 'bill') recordQbBill(b, found, user); else recordInvoiceOnBatch(b, found, user);
+    logQbSync({ actionType: kind === 'bill' ? 'recover_bill' : 'recover_invoice', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: kind === 'bill' ? 'Bill' : 'Invoice', qbEntityId: found.Id,
+      requestSummary: `Reconciled: found ${doc} ${found.DocNumber || found.Id} in QuickBooks from the send whose result was unknown; adopted, nothing re-created`, user });
+    return { found };
+  }
+  b.reconcile.result = 'not_found';
+  b.mayExistInQuickBooks = false;
+  logQbSync({ actionType: findAction, relatedBatchId: b.id, requestSummary: `Reconciled: QuickBooks has no ${doc} for ${b.id}; creating again is allowed (same requestid ${b.id})`, user });
+  return { found: null };
+}
+
 function recordInvoiceOnBatch(b, invoice, user) {
   b.qbInvoiceId = invoice.Id;
   b.qbInvoiceNumber = invoice.DocNumber || '';
@@ -5055,6 +5170,7 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
     return res.status(409).json({ error: 'This batch is already being sent to QuickBooks. Wait for it to finish.', batch: b });
   }
   if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Cannot send a voided batch' });
+  if (b.syncStatus === EXTERNAL_UNKNOWN || (b.mayExistInQuickBooks && !b.qbInvoiceId)) return res.status(409).json({ ...externalUnknownRefusal(b, 'invoice'), batch: b });
   if (b.syncStatus === 'failed') return res.status(400).json({ error: 'This batch failed earlier. Use Retry, which checks it first.', batch: b });
   if ((b.lineItems || []).some(ln => ln.unconfigured || ln.amount == null)) {
     return res.status(400).json({ error: 'This batch has a line the costing engine could not price. It will not be sent as $0; void it, fix the pricing, and re-bill.' });
@@ -5117,8 +5233,10 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
       privateNote: `VBT Dispatch billing batch ${b.id}. PO ${b.poNumber}. Loads: ${b.loadIds.join(', ')}` + ((b.ticketNumbers || []).length ? `. Tickets: ${b.ticketNumbers.join(', ')}` : ''),
       docNumber: b.poNumber ? String(b.poNumber).slice(0, 21) : undefined,
       txnDate: b.deliveryEnd || b.deliveryStart || undefined,
+      // Idempotency key: the batch id, the same on every attempt for this batch.
+      requestId: b.id,
     });
-    if (!invoice?.Id) throw new Error('QuickBooks did not return an invoice ID');
+    if (!invoice?.Id) throw qb.noEntityError('Invoice');
     recordInvoiceOnBatch(b, invoice, user);
 
     logQbSync({
@@ -5186,29 +5304,32 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
     res.json({ success: true, batch: b });
   } catch (e) {
     console.error('[qb send]', e);
-    b.syncStatus = 'failed';
     b.syncingSince = '';
-    // No answer from QuickBooks (timeout, dropped connection) is not the same
-    // as a refusal: the invoice may have been created on Intuit's side. The
-    // batch remembers that, and Retry looks the invoice up before creating one.
-    b.mayExistInQuickBooks = !b.qbInvoiceId && !!e.uncertain;
-    b.errorMessage = b.qbInvoiceId
-      ? `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} was created in QuickBooks but finishing the batch failed: ${e.message}. Do not resend; void the batch to correct it.`
-      : b.mayExistInQuickBooks
-        ? `QuickBooks did not answer (${e.message}). The invoice may or may not have been created. Retry checks QuickBooks for it before creating another.`
-        : e.message;
+    // Three outcomes, never two. The invoice is confirmed (its id is on the
+    // batch) and only a later step failed → 'failed', Retry confirms it.
+    // QuickBooks definitively refused → 'failed', retryable. Anything that
+    // may have reached QuickBooks without a readable answer → UNKNOWN: parked
+    // for reconciliation, never "nothing was created".
+    if (b.qbInvoiceId) {
+      b.syncStatus = 'failed'; b.mayExistInQuickBooks = false;
+      b.errorMessage = `Invoice ${b.qbInvoiceNumber || b.qbInvoiceId} was created in QuickBooks but finishing the batch failed: ${e.message}. Do not resend; Retry confirms the invoice, or void the batch to correct it.`;
+    } else if (e.uncertain) {
+      markExternalUnknown(b, 'invoice', e);
+    } else {
+      b.syncStatus = 'failed'; b.mayExistInQuickBooks = false; b.errorMessage = e.message;
+    }
     if (store.qbConnection) store.qbConnection.lastError = e.message;
     logQbSync({
       actionType: 'create_invoice',
       relatedBatchId: b.id,
       relatedLoadIds: b.loadIds,
       responseStatus: 'error',
-      errorMessage: e.message,
+      errorMessage: b.syncStatus === EXTERNAL_UNKNOWN ? `External result unknown: ${e.message}` : e.message,
       statusCode: e.statusCode || 0,
       user,
     });
     await saveData();
-    res.status(500).json({ error: e.message, batch: b });
+    res.status(b.syncStatus === EXTERNAL_UNKNOWN ? 502 : 500).json({ error: b.errorMessage || e.message, code: b.syncStatus === EXTERNAL_UNKNOWN ? 'external_unknown' : undefined, batch: b });
   }
 });
 
@@ -5222,6 +5343,17 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
   if (!reason) return res.status(400).json({ error: 'Reason required' });
 
   if (b.syncStatus === 'syncing') return res.status(409).json({ error: 'This batch is being sent right now. Wait for it to finish, then void it.' });
+
+  // UNKNOWN result: the invoice may exist. Void never releases the loads on
+  // an assumption — QuickBooks is asked first (or the operator states, on the
+  // record, that they checked and found none). Found → adopted, then voided
+  // there like any sent batch below. Not found → QuickBooks answered; the
+  // void proceeds. Not connected or lookup failed → refused, nothing changed.
+  if (b.syncStatus === EXTERNAL_UNKNOWN || (b.mayExistInQuickBooks && !b.qbInvoiceId)) {
+    const r = await reconcileExternalUnknown(b, 'invoice', req.session.user.username, { operatorStatement: req.body?.confirmedNoInvoiceInQuickBooks === true, reason });
+    if (r.status) { await saveData(); return res.status(r.status).json(r.body); }
+    if (r.found) { logAction(req.session.user, 'recovered-billing-batch', b.id, { invoiceId: r.found.Id, invoiceNumber: r.found.DocNumber || '', during: 'void' }); await saveData(); }
+  }
 
   // A batch that has a QuickBooks invoice can only be voided here if that
   // invoice is voided too — otherwise the loads would go back to Ready to
@@ -5281,7 +5413,7 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
 app.post('/api/billing-batches/:id/retry', reqMgr, async (req, res) => {
   const b = store.billingBatches.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Batch not found' });
-  if (b.syncStatus !== 'failed') return res.status(400).json({ error: 'Only failed batches can be retried' });
+  if (b.syncStatus !== 'failed' && b.syncStatus !== EXTERNAL_UNKNOWN) return res.status(400).json({ error: 'Only a failed batch, or one whose QuickBooks result is unknown, can be retried' });
   const user = req.session.user.username;
   if (b.qbInvoiceId) {
     // The invoice exists; the batch failed AFTER it was created (the save or
@@ -5299,39 +5431,30 @@ app.post('/api/billing-batches/:id/retry', reqMgr, async (req, res) => {
     await saveData();
     return res.json({ success: true, recovered: true, batch: b });
   }
-  // The failed send got no answer from QuickBooks (or the process restarted
-  // mid-send): look the invoice up there first. Found → adopt it, mark the
-  // loads billed, and nothing is re-created. Not found → safe to send again.
-  if (b.mayExistInQuickBooks) {
-    const conn = store.qbConnection;
-    if (!conn?.realmId || conn.status !== 'connected') {
-      return res.status(400).json({ error: 'QuickBooks is not connected, so it cannot be checked for an invoice from the interrupted send. Reconnect QuickBooks, then retry.' });
-    }
-    let found = null;
-    try {
-      found = await qb.findInvoiceForBatch(conn, { docNumber: b.poNumber ? String(b.poNumber).slice(0, 21) : '', batchId: b.id, qbCustomerId: b.qbCustomerId });
-    } catch (e) {
-      logQbSync({ actionType: 'find_invoice', relatedBatchId: b.id, responseStatus: 'error', errorMessage: e.message, user });
-      return res.status(502).json({ error: `Could not check QuickBooks for an existing invoice: ${e.message}. Nothing was sent; retry in a moment.` });
-    }
-    if (found) {
-      recordInvoiceOnBatch(b, found, user);
-      logQbSync({ actionType: 'recover_invoice', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Invoice', qbEntityId: found.Id, requestSummary: `Found invoice ${found.DocNumber || found.Id} in QuickBooks from the interrupted send; batch marked sent, nothing re-created. Ticket and signature attachments were not uploaded — add them in QuickBooks if needed.`, user });
-      logAction(req.session.user, 'recovered-billing-batch', b.id, { invoiceId: found.Id, invoiceNumber: found.DocNumber || '' });
+  // UNKNOWN result (no answer, 5xx, no body, restart mid-send): Retry is a
+  // reconciliation, not a re-send. QuickBooks is asked for the invoice first.
+  // Found → adopted, loads billed, nothing re-created. Not found → QuickBooks
+  // answered; the batch goes back to ready and the client sends again with
+  // the same requestid. Not connected / lookup failed → refused, unchanged.
+  let reconciled;
+  if (b.syncStatus === EXTERNAL_UNKNOWN || b.mayExistInQuickBooks) {
+    const r = await reconcileExternalUnknown(b, 'invoice', user);
+    if (r.status) { await saveData(); return res.status(r.status).json(r.body); }
+    if (r.found) {
+      logAction(req.session.user, 'recovered-billing-batch', b.id, { invoiceId: r.found.Id, invoiceNumber: r.found.DocNumber || '' });
       await saveData();
-      return res.json({ success: true, recovered: true, batch: b });
+      return res.json({ success: true, recovered: true, reconciled: 'found', batch: b });
     }
-    b.mayExistInQuickBooks = false;
-    logQbSync({ actionType: 'find_invoice', relatedBatchId: b.id, requestSummary: 'No invoice found in QuickBooks for the interrupted send; safe to create', user });
+    reconciled = b.reconcile?.result || 'not_found';
   }
   // Reset so the client can POST /send again.
   b.syncStatus = 'ready_to_bill';
   b.errorMessage = '';
   b.syncingSince = '';
-  logAction(req.session.user, 'retry-billing-batch', b.id, {});
+  logAction(req.session.user, 'retry-billing-batch', b.id, reconciled ? { reconciled } : {});
   await saveData();
   // The client POSTs /send after /retry; the reset is confirmed here.
-  res.json({ success: true, batch: b });
+  res.json({ success: true, reconciled, batch: b });
 });
 
 // ── VENDOR BILLS (PAYABLES) ─────────────────────────────────────────────────
@@ -5500,6 +5623,7 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
   if (b.qbBillId) return res.status(400).json({ error: `Already sent (QuickBooks bill ${b.qbDocNumber || b.qbBillId}). Void it to correct it.` });
   if (b.syncStatus === 'syncing') return res.status(409).json({ error: 'This bill is already being sent to QuickBooks. Wait for it to finish.', bill: b });
   if (b.syncStatus === 'voided') return res.status(400).json({ error: 'Cannot send a voided bill' });
+  if (b.syncStatus === EXTERNAL_UNKNOWN || (b.mayExistInQuickBooks && !b.qbBillId)) return res.status(409).json({ ...externalUnknownRefusal(b, 'bill'), bill: b });
   if (b.syncStatus === 'failed') return res.status(400).json({ error: 'This bill failed earlier. Use Retry, which checks QuickBooks first.', bill: b });
   if ((b.lineItems || []).some(ln => ln.unconfigured || ln.amount == null)) return res.status(400).json({ error: 'This bill has a line that could not be priced. It will not be sent as $0; void it, add the vendor price, and bill again.' });
   const conn = store.qbConnection;
@@ -5525,8 +5649,9 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
       memo,
       docNumber: b.id.slice(0, 21),
       txnDate: b.deliveryEnd || b.deliveryStart || undefined,
+      requestId: b.id,   // idempotency key, the same on every attempt for this bill
     });
-    if (!bill?.Id) throw new Error('QuickBooks did not return a bill ID');
+    if (!bill?.Id) throw qb.noEntityError('Bill');
     recordQbBill(b, bill, user);
     b.syncingSince = '';
     logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Bill', qbEntityId: bill.Id, requestSummary: `Bill for ${b.vendorName} — $${b.totalAmount.toFixed(2)}`, user });
@@ -5535,17 +5660,22 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
     res.json({ success: true, bill: b });
   } catch (e) {
     console.error('[vendor bill send]', e);
-    b.syncStatus = 'failed';
     b.syncingSince = '';
-    // No answer from QuickBooks is not the same as a refusal: the bill may
-    // have been created. Retry looks it up by our document number first.
-    b.mayExistInQuickBooks = !!e.uncertain;
-    b.errorMessage = b.mayExistInQuickBooks
-      ? `QuickBooks did not answer (${e.message}). The bill may or may not have been created. Retry checks QuickBooks for it before creating another.`
-      : e.message;
-    logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, responseStatus: 'error', errorMessage: e.message, statusCode: e.statusCode || 0, user });
+    // Same three outcomes as an invoice batch: bill confirmed but a later step
+    // failed → 'failed' (Retry confirms it); QuickBooks refused → 'failed',
+    // retryable; may have reached QuickBooks without a readable answer →
+    // UNKNOWN, parked for reconciliation, never "nothing was created".
+    if (b.qbBillId) {
+      b.syncStatus = 'failed'; b.mayExistInQuickBooks = false;
+      b.errorMessage = `Bill ${b.qbDocNumber || b.qbBillId} was created in QuickBooks but finishing the vendor bill failed: ${e.message}. Do not resend; Retry confirms the bill, or void it to correct it.`;
+    } else if (e.uncertain) {
+      markExternalUnknown(b, 'bill', e);
+    } else {
+      b.syncStatus = 'failed'; b.mayExistInQuickBooks = false; b.errorMessage = e.message;
+    }
+    logQbSync({ actionType: 'create_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, responseStatus: 'error', errorMessage: b.syncStatus === EXTERNAL_UNKNOWN ? `External result unknown: ${e.message}` : e.message, statusCode: e.statusCode || 0, user });
     await saveData();
-    res.status(500).json({ error: e.message, bill: b });
+    res.status(b.syncStatus === EXTERNAL_UNKNOWN ? 502 : 500).json({ error: b.errorMessage || e.message, code: b.syncStatus === EXTERNAL_UNKNOWN ? 'external_unknown' : undefined, bill: b });
   }
 });
 
@@ -5555,34 +5685,43 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
 app.post('/api/vendor-bills/:id/retry', reqMgr, async (req, res) => {
   const b = store.vendorBills.find(x => x.id === req.params.id);
   if (!b) return res.status(404).json({ error: 'Bill not found' });
-  if (b.syncStatus !== 'failed') return res.status(400).json({ error: 'Only failed bills can be retried' });
-  if (b.qbBillId) return res.status(409).json({ error: `Bill ${b.qbDocNumber || b.qbBillId} already exists in QuickBooks for this vendor bill. Retrying would create a second one; void it instead.` });
+  if (b.syncStatus !== 'failed' && b.syncStatus !== EXTERNAL_UNKNOWN) return res.status(400).json({ error: 'Only a failed bill, or one whose QuickBooks result is unknown, can be retried' });
   const user = req.session.user.username;
-  if (b.mayExistInQuickBooks) {
+  if (b.qbBillId) {
+    // The bill exists; the send failed AFTER it was created. Confirm it in
+    // QuickBooks and mark the vendor bill sent — never a second bill.
     const conn = store.qbConnection;
-    if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks is not connected, so it cannot be checked for a bill from the interrupted send. Reconnect QuickBooks, then retry.' });
-    let found = null;
-    try { found = await qb.findBillByDocNumber(conn, b.id.slice(0, 21)); }
-    catch (e) {
-      logQbSync({ actionType: 'find_bill', relatedBatchId: b.id, responseStatus: 'error', errorMessage: e.message, user });
-      return res.status(502).json({ error: `Could not check QuickBooks for an existing bill: ${e.message}. Nothing was sent; retry in a moment.` });
-    }
-    if (found) {
-      recordQbBill(b, found, user);
-      logQbSync({ actionType: 'recover_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Bill', qbEntityId: found.Id, requestSummary: `Found bill ${found.DocNumber || found.Id} in QuickBooks from the interrupted send; marked sent, nothing re-created`, user });
-      logAction(req.session.user, 'recovered-vendor-bill', b.id, { qbBillId: found.Id });
+    if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: `Bill ${b.qbDocNumber || b.qbBillId} exists for this vendor bill, but QuickBooks is not connected to confirm it. Reconnect QuickBooks, then retry; nothing is re-sent.` });
+    let bill = null;
+    try { bill = await qb.getEntity(conn, 'Bill', b.qbBillId); }
+    catch (e) { return res.status(502).json({ error: `Could not confirm bill ${b.qbDocNumber || b.qbBillId} in QuickBooks: ${e.message}. Nothing changed; retry in a moment.` }); }
+    if (!bill) return res.status(409).json({ error: `Bill ${b.qbDocNumber || b.qbBillId} is recorded on this vendor bill but QuickBooks does not have it. Void the vendor bill (stating it was already removed in QuickBooks) and bill again.` });
+    recordQbBill(b, bill, user);
+    logQbSync({ actionType: 'recover_bill', relatedBatchId: b.id, relatedLoadIds: b.loadIds, qbEntityType: 'Bill', qbEntityId: bill.Id, requestSummary: `Confirmed bill ${bill.DocNumber || bill.Id} in QuickBooks after an interrupted finish; nothing re-created`, user });
+    logAction(req.session.user, 'recovered-vendor-bill', b.id, { qbBillId: bill.Id });
+    await saveData();
+    return res.json({ success: true, recovered: true, bill: b });
+  }
+  // UNKNOWN result: Retry is a reconciliation. QuickBooks is asked for a bill
+  // with our document number first; found → adopted, never re-created; not
+  // found → back to ready, the client sends again with the same requestid.
+  let reconciled;
+  if (b.syncStatus === EXTERNAL_UNKNOWN || b.mayExistInQuickBooks) {
+    const r = await reconcileExternalUnknown(b, 'bill', user);
+    if (r.status) { await saveData(); return res.status(r.status).json(r.body); }
+    if (r.found) {
+      logAction(req.session.user, 'recovered-vendor-bill', b.id, { qbBillId: r.found.Id });
       await saveData();
-      return res.json({ success: true, recovered: true, bill: b });
+      return res.json({ success: true, recovered: true, reconciled: 'found', bill: b });
     }
-    b.mayExistInQuickBooks = false;
-    logQbSync({ actionType: 'find_bill', relatedBatchId: b.id, requestSummary: 'No bill found in QuickBooks for the interrupted send; safe to create', user });
+    reconciled = b.reconcile?.result || 'not_found';
   }
   b.syncStatus = 'ready';
   b.errorMessage = '';
   b.syncingSince = '';
-  logAction(req.session.user, 'retry-vendor-bill', b.id, {});
+  logAction(req.session.user, 'retry-vendor-bill', b.id, reconciled ? { reconciled } : {});
   await saveData();
-  res.json({ success: true, bill: b });
+  res.json({ success: true, reconciled, bill: b });
 });
 
 // Void a vendor bill: releases its trips so a corrected bill can be built.
@@ -5596,6 +5735,14 @@ app.post('/api/vendor-bills/:id/void', reqMgr, async (req, res) => {
   const reason = String(req.body?.reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'Reason required' });
   const user = req.session.user.username;
+  // UNKNOWN result: the bill may exist in QuickBooks. Void asks QuickBooks
+  // first (or takes the operator's statement, on the record, that they
+  // checked and found none); found → adopted and removed there below.
+  if (b.syncStatus === EXTERNAL_UNKNOWN || (b.mayExistInQuickBooks && !b.qbBillId)) {
+    const r = await reconcileExternalUnknown(b, 'bill', user, { operatorStatement: req.body?.confirmedNoBillInQuickBooks === true, reason });
+    if (r.status) { await saveData(); return res.status(r.status).json(r.body); }
+    if (r.found) { logAction(req.session.user, 'recovered-vendor-bill', b.id, { qbBillId: r.found.Id, during: 'void' }); await saveData(); }
+  }
   let qbDeleted = false;
   if (b.qbBillId) {
     if (req.body?.alreadyDeletedInQuickBooks === true) {

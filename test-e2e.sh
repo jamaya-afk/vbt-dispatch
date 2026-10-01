@@ -1281,7 +1281,7 @@ chk "   once Keith's Dirt price is on file the haul is costed at it (\$15 x 25)"
 chk "   send the Vulcan bill → sent; sending it again is refused; retry on a sent bill is refused" "$(mg POST /api/vendor-bills/$VBV/send | jq "d['bill']['syncStatus'], d['bill']['qbBillId']")|$(mgc POST /api/vendor-bills/$VBV/send)|$(mgc POST /api/vendor-bills/$VBV/retry)" "sent BILL-1|400|400"
 VB2=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$L5\"]}" | jq "d['bills'][0]['id']")
 mg POST /api/_test/qb-fake '{"billMode":"lost"}' >/dev/null
-chk "   QuickBooks creates the bill but the answer is lost → failed, flagged 'may exist'" "$(mgc POST /api/vendor-bills/$VB2/send)|$(curl -s -b $M $B/api/vendor-bills | jq "[(b['syncStatus'], b['mayExistInQuickBooks']) for b in d['items'] if b['id']=='$VB2'][0]")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsCreated']")" "500|('failed', True)|2"
+chk "   QuickBooks creates the bill but the answer is lost → external result UNKNOWN (502), flagged 'may exist'" "$(mgc POST /api/vendor-bills/$VB2/send)|$(curl -s -b $M $B/api/vendor-bills | jq "[(b['syncStatus'], b['mayExistInQuickBooks']) for b in d['items'] if b['id']=='$VB2'][0]")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsCreated']")" "502|('unknown', True)|2"
 mg POST /api/_test/qb-fake '{"billMode":"ok"}' >/dev/null
 chk "   Retry finds it in QuickBooks and adopts it — no second bill"        "$(mg POST /api/vendor-bills/$VB2/retry | jq "d['recovered'], d['bill']['syncStatus'], d['bill']['qbBillId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsCreated']")" "True sent BILL-2|2"
 chk "   voiding a sent bill removes it in QuickBooks first, then releases the trip" "$(mg POST /api/vendor-bills/$VB2/void '{"reason":"wrong price"}' | jq "d['success'], d['qbDeleted']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['billsDeleted']")|$(load $L5 "l['trips'][0].get('vendorBillId',''), l['qbBillId']")" "True True|1| "
@@ -1289,17 +1289,17 @@ chk "   voiding a sent bill removes it in QuickBooks first, then releases the tr
 # ── C6. Invoices: QuickBooks answers, times out, or accepts and loses the answer ──
 B1=$(mg POST /api/billing-batches "{\"loadIds\":[\"$L1\"]}" | jq "d['batches'][0]['id']")
 mg POST /api/_test/qb-fake '{"mode":"lost"}' >/dev/null
-chk "C6 VBT loses QuickBooks' answer after the invoice was created → failed + 'may exist', load not billed yet" "$(mgc POST /api/billing-batches/$B1/send)|$(curl -s -b $M $B/api/billing-batches/$B1 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], d['batch']['qbInvoiceId']")|$(load $L1 "l['billStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "500|failed True |ready|1"
-chk "   send on that batch says use Retry"                                  "$(mgc POST /api/billing-batches/$B1/send)" "400"
+chk "C6 VBT loses QuickBooks' answer after the invoice was created → external result UNKNOWN (502) + 'may exist', load not billed yet" "$(mgc POST /api/billing-batches/$B1/send)|$(curl -s -b $M $B/api/billing-batches/$B1 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], d['batch']['qbInvoiceId']")|$(load $L1 "l['billStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "502|unknown True |ready|1"
+chk "   send on that batch is refused: external result unknown, reconcile first (409)" "$(mgc POST /api/billing-batches/$B1/send)" "409"
 mg POST /api/_test/qb-fake '{"mode":"ok","connected":false}' >/dev/null
-chk "   Retry with QuickBooks disconnected refuses (cannot check) — nothing sent" "$(mgc POST /api/billing-batches/$B1/retry)|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "400|1"
+chk "   Retry with QuickBooks disconnected refuses (cannot check, 409) — nothing sent, still unknown" "$(mgc POST /api/billing-batches/$B1/retry)|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")|$(curl -s -b $M $B/api/billing-batches/$B1 | jq "d['batch']['syncStatus']")" "409|1|unknown"
 mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
 chk "   Retry finds the invoice in QuickBooks and adopts it: batch sent, load billed, still ONE invoice" "$(mg POST /api/billing-batches/$B1/retry | jq "d['recovered'], d['batch']['syncStatus'], d['batch']['qbInvoiceId']")|$(load $L1 "l['billStatus'], l['qbInvoiceId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "True sent_to_quickbooks INV-1|billed INV-1|1"
 chk "   ...recorded in the sync log"                                        "$(curl -s -b $M "$B/api/qb-sync-log?batchId=$B1" | jq "sorted(set(e['actionType'] for e in d['items']))")" "['create_invoice', 'find_customer', 'recover_invoice']"
 mg POST /api/billing-batches/$B1/void '{"reason":"test the timeout path next"}' >/dev/null
 B2=$(mg POST /api/billing-batches "{\"loadIds\":[\"$L1\"]}" | jq "d['batches'][0]['id']")
 mg POST /api/_test/qb-fake '{"mode":"timeout"}' >/dev/null
-chk "   QuickBooks times out before anything is created → failed + 'may exist'" "$(mgc POST /api/billing-batches/$B2/send)|$(curl -s -b $M $B/api/billing-batches/$B2 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks']")" "500|failed True"
+chk "   QuickBooks times out before anything is created → external result UNKNOWN too (VBT cannot tell the two apart)" "$(mgc POST /api/billing-batches/$B2/send)|$(curl -s -b $M $B/api/billing-batches/$B2 | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks']")" "502|unknown True"
 mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
 chk "   Retry finds nothing, resets the batch; send creates the one invoice" "$(mg POST /api/billing-batches/$B2/retry | jq "d.get('recovered'), d['batch']['syncStatus']")|$(mg POST /api/billing-batches/$B2/send | jq "d['batch']['qbInvoiceId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "None ready_to_bill|INV-2|2"
 mg POST /api/billing-batches/$B2/void '{"reason":"refresh test"}' >/dev/null
@@ -2046,6 +2046,109 @@ chk "   legacy load, no trips: 0 actual, planned 50 from the count, no open tick
 chk "   static: one completion predicate — no inline copy left in the tons, cost or segment paths" "$(grep -c "function tripIsCompleted" server.js)|$(grep -cE "filter\(t => t\.timestamps && t\.timestamps\.completed\)" server.js)" "1|0"
 rm -f $MA $RG $BE
 
+echo "── 53. CRITICAL 4 — a QuickBooks answer VBT cannot read is an UNKNOWN result, never 'nothing was created' ──"
+# Three outcomes of a create: confirmed success, confirmed failure (retryable), and UNKNOWN — the
+# request may have reached QuickBooks. An unknown batch or bill is parked: Send is refused, Retry
+# is a lookup, Void looks up first, the load stays claimed, no id is invented. The fake QuickBooks
+# models each case, including "document created, answer lost", and counts create REQUESTS received
+# separately from documents that exist — the two must never drift apart because of VBT.
+RG=$(mktemp); curl -s -c $RG -X POST -d "username=rigo&password=rigo123" $B/login -o /dev/null
+mkl() { # mkl PONUM MATERIAL YARD → one approved, ready-to-bill load for Ambig Co (planned basis)
+  local P L; P=$(mg POST /api/pos '{"po":{"poNumber":"'"$1"'","customer":"Ambig Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"'"$3"'"},"splits":[{"truckId":"rigo","truckUnitId":"truck-14","material":"'"$2"'","loadsAssigned":1,"vendorId":"'"$3"'"}]}' | jq "d['po']['id']")
+  L=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][0]")
+  dr $RG $L '{"action":"start-trip"}' >/dev/null; dr $RG $L "{\"action\":\"arrived-pickup\",\"yardId\":\"$3\"}" >/dev/null; dr $RG $L "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $RG $L '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $L '{"action":"trip-complete"}' >/dev/null
+  curl -s -b $RG -H "$J" -X PUT $B/api/loads/$L -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+  dr $RG $L '{"action":"delivered"}' >/dev/null; mg POST /api/loads/$L/approve >/dev/null; echo $L; }
+nb() { mg POST /api/billing-batches "{\"loadIds\":[\"$1\"]}" | jq "(d.get('batches') or [{}])[0].get('id') or d.get('error')"; }
+nv() { mg POST /api/vendor-bills "{\"loadIds\":[\"$1\"]}" | jq "(d.get('bills') or [{}])[0].get('id') or d.get('error')"; }
+fk() { curl -s -b $M $B/api/_test/qb-fake | jq "$1"; }
+bt() { curl -s -b $M $B/api/billing-batches/$1 | jq "$2"; }
+vb() { curl -s -b $M $B/api/vendor-bills | jq "[$2 for b in d['items'] if b['id']=='$1'][0]"; }
+qbm() { mg POST /api/_test/qb-fake "{\"mode\":\"$1\"${2:+,$2}}" >/dev/null; }
+mg POST /api/customers '{"name":"Ambig Co"}' >/dev/null
+qbm ok; IC0=$(fk "d['invoicesCreated']"); CC0=$(fk "d['invoiceCreateCalls']")
+inv() { fk "(d['invoicesCreated']-$IC0, d['invoiceCreateCalls']-$CC0)"; }   # (documents that exist, create requests received) since the section began
+# 1. Confirmed success, and the second-send refusals that already existed.
+L1=$(mkl C4-1 Dirt vbt); B1=$(nb $L1)
+chk "53 1. confirmed success: sent, invoice id recorded, load billed, requestid = batch id" "$(mgc POST /api/billing-batches/$B1/send)|$(bt $B1 "d['batch']['syncStatus'], d['batch']['qbInvoiceId']!='', d['batch']['mayExistInQuickBooks']")|$(load $L1 "l['billStatus']")|$(fk "d['invoiceRequestIds'][-1]=='$B1'")|$(inv)" "200|sent_to_quickbooks True False|billed|True|(1, 1)"
+chk "   11. second send, retry and re-batch of a sent load are refused (400 400 400); one invoice" "$(mgc POST /api/billing-batches/$B1/send) $(mgc POST /api/billing-batches/$B1/retry) $(mgc POST /api/billing-batches "{\"loadIds\":[\"$L1\"]}")|$(inv)" "400 400 400|(1, 1)"
+# 2. Confirmed failure (QuickBooks said 400): retryable, nothing invented.
+L2=$(mkl C4-2 Dirt vbt); B2=$(nb $L2); qbm fail
+chk "   2. confirmed failure (400): 500, failed, not 'may exist', no id, load still claimed by the batch" "$(mgc POST /api/billing-batches/$B2/send)|$(bt $B2 "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], repr(d['batch']['qbInvoiceId'])")|$(load $L2 "l['billStatus'], l['billingBatchId']=='$B2'")|$(inv)" "500|failed False ''|ready True|(1, 2)"
+qbm ok
+chk "   …a known failure stays retryable: Retry resets, Send creates the one invoice" "$(mg POST /api/billing-batches/$B2/retry | jq "d['success'], d.get('reconciled'), d['batch']['syncStatus']")|$(mgc POST /api/billing-batches/$B2/send)|$(inv)" "True None ready_to_bill|200|(2, 3)"
+# 3. Thrown before the request left: a failure, retryable.
+L3=$(mkl C4-3 Dirt vbt); B3=$(nb $L3); qbm thrown
+chk "   3. thrown before the request was sent: failed, retryable" "$(mgc POST /api/billing-batches/$B3/send)|$(bt $B3 "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks']")|$(qbm ok; mg POST /api/billing-batches/$B3/retry | jq "d['batch']['syncStatus']")|$(mgc POST /api/billing-batches/$B3/send)|$(inv)" "500|failed False|ready_to_bill|200|(3, 5)"
+# 4. Timeout: nothing was created, but VBT cannot know that → UNKNOWN; reconcile says 'not found'; the re-send carries the same requestid.
+L4=$(mkl C4-4 Dirt vbt); B4=$(nb $L4); qbm timeout
+chk "   4. timeout → 502 external_unknown; batch 'unknown', may exist, no id invented; load claimed, not billed" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code'], d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], repr(d['batch']['qbInvoiceId']), d['batch']['reconcile']['kind'], d['batch']['reconcile']['requestId']=='$B4'")|$(load $L4 "l['billStatus'], l['billingBatchId']=='$B4'")|$(inv)" "502 external_unknown unknown True '' timeout True|ready True|(3, 6)"
+chk "   …Send is refused (409 external_unknown), the load cannot join another batch (400), Ready to Bill shows it as batched" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code']")|$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L4\"]}")|$(rtb "[x['billingBatchId']=='$B4' for x in d['items'] if x['id']=='$L4']")|$(inv)" "409 external_unknown|400|[True]|(3, 6)"
+qbm ok '"connected":false'
+chk "   …Retry with QuickBooks disconnected: 409, still unknown, no create request" "$(mgc POST /api/billing-batches/$B4/retry)|$(bt $B4 "d['batch']['syncStatus'], d['batch']['reconcile']['attempts']")|$(inv)" "409|unknown 1|(3, 6)"
+qbm ok
+chk "   …Retry = reconcile: QuickBooks has no invoice → 'not_found', back to ready; Send creates it with the SAME requestid" "$(mg POST /api/billing-batches/$B4/retry | jq "d['reconciled'], d['batch']['syncStatus'], d['batch']['reconcile']['result']")|$(mgc POST /api/billing-batches/$B4/send)|$(fk "d['invoiceRequestIds'][-1]==d['invoiceRequestIds'][-2]=='$B4'")|$(inv)" "not_found ready_to_bill not_found|200|True|(4, 7)"
+# 5. Connection lost AFTER QuickBooks created the invoice: the case the state exists for.
+L5=$(mkl C4-5 Dirt vbt); B5=$(nb $L5); qbm lost
+chk "   5. invoice created, answer lost → unknown; QuickBooks holds 1 more invoice than VBT knows about; no false id, load not billed" "$(mgc POST /api/billing-batches/$B5/send)|$(bt $B5 "d['batch']['syncStatus'], repr(d['batch']['qbInvoiceId'])")|$(load $L5 "l['billStatus'], l['billingBatchId']=='$B5'")|$(inv)" "502|unknown ''|ready True|(5, 8)"
+qbm ok '"connected":false'
+chk "   …8. Void while unknown with QuickBooks unreachable: 409, nothing released, nothing sent" "$(mg POST /api/billing-batches/$B5/void '{"reason":"bill again"}' -w ' %{http_code}' | pc "d['code']")|$(bt $B5 "d['batch']['syncStatus']")|$(load $L5 "l['billStatus'], l['billingBatchId']=='$B5'")|$(inv)" "409 external_unknown|unknown|ready True|(5, 8)"
+chk "   …9. re-bill attempt while unknown is refused; Send still refused" "$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L5\"]}") $(mgc POST /api/billing-batches/$B5/send)|$(inv)" "400 409|(5, 8)"
+qbm ok
+chk "   …7. Retry = reconcile: the invoice is found and adopted — batch sent, load billed, NO second create request" "$(mg POST /api/billing-batches/$B5/retry | jq "d['recovered'], d['reconciled'], d['batch']['syncStatus'], d['batch']['qbInvoiceId']!=''")|$(load $L5 "l['billStatus'], l['qbInvoiceId']!=''")|$(inv)" "True found sent_to_quickbooks True|billed True|(5, 8)"
+chk "   …the sync log says what happened: create error 'External result unknown', then recover_invoice" "$(curl -s -b $M "$B/api/qb-sync-log?batchId=$B5" | jq "[(e['actionType'], e['responseStatus'], 'External result unknown' in (e.get('errorMessage') or '')) for e in d['items'] if e['actionType'] in ('create_invoice','recover_invoice')]")" "[('recover_invoice', 'success', False), ('create_invoice', 'error', True)]"
+# 6. QuickBooks answered 500 after creating the invoice; Void reconciles, voids THERE, then releases — one live invoice at the end.
+L6=$(mkl C4-6 Dirt vbt); B6=$(nb $L6); qbm http500; VO0=$(fk "d['invoicesVoided']")
+chk "   6. 5xx after the invoice was created → unknown (kind http_500), may exist" "$(mgc POST /api/billing-batches/$B6/send)|$(bt $B6 "d['batch']['syncStatus'], d['batch']['reconcile']['kind'], d['batch']['reconcile']['statusCode']")|$(inv)" "502|unknown http_500 500|(6, 9)"
+qbm ok
+chk "   …8. Void while unknown with QuickBooks connected: looks up first, finds the invoice, voids it in QuickBooks, then releases the load" "$(mg POST /api/billing-batches/$B6/void '{"reason":"wrong price"}' | jq "d['success'], d['qbVoided'], d['batch']['syncStatus'], d['batch']['qbInvoiceId']!='', d['batch']['reconcile']['result']")|$(fk "d['invoicesVoided']-$VO0")|$(load $L6 "l['billStatus'], repr(l['billingBatchId'])")|$(inv)" "True True voided True found|1|ready ''|(6, 9)"
+B6b=$(nb $L6)
+chk "   …re-billed after the void: one more invoice, and exactly ONE live invoice for the load (2 created, 1 voided)" "$(mgc POST /api/billing-batches/$B6b/send)|$(inv)|$(fk "d['invoicesVoided']-$VO0")" "200|(7, 10)|1"
+# 7. 2xx with no body: QuickBooks accepted it, VBT has no id → unknown, reconciled by lookup.
+L7=$(mkl C4-7 Dirt vbt); B7=$(nb $L7); qbm nobody
+chk "   7. 2xx with no readable invoice in the body → unknown (no_entity_in_response), nothing assumed; reconcile adopts it, no second create" "$(mgc POST /api/billing-batches/$B7/send)|$(bt $B7 "d['batch']['syncStatus'], d['batch']['reconcile']['kind']")|$(qbm ok; mg POST /api/billing-batches/$B7/retry | jq "d['recovered'], d['batch']['syncStatus']")|$(inv)" "502|unknown no_entity_in_response|True sent_to_quickbooks|(8, 11)"
+# 8. 503 with nothing created: still unknown to VBT; the lookup settles it.
+L8=$(mkl C4-8 Dirt vbt); B8=$(nb $L8); qbm http503
+chk "   5xx with nothing created → unknown (http_503); reconcile 'not_found'; the send that follows reuses the requestid" "$(mgc POST /api/billing-batches/$B8/send)|$(bt $B8 "d['batch']['syncStatus'], d['batch']['reconcile']['kind']")|$(qbm ok; mg POST /api/billing-batches/$B8/retry | jq "d['reconciled']")|$(mgc POST /api/billing-batches/$B8/send)|$(fk "d['invoiceRequestIds'][-1]==d['invoiceRequestIds'][-2]=='$B8'")|$(inv)" "502|unknown http_503|not_found|200|True|(9, 13)"
+# 9. Operator reconciliation: QuickBooks cannot be reached; the operator checked by hand and found no invoice. On the record.
+L9=$(mkl C4-9 Dirt vbt); B9=$(nb $L9); qbm timeout; mgc POST /api/billing-batches/$B9/send >/dev/null; qbm ok '"connected":false'
+chk "   operator statement 'no invoice in QuickBooks' releases an unknown batch, and is written to the sync log" "$(mg POST /api/billing-batches/$B9/void '{"reason":"outage; checked QuickBooks by hand","confirmedNoInvoiceInQuickBooks":true}' | jq "d['success'], d['batch']['syncStatus'], d['batch']['reconcile']['result']")|$(load $L9 "l['billStatus'], repr(l['billingBatchId'])")|$(curl -s -b $M "$B/api/qb-sync-log?batchId=$B9" | jq "any('checked by hand' in e['requestSummary'] for e in d['items'])")" "True voided operator_confirmed_absent|ready ''|True"
+qbm ok
+# 10. Simultaneous sends of one batch: one 200, one 409, one invoice (the pre-existing guard).
+L10=$(mkl C4-10 Dirt vbt); B10=$(nb $L10); qbm slow '"delayMs":1200'
+R1=$(mktemp); R2=$(mktemp); mgc POST /api/billing-batches/$B10/send > $R1 & sleep 0.2; mgc POST /api/billing-batches/$B10/send > $R2 & wait
+chk "   10. simultaneous sends: one 200, one 409, one create request" "$(cat $R1 $R2 | tr -d '\n' | fold -w3 | sort | tr '\n' ' ')|$(inv)" "200 409 |(10, 15)"
+qbm ok
+# ── Vendor bills: the same three outcomes ──
+BC0=$(fk "d['billsCreated']"); BK0=$(fk "d['billCreateCalls']"); BD0=$(fk "d['billsDeleted']")
+bills() { fk "(d['billsCreated']-$BC0, d['billCreateCalls']-$BK0)"; }
+qbb() { mg POST /api/_test/qb-fake "{\"billMode\":\"$1\"${2:+,$2}}" >/dev/null; }
+V1=$(mkl C4-V1 "3/4 Rock" vulcan); VB1=$(nv $V1)
+chk "   bills 1. confirmed success; second send and retry refused; requestid = bill id" "$(mgc POST /api/vendor-bills/$VB1/send)|$(vb $VB1 "(b['syncStatus'], b['qbBillId']!='')")|$(mgc POST /api/vendor-bills/$VB1/send) $(mgc POST /api/vendor-bills/$VB1/retry)|$(fk "d['billRequestIds'][-1]=='$VB1'")|$(bills)" "200|('sent', True)|400 400|True|(1, 1)"
+V2=$(mkl C4-V2 "3/4 Rock" vulcan); VB2=$(nv $V2); qbb fail
+chk "   bills 2. confirmed failure: failed, retryable; 3. thrown: failed, retryable" "$(mgc POST /api/vendor-bills/$VB2/send)|$(vb $VB2 "(b['syncStatus'], b['mayExistInQuickBooks'])")|$(qbb ok; mg POST /api/vendor-bills/$VB2/retry | jq "d['bill']['syncStatus']")|$(qbb thrown; mgc POST /api/vendor-bills/$VB2/send)|$(vb $VB2 "b['syncStatus']")|$(qbb ok; mg POST /api/vendor-bills/$VB2/retry | jq "d['bill']['syncStatus']")|$(mgc POST /api/vendor-bills/$VB2/send)|$(bills)" "500|('failed', False)|ready|500|failed|ready|200|(2, 4)"
+V4=$(mkl C4-V4 "3/4 Rock" vulcan); VB4=$(nv $V4); qbb timeout
+chk "   bills 4. timeout → unknown; Send 409; Retry disconnected 409; reconcile not_found → ready; Send reuses the requestid" "$(mgc POST /api/vendor-bills/$VB4/send)|$(vb $VB4 "(b['syncStatus'], b['mayExistInQuickBooks'], b['reconcile']['kind'])")|$(mgc POST /api/vendor-bills/$VB4/send)|$(qbb ok '"connected":false'; mgc POST /api/vendor-bills/$VB4/retry)|$(qbb ok; mg POST /api/vendor-bills/$VB4/retry | jq "d['reconciled'], d['bill']['syncStatus']")|$(mgc POST /api/vendor-bills/$VB4/send)|$(fk "d['billRequestIds'][-1]==d['billRequestIds'][-2]=='$VB4'")|$(bills)" "502|('unknown', True, 'timeout')|409|409|not_found ready|200|True|(3, 6)"
+V5=$(mkl C4-V5 "3/4 Rock" vulcan); VB5=$(nv $V5); qbb lost
+chk "   bills 5. bill created, answer lost → unknown; the trip stays claimed; Void disconnected 409; re-bill refused" "$(mgc POST /api/vendor-bills/$VB5/send)|$(vb $VB5 "(b['syncStatus'], b['qbBillId']=='')")|$(load $V5 "l['trips'][0]['vendorBillId']=='$VB5'")|$(qbb ok '"connected":false'; mg POST /api/vendor-bills/$VB5/void '{"reason":"again"}' -w ' %{http_code}' | pc "d['code']")|$(mgc POST /api/vendor-bills "{\"loadIds\":[\"$V5\"]}")|$(bills)" "502|('unknown', True)|True|409 external_unknown|400|(4, 7)"
+qbb ok
+chk "   …bills 7. Retry = reconcile by our document number: found, adopted, no second create" "$(mg POST /api/vendor-bills/$VB5/retry | jq "d['recovered'], d['reconciled'], d['bill']['syncStatus'], d['bill']['qbBillId']!=''")|$(load $V5 "l['qbBillId']!=''")|$(bills)" "True found sent True|True|(4, 7)"
+V6=$(mkl C4-V6 "3/4 Rock" vulcan); VB6=$(nv $V6); qbb http500
+chk "   bills 6. 5xx after creation → unknown; 8. Void connected: found → removed in QuickBooks → released; one live bill after re-billing" "$(mgc POST /api/vendor-bills/$VB6/send)|$(vb $VB6 "b['reconcile']['kind']")|$(qbb ok; mg POST /api/vendor-bills/$VB6/void '{"reason":"wrong price"}' | jq "d['success'], d['qbDeleted'], d['bill']['syncStatus'], d['bill']['reconcile']['result']")|$(fk "d['billsDeleted']-$BD0")|$(load $V6 "l['trips'][0].get('vendorBillId',''), l['qbBillId']")|$(VB6b=$(nv $V6); mgc POST /api/vendor-bills/$VB6b/send)|$(bills)" "502|http_500|True True voided found|1| |200|(6, 9)"
+V7=$(mkl C4-V7 "3/4 Rock" vulcan); VB7=$(nv $V7); qbb nobody
+chk "   bills 7. 2xx with no bill in the body → unknown (no_entity_in_response); reconcile adopts it, no second create" "$(mgc POST /api/vendor-bills/$VB7/send)|$(vb $VB7 "b['reconcile']['kind']")|$(qbb ok; mg POST /api/vendor-bills/$VB7/retry | jq "d['recovered'], d['bill']['syncStatus']")|$(bills)" "502|no_entity_in_response|True sent|(7, 10)"
+V8=$(mkl C4-V8 "3/4 Rock" vulcan); VB8=$(nv $V8); qbb http503
+chk "   bills: 503 with nothing created → unknown (http_503); reconcile not_found → ready; Send creates it with the same requestid" "$(mgc POST /api/vendor-bills/$VB8/send)|$(vb $VB8 "(b['syncStatus'], b['reconcile']['kind'])")|$(qbb ok; mg POST /api/vendor-bills/$VB8/retry | jq "d['reconciled'], d['bill']['syncStatus']")|$(mgc POST /api/vendor-bills/$VB8/send)|$(fk "d['billRequestIds'][-1]==d['billRequestIds'][-2]=='$VB8'")|$(bills)" "502|('unknown', 'http_503')|not_found ready|200|True|(8, 12)"
+V9=$(mkl C4-V9 "3/4 Rock" vulcan); VB9=$(nv $V9); qbb timeout; mgc POST /api/vendor-bills/$VB9/send >/dev/null; qbb ok '"connected":false'
+chk "   bills: operator statement 'no bill in QuickBooks' releases an unknown bill, on the record" "$(mg POST /api/vendor-bills/$VB9/void '{"reason":"outage; checked by hand","confirmedNoBillInQuickBooks":true}' | jq "d['success'], d['bill']['syncStatus'], d['bill']['reconcile']['result']")|$(load $V9 "l['trips'][0].get('vendorBillId','')")|$(curl -s -b $M "$B/api/qb-sync-log?batchId=$VB9" | jq "any('checked by hand' in e['requestSummary'] for e in d['items'])")" "True voided operator_confirmed_absent||True"
+qbb ok
+V10=$(mkl C4-V10 "3/4 Rock" vulcan); VB10=$(nv $V10); qbb slow '"delayMs":1200'
+R1=$(mktemp); R2=$(mktemp); mgc POST /api/vendor-bills/$VB10/send > $R1 & sleep 0.2; mgc POST /api/vendor-bills/$VB10/send > $R2 & wait
+chk "   bills 10. simultaneous sends: one 200, one 409, one create request" "$(cat $R1 $R2 | tr -d '\n' | fold -w3 | sort | tr '\n' ' ')|$(bills)" "200 409 |(9, 14)"
+qbb ok
+chk "   static: the client sends Intuit's requestid on every create; the server never writes 'failed' for an uncertain error" "$(grep -c "requestid=" qb.js)|$(grep -c "requestId: b.id" server.js)|$(grep -c "markExternalUnknown(b, " server.js)" "1|4|7"
+rm -f $RG
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -2222,7 +2325,7 @@ curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/n
 chk "legacy approved load is locked after normalize" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;print([x for x in json.load(sys.stdin)['loads'] if x['id']=='L-OLD'][0]['locked'])")" "True"
 chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/L-OLD -d '{"material":"Sand"}')" "403"
 chk "fabricated hour:1 / mile:1 seeds are removed on load" "$(curl -s -b $M $B/api/costing/settings | python3 -c "import json,sys;u=json.load(sys.stdin)['unitConfig']['byUnit'];print('hour' in u, 'mile' in u, u['ton'])")" "False False 25"
-chk "batch stuck in 'syncing' at restart becomes failed" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'], b['mayExistInQuickBooks'])")" "failed True True"
+chk "batch stuck in 'syncing' at restart (no invoice id) becomes external-result-unknown" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'], b['mayExistInQuickBooks'])")" "unknown True True"
 pkill -f "^node server.js" >/dev/null 2>&1
 rm -f data.json telemetry.json
 

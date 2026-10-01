@@ -78,6 +78,42 @@ unless a definitive validation error came back; on Void of a batch that may
 exist, run the lookup first and refuse to release the loads until QuickBooks
 answers.
 
+**Status: FIXED 2026-10-01** (CRITICAL 4 commit). A QuickBooks create now has
+three outcomes, never two. `qb.js` classifies every mutating request:
+`uncertain: false` only for a definitive 4xx or a failure before the request
+left; `uncertain: true` for a timeout, a dropped connection, a body that could
+not be read or parsed, any 5xx, and a 2xx whose body carries no entity
+(`httpOutcome`, `noEntityError`). The server has an explicit state for the
+third outcome: `syncStatus: 'unknown'` — "External result unknown — reconcile
+before sending again" — on billing batches and vendor bills, with a `reconcile`
+record (reason, kind, the `requestid` the create carried, the exact lookup, the
+attempts and the result). An unknown batch or bill: Send → `409
+external_unknown`; Retry is a reconciliation (QuickBooks is asked for the
+document; found → adopted and the loads billed, not found → ready again, the
+re-send carrying the same requestid; QuickBooks unreachable or the lookup
+failed → refused, nothing changed); Void looks up first and never releases the
+loads on an assumption (found → voided/deleted in QuickBooks, then released;
+not found → released; unreachable → `409`; or the operator states on the
+record that they checked QuickBooks by hand: `confirmedNoInvoiceInQuickBooks`
+/ `confirmedNoBillInQuickBooks`). The load keeps its `billingBatchId`, so it
+cannot join another batch, and no invoice id is ever recorded without
+QuickBooks' word. A restart mid-send parks the batch as unknown (with an id,
+`failed` — Retry confirms it). Idempotency: every create carries Intuit's
+`requestid` query parameter (= the batch / bill id; Intuit replays the
+original answer for a repeated requestid). Intuit does not document how long a
+requestid is kept, so it is the second line of defence; the unknown state and
+the DocNumber / private-note lookup remain the guarantee. Probed before/after:
+invoice created, answer lost, manager voids and bills again — before: `failed`,
+void released the loads with no lookup, re-send created a second invoice (2
+live); after: `unknown`, void with QuickBooks unreachable `409`, void with it
+connected found and voided the invoice in QuickBooks, re-send created one (1
+live). Tests: e2e §53 (confirmed success, confirmed failure, thrown, timeout,
+created-and-lost, 5xx after creation, 5xx with nothing created, 2xx with no
+body, retry / void / re-bill while unknown, operator statement, simultaneous
+sends, second-send refusal — for invoices and for vendor bills); §40 C6 and
+the restart test rewritten to the new state; the fake QuickBooks counts create
+requests received separately from documents that exist.
+
 ### C3. The office branch of the generic load update spreads the request body into the load
 Verified by code (`server.js` `PUT /api/loads/:id`, office branch: `const
 updated = { ...l, ...req.body, id: l.id, poId: l.poId }` behind a short

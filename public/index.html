@@ -4051,6 +4051,7 @@ async function renderBillBatches() {
       'syncing':             { c: '#1f6feb', bg: '#e7f0ff', t: 'Syncing…' },
       'sent_to_quickbooks':  { c: '#0a8a3a', bg: '#e3f6e9', t: 'Sent to QB' },
       'failed':              { c: '#b42318', bg: '#fee4e2', t: 'Failed' },
+      'unknown':             { c: '#92400e', bg: '#fef3c7', t: 'External result unknown — reconcile' },
       'voided':              { c: '#71717a', bg: '#f4f4f5', t: 'Voided' },
     };
     const m = map[s] || map.ready_to_bill;
@@ -4072,8 +4073,9 @@ async function renderBillBatches() {
         <td style="font-size:11px;color:var(--txt2)">${b.createdAt ? new Date(b.createdAt).toLocaleString() : ''}</td>
         <td>
           ${b.syncStatus === 'failed' ? `<button class="btn ghost" onclick="retryBatch('${b.id}')">Retry</button>` : ''}
+          ${b.syncStatus === 'unknown' ? `<button class="btn ghost" onclick="retryBatch('${b.id}')" title="Ask QuickBooks whether the invoice exists. Nothing is sent until it answers.">Reconcile with QuickBooks</button>` : ''}
           ${b.syncStatus === 'ready_to_bill' ? `<button class="btn primary" onclick="sendBatch('${b.id}')">Send</button>` : ''}
-          ${(b.syncStatus === 'sent_to_quickbooks' || b.syncStatus === 'failed') ? `<button class="btn ghost" onclick="voidBatch('${b.id}')">Void</button>` : ''}
+          ${(b.syncStatus === 'sent_to_quickbooks' || b.syncStatus === 'failed' || b.syncStatus === 'unknown') ? `<button class="btn ghost" onclick="voidBatch('${b.id}')">Void</button>` : ''}
         </td>
       </tr>`).join('')}
     </tbody>
@@ -4094,6 +4096,9 @@ async function retryBatch(id) {
   // The interrupted send had already created the invoice: it was found in
   // QuickBooks and adopted. Nothing to send.
   if (rt.recovered) { toast(`Invoice ${rt.batch?.qbInvoiceNumber || rt.batch?.qbInvoiceId || ''} was already in QuickBooks — batch marked as sent`, 'success'); await loadAll(); renderBillBatches(); return; }
+  // An unknown result reconciled as "no invoice in QuickBooks": sending is
+  // allowed again, with the same requestid, and the person is told why.
+  if (rt.reconciled === 'not_found') toast('QuickBooks has no invoice for this batch — sending it now', 'info');
   const r = await api('POST', `/api/billing-batches/${id}/send`, {});
   if (r.ok) toast('Sent to QuickBooks', 'success'); else toast(r.error || 'Retry failed', 'error');
   renderBillBatches();
@@ -4104,6 +4109,17 @@ async function voidBatch(id) {
   const reason = prompt('Reason for voiding this batch (required)?');
   if (!reason || !reason.trim()) return;
   const body = { reason: reason.trim() };
+  if (b && b.syncStatus === 'unknown') {
+    // The invoice may exist. Void asks QuickBooks first; the only other way
+    // through is the operator's own statement, which goes on the record.
+    const check = confirm(`The QuickBooks result for this batch is unknown — the invoice may exist.\n\n`
+      + 'OK = Ask QuickBooks now (it must be connected). If the invoice is found it is voided there, then the loads are released.\n'
+      + 'Cancel = I checked QuickBooks myself and there is NO invoice for this batch.');
+    if (!check) {
+      if (!confirm('Confirm: you looked in QuickBooks and found no invoice for this batch. This statement is recorded in the sync log.')) return;
+      body.confirmedNoInvoiceInQuickBooks = true;
+    }
+  }
   if (b && b.qbInvoiceId) {
     // The loads only go back to Ready to Bill once the QuickBooks invoice is
     // voided too — either here, or by hand in QuickBooks first.

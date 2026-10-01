@@ -98,7 +98,8 @@ say "   Case B — QuickBooks accepts the invoice, VBT loses the answer"
 B2=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LM\"]}" | jq "d['batches'][0]['id']")
 mg POST /api/_test/qb-fake '{"mode":"lost"}' >/dev/null
 R=$(mg POST /api/billing-batches/$B2/send); echo "  → $(echo "$R" | jq "d['batch']['errorMessage']")"
-chk "batch failed and flagged; load NOT marked billed; QuickBooks holds INV-2" "$(echo "$R" | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks']")|$(load $LM "l['billStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "failed True|ready|2"
+# (CRITICAL 4: a lost answer is an UNKNOWN external result, not a failure — the batch is parked for reconciliation.)
+chk "batch parked as external-result-unknown and flagged; load NOT marked billed; QuickBooks holds INV-2" "$(echo "$R" | jq "d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks']")|$(load $LM "l['billStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "unknown True|ready|2"
 mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
 chk "Retry finds INV-2 in QuickBooks and adopts it — no third invoice" "$(mg POST /api/billing-batches/$B2/retry | jq "d['recovered'], d['batch']['qbInvoiceId']")|$(load $LM "l['billStatus'], l['qbInvoiceId']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")" "True INV-2|billed INV-2|2"
 say "   Case C — the user refreshes during Send"

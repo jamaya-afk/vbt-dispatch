@@ -182,6 +182,28 @@ automatically.
 Approved/sent loads are locked from deletion. Mistakes use **Void** (which
 reverses the local lock and optionally voids the invoice in QB) — never delete.
 
+### Three outcomes of a send, never two
+
+A create request to QuickBooks ends in one of three states, for invoice
+batches and vendor bills alike:
+
+- **Sent** — QuickBooks confirmed the document; its id is recorded and the
+  loads are marked billed.
+- **Failed** — QuickBooks definitively refused (a validation error), or the
+  request never left. Retry resets the batch and Send creates the document.
+- **External result unknown — reconcile** — the request may have reached
+  QuickBooks and VBT cannot tell whether the document exists: a timeout, a
+  dropped connection, a 5xx, an answer with no readable body, a restart
+  mid-send. Nothing assumes "nothing was created": Send is refused,
+  **Reconcile** asks QuickBooks for the document (found → adopted, the loads
+  billed; not found → ready to send again), Void asks QuickBooks first and
+  releases the loads only once it has answered (or once the operator states,
+  on the record, that they checked QuickBooks by hand). The loads stay on the
+  batch, so they cannot be billed twice, and no invoice id is written without
+  QuickBooks' word. Every create carries Intuit's `requestid` (the batch or
+  bill id) so a repeat of the same request is answered with the original
+  document rather than a second one.
+
 ### Setup
 
 1. Register an Intuit Developer app at https://developer.intuit.com.
