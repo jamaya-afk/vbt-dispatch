@@ -38,6 +38,14 @@ carlos / carlos123
   (unassigned, in progress, awaiting approval, ready to bill with its amount,
   missing information, conflicts, carried over, free trucks and drivers) is
   actionable: each tile filters the board or opens the screen that works it.
+- **Calendar** is the planning view beside the board: scheduled work by day,
+  week or month, with a date picker. Every item is the board's own row
+  (customer, job, PO, pickup yard, jobsite, driver, truck, load count,
+  status) read from the load's `deliveryDate`, so an Edit PO date change
+  moves it at once and there is no second schedule to drift. Archived loads
+  stay on their dates, flagged. An item opens the same Load Details and Edit
+  PO; "Open this day on Dispatch" hands the day to the board. Telemetry is
+  not shown on the calendar and never moves a date.
 - **Quick Assign** is Driver → Truck → Yard → (Trailer) → Confirm, from a card
   or by dragging a load onto a driver. A conflict (driver mid-haul elsewhere,
   truck or trailer on another driver's load) is shown in the app with Cancel

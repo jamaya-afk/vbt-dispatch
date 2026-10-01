@@ -7301,6 +7301,59 @@ async function loadTelemetryEvidence(load, opts = {}) {
   return out;
 }
 
+// ── THE CALENDAR ─────────────────────────────────────────────────────────────
+// Scheduled work by date: the planning view beside the dispatch board (which
+// is about now). Every row is boardLoadRow — the same statuses, pickup yard,
+// driver and truck the board shows — read straight from each load's own
+// deliveryDate, so a PO date change moves the item the moment it is saved;
+// there is no second schedule to drift. Archived loads are included for the
+// history, flagged. Voided loads are not work. Telemetry has no part here:
+// nothing from Linxup is read, shown or allowed to move a date.
+const CAL_MAX_DAYS = 93;
+function calendarRows(from, to) {
+  const inRange = l => !l.voided && l.deliveryDate && l.deliveryDate >= from && l.deliveryDate <= to;
+  const byDay = new Map();
+  for (const l of store.loads.filter(inRange)) { if (!byDay.has(l.deliveryDate)) byDay.set(l.deliveryDate, []); byDay.get(l.deliveryDate).push(l); }
+  const days = {};
+  for (const [date, ls] of byDay) { const holding = ls.filter(loadHoldsResources); days[date] = ls.map(l => ({ ...boardLoadRow(l, holding), archived: false })); }
+  for (const b of store.archive || []) for (const l of b.loads || []) {
+    if (!inRange(l)) continue;
+    const rows = (days[l.deliveryDate] = days[l.deliveryDate] || []);
+    if (rows.some(x => x.id === l.id)) continue;   // never twice, whatever the archive holds
+    rows.push({ ...boardLoadRow(l, []), archived: true, archiveBatchId: b.batchId || null });
+  }
+  const order = r => (r.driverName ? '0' + r.driverName : '1') + ':' + r.poNumber + ':' + r.id;
+  for (const date of Object.keys(days)) days[date].sort((a, b) => order(a).localeCompare(order(b)));
+  return days;
+}
+// Changes when any scheduled day changes (a PO created, moved, assigned,
+// progressed, approved, billed or archived), so the office refreshes the
+// calendar for days other than today too.
+function calendarFingerprint() {
+  const parts = store.loads.filter(l => !l.voided).map(l => `${l.id}:${l.deliveryDate}:${l.truckId || '-'}:${l.truckUnitId || '-'}:${l.loadsDelivered || 0}:${l.approvalStatus}:${l.billStatus || '-'}`);
+  parts.sort();
+  return require('crypto').createHash('sha1').update(parts.join('|') + '#' + (store.archive || []).length).digest('hex').slice(0, 12);
+}
+app.get('/api/calendar', reqMgr, (req, res) => {
+  const today = todayStr();
+  const from = String(req.query.from || today), to = String(req.query.to || from);
+  const okDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s + 'T12:00:00Z'));
+  if (!okDate(from) || !okDate(to)) return res.status(400).json({ error: 'from and to must be YYYY-MM-DD' });
+  if (to < from) return res.status(400).json({ error: 'to must not be before from' });
+  const span = Math.round((Date.parse(to + 'T12:00:00Z') - Date.parse(from + 'T12:00:00Z')) / 86400000) + 1;
+  if (span > CAL_MAX_DAYS) return res.status(400).json({ error: `At most ${CAL_MAX_DAYS} days at a time` });
+  const days = calendarRows(from, to);
+  const totals = {};
+  for (const [date, rows] of Object.entries(days)) totals[date] = {
+    loads: rows.length,
+    loadsAssigned: rows.reduce((s, r) => s + (Number(r.loadsAssigned) || 0), 0),
+    loadsDelivered: rows.reduce((s, r) => s + (Number(r.loadsDelivered) || 0), 0),
+    unassigned: rows.filter(r => r.bucket === 'unassigned').length,
+    byBucket: rows.reduce((m, r) => { const k = r.archived ? 'archived' : r.bucket; m[k] = (m[k] || 0) + 1; return m; }, {}),
+  };
+  res.json({ ok: true, from, to, today, days, totals, version: calendarFingerprint() });
+});
+
 // The office's live-refresh fingerprint: the day's loads plus everything the
 // attention row shows (submitted and ready-to-bill counts, the drivers' open
 // days), so the board refreshes when any of them change and only then.
@@ -7312,6 +7365,7 @@ function officeFingerprint(day) {
     'rtb:' + live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready').length,
     'sh:' + (store.shifts || []).filter(s => s.status === 'open').map(s => s.id + ':' + (s.truckId || '')).sort().join(','),
     'lx:' + linxup.version,   // a new truck position or tracker change repaints the board
+    'cal:' + calendarFingerprint(),   // any scheduled day changing repaints the calendar
   ].join('|');
   return require('crypto').createHash('sha1').update(dispatchFingerprint(dayLoads) + '#' + extra).digest('hex').slice(0, 16);
 }

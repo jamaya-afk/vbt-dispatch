@@ -522,6 +522,35 @@ async function call(cookie, method, path, body) {
   chk('   Save maps it (a manager\'s decision, audited); the panel now says visits count as pickup evidence', `${l2m.data.geofences.find(g => g.geofenceId === 21).mappedVendorId} ${await page.evaluate(() => /Geofence visits count as pickup evidence for this yard\./.test(document.getElementById('v-fence').innerText))}`, 'vulcan true');
   chk('   no browser confirm() or prompt()', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
 
+  console.log('── Office: the Calendar — scheduled work by date, beside the Dispatch board ──');
+  await page.evaluate(() => goTab('calendar')); await page.waitForTimeout(1200);
+  const calToday = (await call(mgr, 'GET', `/api/calendar?from=${today}&to=${today}`)).data.today;
+  const monthName = new Date(calToday + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const cm = await page.evaluate(id => {
+    const sec = document.getElementById('sec-calendar'), cell = document.querySelector('.cal-cell.today'), item = cell && cell.querySelector(`.cal-item[data-load-id="${id}"]`);
+    return { nav: !!document.querySelector('.nav-item[data-tab="calendar"]'), navText: (document.querySelector('.nav-item[data-tab="calendar"] span') || {}).textContent, visible: sec && getComputedStyle(sec).display !== 'none', title: document.getElementById('page-title').textContent,
+      label: (document.getElementById('cal-label') || {}).textContent, views: Array.from(document.querySelectorAll('[data-cal-view]')).map(b => b.textContent + (b.classList.contains('active') ? '*' : '')).join('|'),
+      cells: document.querySelectorAll('.cal-cell').length, todayDate: cell && cell.dataset.date, item: item ? item.innerText.replace(/\s+/g, ' ').trim() : 'no item', newPo: !!document.querySelector('#topbar-actions .btn.primary') };
+  }, load.id);
+  chk('1. Calendar is in the sidebar and opens as a month: the grid, today marked, Day / Week / Month pills, + New PO at hand', `${cm.nav} ${cm.navText} ${cm.visible} ${cm.title} ${cm.label === monthName} ${cm.views} ${cm.cells >= 28} ${cm.todayDate === calToday} ${cm.newPo}`, 'true Calendar true Calendar true Day|Week|Month* true true true');
+  chk('   Beryle\'s load sits in today\'s cell with customer, PO, driver · truck, count and status', /^ABC Materials PO 10482 · 3\/4 Rock Beryle · Truck #12 · 0\/3 (Loaded|In progress|Loaded \/ en route)/i.test(cm.item), true);
+  await page.evaluate(() => calSetView('week')); await page.waitForTimeout(900);
+  const cw = await page.evaluate(id => { const col = document.querySelector('.cal-col.today'); return { cols: document.querySelectorAll('.cal-col').length, has: !!(col && col.querySelector(`.cal-item[data-load-id="${id}"]`)), route: col ? col.innerText.replace(/\s+/g, ' ') : '' }; }, load.id);
+  chk('2. Week: seven columns, the load in today\'s column with its route', `${cw.cols} ${cw.has} ${/Vulcan → Merced/.test(cw.route)}`, '7 true true');
+  await page.evaluate(() => calSetView('day')); await page.waitForTimeout(900);
+  const cd = await page.evaluate(id => { const row = document.querySelector(`.cal-row[data-load-id="${id}"]`); return { txt: row ? row.innerText.replace(/\s+/g, ' ') : 'no row', btns: row ? Array.from(row.querySelectorAll('button')).map(b => b.textContent.trim()).join('|') : '', group: (document.querySelector('.cal-group-head') || {}).innerText }; }, load.id);
+  chk('3. Day: grouped by driver, every fact on the row — customer, PO, material, count, pickup yard → jobsite, driver, truck, trailer — with Details and Edit PO', `${/ABC Materials/.test(cd.txt)} ${/PO 10482 · 3\/4 Rock · 0\/3 loads/.test(cd.txt)} ${/Pickup Vulcan .*→ Jobsite 500 Main St, Merced/.test(cd.txt)} ${/Driver Beryle · Truck Truck #12 · Trailer 3B/.test(cd.txt)} ${cd.btns} ${/Beryle/.test(cd.group || '')}`, 'true true true true Details|Edit PO true');
+  await page.evaluate(id => document.querySelector(`.cal-row[data-load-id="${id}"]`).click(), load.id); await page.waitForTimeout(900);
+  const cdm = await page.evaluate(() => { const m = document.querySelector('.modal-bg[style*="250"] .modal'); return m ? m.innerText.replace(/\s+/g, ' ').slice(0, 120) : 'no modal'; });
+  chk('4. clicking the item opens the existing Load Details for that load (PO 10482, ABC Materials), not a second detail screen', /^Load Details × 10482 ABC Materials/.test(cdm), true);
+  await page.evaluate(() => document.querySelectorAll('.modal-bg').forEach(m => m.remove()));
+  await page.evaluate(() => calPick('2026-01-15')); await page.waitForTimeout(900);
+  chk('5. picking a date goes there: an empty past day says so plainly; Today brings the office back', `${await page.evaluate(() => document.getElementById('cal-label').textContent)} ${await page.evaluate(() => /Nothing scheduled for this day/.test(document.getElementById('calendar-content').innerText))} ${await page.evaluate(() => !!document.querySelector('.cal-today'))}`, 'Thursday, January 15, 2026 true true');
+  await page.evaluate(() => calToday()); await page.waitForTimeout(700);
+  await page.evaluate(() => calOnBoard(document.getElementById('cal-pick').value)); await page.waitForTimeout(900);
+  chk('6. "Open this day on Dispatch" hands the day to the board — the two screens stay two screens', `${await page.evaluate(() => currentTab)} ${await page.evaluate(() => document.getElementById('page-title').textContent)} ${await page.evaluate(() => !document.querySelector('[data-tab="board"]'))}`, 'today Dispatch true');
+  chk('   no browser confirm() or prompt()', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
+
   await ctx.close();
 
   console.log('── Driver: phone view, no fleet access ──');
