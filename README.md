@@ -61,6 +61,14 @@ carlos / carlos123
 - **Edit PO** changes the order; the work follows only where it is still
   operational. The rules are in [PO-EDITING.md](PO-EDITING.md). "Add a load"
   puts more work on the same order with the same checks as the New PO form.
+- **Every change to a load goes through its own operation.** The generic load
+  update (`PUT /api/loads/:id`) accepts only notes, the planned count while the
+  load is still operational, and the ticket photo and signature. Driver, truck,
+  trailer and yard change through Quick Assign; the date through Move Date or
+  Edit PO; the delivered count, trips and stamps through the driver's trip
+  steps; approval, billing, void and their bookkeeping through their own
+  actions; prices are set at creation. Anything else is refused by name, with
+  the operation to use, and nothing is written.
 - **Billing** reads Submitted → Approved → Ready to Bill → Billed → Archived.
   Ready to Bill prices each load with the invoice engine. Manual billing asks
   for the outside invoice reference; its undo is Unbill in History, with a

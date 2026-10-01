@@ -91,6 +91,27 @@ change replaces the audit details). No office screen calls this route today
 corruption path. Fix shape: a whitelist like the driver branch (notes, trailer
 through the assign rule), everything else refused.
 
+**Status: FIXED 2026-10-01** (CRITICAL 2 commit). The office branch of
+`PUT /api/loads/:id` is now a strict allowlist: `notes`; `loadsAssigned` only
+while the load is operational (the Edit PO rule — no trip started, nothing
+delivered; otherwise `409 not_operational`); `pod`, `ticketImage` and
+`ticketImageUrl` (evidence the office may attach on the driver's behalf, as the
+driver branch already allowed). Every other field is refused with
+`400` naming the field and the operation that owns it (`routes` in the
+response): driver / truck / trailer / yard → Quick Assign; date → Move Date or
+Edit PO; delivered count, trips, stamps, GPS, actual yard, status → the
+driver's trip steps; approval, billing, void, bookkeeping, history, pricing
+snapshots, ids → their own actions or never. A request with one refused field
+writes nothing. A voided load answers `403`; a locked load still answers `403`.
+Probed before/after on the same fixture (driver, truck, delivered count, date,
+history arrays, pricing, vendor-bill bookkeeping, status: all `200` and written
+before; all `400` and untouched after). Tests: e2e §51, §22 loop extended; §8,
+§29 and §44 fixtures moved off the bypass (test hook or Quick Assign). No
+office screen called the route, so no UI change. Owner note: there is no
+dedicated office operation that hand-sets a per-load customer rate (prices are
+set at creation and by Edit PO propagation); the PO-edit "hand-set price stays"
+rule is still tested with a planted fixture.
+
 ### C4. Actual-tons customers can be billed for a trip that was loaded but never delivered
 Verified by code (`server.js` `loadTons`: `actualTons` sums every trip with a
 ticket, not every completed trip; `revenueDetail` bills `rate × actualTons`

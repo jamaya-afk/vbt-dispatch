@@ -184,7 +184,9 @@ curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{
 CL=$(curl -s -b $M $B/api/data | python3 -c "
 import json,sys
 print([l['id'] for l in json.load(sys.stdin)['loads'] if l['material']=='3/4 Rock' and l['truckId']=='matthew'][0])")
-curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$CL -d '{"loadsDelivered":2}' -o /dev/null
+# Two delivered loads on record (planted with the test hook: the office update no longer
+# accepts loadsDelivered — CRITICAL 2 — and this fixture is older, trip-less data).
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/_test/set-load -d "{\"id\":\"$CL\",\"fields\":{\"loadsDelivered\":2}}" -o /dev/null
 chk "profitability cost = 38x25x2 + one Vulcan trip on the VBT-planned load" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grand']['cost']))")" "2850"
 chk "material-costs agrees"        "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;print(int(json.load(sys.stdin)['grandTotal']))")" "2850"
 chk "  ...the Vulcan trip on the VBT-planned load is costed to Vulcan" "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;v=json.load(sys.stdin)['vendors']['vulcan'];print(v['totalLoads'], int(v['totalCost']))")" "3 2850"
@@ -417,8 +419,8 @@ import json,sys;d=json.load(sys.stdin)
 po=[p for p in d['pos'] if p['poNumber']=='SM-CHK'][0]
 print([x for x in d['loads'] if x['poId']==po['id']][0]['id']); print(po['id'])")
 SML=$(echo "$SM"|sed -n 1p); SMP=$(echo "$SM"|sed -n 2p)
-for F in approvalStatus billStatus voided locked billingBatchId trips qbInvoiceId; do
-  case $F in trips) V='[]';; voided|locked) V='true';; *) V='"approved"';; esac
+for F in approvalStatus billStatus voided locked billingBatchId trips qbInvoiceId truckId truckUnitId deliveryDate loadsDelivered customerRate manualBillRef; do
+  case $F in trips) V='[]';; voided|locked) V='true';; loadsDelivered|customerRate) V='1';; *) V='"approved"';; esac
   chk "PUT $F rejected (400)" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/$SML -d "{\"$F\":$V}")" "400"
 done
 chk "  ...and the load is still pending/unlocked" "$(curl -s -b $M $B/api/data | python3 -c "
@@ -604,9 +606,10 @@ echo "── 29. One pickup-yard source for every office screen ──"
 curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"poNumber":"YARD-1","customer":"Yard Co","deliveryDate":"'"$(date +%F)"'","plannedVendorId":"vbt"},"splits":[{"truckId":"rigo","material":"Base Rock","loadsAssigned":1,"vendorId":"vulcan"}]}' -o /dev/null
 YL=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='YARD-1'][0];print([l['id'] for l in d['loads'] if l['poId']==po['id']][0])")
 chk "office load carries resolved pickup (vendor wins over PO plan)" "$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$YL'][0];print(l['pickup']['id'], l['pickup']['name'])")" "vulcan Vulcan"
-curl -s -b $M -H 'Content-Type: application/json' -X PUT $B/api/loads/$YL -d '{"vendorId":"cemex"}' -o /dev/null
+# The yard changes through Quick Assign (the generic load update refuses vendorId — CRITICAL 2).
+curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/loads/$YL/assign -d '{"yardId":"cemex"}' -o /dev/null
 YP=$(curl -s -b $M $B/api/data | python3 -c "import json,sys;l=[x for x in json.load(sys.stdin)['loads'] if x['id']=='$YL'][0];print(l['pickup']['name'], l['vendorName'], l.get('actualYardId'), l['vendorRateIsDefault'])")
-chk "generic PUT of vendorId re-resolves, clears mirror, re-prices" "$YP" "CEMEX CEMEX None False"
+chk "yard change through Quick Assign re-resolves, clears mirror, re-prices" "$YP" "CEMEX CEMEX None False"
 chk "profitability uses the same resolver" "$(curl -s -b $M $B/api/profitability | python3 -c "import json,sys;d=json.load(sys.stdin);print(any('CEMEX' in (v.get('name') or '') for v in d['byVendor']))")" "True"
 chk "no independent yard label left in the UI" "$(grep -cE "l\.vendorName \|\| po\.pickup|l\.actualYardName \|\| \(l\.vendorName\)|l\.actualYardName \|\| l\.pickup" public/index.html)" "0"
 chk "no hand-rolled yard chain left on the server" "$(grep -cE "l\.actualYardId \|\| l\.vendorId|l\.vendorId \|\| l\.yardId" server.js)" "0"
@@ -1511,7 +1514,9 @@ P=$(mg POST /api/pos '{"po":{"poNumber":"E44-1","customer":"Edit Co","deliveryDa
 LB=$(loadof $P beryle); LM=$(loadof $P matthew); LR=$(loadof $P rigo); LU=$(loadof $P "")
 mg PUT /api/pos/$P/location '{"lat":36.7,"lng":-119.7}' >/dev/null
 dr $BE $LB '{"action":"start-trip"}' >/dev/null
-mg PUT /api/loads/$LR '{"customerRate":40}' >/dev/null
+# A hand-set price is planted with the test hook: no office operation sets a per-load customer rate
+# (prices come from Vendors & Prices at creation; the generic load update refuses customerRate — CRITICAL 2).
+mg POST /api/_test/set-load "{\"id\":\"$LR\",\"fields\":{\"customerRate\":40}}" >/dev/null
 PC=$(mg POST /api/pos '{"po":{"poNumber":"E44-C","customer":"Other Co","deliveryDate":"'"$TOMORROW"'","plannedVendorId":"vbt"},"splits":[{"truckId":"carlos","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
 chk "44 only the order's own fields go through a PO update; status, materials and the pin are derived or have their own action" "$(mg PUT /api/pos/$P '{"status":"completed","notes":"x"}' -w ' %{http_code}' | code "d['rejectedFields']")|$(po $P "p['status'], repr(p['notes'])")" "400 ['status']|active ''"
 R=$(mg PUT /api/pos/$P "{\"deliveryDate\":\"$TOMORROW\",\"reason\":\"pour moved\"}")
@@ -1949,6 +1954,50 @@ mg POST /api/_test/set-load "{\"id\":\"$L\",\"fields\":{\"loadsDelivered\":4}}" 
 chk "   an approved load whose count was inflated is not priceable (the reason names the trips), costing pays 1 trip, and it cannot be batched" "$(rtb "[(x['priceable'], x['priceReason']) for x in d['items'] if x['id']=='$L']")|$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$L\"]}" | jq "[li['loads'] for g in d['groups'] for li in g['lineItems']]")|$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L\"]}")" "[(False, 'the delivered count (4) on $L does not match its completed trips (1) — reject or void the load before billing')]|[1]|400"
 chk "   the increment is gone: every delivered count on the server is derived from the completed trips" "$(grep -c "loadsDelivered = (l.loadsDelivered || 0) + 1" server.js)|$(grep -c "l.loadsDelivered = completed" server.js)|$(grep -c "^function completedTripCount\|^function deliveredRecord" server.js)" "0|2|2"
 rm -f $MA $RG
+
+echo "── 51. CRITICAL 2 — the office load update is an allowlist; every operation keeps its own route ──"
+# Before this fix the office branch spread the request body into the load: one curl with an office
+# session set the driver, truck, delivered count, date, prices, bookkeeping and history with no
+# conflict check and a bare audit entry. Now notes, the planned count (while operational), the ticket
+# photo and the signature go through; everything else is refused naming the operation that owns it,
+# and a request with one refused field writes nothing.
+pc() { python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, $1)"; }
+BE=$(mktemp); curl -s -c $BE -X POST -d "username=beryle&password=beryle123" $B/login -o /dev/null
+CA=$(mktemp); curl -s -c $CA -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
+P=$(mg POST /api/pos '{"po":{"poNumber":"C2-1","customer":"Allow Co","deliveryDate":"'"$TODAY"'","plannedVendorId":"vbt"},"splits":[{"truckId":"beryle","truckUnitId":"truck-2","material":"Dirt","loadsAssigned":3,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+L1=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P' and l['truckId']=='beryle'][0]")
+L2=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P' and not l['truckId']][0]")
+deny() { chk "   $1" "$(mg PUT /api/loads/$L1 "$2" -w ' %{http_code}' | pc "d['protectedFields'], d['routes'][d['protectedFields'][0]]")|$(load $L1 "$3")" "$4"; }
+chk "51 fixture: Beryle on Truck #2, 3 loads, today, pending, unpriced" "$(load $L1 "l['truckId'], l['truckUnitId'], l['loadsAssigned'], l['loadsDelivered'], l['deliveryDate']=='$TODAY', l['approvalStatus'], l['billStatus']")" "beryle truck-2 3 0 True pending not-ready"
+deny "1. driver → refused, Quick Assign named, load unchanged"              '{"truckId":"rigo"}'                                        "l['truckId'], l['driverName']"                                         "400 ['truckId'] Quick Assign (POST /api/loads/:id/assign)|beryle Beryle"
+deny "2. truck → refused, Quick Assign named"                               '{"truckUnitId":"truck-4"}'                                 "l['truckUnitId']"                                                      "400 ['truckUnitId'] Quick Assign (POST /api/loads/:id/assign)|truck-2"
+deny "   trailer and yard → refused, Quick Assign named (it owns the conflict check and the re-price)" '{"trailerId":"trailer-1","vendorId":"cemex"}' "l.get('trailerId'), l['vendorId'], l['vendorName']"      "400 ['trailerId', 'vendorId'] Quick Assign (POST /api/loads/:id/assign)|None vbt VBT Yard"
+deny "3. delivered count → refused, routed to the driver's trip steps"      '{"loadsDelivered":3}'                                      "l['loadsDelivered']"                                                   "400 ['loadsDelivered'] the driver's trip steps (POST /api/loads/:id/trip-action)|0"
+deny "4. delivery date → refused, routed to Move Date / Edit PO"            "{\"deliveryDate\":\"$TOMORROW\"}"                          "l['deliveryDate']=='$TODAY', l.get('moveHistory')"                     "400 ['deliveryDate'] Move Date (POST /api/loads/move) or Edit PO|True None"
+deny "5. approval state → refused, routed to approve / reject"              '{"approvalStatus":"approved","locked":true,"approvedBy":"me"}' "l['approvalStatus'], l['locked'], l.get('approvedBy') or None"      "400 ['approvalStatus', 'locked', 'approvedBy'] approve / reject|pending False None"
+deny "6. billing fields → refused, routed to billing"                       '{"billStatus":"billed","manualBillRef":"INV-1","billingBatchId":"BB-1","qbInvoiceId":"9"}' "l['billStatus'], l.get('manualBillRef'), l.get('billingBatchId'), l.get('qbInvoiceId')" "400 ['billStatus', 'manualBillRef', 'billingBatchId', 'qbInvoiceId'] Mark Billed / unbill / billing batches|not-ready None None None"
+deny "7. trip ownership and history → refused (trips, stamps, move and reassign history)" '{"trips":[{"n":1,"timestamps":{"completed":"x"}}],"timestamps":{"completed":"x"},"moveHistory":[{"x":1}],"reassignHistory":[{"x":1}]}' "len(l.get('trips') or []), l.get('timestamps'), l.get('moveHistory'), l.get('reassignHistory')" "400 ['trips', 'timestamps', 'moveHistory', 'reassignHistory'] the driver's trip steps|0 {} None None"
+deny "8. pricing and costing snapshot → refused (set at creation / Vendors & Prices)" '{"customerRate":1,"vendorRate":1,"tonsPerLoad":1,"pricePerUnit":1}' "l['customerRate'], l['vendorRate'], l['tonsPerLoad']"                "400 ['customerRate', 'vendorRate', 'tonsPerLoad', 'pricePerUnit'] Vendors & Prices (set at creation or by Edit PO)|25 0 25"
+deny "   vendor-bill and void bookkeeping → refused"                        '{"vendorBillId":"VB-1","billHistory":[{"x":1}],"billStatusBeforeVoid":"ready","qbBillId":"7","voided":true}' "l.get('vendorBillId'), l.get('billHistory'), l['voided']"       "400 ['vendorBillId', 'billHistory', 'billStatusBeforeVoid', 'qbBillId', 'voided'] vendor bills|None None False"
+deny "   status, driver name and derived progress → refused"                '{"status":"completed","driverName":"Nobody","isPartial":true,"allTripsDone":true,"actualYardId":"cemex"}' "l['status'], l['driverName'], l.get('isPartial'), l.get('actualYardId')" "400 ['status', 'driverName', 'isPartial', 'allTripsDone', 'actualYardId'] derived from the trips and the approval|active Beryle None None"
+deny "   identity → refused (id, poId, createdAt are never editable)"       '{"id":"X","poId":"Y","createdAt":"z"}'                     "l['id']=='$L1', l['poId']=='$P'"                                       "400 ['id', 'poId', 'createdAt'] never|True True"
+deny "   one refused field in a mixed body: only truckId is reported, and nothing is written — not even the (allowed) notes" '{"notes":"smuggled","truckId":"rigo"}' "repr(l.get('notes') or ''), l['truckId']" "400 ['truckId'] Quick Assign (POST /api/loads/:id/assign)|'' beryle"
+chk "   legitimate: notes → 200, stored"                                    "$(mgc PUT /api/loads/$L1 '{"notes":"gate code 4321"}')|$(load $L1 "l['notes']")" "200|gate code 4321"
+chk "   legitimate: planned count while operational → 200, audited old → new" "$(mgc PUT /api/loads/$L1 '{"loadsAssigned":4}')|$(load $L1 "l['loadsAssigned']")|$(curl -s -b $M "$B/api/audit-log?action=updated-load" | jq "[e['details'] for e in d['entries'] if e['target']=='$L1'][0]")" "200|4|{'changes': ['loadsAssigned'], 'loadsAssigned': {'from': 3, 'to': 4}}"
+chk "   planned count must be a whole number ≥ 1 (0 and 'abc' → 400)"       "$(mgc PUT /api/loads/$L1 '{"loadsAssigned":0}') $(mgc PUT /api/loads/$L1 '{"loadsAssigned":"abc"}')|$(load $L1 "l['loadsAssigned']")" "400 400|4"
+chk "   legitimate: office may attach the signature and ticket photo (merged, stamped)" "$(mgc PUT /api/loads/$L1 "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"Office on behalf\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}")|$(load $L1 "l['pod']['signedBy'], bool(l['ticketImage']), bool(l.get('ticketImageAt'))")" "200|Office on behalf True True"
+# The same changes still work through the operations that own them.
+chk "   routed: yard through Quick Assign → 200, re-resolved and re-priced (Dirt has no CEMEX price, so the default is flagged)" "$(mgc POST /api/loads/$L1/assign '{"yardId":"cemex"}')|$(load $L1 "l['vendorId'], l['vendorName'], l['vendorRateIsDefault']")" "200|cemex CEMEX True"
+chk "   routed: date through Move Date (reason required) → 200, history kept" "$(mgc POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$L1\",\"newDate\":\"$TOMORROW\",\"reason\":\"pour moved\"}") $(mgc POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$L1\",\"newDate\":\"$TODAY\",\"reason\":\"pour back\"}")|$(load $L1 "l['deliveryDate']=='$TODAY', len(l['moveHistory']), l['moveHistory'][0]['reason']")" "200 200|True 2 pour moved"
+chk "   routed: driver and truck through Quick Assign → 200, reassign history written" "$(mgc POST /api/loads/$L1/assign '{"driverId":"carlos","truckUnitId":"truck-2b","force":true,"reason":"regression fixture"}')|$(load $L1 "l['truckId'], l['truckUnitId'], l['driverName']")" "200|carlos truck-2b Carlos"
+# Once a trip has started the planned count belongs to Edit PO's add/delete rule; notes are still fine.
+dr $CA $L1 '{"action":"start-trip"}' >/dev/null
+chk "   not operational (trip started): planned count → 409 not_operational, unchanged; notes still 200" "$(mg PUT /api/loads/$L1 '{"loadsAssigned":5}' -w ' %{http_code}' | pc "d['code']")|$(load $L1 "l['loadsAssigned']")|$(mgc PUT /api/loads/$L1 '{"notes":"still fine"}')" "409 not_operational|4|200"
+chk "   the driver branch is unchanged: progress → 400, signature → 200"    "$(curl -s -b $CA -H "$J" -X PUT $B/api/loads/$L1 -d '{"loadsDelivered":2}' -o /dev/null -w '%{http_code}') $(curl -s -b $CA -H "$J" -X PUT $B/api/loads/$L1 -d "{\"pod\":{\"signedBy\":\"Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null -w '%{http_code}')" "400 200"
+mg POST /api/loads/$L2/void '{"reason":"never happened"}' >/dev/null
+chk "   a voided load refuses even notes (403); a locked load still does (§22)" "$(mgc PUT /api/loads/$L2 '{"notes":"x"}')" "403"
+chk "   static: no request body is spread into a load anywhere on the server; the allowlist is exactly five fields; only the driver phone calls the route" "$(grep -c '{ \.\.\.l, \.\.\.req\.body' server.js)|$(grep -c "OFFICE_LOAD_FIELDS = new Set(\['notes', 'loadsAssigned', 'pod', 'ticketImage', 'ticketImageUrl'\])" server.js)|$(grep -c "api('PUT', '/api/loads/' + currentLoadId" public/index.html)" "0|1|2"
+rm -f $BE $CA
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.

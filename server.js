@@ -3322,14 +3322,27 @@ app.delete('/api/pos/:id', reqMgr, async (req, res) => {
   res.json({ success: true });
 });
 
-// ── API: UPDATE LOAD (manager: anything | driver: limited) ──────────────────
-const PROTECTED_LOAD_FIELDS = new Set([
-  'id', 'poId',
-  'approvalStatus', 'approvedAt', 'approvedBy', 'submittedAt', 'rejectReason',
-  'billStatus', 'billedAt', 'billingBatchId', 'qbInvoiceId', 'qbInvoiceNumber',
-  'voided', 'voidedAt', 'voidedBy', 'voidReason', 'unvoidedAt', 'unvoidedBy',
-  'locked', 'trips', 'completedAt',
-]);
+// ── API: UPDATE LOAD (office: a short allowlist | driver: evidence only) ────
+// Everything that is an operation has its own route with its own rule —
+// conflict checks, the trip state machine, pricing at creation or yard
+// change, approval, billing, history — and is refused here with the route
+// to use. A generic update can therefore never bypass one, whoever calls it.
+const OFFICE_LOAD_FIELDS = new Set(['notes', 'loadsAssigned', 'pod', 'ticketImage', 'ticketImageUrl']);
+const LOAD_FIELD_ROUTE = {
+  truckId: 'Quick Assign (POST /api/loads/:id/assign)', truckUnitId: 'Quick Assign (POST /api/loads/:id/assign)', trailerId: 'Quick Assign (POST /api/loads/:id/assign)',
+  driverName: 'Quick Assign (POST /api/loads/:id/assign)', vendorId: 'Quick Assign (POST /api/loads/:id/assign)', vendorName: 'Quick Assign (POST /api/loads/:id/assign)',
+  deliveryDate: 'Move Date (POST /api/loads/move) or Edit PO', originalScheduledDate: 'Move Date (POST /api/loads/move)', moveHistory: 'Move Date (POST /api/loads/move)',
+  loadsDelivered: "the driver's trip steps (POST /api/loads/:id/trip-action)", trips: "the driver's trip steps", timestamps: "the driver's trip steps", isoStamps: "the driver's trip steps", gps: "the driver's trip steps",
+  isPartial: "the driver's trip steps", allTripsDone: "the driver's trip steps", actualYardId: "the driver's trip steps", actualYardName: "the driver's trip steps", status: 'derived from the trips and the approval',
+  approvalStatus: 'approve / reject', approvedAt: 'approve', approvedBy: 'approve', submittedAt: "the driver's submission", rejectReason: 'reject', approvalWarnings: 'approve', locked: 'approve / reject', completedAt: 'approve',
+  billStatus: 'Mark Billed / unbill / billing batches', billedAt: 'billing', billedBy: 'billing', billingBatchId: 'billing batches', qbInvoiceId: 'billing batches', qbInvoiceNumber: 'billing batches',
+  manualBillRef: 'Mark Billed', billHistory: 'billing', billStatusBeforeVoid: 'void / unvoid', vendorBillId: 'vendor bills', vendorBillIds: 'vendor bills', vendorBillExtraId: 'vendor bills', qbBillId: 'vendor bills',
+  voided: 'void / unvoid', voidedAt: 'void', voidedBy: 'void', voidReason: 'void', unvoidedAt: 'unvoid', unvoidedBy: 'unvoid',
+  material: 'delete the load and add it again on Edit PO (prices are set at creation)', unit: 'Vendors & Prices (set at creation)', pricePerUnit: 'Vendors & Prices (set at creation)',
+  customerRate: 'Vendors & Prices (set at creation or by Edit PO)', customerUnit: 'Vendors & Prices', customerRateIsDefault: 'Vendors & Prices', tonsPerLoad: 'Default Rates (set at creation)',
+  vendorRate: 'Vendors & Prices (set at creation or yard change)', vendorUnit: 'Vendors & Prices', vendorRateIsDefault: 'Vendors & Prices', vendorIsInternal: 'Vendors & Prices',
+  miles: 'the freight segment', hours: 'the freight segment', freightSegmentId: 'the freight segment', reassignHistory: 'Quick Assign', id: 'never', poId: 'never', createdAt: 'never', createdBy: 'never',
+};
 app.put('/api/loads/:id', reqAuth, async (req, res) => {
   const u = req.session.user;
   const idx = store.loads.findIndex(l => l.id === req.params.id);
@@ -3354,57 +3367,34 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
     if (req.body.notes !== undefined) allowed.notes = req.body.notes;
     store.loads[idx] = { ...l, ...allowed };
   } else {
-    // Manager — most fields, but NEVER the state machine. Approval, billing,
-    // void and trip history change only through their own endpoints
-    // (/approve, /reject, /void, /unvoid, /trip-action, billing batches), so
-    // a generic update can neither approve work nor un-bill it.
-    const touched = Object.keys(req.body || {}).filter(k => PROTECTED_LOAD_FIELDS.has(k));
-    if (touched.length) {
+    // Office — the allowlist: notes; the planned count while the load is
+    // still operational (no trip started, nothing delivered — the Edit PO
+    // rule); the ticket photo and the signature, evidence the office may
+    // attach on the driver's behalf (approval still needs the driver's own
+    // submission). Anything else names the route that owns it, and nothing
+    // is written when any field is refused.
+    if (l.voided) return res.status(403).json({ error: 'Load is voided — unvoid it first' });
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    const refused = Object.keys(body).filter(k => !OFFICE_LOAD_FIELDS.has(k));
+    if (refused.length) {
       return res.status(400).json({
-        error: `These fields cannot be changed through a load update: ${touched.join(', ')}. Use the approve / reject / void / billing actions.`,
-        protectedFields: touched,
+        error: `These fields cannot be changed through a load update: ${refused.map(k => `${k} → ${LOAD_FIELD_ROUTE[k] || 'not editable'}`).join('; ')}.`,
+        protectedFields: refused, routes: Object.fromEntries(refused.map(k => [k, LOAD_FIELD_ROUTE[k] || 'not editable'])),
       });
     }
-    const updated = { ...l, ...req.body, id: l.id, poId: l.poId };
-    let auditAction = 'updated-load';
-    let auditDetails = { changes: Object.keys(req.body) };
-    if (req.body.trailerId !== undefined) {
-      const tr = req.body.trailerId ? (store.trailers || []).find(x => x.id === req.body.trailerId) : null;
-      if (req.body.trailerId && !tr) return res.status(400).json({ error: 'Unknown trailer' });
-      if (tr && tr.active === false) return res.status(400).json({ error: `Trailer ${tr.number} is deactivated` });
-      updated.trailerId = tr ? tr.id : null;
-      auditDetails.trailer = { from: (getTrailerForLoad(l) || {}).number || 'none', to: tr ? tr.number : 'none' };
+    const allowed = {}, details = { changes: [] };
+    if (body.loadsAssigned !== undefined) {
+      const n = Number(body.loadsAssigned);
+      if (!Number.isInteger(n) || n < 1) return res.status(400).json({ error: 'loadsAssigned must be a whole number of at least 1' });
+      if (!loadIsOperational(l)) return res.status(409).json({ error: 'The planned count can change only while the load is operational (no trip started, nothing delivered). Add or delete loads on the Edit PO screen instead.', code: 'not_operational' });
+      if (n !== l.loadsAssigned) { allowed.loadsAssigned = n; details.loadsAssigned = { from: l.loadsAssigned, to: n }; details.changes.push('loadsAssigned'); }
     }
-    if (req.body.vendorId !== undefined && req.body.vendorId !== l.vendorId) {
-      // Same rule as /assign: a new yard wins over the current-trip mirror
-      // and re-prices the load. Trip history is untouched.
-      const v = req.body.vendorId ? store.vendors.find(x => x.id === req.body.vendorId) : null;
-      if (req.body.vendorId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
-      updated.vendorName = v?.name || '';
-      updated.actualYardId = null;
-      updated.actualYardName = '';
-      if (v) {
-        const vr = resolveVendorRate(v.id, updated.material);
-        updated.vendorRate = vr.price; updated.vendorUnit = vr.unit; updated.vendorRateIsDefault = vr.isDefault;
-        updated.vendorIsInternal = !!vr.isInternal; updated.pricePerUnit = vr.price;
-      }
-      auditDetails.yard = { from: resolvePickupYard(l, store.pos.find(p => p.id === l.poId)).name, to: v?.name || '' };
-    }
-    if (req.body.truckId !== undefined) {
-      const t = driverRoster().find(t => t.id === req.body.truckId);   // DRIVER
-      updated.driverName = t?.label || '';
-      updated.status = req.body.truckId ? 'active' : 'unassigned';
-      // Treat driver change as a separate action type
-      if (req.body.truckId !== l.truckId) {
-        auditAction = 'reassigned-load';
-        auditDetails = {
-          fromDriver: l.driverName || l.truckId || 'Unassigned',
-          toDriver:   updated.driverName || 'Unassigned',
-        };
-      }
-    }
-    store.loads[idx] = updated;
-    logAction(req.session.user, auditAction, l.id, auditDetails);
+    if (body.notes !== undefined) { allowed.notes = String(body.notes); details.changes.push('notes'); }
+    if (body.pod) { if (typeof body.pod !== 'object' || Array.isArray(body.pod)) return res.status(400).json({ error: 'pod must be an object' }); allowed.pod = { ...l.pod, ...body.pod }; details.changes.push('pod'); }
+    if (body.ticketImage) { allowed.ticketImage = String(body.ticketImage); allowed.ticketImageAt = new Date().toISOString(); details.changes.push('ticketImage'); }
+    if (body.ticketImageUrl) { allowed.ticketImageUrl = String(body.ticketImageUrl); allowed.ticketImageAt = new Date().toISOString(); allowed.ticketImage = ''; details.changes.push('ticketImageUrl'); }
+    store.loads[idx] = { ...l, ...allowed };
+    logAction(req.session.user, 'updated-load', l.id, details);
   }
   await saveData();
   res.json({ success: true, load: store.loads[idx] });
