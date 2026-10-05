@@ -961,10 +961,45 @@ function replaceStoreContents(next) {
 // the whole store back for it would sweep away whatever a locked request has
 // changed but not yet saved. So: no request context, no rollback; the next
 // save carries the memory state forward and the caller is told it failed.
+// The QuickBooks routes run outside the write lock (they talk to QuickBooks
+// for seconds) and hold their batch or bill, its loads and the connection
+// object across that call. A LOCKED request's failed save meanwhile rolls the
+// store back — and a rollback replaces every object in the store, so the
+// route would then write QuickBooks' answer onto orphans: the live batch
+// stuck 'syncing' for good while the response said "sent", loads un-billed
+// against a live invoice. So the records an exempt route works on are PINNED
+// for the request: a rollback puts those very objects back into the restored
+// store. Their state is the route's own recovery record and is never rolled
+// back — the rule keepOnFailure already applies to the route's own saves.
+const pinnedRecords = new Set();
+function pinExemptRecords(url) {
+  const pins = [];
+  const m = /^\/api\/(billing-batches|vendor-bills)\/([^/]+)\/(send|retry|void)$/.exec(url);
+  if (m) {
+    let id = m[2]; try { id = decodeURIComponent(id); } catch { /* keep as sent */ }
+    const coll = m[1] === 'billing-batches' ? 'billingBatches' : 'vendorBills';
+    const obj = (store[coll] || []).find(x => x && x.id === id);
+    if (obj) {
+      pins.push({ coll, obj });
+      const loadIds = new Set([...(obj.loadIds || []), ...(obj.tripRefs || []).map(r => r && r.loadId)]);
+      for (const l of store.loads) if (loadIds.has(l.id)) pins.push({ coll: 'loads', obj: l });
+    }
+  }
+  if (/^\/api\/(billing-batches|vendor-bills|quickbooks)\//.test(url) && store.qbConnection && typeof store.qbConnection === 'object') pins.push({ coll: 'qbConnection', obj: store.qbConnection });
+  for (const p of pins) pinnedRecords.add(p);
+  return () => { for (const p of pins) pinnedRecords.delete(p); };
+}
 function rollbackStore(err) {
   const ctx = requestCtx.getStore();
   if (!ctx || ctx.keepOnFailure || !lastGoodJson) return false;
+  const pins = [...pinnedRecords];
   replaceStoreContents(JSON.parse(lastGoodJson));
+  for (const p of pins) {
+    if (p.coll === 'qbConnection') { store.qbConnection = p.obj; continue; }
+    if (!Array.isArray(store[p.coll])) store[p.coll] = [];
+    const i = store[p.coll].findIndex(x => x && x.id === p.obj.id);
+    if (i >= 0) store[p.coll][i] = p.obj; else store[p.coll].push(p.obj);
+  }
   persistence.rollbacks++;
   persistence.lastRollbackAt = new Date().toISOString();
   if (err && !err.userMessage) err.userMessage = 'Unable to save — the database did not accept the write. Your change was not applied; please try again.';
@@ -1070,10 +1105,18 @@ async function loadIdHighWater() {
 // restarts and restores, the per-process sequence keeps them apart within
 // one, and `exists` (for records kept in the store) makes a repeat impossible
 // even if the clock were set back.
-let idSeq = 0;
+let idSeq = 0, idSeqMs = 0;
 function genId(prefix, exists) {
   let id;
-  do { id = `${prefix}-${Date.now()}-${++idSeq}`; } while (exists && exists(id));
+  do {
+    // The sequence restarts every millisecond, so an id stays short. A vendor
+    // bill's id is also its QuickBooks DocNumber, 21 characters at most: a
+    // sequence that only ever climbed would one day be cut off there, and two
+    // bills made in the same millisecond would share a document number.
+    const now = Date.now();
+    if (now !== idSeqMs) { idSeqMs = now; idSeq = 0; }
+    id = `${prefix}-${now}-${++idSeq}`;
+  } while (exists && exists(id));
   return id;
 }
 // <prefix>-<ms>, bumped past any id already on record (the PO id, the archive batch id).
@@ -1639,20 +1682,30 @@ function notifyLoadEvent(load, po, eventKey, opts = {}) {
       note: opts.note || '',
     });
 
-    for (const to of recipients) {
-      mailer.send({ to, subject, text, html })
-        .then(r => {
-          logNotification({
-            ...base, to, subject,
-            status: r.sent ? 'sent' : r.dryRun ? 'dry-run' : 'failed',
-            reason: r.error || '', messageId: r.messageId || '',
+    // The mail goes out after this request has answered, and its log entry is
+    // saved in the background. That save must run with NO request context:
+    // a promise chain inherits the context of the request that started it,
+    // and under that context a failed save would roll the whole store back —
+    // long after this request's lock was released, sweeping away whatever
+    // another request has changed but not yet saved. A background save that
+    // fails is simply reported; the next save carries memory forward.
+    requestCtx.exit(() => {
+      for (const to of recipients) {
+        mailer.send({ to, subject, text, html })
+          .then(r => {
+            logNotification({
+              ...base, to, subject,
+              status: r.sent ? 'sent' : r.dryRun ? 'dry-run' : 'failed',
+              reason: r.error || '', messageId: r.messageId || '',
+            });
+            return saveData({ rotatePrev: false });
+          })
+          .catch(e => {
+            logNotification({ ...base, to, subject, status: 'failed', reason: e.message });
+            console.warn('[notify] background save of the notification log failed:', e.message);
           });
-          return saveData({ rotatePrev: false });
-        })
-        .catch(e => {
-          logNotification({ ...base, to, subject, status: 'failed', reason: e.message });
-        });
-    }
+      }
+    });
   } catch (e) {
     console.error('[notifyLoadEvent] failed:', e.message);
   }
@@ -2184,7 +2237,17 @@ app.use('/api', (req, res, next) => {
     inFlight.then(() => next());
     return;
   }
-  if (WRITE_LOCK_EXEMPT.test(req.originalUrl.split('?')[0])) return requestCtx.run({ keepOnFailure: true }, next);
+  const urlPath = req.originalUrl.split('?')[0];
+  if (WRITE_LOCK_EXEMPT.test(urlPath)) {
+    // Outside the lock, but its records survive another request's rollback (see pinExemptRecords).
+    const unpin = pinExemptRecords(urlPath);
+    let unpinned = false;
+    const unpinOnce = () => { if (unpinned) return; unpinned = true; clearTimeout(pinTimer); unpin(); };
+    const pinTimer = setTimeout(unpinOnce, 5 * 60 * 1000);
+    const end = res.end;
+    res.end = function (...args) { const r = end.apply(this, args); unpinOnce(); return r; };
+    return requestCtx.run({ keepOnFailure: true }, next);
+  }
   let release; const held = new Promise(r => { release = r; });
   const wait = writeLockTail; writeLockTail = wait.then(() => held);
   wait.then(() => {
@@ -2341,7 +2404,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
       if (m === 'nobody') throw qb.noEntityError('Invoice');
       return inv;
     };
-    qb.findInvoiceForBatch = async (conn, { batchId }) => fakeQb.invoices.find(i => String(i.PrivateNote || '').includes(`batch ${batchId}`)) || null;
+    qb.findInvoiceForBatch = async (conn, { batchId }) => fakeQb.invoices.find(i => qb.invoiceNoteNamesBatch(i.PrivateNote, batchId)) || null;   // the real matcher, so a test proves it
     qb.getEntity = async (conn, type, id) => (type === 'Invoice' ? fakeQb.invoices : type === 'Bill' ? fakeQb.bills : []).find(x => x.Id === id) || null;
     qb.voidInvoice = async (conn, id) => {
       if (fakeQb.mode === 'fail') throw new Error('Fake QuickBooks: void rejected');
@@ -3373,7 +3436,9 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   }
   const changed = k => String(next[k] ?? '') !== String(old[k] ?? '');
   const mine = store.loads.filter(l => l.poId === old.id && !l.voided);
-  const hasApproved = store.loads.some(l => l.poId === old.id && (l.approvalStatus === 'approved' || l.billStatus === 'billed'));
+  // Archived loads count: a PO stays live while it still has unbilled loads,
+  // but its billed loads in the archive were invoiced under these fields.
+  const hasApproved = allLoadsWithArchive().some(l => l.poId === old.id && (l.approvalStatus === 'approved' || l.billStatus === 'billed'));
   if (hasApproved) {
     const frozen = PO_INVOICE_FIELDS.filter(changed);
     if (frozen.length) return res.status(403).json({ error: `This PO has approved loads; ${frozen.join(', ')} cannot change.`, frozenFields: frozen });
@@ -3538,7 +3603,8 @@ app.delete('/api/pos/:id', reqMgr, async (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   // Deleting a PO deletes its loads, so nothing with a field record may be
   // on it. Voided ≠ deleted: a voided approved load stays on the record.
-  const linked = store.loads.filter(l => l.poId === req.params.id);
+  // Archived loads count too — history keeps pointing at this PO.
+  const linked = allLoadsWithArchive().filter(l => l.poId === req.params.id);
   const blocking = linked.filter(loadHasFieldRecord);
   if (blocking.length) {
     const voidedCount = blocking.filter(l => l.voided).length;
@@ -4744,6 +4810,10 @@ app.post('/api/loads/:id/unvoid', reqMgr, async (req, res) => {
   const l = store.loads.find(x => x.id === req.params.id);
   if (!l) return res.status(404).json({ error: 'Load not found' });
   if (!l.voided) return res.status(400).json({ error: 'This load is not voided' });
+  // Its PO must be on the live record. A voided load is never archived, but
+  // its PO goes to the archive with the PO's billed loads; brought back now,
+  // the load would sit in Ready to Bill with no PO to bill it under.
+  if (!store.pos.some(p => p.id === l.poId)) return res.status(409).json({ error: 'This load\'s PO is archived with its billed loads. Unarchive that history first, then unvoid the load.', code: 'po_archived' });
 
   l.voided = false;
   // Back to the billing state it had before the void. Approved-and-unbilled
@@ -4790,28 +4860,29 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
   // The invoice made outside QuickBooks, so the record says where the money
   // went. The screen requires it; the API keeps it optional for older callers.
   const reference = String(req.body.reference || '').trim();
-  let count = 0;
-  const billedIds = [];
-  const skipped = [];
-  store.loads.forEach(l => {
-    if (!ids.includes(l.id)) return;
-    if (l.approvalStatus !== 'approved' || l.billStatus !== 'ready') return;
-    // Duplicate-billing guard: a load already claimed by a billing batch must
-    // not be manually marked billed — void the batch first to release it.
-    if (l.billingBatchId || l.qbInvoiceId) { skipped.push(l.id); return; }
-    l.billStatus = 'billed';
-    l.billedAt   = new Date().toISOString();
-    l.billedBy   = req.session.user.username;
-    l.manualBillRef = reference;
-    billedIds.push(l.id);
-    count++;
-  });
+  // Decide first, change nothing until every load passes: a refused request
+  // must leave no load marked billed behind it (that mark would ride along
+  // with the next save, with no reference and no audit entry).
+  const eligible = store.loads.filter(l => ids.includes(l.id) && l.approvalStatus === 'approved' && l.billStatus === 'ready');
+  // Duplicate-billing guard: a load already claimed by a billing batch must
+  // not be manually marked billed — void the batch first to release it.
+  const skipped = eligible.filter(l => l.billingBatchId || l.qbInvoiceId).map(l => l.id);
   if (skipped.length) {
     return res.status(409).json({
       error: `${skipped.length} load(s) already belong to a billing batch — void the batch before billing them manually.`,
       skipped,
     });
   }
+  const billedAt = new Date().toISOString();
+  const billedIds = [];
+  for (const l of eligible) {
+    l.billStatus = 'billed';
+    l.billedAt   = billedAt;
+    l.billedBy   = req.session.user.username;
+    l.manualBillRef = reference;
+    billedIds.push(l.id);
+  }
+  const count = billedIds.length;
   if (count > 0) {
     logAction(req.session.user, 'marked-billed', '', {
       count,
@@ -5360,10 +5431,16 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
   const conn = store.qbConnection;
   if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks not connected' });
 
+  const wasStatus = b.syncStatus;
   b.syncStatus = 'syncing';
   b.syncingSince = new Date().toISOString();
   b.errorMessage = '';
-  await saveData();
+  try { await saveData(); } catch (e) {
+    // Nothing has been sent. A batch left 'syncing' here would refuse every
+    // send, retry, void and restore until a restart; put it back as it was.
+    b.syncStatus = wasStatus; b.syncingSince = '';
+    throw e;
+  }
 
   const user = req.session.user.username;
   try {
@@ -5380,7 +5457,9 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
       });
       qbCustomerId = lookup.customer?.Id;
       if (!qbCustomerId) throw new Error('QuickBooks did not return a customer ID');
-      if (localCust) localCust.qbCustomerId = qbCustomerId;
+      // Looked up again by id: a rollback during the call above may have replaced the customer object.
+      const liveCust = localCust && (store.customers || []).find(c => c.id === localCust.id);
+      if (liveCust) liveCust.qbCustomerId = qbCustomerId;
       logQbSync({
         actionType: lookup.created ? 'create_customer' : 'find_customer',
         relatedBatchId: b.id,
@@ -5811,7 +5890,10 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
   const conn = store.qbConnection;
   if (!conn?.realmId || conn.status !== 'connected') return res.status(400).json({ error: 'QuickBooks not connected' });
   const user = req.session.user.username;
-  b.syncStatus = 'syncing'; b.syncingSince = new Date().toISOString(); b.errorMessage = ''; await saveData();
+  const wasStatus = b.syncStatus;
+  b.syncStatus = 'syncing'; b.syncingSince = new Date().toISOString(); b.errorMessage = '';
+  // Nothing has been sent if this save fails: never leave the bill 'syncing' (it would refuse every send, retry, void and restore until a restart).
+  try { await saveData(); } catch (e) { b.syncStatus = wasStatus; b.syncingSince = ''; throw e; }
   try {
     const localVendor = store.vendors.find(v => v.id === b.vendorId);
     let qbVendorId = localVendor?.qbVendorId || '';
@@ -5819,7 +5901,8 @@ app.post('/api/vendor-bills/:id/send', reqMgr, async (req, res) => {
       const lookup = await qb.findOrCreateVendor(conn, { name: b.vendorName });
       qbVendorId = lookup.vendor?.Id;
       if (!qbVendorId) throw new Error('QuickBooks did not return a vendor ID');
-      if (localVendor) localVendor.qbVendorId = qbVendorId;
+      const liveVendor = localVendor && store.vendors.find(v => v.id === localVendor.id);   // looked up again: a rollback during the call may have replaced the object
+      if (liveVendor) liveVendor.qbVendorId = qbVendorId;
       logQbSync({ actionType: lookup.created ? 'create_vendor' : 'find_vendor', relatedBatchId: b.id, qbEntityType: 'Vendor', qbEntityId: qbVendorId, requestSummary: `${lookup.created ? 'Created' : 'Matched'} vendor "${b.vendorName}"`, user });
     }
     b.qbVendorId = qbVendorId;
@@ -6507,6 +6590,9 @@ app.put('/api/customers/:id', reqMgr, async (req, res) => {
     }
     if (!newName) return res.status(400).json({ error: 'Customer name required' });
   }
+  // Every refusal comes before the first change: a 400 here must not leave
+  // the master renamed while its POs and prices still carry the old name.
+  if (req.body.billingBasis !== undefined && !BILLING_BASES.includes(req.body.billingBasis)) return res.status(400).json({ error: 'billingBasis must be "planned" or "actual"' });
   // Apply changes
   c.name = newName;
   if (req.body.code    !== undefined) c.code    = String(req.body.code    || '').trim();
@@ -6517,7 +6603,6 @@ app.put('/api/customers/:id', reqMgr, async (req, res) => {
   if (req.body.notes   !== undefined) c.notes   = String(req.body.notes   || '').trim();
   if (req.body.active  !== undefined) c.active  = !!req.body.active;
   if (req.body.billingBasis !== undefined) {
-    if (!BILLING_BASES.includes(req.body.billingBasis)) return res.status(400).json({ error: 'billingBasis must be "planned" or "actual"' });
     if (req.body.billingBasis !== (c.billingBasis || 'planned')) {
       logAction(req.session.user, 'changed-billing-basis', c.id, { customer: c.name, from: c.billingBasis || 'planned', to: req.body.billingBasis });
     }

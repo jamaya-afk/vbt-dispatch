@@ -112,6 +112,17 @@ carlos / carlos123
   record (locked, already approved, archived, deleted, truck already on
   another load), so a stale tab can never bypass a rule by acting on old
   information.
+- **A QuickBooks answer always lands on the record.** The QuickBooks routes
+  work outside the write lock (they talk to QuickBooks for seconds). The batch
+  or bill they work on, its loads and the connection are pinned for that
+  request, so another request's failed save — which rolls the store back —
+  can no longer leave the send writing onto orphans (a batch stuck "syncing"
+  while the response said "sent"). A send whose first save is refused puts
+  the batch back instead of leaving it "syncing"; the notification log's
+  background save never rolls anything back; a refused manual bill or
+  customer update changes nothing; a PO keeps its invoice fields and cannot
+  be deleted while its billed loads sit in the archive; a voided load whose
+  PO is archived waits for that history to come back before it is unvoided.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on
