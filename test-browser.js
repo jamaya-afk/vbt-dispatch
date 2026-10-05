@@ -95,6 +95,26 @@ async function call(cookie, method, path, body) {
   chk('History tab has no Sheets wording', await page.evaluate(() => { goTab('history'); return new Promise(r => setTimeout(() => r(/Sheets/i.test(document.getElementById('sec-history').innerText)), 600)); }), false);
   chk('Dispatch topbar has no Sync button', await page.evaluate(() => { goTab('today'); return /Sync/.test(document.getElementById('topbar-actions').innerText); }), false);
 
+  console.log('── Office: a slow old answer never repaints over a newer one; a save is what the next read returns ──');
+  {
+    // Hold the FIRST /api/data the page asks for from now on; let every later one through.
+    let held = null, seen = 0;
+    await page.route('**/api/data', async route => { seen++; if (seen === 1) { held = route; return; } await route.continue(); });
+    const pA = page.evaluate(() => loadAll());                                   // GET A — held, old
+    await page.waitForTimeout(250);
+    await call(mgr, 'PUT', `/api/loads/${load.id}`, { notes: 'the newest note' });  // the server moves on
+    await page.evaluate(() => loadAll());                                        // GET B — fast, new
+    const afterB = await page.evaluate(id => (loads.find(l => l.id === id) || {}).notes, load.id);
+    await held.continue();                                                       // A's stale answer lands now
+    await pA; await page.waitForTimeout(250);
+    const afterA = await page.evaluate(id => (loads.find(l => l.id === id) || {}).notes, load.id);
+    chk('P4 GET A (held, older) then GET B (newer): B is what the page holds', afterB, 'the newest note');
+    chk('   …and A arriving late is dropped — B stays displayed', afterA, 'the newest note');
+    await page.unroute('**/api/data');
+    await call(mgr, 'PUT', `/api/loads/${load.id}`, { notes: 'save then read' });
+    chk('   SAVE → GET: the client copy receives exactly the saved value', await page.evaluate(async id => { await loadAll(); return loads.find(l => l.id === id).notes; }, load.id), 'save then read');
+  }
+
   console.log('── New PO form: two steps, unique PO number, truck per load ──');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(300);
   await page.evaluate(() => openNewPO()); await page.waitForTimeout(500);

@@ -2180,6 +2180,55 @@ rm -f /tmp/vbt-54-codes.txt; for i in $(seq 1 10); do mg POST /api/pos '{"po":{"
 chk "   concurrent creation: ten POs (two loads each) at once → ten 200s; every PO id, PO number and load id on record is distinct" "$(sort /tmp/vbt-54-codes.txt | uniq -c | tr -s ' \n' ' ')|$(curl -s -b $M $B/api/data | jq "len(set(p['id'] for p in d['pos']))==len(d['pos']), len(set(p['poNumber'] for p in d['pos']))==len(d['pos']), len(set(l['id'] for l in d['loads']))==len(d['loads']), len([p for p in d['pos'] if p['customer']=='Id Co'])")" " 10 200 |True True True 12"
 chk "   static: one load-id generator, one auto-PO-number generator, no timestamp-plus-random id left, the marks persist with every save in both modes, and are reconciled at boot, after a restore and before every id" "$(grep -c 'store.nextLoadId++' server.js)|$(grep -c 'store.nextPoNum++' server.js)|$(grep -c "Date.now() + '-' + Math.floor" server.js)|$(grep -c "'PO-' + Date.now()" server.js)|$(grep -c 'fs.writeFileSync(ID_HIGH_WATER_FILE' server.js)|$(grep -c "VALUES('id_high_water'" server.js)|$(grep -c 'reconcileIdCounters();' server.js)" "1|1|0|0|1|1|4"
 
+echo "── 55. Persistence 4 — a read describes committed state only, a read never saves, the client copy only moves forward ──"
+P=$(mg POST /api/pos '{"po":{"poNumber":"P4-1","customer":"Read Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LA=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][0]"); LB=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][1]")
+disk55() { python3 -c "import json;print([l['notes'] for l in json.load(open('data.json'))['loads'] if l['id']=='$1'][0])"; }
+R0=$(curl -s $B/healthz | jq "d['persistence']['rollbacks']")
+chk "55 save → GET: what a 200 answered is what the next read returns, in memory and on disk" "$(mgc PUT /api/loads/$LA '{"notes":"saved once"}')|$(load $LA "l['notes']")|$(disk55 $LA)" "200|saved once|saved once"
+# A read arriving while a write is in flight waits for that write to settle; it never shows a value that is still being saved and may roll back.
+mg POST /api/_test/save-mode '{"mode":"fail","count":1,"delayMs":1500}' >/dev/null
+rm -f /tmp/vbt-55-w; (mgc PUT /api/loads/$LA '{"notes":"never committed"}' > /tmp/vbt-55-w) & sleep 0.3
+T0=$(date +%s%N); SEEN=$(load $LA "l['notes']"); T1=$(date +%s%N); wait
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   GET during a write whose save then fails: the read waited (≥ 1 s) and returned the committed value, never the one being saved; the write answered 503; memory, disk and the rollback count agree" "$SEEN|$(( (T1-T0)/1000000 >= 1000 ))|$(cat /tmp/vbt-55-w)|$(load $LA "l['notes']")|$(disk55 $LA)|$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R0")" "saved once|1|503|saved once|saved once|1"
+mg POST /api/_test/save-mode '{"mode":"ok","delayMs":1200}' >/dev/null
+(mgc PUT /api/loads/$LA '{"notes":"slow commit"}' > /tmp/vbt-55-w) & sleep 0.2
+rm -f /tmp/vbt-55-g; for i in 1 2 3 4 5; do (load $LA "l['notes']" >> /tmp/vbt-55-g) & done; wait
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   five concurrent GETs during a slow successful write: every one waited and returned the committed new value — none the pre-save value, none a mix" "$(cat /tmp/vbt-55-w)|$(sort /tmp/vbt-55-g | uniq -c | tr -s ' \n' ' ')" "200| 5 slow commit "
+chk "   write A → write B → GET: the read is B, and so is disk" "$(mgc PUT /api/loads/$LA '{"notes":"A"}') $(mgc PUT /api/loads/$LA '{"notes":"B"}')|$(load $LA "l['notes']")|$(disk55 $LA)" "200 200|B|B"
+rm -f /tmp/vbt-55-a /tmp/vbt-55-b; (mgc PUT /api/loads/$LA '{"notes":"queued A"}' > /tmp/vbt-55-a) & (mgc PUT /api/loads/$LA '{"notes":"queued B"}' > /tmp/vbt-55-b) & wait
+chk "   two writes queued at once → GET: both 200, the read is the one that ran last, and disk agrees with memory" "$(cat /tmp/vbt-55-a) $(cat /tmp/vbt-55-b)|$(python3 - "$(load $LA "l['notes']")" "$(disk55 $LA)" <<'PY'
+import sys; mem,disk=sys.argv[1:3]; print(mem in ('queued A','queued B'), disk==mem)
+PY
+)" "200 200|True True"
+# A client that drops its connection mid-write, then a read: the read is the committed state (the write landed; the lock outlived the socket — Persistence 1).
+mg POST /api/_test/save-mode '{"mode":"ok","delayMs":1000}' >/dev/null
+curl -s -b $M -H "$J" -X PUT $B/api/loads/$LA -d '{"notes":"dropped but saved"}' --max-time 0.3 -o /dev/null
+chk "   client disconnect during a write → GET: the read waits for that write and returns what it committed; disk agrees" "$(load $LA "l['notes']")|$(disk55 $LA)" "dropped but saved|dropped but saved"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+# I21 — a read never saves. Plant a stale PO status (both loads done, the PO still says active), refuse every database write, and read.
+mg POST /api/_test/set-load "{\"id\":\"$LA\",\"fields\":{\"status\":\"completed\",\"approvalStatus\":\"approved\",\"locked\":true}}" >/dev/null
+mg POST /api/_test/set-load "{\"id\":\"$LB\",\"fields\":{\"status\":\"completed\",\"approvalStatus\":\"approved\",\"locked\":true}}" >/dev/null
+R1=$(curl -s $B/healthz | jq "d['persistence']['rollbacks']"); S1=$(curl -s $B/healthz | jq "d['persistence']['lastSaveAt']")
+mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
+chk "   I21 — a read never saves: with the database refusing every write, GET /api/data answers 200, corrects the stale PO status in memory, and attempts no save (no rollback, lastSaveAt unchanged) — so a read can never sweep a concurrent write away" "$(curl -s -b $M -o /dev/null -w '%{http_code}' $B/api/data)|$(curl -s -b $M $B/api/data | jq "[p['status'] for p in d['pos'] if p['id']=='$P'][0]")|$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R1, d['persistence']['lastSaveAt'] == '$S1'")" "200|completed|0 True"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   …the correction reaches disk with the next real save (any write carries the whole store)" "$(mgc POST /api/customers '{"name":"Persist Co"}')|$(python3 -c "import json;print([p['status'] for p in json.load(open('data.json'))['pos'] if p['id']=='$P'][0])")" "200|completed"
+chk "   static: no GET handler saves (the two PO-status reconciles are memory-only; the QuickBooks OAuth callback is the one documented exception); reads wait for writes in flight; a save with no owning request never rolls the store back" "$(python3 - <<'PY'
+import re; src=open('server.js').read().split('\n'); bad=0
+for i,l in enumerate(src):
+    m=re.match(r"^(\s*)app\.get\(", l)
+    if not m or 'quickbooks/callback' in l: continue
+    ind=m.group(1); j=i+1
+    while j<len(src) and not (src[j].startswith(ind+'});') and len(src[j])-len(src[j].lstrip())==len(ind)):
+        if 'await saveData(' in src[j]: bad+=1
+        j+=1
+print(bad)
+PY
+)|$(grep -c "const inFlight = writeLockTail;" server.js)|$(grep -c "if (!ctx || ctx.keepOnFailure || !lastGoodJson) return false;" server.js)|$(grep -c "if (seq !== loadAllSeq)" public/index.html)|$(grep -c "if (seq !== todaySeq) return;" public/index.html)|$(grep -c "if (seq !== calSeq) return;" public/index.html)" "0|1|1|1|1|1"
+
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -2388,6 +2437,14 @@ else
   for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
   curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
   chk "   after a restart the ids continue past the high-water row, not from a counter reset; the row follows" "$(r3po R3-I)|$(r3max)|$(r3hw)" "200|$((C3+6))|$((C3+7))"
+  # ── Persistence #4: a read after a restore is the restored state ──
+  r4mem() { curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R4-'))))"; }
+  r4row() { $PSQL -c "select value from dispatch_data where key='store'" | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R4-'))))"; }
+  r2po R4-A >/dev/null; r2po R4-B >/dev/null
+  chk "P4 restore → GET: the read is the restored state, and so is the row" "$(r2rst store_prev | r2code "d['success']")|$(r4mem)|$(r4row)" "200 True|A|A"
+  r2hook '{"mode":"fail","after":1,"count":1}'
+  chk "   restore whose audit save fails → GET: the read is still the restored state — the restore itself committed" "$(r2rst store_before_restore | r2code "d['success'], d['auditSaved']")|$(r4mem)|$(r4row)" "200 True False|A,B|A,B"
+  chk "   restore → write → GET: the write sits on top of the restored state, in memory and in the row" "$(r2po R4-C)|$(r4mem)|$(r4row)" "200|A,B,C|A,B,C"
   # A missing store row next to existing backups is a lost row, not a new company.
   pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
   $PSQL -c "delete from dispatch_data where key='store'" >/dev/null

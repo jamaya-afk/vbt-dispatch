@@ -88,6 +88,11 @@ carlos / carlos123
   memory follow, and the restored state becomes the point a later failed save
   rolls back to. A restore waits its turn behind any save in flight, is refused
   while a QuickBooks send is running, and if it fails nothing has changed.
+- **A read describes committed state.** Reads never save, and a read that
+  arrives while a write is being saved waits for that write to settle (a few
+  milliseconds), so it never shows a value that may yet roll back. The browser
+  applies answers in the order it asked for them: a slow, older answer that
+  lands after a newer one is dropped.
 - **An id is never handed out twice.** Load ids and auto PO numbers come from
   counters that travel with the data, and from high-water marks kept outside
   it (the `id_high_water` row, `data-ids.json` in file mode) that are never

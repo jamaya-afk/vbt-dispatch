@@ -1370,7 +1370,12 @@ async function uploadPhoto(kind, loadId, dataUrl) {
   }
 }
 
+// Responses are applied in the order they were REQUESTED, never in the order
+// they arrive: a slow older answer that lands after a newer one is dropped,
+// so the client copy can only move forward.
+let loadAllSeq = 0;
 async function loadAll() {
+  const seq = ++loadAllSeq;
   try {
     const r = await fetch('/api/data');
     if (!r.ok) {
@@ -1378,6 +1383,7 @@ async function loadAll() {
       return;
     }
     const d = await r.json();
+    if (seq !== loadAllSeq) { console.log('[loadAll] dropped a stale response'); return; }
     trucks = d.trucks || [];
     materials = d.materials || [];
     yards = d.yards || [];
@@ -4406,11 +4412,14 @@ function calRange() {
   const first = new Date(d.getFullYear(), d.getMonth(), 1, 12), last = new Date(d.getFullYear(), d.getMonth() + 1, 0, 12);
   return { from: calAddDays(ymd(first), -first.getDay()), to: calAddDays(ymd(last), 6 - last.getDay()), monthFirst: ymd(first), monthLast: ymd(last) };
 }
+let calSeq = 0;   // the calendar only ever moves forward (see loadAll)
 async function renderCalendar() {
   const wrap = document.getElementById('calendar-content'); if (!wrap) return;
   if (!calData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading the calendar…</div>`;
   const r = calRange();
+  const seq = ++calSeq;
   const d = await api('GET', `/api/calendar?from=${r.from}&to=${r.to}`);
+  if (seq !== calSeq) return;   // a newer request has been made; its answer paints the calendar
   if (!d.ok) { wrap.innerHTML = `<div style="padding:24px;color:var(--R)">${escapeHtml(d.error || 'Failed to load the calendar')}</div>`; return; }
   calData = d;
   paintCalendar();
@@ -4524,10 +4533,13 @@ function calDayHtml(date, xs) {
 let todayData = null;
 let qaPick = null;          // { loadId, driverId, truckUnitId, yardId }
 
+let todaySeq = 0;   // the board, too, only ever moves forward (see loadAll)
 async function renderToday() {
   const wrap = document.getElementById('today-content');
   if (!todayData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading the board…</div>`;
+  const seq = ++todaySeq;
   const d = await api('GET', '/api/today' + (dbDate ? '?date=' + encodeURIComponent(dbDate) : ''));
+  if (seq !== todaySeq) return;   // a newer request has been made; its answer paints the board
   if (!d.ok) { wrap.innerHTML = `<div style="padding:24px;color:var(--R)">${d.error || 'Failed to load'}</div>`; return; }
   todayData = d;
   paintToday();

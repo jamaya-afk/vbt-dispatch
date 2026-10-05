@@ -955,9 +955,15 @@ function replaceStoreContents(next) {
   for (const k of Object.keys(store)) delete store[k];
   Object.assign(store, next);
 }
+// A rollback undoes the ONE unsaved change in memory: the failing request's
+// own, under the write lock. A save with no owning request — a background
+// flush, a notification log entry — has no such change to undo, and rolling
+// the whole store back for it would sweep away whatever a locked request has
+// changed but not yet saved. So: no request context, no rollback; the next
+// save carries the memory state forward and the caller is told it failed.
 function rollbackStore(err) {
   const ctx = requestCtx.getStore();
-  if ((ctx && ctx.keepOnFailure) || !lastGoodJson) return false;
+  if (!ctx || ctx.keepOnFailure || !lastGoodJson) return false;
   replaceStoreContents(JSON.parse(lastGoodJson));
   persistence.rollbacks++;
   persistence.lastRollbackAt = new Date().toISOString();
@@ -2164,8 +2170,20 @@ app.use('/api', (req, res, next) => {
 // GPS pings, the QuickBooks connection routes and the test hooks.
 const WRITE_LOCK_EXEMPT = /^\/api\/(billing-batches\/[^/]+\/(send|retry|void)|vendor-bills\/[^/]+\/(send|retry|void)|driver-location|linxup\/|quickbooks\/|_test\/)/;
 let writeLockTail = Promise.resolve();
+// Reads do not take the lock, but they wait for the writes already in flight
+// when they arrive: a GET must describe committed state, never a change that
+// is still being saved and may yet roll back. Normally that wait is the few
+// milliseconds of one save; it is bounded by the 30 s handler fallback.
+// Identity and health answer at once — they carry no dispatch data.
+const READ_NO_WAIT = new Set(['/api/me', '/api/persistence']);
 app.use('/api', (req, res, next) => {
-  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  if (req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  if (req.method === 'GET') {
+    if (READ_NO_WAIT.has(req.originalUrl.split('?')[0])) return next();
+    const inFlight = writeLockTail;
+    inFlight.then(() => next());
+    return;
+  }
   if (WRITE_LOCK_EXEMPT.test(req.originalUrl.split('?')[0])) return requestCtx.run({ keepOnFailure: true }, next);
   let release; const held = new Promise(r => { release = r; });
   const wait = writeLockTail; writeLockTail = wait.then(() => held);
@@ -2893,12 +2911,14 @@ app.get('/api/fleet/live', reqMgr, (req, res) => {
 app.get('/api/data', reqAuth, async (req, res) => {
   const u = req.session.user;
   // Self-heal stale PO statuses on every fetch (cheap operation, fixes legacy data)
+  // A read never saves. The PO status is derived from the loads; a stale one
+  // (legacy data) is corrected in memory here so the screen is right, and the
+  // correction reaches disk with the next real save — every save writes the
+  // whole store. Saving from a GET ran outside the write lock, and a failed
+  // save there rolled back a concurrent request's unsaved change (I21).
   if (u.role !== 'driver') {
     const fixed = reconcilePoStatuses();
-    if (fixed.length) {
-      console.log(`[/api/data] Reconciled ${fixed.length} stale POs`);
-      await saveData({ rotatePrev: false });
-    }
+    if (fixed.length) console.log(`[/api/data] Reconciled ${fixed.length} stale PO status(es) in memory; the next save persists them`);
   }
   // Build "yards" view (just the active vendors with name + location, for the driver yard picker)
   const yards = store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, location: v.location }));
@@ -7167,11 +7187,9 @@ function reconcilePoStatuses() {
 // ── API: REPORTS / FINANCE ───────────────────────────────────────────────────
 app.get('/api/reports', reqMgr, async (req, res) => {
   // Self-heal stale PO statuses (POs that should be 'completed' but stuck on 'active')
+  // In memory only — a read never saves (see /api/data).
   const fixed = reconcilePoStatuses();
-  if (fixed.length) {
-    console.log(`[reports] Reconciled ${fixed.length} stale PO statuses:`, fixed);
-    await saveData({ rotatePrev: false });
-  }
+  if (fixed.length) console.log(`[reports] Reconciled ${fixed.length} stale PO status(es) in memory:`, fixed);
 
   // Live + archived: archiving moves billed loads off the board, not out of
   // the company's history, so the numbers here do not drop when it happens.
@@ -8304,6 +8322,10 @@ const PORT = process.env.PORT || 3000;
     // is issued. A rolled-back row or an older restore cannot reset them.
     await loadIdHighWater();
     reconcileIdCounters();
+    // Derived PO statuses are corrected once here, in memory; the first real
+    // save persists them. Reads never save (I21).
+    const stalePos = reconcilePoStatuses();
+    if (stalePos.length) console.log(`[boot] Reconciled ${stalePos.length} stale PO status(es); persisted with the next save`);
     lastGoodJson = JSON.stringify(store);   // the rollback point until the first successful save
     await pruneLocationHistory();
     setInterval(pruneLocationHistory, 24 * 60 * 60 * 1000).unref();
