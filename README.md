@@ -123,6 +123,13 @@ carlos / carlos123
   customer update changes nothing; a PO keeps its invoice fields and cannot
   be deleted while its billed loads sit in the archive; a voided load whose
   PO is archived waits for that history to come back before it is unvoided.
+- **The fleet, the roster and the logins are the office's.** Seed trucks,
+  drivers and logins are planted once, onto an empty fleet, an empty roster
+  and a users table with no logins; a truck, driver or login the office
+  removed stays removed across restarts and deploys. Every form that refuses
+  a change (fleet, notification settings, costing, a PO with a duplicate
+  number, a driver's submission with a count that disagrees) refuses before
+  it changes anything, so a 400 never leaves a half-applied record behind.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on
