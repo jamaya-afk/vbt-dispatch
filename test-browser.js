@@ -115,6 +115,94 @@ async function call(cookie, method, path, body) {
     chk('   SAVE → GET: the client copy receives exactly the saved value', await page.evaluate(async id => { await loadAll(); return loads.find(l => l.id === id).notes; }, load.id), 'save then read');
   }
 
+  console.log('── Office: two tabs — the server state is the one truth; a stale screen changes only what it touched ──');
+  {
+    // Tab B is a second dispatcher on the same routes the page calls. The
+    // fixture lives three weeks out, a day nothing else on the board touches.
+    // The page's own 12 s poll is paused for the block so each "stale" moment
+    // is deliberate; it is restarted at the end.
+    const osc = await login('oscar', 'oscar123');
+    const far = new Date(Date.now() + 21 * 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+    await page.evaluate(() => { if (liveTimer) clearInterval(liveTimer); liveTimer = null; });
+    await page.evaluate(() => liveCheck());   // one primed tick, as any page has had after 12 s
+    const ttPo = (await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'P5-TT', customer: 'Two Tab Co', deliveryDate: far, address: '1 Tab St', city: 'Fresno', plannedVendorId: 'vbt' }, splits: [{ truckId: 'carlos', truckUnitId: 'truck-2b', material: 'Sand', loadsAssigned: 1, vendorId: 'vbt' }] })).data.po;
+    const ttLoad = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.poId === ttPo.id);
+    const ttTruck = (await call(mgr, 'POST', '/api/fleet/trucks', { truckNum: 'Truck #P5', type: 'End Dump' })).data.truck;
+    const ttCust = (await call(mgr, 'GET', '/api/data')).data.customers.find(c => c.name === 'Two Tab Co');
+    // The field names of the next write the page sends to a route.
+    const sent = async (urlRe, act) => { const [req] = await Promise.all([page.waitForRequest(r => urlRe.test(r.url()) && r.method() !== 'GET', { timeout: 5000 }), act()]); return Object.keys(req.postDataJSON() || {}).sort().join(','); };
+    const srvLoad = async () => (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === ttLoad.id);
+
+    // 1. Quick Assign: tab A opens the sheet (Carlos, Truck #2B, VBT Yard); tab B moves the load to Matthew on Truck #4; tab A changes only the yard.
+    await page.evaluate(() => loadAll());
+    await page.evaluate(id => qaOpenFor(id), ttLoad.id); await page.waitForTimeout(500);
+    chk('1. Quick Assign opened on the load as it was: Carlos, Truck #2B, VBT Yard', await page.evaluate(() => `${!!document.getElementById('qa-sheet-bg')} ${qaPick.driverId} ${qaPick.truckUnitId} ${qaPick.yardId}`), 'true carlos truck-2b vbt');
+    chk('   tab B moves the load to Matthew on Truck #4', (await call(osc, 'POST', `/api/loads/${ttLoad.id}/assign`, { driverId: 'matthew', truckUnitId: 'truck-4' })).status, 200);
+    const qaBody = await sent(/\/assign$/, () => page.evaluate(() => { qaSet('yardId', 'vulcan'); return qaConfirm(); }));
+    await page.waitForTimeout(700);
+    const after1 = await srvLoad();
+    chk('   tab A picks Vulcan and confirms: the request carries the yard and nothing else', qaBody, 'yardId');
+    chk('   …the load keeps tab B\'s driver and truck and takes tab A\'s yard — the stale sheet reverted nothing', `${after1.truckId} ${after1.truckUnitId} ${after1.vendorId} ${await page.evaluate(() => !document.getElementById('qa-sheet-bg'))}`, 'matthew truck-4 vulcan true');
+    const assignsBefore2 = requests.filter(r => /\/assign$/.test(r)).length;
+    await page.evaluate(id => qaOpenFor(id), ttLoad.id); await page.waitForTimeout(400);
+    await page.evaluate(() => qaConfirm()); await page.waitForTimeout(300);
+    chk('   confirming an untouched sheet sends nothing and just closes', `${requests.filter(r => /\/assign$/.test(r)).length - assignsBefore2} ${await page.evaluate(() => !document.getElementById('qa-sheet-bg'))}`, '0 true');
+
+    // 2. Customer form: tab A opens Edit Customer; tab B switches the billing basis to actual tons; tab A changes the phone only.
+    await page.evaluate(() => loadAll());
+    await page.evaluate(id => openCustomerMasterForm(customers.find(c => c.id === id)), ttCust.id); await page.waitForTimeout(300);
+    chk('2. Edit Customer opened on the record as it was (planned basis)', await page.evaluate(() => `${!!document.getElementById('cm-name')} ${document.getElementById('cm-basis').value}`), 'true planned');
+    chk('   tab B switches the customer to actual-tons billing', (await call(osc, 'PUT', `/api/customers/${ttCust.id}`, { billingBasis: 'actual' })).status, 200);
+    const cmBody = await sent(/\/api\/customers\//, () => page.evaluate(id => { document.getElementById('cm-phone').value = '555-0100'; return saveCustomerMaster(id); }, ttCust.id));
+    await page.waitForTimeout(600);
+    const cust2 = (await call(mgr, 'GET', '/api/data')).data.customers.find(c => c.id === ttCust.id);
+    chk('   tab A types a phone number and saves: the request carries the phone and nothing else', cmBody, 'phone');
+    chk('   …the customer keeps tab B\'s billing basis and takes tab A\'s phone', `${cust2.billingBasis} ${cust2.phone}`, 'actual 555-0100');
+
+    // 3. Fleet row: tab A renders Drivers & Trucks; tab B puts the truck in maintenance; tab A edits the type only.
+    await page.evaluate(() => goTab('fleet')); await page.waitForTimeout(900);
+    chk('3. the fleet row shows the truck as it was (available)', await page.evaluate(id => (document.querySelector(`[data-truck-id="${id}"][data-field="status"]`) || {}).value, ttTruck.id), 'available');
+    chk('   tab B puts the truck in maintenance', (await call(osc, 'PUT', `/api/fleet/trucks/${ttTruck.id}`, { status: 'maintenance' })).status, 200);
+    const tkBody = await sent(/\/api\/fleet\/trucks\//, () => page.evaluate(id => { document.querySelector(`[data-truck-id="${id}"][data-field="type"]`).value = 'Transfer'; return saveTruck(id); }, ttTruck.id));
+    await page.waitForTimeout(700);
+    const truck2 = (await call(mgr, 'GET', '/api/fleet')).data.trucks.find(t => t.id === ttTruck.id);
+    chk('   tab A changes the type and saves the row: the request carries the type and nothing else', tkBody, 'type');
+    chk('   …the truck keeps tab B\'s maintenance status and takes tab A\'s type — the stale row did not put it back in service', `${truck2.status} ${truck2.type}`, 'maintenance Transfer');
+
+    // 4. Edit PO (per-field already, kept that way): tab A opens Edit PO; tab B changes the city; tab A changes the notes only.
+    await page.evaluate(() => goTab('pos')); await page.waitForTimeout(600);
+    await page.evaluate(() => loadAll());
+    await page.evaluate(id => openEditPO(id), ttPo.id); await page.waitForTimeout(300);
+    chk('4. Edit PO opened on the order as it was (Fresno)', await page.evaluate(() => `${!!document.getElementById('poedit-modal')} ${document.getElementById('pe-city').value}`), 'true Fresno');
+    chk('   tab B moves the jobsite city to Clovis', (await call(osc, 'PUT', `/api/pos/${ttPo.id}`, { city: 'Clovis' })).status, 200);
+    const peBody = await sent(/\/api\/pos\//, () => page.evaluate(() => { document.getElementById('pe-notes').value = 'gate code 4411'; return saveEditPO(); }));
+    await page.waitForTimeout(600);
+    const po2 = (await call(mgr, 'GET', '/api/data')).data.pos.find(p => p.id === ttPo.id);
+    chk('   tab A adds a note and saves: the request carries the note and nothing else', peBody, 'notes');
+    chk('   …the PO keeps tab B\'s city and takes tab A\'s note', `${po2.city} ${po2.notes}`, 'Clovis gate code 4411');
+
+    // 5. Approvals: a card the other tab already dealt with. The stale Approve is refused by the server; the poll repaints the list.
+    await call(mgr, 'POST', '/api/_test/set-load', { id: ttLoad.id, fields: { approvalStatus: 'submitted', locked: true } });
+    await page.evaluate(() => goTab('approvals')); await page.waitForTimeout(900);
+    chk('5. Approvals shows the submitted load', await page.evaluate(() => /P5-TT/.test(document.getElementById('approve-list').innerText)), true);
+    chk('   tab B rejects it', (await call(osc, 'POST', `/api/loads/${ttLoad.id}/reject`, { reason: 'wrong ticket' })).status, 200);
+    chk('   tab A still shows the card until it hears about it — and its Approve is refused by the server (400), never applied', `${await page.evaluate(() => /P5-TT/.test(document.getElementById('approve-list').innerText))} ${(await call(mgr, 'POST', `/api/loads/${ttLoad.id}/approve`, {})).status}`, 'true 400');
+    await page.evaluate(() => liveCheck()); await page.waitForTimeout(900);
+    chk('   the next poll repaints Approvals from the server: the card is gone, the badge too', await page.evaluate(() => `${/P5-TT/.test(document.getElementById('approve-list').innerText)} ${document.getElementById('approve-badge').style.display}`), 'false none');
+
+    // 6. Purchase Orders: a PO another tab created appears on the next poll, without leaving the tab.
+    await page.evaluate(() => goTab('pos')); await page.waitForTimeout(600);
+    const newPo = (await call(osc, 'POST', '/api/pos', { po: { poNumber: 'P5-NEW', customer: 'Two Tab Co', deliveryDate: far, plannedVendorId: 'vbt' }, splits: [{ truckId: '', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }] })).data.po;
+    chk('6. Purchase Orders does not know tab B\'s new PO yet', await page.evaluate(() => /P5-NEW/.test(document.getElementById('pos-content').innerText)), false);
+    await page.evaluate(() => liveCheck()); await page.waitForTimeout(900);
+    chk('   …the next poll repaints the list: the new PO is there', await page.evaluate(() => /P5-NEW/.test(document.getElementById('pos-content').innerText)), true);
+
+    // Fixture out: the two POs (no field record), the customer, the truck. The poll resumes.
+    const gone = [await call(mgr, 'DELETE', `/api/pos/${newPo.id}`), await call(mgr, 'DELETE', `/api/pos/${ttPo.id}`), await call(mgr, 'DELETE', `/api/customers/${ttCust.id}`), await call(mgr, 'DELETE', `/api/fleet/trucks/${ttTruck.id}`)].map(r => r.status).join(' ');
+    chk('   fixture removed (two POs, the customer, the truck)', gone, '200 200 200 200');
+    await page.evaluate(() => { liveTimer = setInterval(() => { if (!document.hidden) liveCheck(false); }, 12000); goTab('today'); }); await page.waitForTimeout(600);
+  }
+
   console.log('── New PO form: two steps, unique PO number, truck per load ──');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(300);
   await page.evaluate(() => openNewPO()); await page.waitForTimeout(500);

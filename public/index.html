@@ -727,6 +727,7 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 .qa-card.in-progress{border-left-color:#d97706}
 .qa-card.completed{border-left-color:#0a8a3a}
 .qa-card.awaiting-approval{border-left-color:#7c3aed}
+.qa-card.rejected{border-left-color:#b42318}
 .qa-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .qa-cust{font-size:15px;font-weight:750;line-height:1.25}
 .qa-sub{font-size:12px;color:var(--txt2);margin-top:2px}
@@ -1519,8 +1520,8 @@ function goTab(tab) {
 
   if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch'; renderToday(); }
   if (tab === 'calendar') { document.getElementById('sec-calendar').classList.add('active'); document.getElementById('page-title').textContent = 'Calendar'; renderCalendar(); }
-  if (tab === 'pos')      { document.getElementById('sec-pos').classList.add('active'); document.getElementById('page-title').textContent = 'Purchase Orders'; renderPOsList(); }
-  if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
+  if (tab === 'pos')      { document.getElementById('sec-pos').classList.add('active'); document.getElementById('page-title').textContent = 'Purchase Orders'; renderPOsList(); loadAll().then(() => { if (currentTab === 'pos') renderPOsList(); }); }
+  if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); loadAll().then(() => { if (currentTab === 'approvals') { renderApprovals(); updateApproveBadge(); } }); }
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
   if (tab === 'history')  { document.getElementById('sec-history').classList.add('active'); document.getElementById('page-title').textContent = 'History'; renderHistory(); }
   if (tab === 'reports')  { document.getElementById('sec-reports').classList.add('active'); document.getElementById('page-title').textContent = 'Reports'; renderReports(); }
@@ -2362,6 +2363,7 @@ function refreshCurrentView() {
   else if (currentTab === 'today') renderToday();
   else if (currentTab === 'approvals') renderApprovals();
   else if (currentTab === 'billing') renderBilling();
+  else if (currentTab === 'history') renderHistory();
 }
 
 // Delete a PO and every load on it. Use this to clear test POs — the server
@@ -4402,7 +4404,7 @@ let calView = 'month';          // 'day' | 'week' | 'month'
 let calDate = null;             // YYYY-MM-DD anchor; null = today
 let calData = null;             // the last /api/calendar answer
 const CAL_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const CAL_STATUS = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In progress', 'awaiting-approval': 'Awaiting approval', 'ready-to-bill': 'Approved', completed: 'Billed', archived: 'Archived' };
+const CAL_STATUS = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In progress', rejected: 'Rejected', 'awaiting-approval': 'Awaiting approval', 'ready-to-bill': 'Approved', completed: 'Billed', archived: 'Archived' };
 function calAnchor() { return calDate || (calData && calData.today) || todayStr(); }
 function calAddDays(s, n) { const d = new Date(s + 'T12:00:00'); d.setDate(d.getDate() + n); return ymd(d); }
 function calRange() {
@@ -4581,7 +4583,7 @@ function dbTile(key) {
   dbSetFilter(key);
 }
 
-const DB_BUCKET_LABEL = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In Progress', 'awaiting-approval': 'Awaiting Approval', 'ready-to-bill': 'Ready to Bill', completed: 'Completed' };
+const DB_BUCKET_LABEL = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In Progress', rejected: 'Rejected', 'awaiting-approval': 'Awaiting Approval', 'ready-to-bill': 'Ready to Bill', completed: 'Completed' };
 const DB_STATE_LABEL  = { available: 'Available', assigned: 'Assigned', 'in-progress': 'In progress', completed: 'Done', off: 'Off', unavailable: 'In shop' };
 const DB_FILTER_TITLE = { missing: 'Missing information', conflicts: 'Conflicts', carried: 'Unfinished from earlier days' };
 
@@ -4596,7 +4598,7 @@ function paintToday() {
        <div class="n">${n}</div><div class="l">${label}</div>${sub ? `<div class="s">${sub}</div>` : ''}</button>`;
 
   // Loads, most urgent first
-  const order = { unassigned: 0, 'in-progress': 1, assigned: 2, 'awaiting-approval': 3, 'ready-to-bill': 4, completed: 5 };
+  const order = { unassigned: 0, rejected: 1, 'in-progress': 2, assigned: 3, 'awaiting-approval': 4, 'ready-to-bill': 5, completed: 6 };
   let list = [...d.loads].sort((x, y) => (order[x.bucket] - order[y.bucket]) || String(x.customer).localeCompare(String(y.customer)));
   if (dbFilter === 'missing') list = list.filter(l => l.missing.length);
   else if (dbFilter === 'conflicts') list = list.filter(l => l.conflicts.length);
@@ -4823,10 +4825,22 @@ async function mgrCloseSegment(id) {
 
 // ── Assignment sheet: Driver → Truck → Yard → Confirm ───────────────────────
 // Nothing commits until Confirm, so a stray tap can never reassign a load.
+// The sheet remembers what it opened with (qaBase) and sends ONLY what the
+// person changed. Another tab may have changed the driver meanwhile; this tab
+// choosing a trailer must not quietly put the old driver back. The server
+// treats an absent field as "keep", and checks the rest against its own
+// current state.
+let qaBase = null;
 function qaOpen(loadId) {
   const l = todayData.loads.find(x => x.id === loadId); if (!l) return;
   qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId, trailerId: l.trailerId || null };
+  qaBase = { ...qaPick };
   qaPaintSheet();
+}
+function qaChanges() {
+  const out = {};
+  for (const k of ['driverId', 'truckUnitId', 'yardId', 'trailerId']) if ((qaPick[k] || null) !== (qaBase ? qaBase[k] || null : undefined)) out[k] = qaPick[k] || null;
+  return out;
 }
 // The same sheet from anywhere else (the Board), for a load on any date: the
 // availability of drivers, trucks and trailers is fetched for that load's day.
@@ -4971,10 +4985,10 @@ async function postAssignment(url, body, verb, reason, method = 'POST') {
 async function qaConfirm() {
   const p = qaPick; if (!p) return;
   const btn = document.getElementById('qa-confirm');
+  const body = qaChanges();
+  if (!Object.keys(body).length) { qaClose(); return toast('Nothing changed', ''); }
   btn.disabled = true; btn.textContent = 'Assigning…';
-  const r = await postAssignment(`/api/loads/${p.loadId}/assign`, {
-    driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId, trailerId: p.trailerId || null,
-  }, 'Reassign');
+  const r = await postAssignment(`/api/loads/${p.loadId}/assign`, body, 'Reassign');
   if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; if (!r.cancelled) toast(r.error || 'Assign failed', 'error'); return; }
   const who = r.load.driverName || 'Unassigned';
   const truck = r.truck ? r.truck.truckNum : 'no truck';
@@ -5125,7 +5139,12 @@ async function liveCheck(force) {
       await loadAll();          // Load Details reads the client copy of the loads
       await renderCalendar();
     } else {
+      // Every other screen repaints from the fresh copy too, so Approvals,
+      // Purchase Orders, Ready to Bill and History never sit on a stale list
+      // while the board next door has moved on.
       await loadAll();
+      refreshCurrentView();
+      updateApproveBadge();
     }
   } catch (e) { /* offline — retry on the next tick */ }
 }
@@ -5599,9 +5618,11 @@ function rerenderCustomerMasterList() {
   wrap.innerHTML = h;
 }
 
+let cmBase = null;   // the record the form opened with; the save sends only what differs from it
 function openCustomerMasterForm(existing) {
   const c = existing || { id: '', name: '', code: '', address: '', city: '', phone: '', email: '', notes: '', active: true };
   const isEdit = !!c.id;
+  cmBase = isEdit ? { ...c } : null;
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
   bg.style.zIndex = 260;
@@ -5657,6 +5678,13 @@ async function saveCustomerMaster(existingId) {
   if (activeEl) body.active = activeEl.checked;
   let d;
   if (existingId) {
+    // Only what this person changed goes to the server. Another tab may have
+    // edited the same customer since this form opened (its billing basis, a
+    // phone number); untouched fields are not sent, so they are not reverted.
+    const base = cmBase && cmBase.id === existingId ? cmBase : {};
+    const same = (k) => k === 'billingBasis' ? body[k] === (base[k] || 'planned') : k === 'active' ? body[k] === (base[k] !== false) : String(body[k] ?? '') === String(base[k] ?? '');
+    for (const k of Object.keys(body)) if (same(k)) delete body[k];
+    if (!Object.keys(body).length) { document.querySelector('.modal-bg[style*="z-index: 260"]')?.remove(); return toast('Nothing changed', ''); }
     d = await api('PUT', '/api/customers/' + existingId, body);
   } else {
     d = await api('POST', '/api/customers', body);
@@ -7058,13 +7086,27 @@ async function addTruckPrompt() {
   } catch (e) { toast('Add truck failed: ' + e.message, 'error'); }
 }
 
+// The Drivers & Trucks rows send ONLY the fields the person changed, compared
+// with the record the row was drawn from (fleetState). Another tab may have
+// put a truck in the shop or set a driver off since; an edit to one field here
+// must not quietly put the old value back on the others.
+function changedFields(body, base) {
+  const out = {};
+  for (const k of Object.keys(body)) {
+    const a = body[k], b = base ? base[k] : undefined;
+    const norm = v => (v === undefined || v === null || v === '') ? null : (typeof v === 'boolean' ? v : String(v));
+    if (!base || norm(a) !== norm(b)) out[k] = a;
+  }
+  return out;
+}
 async function saveTruck(id) {
   const f = (field) => document.querySelector(`[data-truck-id="${id}"][data-field="${field}"]`);
   try {
-    await fleetCall('PUT', '/api/fleet/trucks/' + encodeURIComponent(id), {
+    const body = changedFields({
       truckNum: f('truckNum')?.value, type: f('type')?.value, status: f('status')?.value,
       defaultDriverId: f('defaultDriverId')?.value || null, active: !!f('active')?.checked,
-    });
+    }, (fleetState.trucks || []).find(t => t.id === id));
+    if (Object.keys(body).length) await fleetCall('PUT', '/api/fleet/trucks/' + encodeURIComponent(id), body);
     // The Linxup link is its own action (by tracker id), only when it changed.
     const sel = f('linxupTrackerId');
     if (sel) {
@@ -7121,10 +7163,12 @@ async function addTrailerPrompt() {
 async function saveTrailer(id) {
   const f = (field) => document.querySelector(`[data-trailer-id="${id}"][data-field="${field}"]`);
   try {
-    await fleetCall('PUT', '/api/fleet/trailers/' + encodeURIComponent(id), {
+    const body = changedFields({
       number: f('number')?.value, type: f('type')?.value, status: f('status')?.value,
       defaultTruckId: f('defaultTruckId')?.value || null, active: !!f('active')?.checked,
-    });
+    }, (fleetState.trailers || []).find(t => t.id === id));
+    if (!Object.keys(body).length) return toast('Nothing changed', '');
+    await fleetCall('PUT', '/api/fleet/trailers/' + encodeURIComponent(id), body);
     toast('Trailer saved', 'success');
     await loadAll(); renderFleet();
   } catch (e) { toast('Save failed: ' + e.message, 'error'); }
@@ -7141,12 +7185,14 @@ async function deleteTrailer(id) {
 
 async function saveDriver(username) {
   const f = (field) => document.querySelector(`[data-driver="${username}"][data-field="${field}"]`);
-  const body = {
+  const base = (fleetState.drivers || []).find(d => (d.username || d.id) === username);
+  const body = changedFields({
     displayName: f('displayName')?.value, defaultTruckId: f('defaultTruckId')?.value || null,
     status: f('status')?.value, active: !!f('active')?.checked,
-  };
-  if (f('linxupPersonId')) body.linxupPersonId = f('linxupPersonId').value || null;
-  if (f('password')?.value) body.password = f('password').value;
+    ...(f('linxupPersonId') ? { linxupPersonId: f('linxupPersonId').value || null } : {}),
+  }, base);
+  if (f('password')?.value) body.password = f('password').value;   // a typed password is always a change
+  if (!Object.keys(body).length) return toast('Nothing changed', '');
   try {
     await fleetCall('PUT', '/api/drivers/' + encodeURIComponent(username), body);
     if (f('password')) f('password').value = '';

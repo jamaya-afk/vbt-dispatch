@@ -2100,7 +2100,8 @@ chk "   3. thrown before the request was sent: failed, retryable" "$(mgc POST /a
 # 4. Timeout: nothing was created, but VBT cannot know that → UNKNOWN; reconcile says 'not found'; the re-send carries the same requestid.
 L4=$(mkl C4-4 Dirt vbt); B4=$(nb $L4); qbm timeout
 chk "   4. timeout → 502 external_unknown; batch 'unknown', may exist, no id invented; load claimed, not billed" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code'], d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], repr(d['batch']['qbInvoiceId']), d['batch']['reconcile']['kind'], d['batch']['reconcile']['requestId']=='$B4'")|$(load $L4 "l['billStatus'], l['billingBatchId']=='$B4'")|$(inv)" "502 external_unknown unknown True '' timeout True|ready True|(3, 6)"
-chk "   …Send is refused (409 external_unknown), the load cannot join another batch (400), Ready to Bill shows it as batched" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code']")|$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L4\"]}")|$(rtb "[x['billingBatchId']=='$B4' for x in d['items'] if x['id']=='$L4']")|$(inv)" "409 external_unknown|400|[True]|(3, 6)"
+# (Persistence 5 changed the rule: a load on a batch — unknown, failed or unsent — belongs to that batch and is off the Ready to Bill list; before, the list showed it "as batched".)
+chk "   …Send is refused (409 external_unknown), the load cannot join another batch (400), and it is off the Ready to Bill list — it belongs to the batch, which still lists it" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code']")|$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L4\"]}")|$(rtb "[x['id'] for x in d['items'] if x['id']=='$L4']")|$(bt $B4 "'$L4' in [l['id'] for l in d['loads']]")|$(inv)" "409 external_unknown|400|[]|True|(3, 6)"
 qbm ok '"connected":false'
 chk "   …Retry with QuickBooks disconnected: 409, still unknown, no create request" "$(mgc POST /api/billing-batches/$B4/retry)|$(bt $B4 "d['batch']['syncStatus'], d['batch']['reconcile']['attempts']")|$(inv)" "409|unknown 1|(3, 6)"
 qbm ok
@@ -2228,6 +2229,78 @@ for i,l in enumerate(src):
 print(bad)
 PY
 )|$(grep -c "const inFlight = writeLockTail;" server.js)|$(grep -c "if (!ctx || ctx.keepOnFailure || !lastGoodJson) return false;" server.js)|$(grep -c "if (seq !== loadAllSeq)" public/index.html)|$(grep -c "if (seq !== todaySeq) return;" public/index.html)|$(grep -c "if (seq !== calSeq) return;" public/index.html)" "0|1|1|1|1|1"
+
+echo "── 56. Persistence 5 — one authoritative state: Dispatch and Calendar read one row rule, one Ready-to-Bill rule, a stale copy changes only what it touched, the server decides ──"
+# Everything here lives three weeks out, a day no other section touches, so no same-day conflict is accidental.
+P5D=$(date -d '+21 day' +%F); P5D2=$(date -d '+22 day' +%F)
+P5O=$(mktemp); curl -s -c $P5O -X POST -d "username=oscar&password=oscar123" $B/login -o /dev/null      # "the other tab": a second dispatcher
+P5C=$(mktemp); curl -s -c $P5C -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
+og()  { curl -s -b $P5O -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}"; }
+ogc() { curl -s -b $P5O -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+p5po() { mg POST /api/pos "{\"po\":{\"poNumber\":\"$1\",\"customer\":\"Two Tab Co\",\"deliveryDate\":\"$P5D\",\"address\":\"1 Tab St\",\"city\":\"Fresno\",\"plannedVendorId\":\"vbt\"},\"splits\":[$2]}" | jq "d.get('po',{}).get('id') or d.get('error')"; }
+p5loads() { curl -s -b $M $B/api/data | jq "','.join(l['id'] for l in d['loads'] if l['poId']=='$1')"; }
+# The Dispatch row and the Calendar row for one load, compared field by field: the bucket when they agree, DIFF otherwise.
+row56() { curl -s -b $M "$B/api/today?date=$2" > /tmp/vbt-56-t; curl -s -b $M "$B/api/calendar?from=$2&to=$2" > /tmp/vbt-56-c; python3 - "$1" <<'PY'
+import sys,json
+lid=sys.argv[1]; t=json.load(open('/tmp/vbt-56-t')); c=json.load(open('/tmp/vbt-56-c'))
+keys=['bucket','driverId','truckUnitId','yardId','trailerId','loadsAssigned','loadsDelivered','approvalStatus','billStatus','deliveryDate','locked','poNumber','customer']
+a=[r for r in t['loads'] if r['id']==lid]; b=[r for rows in c['days'].values() for r in rows if r['id']==lid]
+if len(a)!=1 or len(b)!=1: print('dispatch:%d calendar:%d%s'%(len(a),len(b),' archived' if b and b[0].get('archived') else '')); sys.exit()
+diff=[k for k in keys if a[0].get(k)!=b[0].get(k)]
+print(a[0]['bucket'] if not diff else 'DIFF '+','.join(diff))
+PY
+}
+# ── I10: a rejected load is its own bucket, on both screens ──
+PR=$(p5po P5-R '{"truckId":"rigo","truckUnitId":"truck-14","material":"Sand","loadsAssigned":1,"vendorId":"vbt"}'); LR=$(p5loads $PR)
+mg POST /api/_test/set-load "{\"id\":\"$LR\",\"fields\":{\"approvalStatus\":\"rejected\",\"rejectReason\":\"ticket unreadable\"}}" >/dev/null
+chk "56 I10 — a rejected load is its own bucket on Dispatch and on the Calendar (never Assigned or In Progress), and the day's summary counts it" "$(row56 $LR $P5D)|$(curl -s -b $M "$B/api/today?date=$P5D" | jq "d['summary']['rejected']")|$(curl -s -b $M "$B/api/calendar?from=$P5D&to=$P5D" | jq "d['totals']['$P5D']['byBucket'].get('rejected')")" "rejected|1|1"
+chk "   …a rejected load with no driver is Unassigned on both (the work needs a driver before anything else)" "$(mgc POST /api/loads/$LR/assign '{"driverId":null}')|$(row56 $LR $P5D)" "200|unassigned"
+# ── I11: one Ready-to-Bill rule ──
+PB=$(p5po P5-B '{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}')
+IFS=, read LB1 LB2 LB3 LB4 <<< "$(p5loads $PB)"
+rtb56() { echo "$(curl -s -b $M $B/api/ready-to-bill | jq "d['totals']['count']") $(curl -s -b $M "$B/api/today?date=$P5D" | jq "d['attention']['readyToBill']") $(curl -s -b $M $B/api/reports | jq "d['totals']['readyToBill']")"; }
+read R0 A0 P0 <<< "$(rtb56)"
+for x in $LB1 $LB2 $LB3; do mg POST /api/_test/set-load "{\"id\":\"$x\",\"fields\":{\"approvalStatus\":\"approved\",\"billStatus\":\"ready\",\"locked\":true}}" >/dev/null; done
+BB2=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LB2\"]}" | jq "d['batches'][0]['id']")                        # on a batch, not yet sent
+mg POST /api/_test/set-load "{\"id\":\"$LB3\",\"fields\":{\"voided\":true,\"voidedAt\":\"2026-01-01T00:00:00Z\"}}" >/dev/null   # approved, then voided
+mg POST /api/_test/set-load "{\"id\":\"$LB4\",\"fields\":{\"approvalStatus\":\"approved\",\"billStatus\":\"billed\",\"locked\":true,\"billedAt\":\"2026-01-01T00:00:00Z\",\"manualBillRef\":\"P5 fixture\"}}" >/dev/null
+read R1 A1 P1 <<< "$(rtb56)"
+chk "   I11 — one Ready-to-Bill rule: of four approved loads (plain, on an unsent batch, voided, billed) exactly one is Ready to Bill, and the strip, the Dispatch tile and the reports each moved by that same one" "${BB2:0:3}|$((R1-R0)) $((A1-A0)) $((P1-P0))|$(curl -s -b $M $B/api/ready-to-bill | jq "[x['id'] for x in d['items'] if x['poId']=='$PB']")" "BB-|1 1 1|['$LB1']"
+chk "   …the tile's amount is the strip's total, and the batched load still reads Approved on the board (not Ready to Bill, not Billed)" "$(python3 -c "print($(curl -s -b $M "$B/api/today?date=$P5D" | jq "d['attention']['readyToBillAmount']") == $(curl -s -b $M $B/api/ready-to-bill | jq "d['totals']['amount']"))")|$(row56 $LB2 $P5D)" "True|ready-to-bill"
+# ── Dispatch and Calendar agree through a load's whole life; two tabs approve and bill the same load at once ──
+PC=$(p5po P5-C '{"truckId":"carlos","truckUnitId":"truck-2b","material":"Base Rock","loadsAssigned":1,"vendorId":"vbt"}'); LC=$(p5loads $PC)
+S1=$(row56 $LC $P5D)
+dc() { curl -s -b $P5C -H "$J" -X POST $B/api/loads/$LC/trip-action -d "$1" -o /dev/null -w '%{http_code} '; }
+F1=$(dc '{"action":"start-trip"}'); S2=$(row56 $LC $P5D)
+F2=$(dc '{"action":"arrived-pickup","yardId":"vbt"}'; dc "{\"action\":\"loaded\",\"ticket\":$(tkt)}"; dc '{"action":"arrived-jobsite"}'; dc '{"action":"trip-complete"}'); S3=$(row56 $LC $P5D)
+F3=$(curl -s -b $P5C -H "$J" -X PUT $B/api/loads/$LC -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null -w '%{http_code} '; dc '{"action":"delivered"}'); S4=$(row56 $LC $P5D)
+chk "   Dispatch and Calendar agree at every step — created, started, delivered 1/1, submitted — field by field from one row rule" "$F1$F2$F3|$S1 → $S2 → $S3 → $S4" "200 200 200 200 200 200 200 |assigned → in-progress → in-progress → awaiting-approval"
+rm -f /tmp/vbt-56-a1 /tmp/vbt-56-a2; (mgc POST /api/loads/$LC/approve > /tmp/vbt-56-a1) & (ogc POST /api/loads/$LC/approve > /tmp/vbt-56-a2) & wait
+chk "   two tabs approve the same load at once: one 200, one 400 (no longer submitted); approved once, locked, by one of them; both screens say Ready to Bill" "$(for f in /tmp/vbt-56-a1 /tmp/vbt-56-a2; do cat $f; echo; done | sort | tr '\n' ' ')|$(load $LC "l['approvalStatus']+' '+str(l['locked'])+' '+str(l['approvedBy'] in ('Joshua','Oscar'))")|$(row56 $LC $P5D)" "200 400 |approved True True|ready-to-bill"
+rm -f /tmp/vbt-56-b1 /tmp/vbt-56-b2; (mg POST /api/billing-batches "{\"loadIds\":[\"$LC\"]}" > /tmp/vbt-56-b1) & (og POST /api/billing-batches "{\"loadIds\":[\"$LC\"]}" > /tmp/vbt-56-b2) & wait
+BC=$(python3 -c "
+import json; r=[json.load(open('/tmp/vbt-56-b1')),json.load(open('/tmp/vbt-56-b2'))]; ok=[x for x in r if x.get('batches')]
+print(len(ok), len([x for x in r if x.get('error')]), ok[0]['batches'][0]['id'] if ok else '')")
+read BOK BERR BBC <<< "$BC"
+chk "   two tabs bill the same load at once: one batch created, one refused (nothing eligible); the load belongs to exactly one batch" "$BOK $BERR|$(load $LC "l['billingBatchId']=='$BBC'")|$(curl -s -b $M $B/api/billing-batches | jq "sum(1 for b in d['items'] if '$LC' in b.get('loadIds',[]) and b['syncStatus']!='voided')")" "1 1|True|1"
+chk "   …voiding that batch releases the load to Ready to Bill on both screens" "$(mgc POST /api/billing-batches/$BBC/void '{"reason":"bill it by hand"}')|$(row56 $LC $P5D)|$(load $LC "l['billStatus']+' '+str(bool(l.get('billingBatchId')))")" "200|ready-to-bill|ready False"
+rm -f /tmp/vbt-56-m1 /tmp/vbt-56-m2; (mg POST /api/loads/bill "{\"loadIds\":[\"$LC\"],\"reference\":\"INV-P5\"}" | jq "d['billed']" > /tmp/vbt-56-m1) & (og POST /api/loads/bill "{\"loadIds\":[\"$LC\"],\"reference\":\"INV-P5-AGAIN\"}" | jq "d['billed']" > /tmp/vbt-56-m2) & wait
+chk "   two tabs mark the same load billed by hand at once: billed once (1 then 0), one reference, one billedAt; both screens say Completed" "$(cat /tmp/vbt-56-m1 /tmp/vbt-56-m2 | sort | tr '\n' ' ')|$(load $LC "l['billStatus']+' '+str(l['manualBillRef'] in ('INV-P5','INV-P5-AGAIN'))+' '+str(bool(l.get('billedAt')))")|$(row56 $LC $P5D)" "0 1 |billed True True|completed"
+# ── Two tabs put the same truck on two loads at once; a date change moves both screens together ──
+PA=$(p5po P5-A '{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}'); IFS=, read LA1 LA2 <<< "$(p5loads $PA)"
+rm -f /tmp/vbt-56-t1 /tmp/vbt-56-t2; (mgc POST /api/loads/$LA1/assign '{"driverId":"leonardo","truckUnitId":"truck-12"}' > /tmp/vbt-56-t1) & (ogc POST /api/loads/$LA2/assign '{"driverId":"beryle","truckUnitId":"truck-12"}' > /tmp/vbt-56-t2) & wait
+WON=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$PA' and l['truckUnitId']=='truck-12'][0]")
+chk "   two tabs put Truck #12 on two loads the same day at once: one 200, one 409 (truck on the other driver's load); exactly one load holds the truck, the other is still Unassigned on both screens" "$(for f in /tmp/vbt-56-t1 /tmp/vbt-56-t2; do cat $f; echo; done | sort | tr '\n' ' ')|$(curl -s -b $M $B/api/data | jq "sum(1 for l in d['loads'] if l['poId']=='$PA' and l['truckUnitId']=='truck-12')")|$(row56 $WON $P5D) $(row56 $([ "$WON" = "$LA1" ] && echo $LA2 || echo $LA1) $P5D)" "200 409 |1|assigned unassigned"
+chk "   a PO date change: both loads leave the old day and arrive on the new one, on Dispatch and on the Calendar alike" "$(mgc PUT /api/pos/$PA "{\"deliveryDate\":\"$P5D2\"}")|$(row56 $LA1 $P5D) $(row56 $LA2 $P5D)|$(row56 $WON $P5D2)" "200|dispatch:0 calendar:0 dispatch:0 calendar:0|assigned"
+# ── A stale copy changes only what it touched; the server applies exactly the fields it is given ──
+chk "   stale sheet: tab B moves the load to Matthew on Truck #4; tab A, opened earlier, changes only the pickup yard and sends only that — the load keeps tab B's driver and truck and takes tab A's yard" "$(ogc POST /api/loads/$WON/assign '{"driverId":"matthew","truckUnitId":"truck-4"}') $(mgc POST /api/loads/$WON/assign '{"yardId":"vulcan"}')|$(load $WON "l['truckId']+' '+l['truckUnitId']+' '+l['vendorId']")" "200 200|matthew truck-4 vulcan"
+chk "   …and a stale copy cannot bypass the server: on an approved, locked load an edit, an assignment and a second approval are refused; the PO's invoice fields are frozen" "$(mgc PUT /api/loads/$LB1 '{"notes":"from a stale tab"}') $(mgc POST /api/loads/$LB1/assign '{"driverId":"carlos"}') $(mgc POST /api/loads/$LB1/approve) $(mgc PUT /api/pos/$PB '{"customer":"Someone Else"}')" "403 403 400 403"
+# ── Archive vs a stale tab; a deleted PO vs a stale tab ──
+mg POST /api/history/archive >/dev/null     # the manually billed load (and the billed fixture) leave the live lists
+chk "   archive vs a stale tab: the archived load is off Dispatch and stays on the Calendar as history; the stale tab's update, assign, approve and void are refused (404); a stale manual bill bills nothing" "$(row56 $LC $P5D)|$(mgc PUT /api/loads/$LC '{"notes":"x"}') $(mgc POST /api/loads/$LC/assign '{"driverId":"carlos"}') $(mgc POST /api/loads/$LC/approve) $(mgc POST /api/loads/$LC/void '{"reason":"x"}')|$(mg POST /api/loads/bill "{\"loadIds\":[\"$LC\"],\"reference\":\"again\"}" | jq "d['billed']")" "dispatch:0 calendar:1 archived|404 404 404 404|0"
+PD=$(p5po P5-D '{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}'); LD=$(p5loads $PD)
+chk "   deleted PO vs a stale tab: the other tab deletes the PO (200); the stale tab's assign and edit are refused (404); neither screen shows the load" "$(ogc DELETE /api/pos/$PD)|$(mgc POST /api/loads/$LD/assign '{"driverId":"carlos"}') $(mgc PUT /api/loads/$LD '{"notes":"x"}')|$(row56 $LD $P5D)" "200|404 404|dispatch:0 calendar:0"
+chk "   static: the sheet, the customer form and the fleet rows send only what changed; one Ready-to-Bill rule in the strip, the tile, the reports and the fingerprint; the rejected bucket; the poll repaints History too; both screens label Rejected" "$(grep -c "const body = qaChanges();" public/index.html)|$(grep -c "qaBase = { ...qaPick };" public/index.html)|$(grep -c "cmBase = isEdit ? { ...c } : null;" public/index.html)|$(grep -c "changedFields(" public/index.html)|$(grep -c "isReadyToBill" server.js)|$(grep -c "if (l.approvalStatus === 'rejected' && l.truckId && l.truckId !== 'unassigned') return 'rejected';" server.js)|$(grep -c "else if (currentTab === 'history') renderHistory();" public/index.html)|$(grep -c "rejected: 'Rejected'" public/index.html)" "1|1|1|4|5|1|1|2"
 
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.

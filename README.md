@@ -99,6 +99,19 @@ carlos / carlos123
   rolled back, rotated or restored. A new id is always past the highest ever
   issued: after a restart, after restoring an older backup, after a save that
   failed. Every other id is time-based and checked against what is on record.
+- **Every screen reads one state, and a stale screen changes only what it
+  touched.** Dispatch and the Calendar are built from one row rule on the
+  server (a rejected load is its own bucket on both); "Ready to Bill" is one
+  rule shared by the strip, the Dispatch tile, the reports and the refresh
+  fingerprint (a load on an unsent batch counts nowhere). The office poll
+  repaints whichever screen is open — Approvals, Purchase Orders, Ready to
+  Bill, History — not only Dispatch. Quick Assign, the customer form, the
+  fleet rows and Edit PO send only the fields the person changed, so two
+  dispatchers editing the same record from two tabs cannot revert each
+  other; and every action is revalidated on the server against the current
+  record (locked, already approved, archived, deleted, truck already on
+  another load), so a stale tab can never bypass a rule by acting on old
+  information.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on

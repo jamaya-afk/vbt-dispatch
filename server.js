@@ -4766,7 +4766,7 @@ app.post('/api/loads/:id/unvoid', reqMgr, async (req, res) => {
 // ── API: BILLING ─────────────────────────────────────────────────────────────
 app.get('/api/ready-to-bill', reqMgr, (req, res) => {
   const filters = req.query;
-  let items = store.loads.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready' && !l.voided);
+  let items = store.loads.filter(isReadyToBill);   // the one rule — the tile, the strip and the reports count the same loads
   if (filters.month)    items = items.filter(l => (l.deliveryDate || '').startsWith(filters.month));
   if (filters.material) items = items.filter(l => l.material === filters.material);
   if (filters.truckId)  items = items.filter(l => l.truckId === filters.truckId);
@@ -7249,7 +7249,7 @@ app.get('/api/reports', reqMgr, async (req, res) => {
 
   // Totals
   const billed = allLoads.filter(l => l.billStatus === 'billed' && !l.voided);
-  const ready  = store.loads.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready' && !l.voided);
+  const ready  = store.loads.filter(isReadyToBill);
 
   res.json({
     driverStats, custStats, matStats, weeks,
@@ -7409,9 +7409,19 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
 //            done) · off
 //   Trucks:  available · assigned · in-progress · unavailable (shop)
 const BOARD_STAGE_LABEL = { toYard: 'Going to yard', atYard: 'At yard', enRoute: 'Loaded / en route', atJobsite: 'At jobsite', returning: 'Returning', completed: 'Done', assigned: 'Assigned', available: 'Available' };
+// ONE Ready-to-Bill rule for the tile, the table, the strip and the reports:
+// approved, not yet billed, not voided, and not already on a batch (a load on
+// an unsent, failed or unknown batch belongs to that batch, not to the list).
+function isReadyToBill(l) {
+  return l.approvalStatus === 'approved' && l.billStatus === 'ready' && !l.voided && !l.billingBatchId;
+}
 function boardBucket(l) {
   if (l.approvalStatus === 'approved') return l.billStatus === 'billed' ? 'completed' : 'ready-to-bill';
   if (l.approvalStatus === 'submitted') return 'awaiting-approval';
+  // Sent back by the office: the driver still holds it, to fix and resubmit.
+  // Its own word on every screen, instead of reading as In Progress here and
+  // "rejected" on Load Details.
+  if (l.approvalStatus === 'rejected' && l.truckId && l.truckId !== 'unassigned') return 'rejected';
   if (!l.truckId || l.truckId === 'unassigned') return 'unassigned';
   if ((l.loadsDelivered || 0) > 0 || (l.trips || []).length > 0) return 'in-progress';
   return 'assigned';
@@ -7722,7 +7732,7 @@ function officeFingerprint(day) {
   const live = store.loads.filter(l => !l.voided);
   const extra = [
     'sub:' + live.filter(l => l.approvalStatus === 'submitted').length,
-    'rtb:' + live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready').length,
+    'rtb:' + live.filter(isReadyToBill).length,
     'sh:' + (store.shifts || []).filter(s => s.status === 'open').map(s => s.id + ':' + (s.truckId || '')).sort().join(','),
     'lx:' + linxup.version,   // a new truck position or tracker change repaints the board
     'cal:' + calendarFingerprint(),   // any scheduled day changing repaints the calendar
@@ -7810,7 +7820,7 @@ app.get('/api/today', reqMgr, async (req, res) => {
   // Attention: what needs a person, wherever it sits on the calendar.
   const live = store.loads.filter(l => !l.voided);
   const submittedAll = live.filter(l => l.approvalStatus === 'submitted');
-  const readyAll = live.filter(l => l.approvalStatus === 'approved' && l.billStatus === 'ready');
+  const readyAll = live.filter(isReadyToBill);
   const readyAmount = Math.round(readyAll.reduce((s, l) => { const r = revenueDetail(l); return s + (r.amount == null ? 0 : r.amount); }, 0) * 100) / 100;
   const carried = live.filter(l => l.deliveryDate && l.deliveryDate < today && l.approvalStatus !== 'approved' && l.approvalStatus !== 'submitted');
 
@@ -7833,6 +7843,7 @@ app.get('/api/today', reqMgr, async (req, res) => {
       assigned: count('assigned'),
       inProgress: count('in-progress'),
       awaitingApproval: count('awaiting-approval'),
+      rejected: count('rejected'),
       readyToBill: count('ready-to-bill'),
       completed: count('completed'),
       driversWorking: drivers.filter(d => d.openLoadIds.length > 0).length,
