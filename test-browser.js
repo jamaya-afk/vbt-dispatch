@@ -95,6 +95,114 @@ async function call(cookie, method, path, body) {
   chk('History tab has no Sheets wording', await page.evaluate(() => { goTab('history'); return new Promise(r => setTimeout(() => r(/Sheets/i.test(document.getElementById('sec-history').innerText)), 600)); }), false);
   chk('Dispatch topbar has no Sync button', await page.evaluate(() => { goTab('today'); return /Sync/.test(document.getElementById('topbar-actions').innerText); }), false);
 
+  console.log('── Office: a slow old answer never repaints over a newer one; a save is what the next read returns ──');
+  {
+    // Hold the FIRST /api/data the page asks for from now on; let every later one through.
+    let held = null, seen = 0;
+    await page.route('**/api/data', async route => { seen++; if (seen === 1) { held = route; return; } await route.continue(); });
+    const pA = page.evaluate(() => loadAll());                                   // GET A — held, old
+    await page.waitForTimeout(250);
+    await call(mgr, 'PUT', `/api/loads/${load.id}`, { notes: 'the newest note' });  // the server moves on
+    await page.evaluate(() => loadAll());                                        // GET B — fast, new
+    const afterB = await page.evaluate(id => (loads.find(l => l.id === id) || {}).notes, load.id);
+    await held.continue();                                                       // A's stale answer lands now
+    await pA; await page.waitForTimeout(250);
+    const afterA = await page.evaluate(id => (loads.find(l => l.id === id) || {}).notes, load.id);
+    chk('P4 GET A (held, older) then GET B (newer): B is what the page holds', afterB, 'the newest note');
+    chk('   …and A arriving late is dropped — B stays displayed', afterA, 'the newest note');
+    await page.unroute('**/api/data');
+    await call(mgr, 'PUT', `/api/loads/${load.id}`, { notes: 'save then read' });
+    chk('   SAVE → GET: the client copy receives exactly the saved value', await page.evaluate(async id => { await loadAll(); return loads.find(l => l.id === id).notes; }, load.id), 'save then read');
+  }
+
+  console.log('── Office: two tabs — the server state is the one truth; a stale screen changes only what it touched ──');
+  {
+    // Tab B is a second dispatcher on the same routes the page calls. The
+    // fixture lives three weeks out, a day nothing else on the board touches.
+    // The page's own 12 s poll is paused for the block so each "stale" moment
+    // is deliberate; it is restarted at the end.
+    const osc = await login('oscar', 'oscar123');
+    const far = new Date(Date.now() + 21 * 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+    await page.evaluate(() => { if (liveTimer) clearInterval(liveTimer); liveTimer = null; });
+    await page.evaluate(() => liveCheck());   // one primed tick, as any page has had after 12 s
+    const ttPo = (await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'P5-TT', customer: 'Two Tab Co', deliveryDate: far, address: '1 Tab St', city: 'Fresno', plannedVendorId: 'vbt' }, splits: [{ truckId: 'carlos', truckUnitId: 'truck-2b', material: 'Sand', loadsAssigned: 1, vendorId: 'vbt' }] })).data.po;
+    const ttLoad = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.poId === ttPo.id);
+    const ttTruck = (await call(mgr, 'POST', '/api/fleet/trucks', { truckNum: 'Truck #P5', type: 'End Dump' })).data.truck;
+    const ttCust = (await call(mgr, 'GET', '/api/data')).data.customers.find(c => c.name === 'Two Tab Co');
+    // The field names of the next write the page sends to a route.
+    const sent = async (urlRe, act) => { const [req] = await Promise.all([page.waitForRequest(r => urlRe.test(r.url()) && r.method() !== 'GET', { timeout: 5000 }), act()]); return Object.keys(req.postDataJSON() || {}).sort().join(','); };
+    const srvLoad = async () => (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === ttLoad.id);
+
+    // 1. Quick Assign: tab A opens the sheet (Carlos, Truck #2B, VBT Yard); tab B moves the load to Matthew on Truck #4; tab A changes only the yard.
+    await page.evaluate(() => loadAll());
+    await page.evaluate(id => qaOpenFor(id), ttLoad.id); await page.waitForTimeout(500);
+    chk('1. Quick Assign opened on the load as it was: Carlos, Truck #2B, VBT Yard', await page.evaluate(() => `${!!document.getElementById('qa-sheet-bg')} ${qaPick.driverId} ${qaPick.truckUnitId} ${qaPick.yardId}`), 'true carlos truck-2b vbt');
+    chk('   tab B moves the load to Matthew on Truck #4', (await call(osc, 'POST', `/api/loads/${ttLoad.id}/assign`, { driverId: 'matthew', truckUnitId: 'truck-4' })).status, 200);
+    const qaBody = await sent(/\/assign$/, () => page.evaluate(() => { qaSet('yardId', 'vulcan'); return qaConfirm(); }));
+    await page.waitForTimeout(700);
+    const after1 = await srvLoad();
+    chk('   tab A picks Vulcan and confirms: the request carries the yard and nothing else', qaBody, 'yardId');
+    chk('   …the load keeps tab B\'s driver and truck and takes tab A\'s yard — the stale sheet reverted nothing', `${after1.truckId} ${after1.truckUnitId} ${after1.vendorId} ${await page.evaluate(() => !document.getElementById('qa-sheet-bg'))}`, 'matthew truck-4 vulcan true');
+    const assignsBefore2 = requests.filter(r => /\/assign$/.test(r)).length;
+    await page.evaluate(id => qaOpenFor(id), ttLoad.id); await page.waitForTimeout(400);
+    await page.evaluate(() => qaConfirm()); await page.waitForTimeout(300);
+    chk('   confirming an untouched sheet sends nothing and just closes', `${requests.filter(r => /\/assign$/.test(r)).length - assignsBefore2} ${await page.evaluate(() => !document.getElementById('qa-sheet-bg'))}`, '0 true');
+
+    // 2. Customer form: tab A opens Edit Customer; tab B switches the billing basis to actual tons; tab A changes the phone only.
+    await page.evaluate(() => loadAll());
+    await page.evaluate(id => openCustomerMasterForm(customers.find(c => c.id === id)), ttCust.id); await page.waitForTimeout(300);
+    chk('2. Edit Customer opened on the record as it was (planned basis)', await page.evaluate(() => `${!!document.getElementById('cm-name')} ${document.getElementById('cm-basis').value}`), 'true planned');
+    chk('   tab B switches the customer to actual-tons billing', (await call(osc, 'PUT', `/api/customers/${ttCust.id}`, { billingBasis: 'actual' })).status, 200);
+    const cmBody = await sent(/\/api\/customers\//, () => page.evaluate(id => { document.getElementById('cm-phone').value = '555-0100'; return saveCustomerMaster(id); }, ttCust.id));
+    await page.waitForTimeout(600);
+    const cust2 = (await call(mgr, 'GET', '/api/data')).data.customers.find(c => c.id === ttCust.id);
+    chk('   tab A types a phone number and saves: the request carries the phone and nothing else', cmBody, 'phone');
+    chk('   …the customer keeps tab B\'s billing basis and takes tab A\'s phone', `${cust2.billingBasis} ${cust2.phone}`, 'actual 555-0100');
+
+    // 3. Fleet row: tab A renders Drivers & Trucks; tab B puts the truck in maintenance; tab A edits the type only.
+    await page.evaluate(() => goTab('fleet')); await page.waitForTimeout(900);
+    chk('3. the fleet row shows the truck as it was (available)', await page.evaluate(id => (document.querySelector(`[data-truck-id="${id}"][data-field="status"]`) || {}).value, ttTruck.id), 'available');
+    chk('   tab B puts the truck in maintenance', (await call(osc, 'PUT', `/api/fleet/trucks/${ttTruck.id}`, { status: 'maintenance' })).status, 200);
+    const tkBody = await sent(/\/api\/fleet\/trucks\//, () => page.evaluate(id => { document.querySelector(`[data-truck-id="${id}"][data-field="type"]`).value = 'Transfer'; return saveTruck(id); }, ttTruck.id));
+    await page.waitForTimeout(700);
+    const truck2 = (await call(mgr, 'GET', '/api/fleet')).data.trucks.find(t => t.id === ttTruck.id);
+    chk('   tab A changes the type and saves the row: the request carries the type and nothing else', tkBody, 'type');
+    chk('   …the truck keeps tab B\'s maintenance status and takes tab A\'s type — the stale row did not put it back in service', `${truck2.status} ${truck2.type}`, 'maintenance Transfer');
+
+    // 4. Edit PO (per-field already, kept that way): tab A opens Edit PO; tab B changes the city; tab A changes the notes only.
+    await page.evaluate(() => goTab('pos')); await page.waitForTimeout(600);
+    await page.evaluate(() => loadAll());
+    await page.evaluate(id => openEditPO(id), ttPo.id); await page.waitForTimeout(300);
+    chk('4. Edit PO opened on the order as it was (Fresno)', await page.evaluate(() => `${!!document.getElementById('poedit-modal')} ${document.getElementById('pe-city').value}`), 'true Fresno');
+    chk('   tab B moves the jobsite city to Clovis', (await call(osc, 'PUT', `/api/pos/${ttPo.id}`, { city: 'Clovis' })).status, 200);
+    const peBody = await sent(/\/api\/pos\//, () => page.evaluate(() => { document.getElementById('pe-notes').value = 'gate code 4411'; return saveEditPO(); }));
+    await page.waitForTimeout(600);
+    const po2 = (await call(mgr, 'GET', '/api/data')).data.pos.find(p => p.id === ttPo.id);
+    chk('   tab A adds a note and saves: the request carries the note and nothing else', peBody, 'notes');
+    chk('   …the PO keeps tab B\'s city and takes tab A\'s note', `${po2.city} ${po2.notes}`, 'Clovis gate code 4411');
+
+    // 5. Approvals: a card the other tab already dealt with. The stale Approve is refused by the server; the poll repaints the list.
+    await call(mgr, 'POST', '/api/_test/set-load', { id: ttLoad.id, fields: { approvalStatus: 'submitted', locked: true } });
+    await page.evaluate(() => goTab('approvals')); await page.waitForTimeout(900);
+    chk('5. Approvals shows the submitted load', await page.evaluate(() => /P5-TT/.test(document.getElementById('approve-list').innerText)), true);
+    chk('   tab B rejects it', (await call(osc, 'POST', `/api/loads/${ttLoad.id}/reject`, { reason: 'wrong ticket' })).status, 200);
+    chk('   tab A still shows the card until it hears about it — and its Approve is refused by the server (400), never applied', `${await page.evaluate(() => /P5-TT/.test(document.getElementById('approve-list').innerText))} ${(await call(mgr, 'POST', `/api/loads/${ttLoad.id}/approve`, {})).status}`, 'true 400');
+    await page.evaluate(() => liveCheck()); await page.waitForTimeout(900);
+    chk('   the next poll repaints Approvals from the server: the card is gone, the badge too', await page.evaluate(() => `${/P5-TT/.test(document.getElementById('approve-list').innerText)} ${document.getElementById('approve-badge').style.display}`), 'false none');
+
+    // 6. Purchase Orders: a PO another tab created appears on the next poll, without leaving the tab.
+    await page.evaluate(() => goTab('pos')); await page.waitForTimeout(600);
+    const newPo = (await call(osc, 'POST', '/api/pos', { po: { poNumber: 'P5-NEW', customer: 'Two Tab Co', deliveryDate: far, plannedVendorId: 'vbt' }, splits: [{ truckId: '', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }] })).data.po;
+    chk('6. Purchase Orders does not know tab B\'s new PO yet', await page.evaluate(() => /P5-NEW/.test(document.getElementById('pos-content').innerText)), false);
+    await page.evaluate(() => liveCheck()); await page.waitForTimeout(900);
+    chk('   …the next poll repaints the list: the new PO is there', await page.evaluate(() => /P5-NEW/.test(document.getElementById('pos-content').innerText)), true);
+
+    // Fixture out: the two POs (no field record), the customer, the truck. The poll resumes.
+    const gone = [await call(mgr, 'DELETE', `/api/pos/${newPo.id}`), await call(mgr, 'DELETE', `/api/pos/${ttPo.id}`), await call(mgr, 'DELETE', `/api/customers/${ttCust.id}`), await call(mgr, 'DELETE', `/api/fleet/trucks/${ttTruck.id}`)].map(r => r.status).join(' ');
+    chk('   fixture removed (two POs, the customer, the truck)', gone, '200 200 200 200');
+    await page.evaluate(() => { liveTimer = setInterval(() => { if (!document.hidden) liveCheck(false); }, 12000); goTab('today'); }); await page.waitForTimeout(600);
+  }
+
   console.log('── New PO form: two steps, unique PO number, truck per load ──');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(300);
   await page.evaluate(() => openNewPO()); await page.waitForTimeout(500);
@@ -265,6 +373,43 @@ async function call(cookie, method, path, body) {
   chk('   no browser confirm() or prompt() anywhere in this', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
 
+  console.log('── Office: the board speaks the Calendar\'s words; Load Details reads as a record ──');
+  // OA1: Matthew's load is approved (Ready to Bill), Carlos's was sent back with a reason.
+  await page.evaluate(async () => { await loadAll(); goTab('today'); }); await page.waitForTimeout(700);
+  const oa1 = await page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('#db-loads .qa-card'));
+    const pick = re => cards.find(c => /PO 10484/.test(c.innerText) && re.test(c.innerText));
+    const info = c => c ? `${c.querySelector('.qa-chip').textContent.trim()} | ${Array.from(c.querySelectorAll('.db-flag')).map(f => f.innerText.replace(/\s+/g, ' ').trim()).join(' / ')}` : 'missing';
+    return { mat: info(pick(/Matthew/)), car: info(pick(/Carlos/)) };
+  });
+  chk('1. the approved load\'s chip says Approved — the Calendar\'s word — and its flag says Ready to Bill', oa1.mat, 'Approved | Ready to Bill');
+  chk('   the rejected load\'s chip says Rejected and the card carries the office\'s reason', oa1.car, 'Rejected | Rejected: Ticket photo is unreadable');
+  const ldText = async id => page.evaluate(async id => { openLoadDetail(id); await new Promise(r => setTimeout(r, 300)); const m = Array.from(document.querySelectorAll('.modal-bg')).pop(); const t = m ? m.innerText.replace(/\s+/g, ' ') : 'no modal'; if (m) m.remove(); return t; }, id);
+  const ldMat = await ldText(lMat.id), ldCar = await ldText(lCar.id);
+  chk('2. Load Details names the truck and reads the status in words: Truck #4, Approved · Ready to Bill', `${/Truck Truck #4 /.test(ldMat)} ${/Status Approved · Ready to Bill/.test(ldMat)}`, 'true true');
+  chk('   …and for the rejected load: Truck #2B, Rejected — with the reason', `${/Truck Truck #2B /.test(ldCar)} ${/Status Rejected — Ticket photo is unreadable/.test(ldCar)}`, 'true true');
+  // A voided load is reachable from its PO: Edit PO lists it, the link opens Load Details with Restore.
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'VOID-2', customer: 'Void Co', deliveryDate: '2027-03-10', address: '2 Void St', city: 'Fresno', plannedVendorId: 'vbt' },
+    splits: [{ truckId: '', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }, { truckId: '', material: 'Dirt', loadsAssigned: 2, vendorId: 'vbt' }] });
+  const dv2 = (await call(mgr, 'GET', '/api/data')).data; const pv2 = dv2.pos.find(p => p.poNumber === 'VOID-2'); const lv2 = dv2.loads.find(l => l.poId === pv2.id && l.loadsAssigned === 1);
+  await call(mgr, 'POST', `/api/loads/${lv2.id}/void`, { reason: 'wrong site' });
+  await page.evaluate(async () => { await loadAll(); goTab('pos'); }); await page.waitForTimeout(500);
+  const pv = await page.evaluate(async () => {
+    const card = Array.from(document.querySelectorAll('#pos-content .qa-card')).find(c => /VOID-2/.test(c.innerText));
+    const btn = card && Array.from(card.querySelectorAll('button')).find(b => b.textContent.trim() === 'Edit PO'); if (!btn) return null;
+    btn.click(); await new Promise(r => setTimeout(r, 300));
+    const m = document.getElementById('poedit-modal'); if (!m) return null;
+    const follow = Array.from(m.querySelectorAll('.pe-follow')).map(e => e.innerText.replace(/\s+/g, ' ').trim());
+    const link = m.querySelector('.pe-follow a'); if (!link) return { follow, link: false };
+    link.click(); await new Promise(r => setTimeout(r, 300));
+    const ld = Array.from(document.querySelectorAll('.modal-bg')).pop();
+    const out = { follow, link: true, editClosed: !document.getElementById('poedit-modal'), ld: ld ? ld.innerText.replace(/\s+/g, ' ') : 'no modal' };
+    if (ld) ld.remove(); return out;
+  });
+  chk('3. Edit PO lists the voided load with its reason, as a link', pv ? `${pv.follow.length} ${pv.follow[1]}` : 'no modal', `2 1 voided load on this PO: ${lv2.id} (wrong site) — open one to see it or restore it.`);
+  chk('   …the link closes Edit PO and opens Load Details: Voided — wrong site, with Restore Load', pv ? `${pv.link} ${pv.editClosed} ${/Status Voided — wrong site/.test(pv.ld)} ${/Restore Load/.test(pv.ld)}` : 'no modal', 'true true true true');
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(400);
+
   console.log('── Office: Edit PO — the order changes, the work follows where it can ──');
   // A fresh order for Leonardo (Truck #2, nothing hauled), edited from the PO card.
   await call(mgr, 'POST', '/api/pos', { po: { poNumber: '10485', customer: 'Gate Rd Builders', deliveryDate: today, address: '9 Gate Rd', city: 'Fresno', plannedVendorId: 'vbt' },
@@ -328,6 +473,15 @@ async function call(cookie, method, path, body) {
   await page.fill('#ask-reason', 'paper invoice cancelled'); await page.click('#ask-go'); await page.waitForTimeout(900);
   lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
   chk('   …back to Ready to Bill, the reversal on the record', `${lm2.billStatus} ${lm2.manualBillRef || ''}|${(lm2.billHistory || []).map(h => h.action + ':' + h.reason + ':' + h.reference).join(',')}`, 'ready |unbilled:paper invoice cancelled:INV-7 (paper)');
+  // OA1: a batch made but not yet sent can be voided from the list — a wrong batch never has to reach QuickBooks first.
+  const bb1 = ((await call(mgr, 'POST', '/api/billing-batches', { loadIds: [lMat.id] })).data.batches || [])[0];
+  await page.evaluate(async () => { await loadAll(); goTab('billing'); setBillSubview('batches'); }); await page.waitForTimeout(900);
+  const bbRow = await page.evaluate(id => { const r = Array.from(document.querySelectorAll('tr')).find(x => x.innerText.includes(id)); return r ? Array.from(r.querySelectorAll('button')).map(b => b.textContent.trim()).join('|') : 'no row'; }, bb1 ? bb1.id : 'none');
+  chk('   a batch not yet sent offers Send and Void in the batches list', bbRow, 'Send|Void');
+  await call(mgr, 'POST', `/api/billing-batches/${bb1.id}/void`, { reason: 'made in error' });
+  lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('   …voided before sending: the load is back in Ready to Bill, nothing went to QuickBooks', `${lm2.billStatus} ${lm2.billingBatchId || ''}`, 'ready ');
+  await page.evaluate(() => { setBillSubview('ready'); goTab('history'); }); await page.waitForTimeout(700);   // back where the section was: History, for the archive step
   await call(mgr, 'POST', '/api/loads/bill', { loadIds: [lMat.id], reference: 'INV-8' });
   await page.evaluate(() => renderHistory()); await page.waitForTimeout(700);
   await page.click('#history-content .history-head button.btn.success'); await page.waitForTimeout(400);
@@ -686,6 +840,25 @@ async function call(cookie, method, path, body) {
   await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'trip-complete' });
   await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   chk('2. load 1 delivered: Start Load 2 of 3, indicator 2 of 3, 1 delivered', await cardState(), 'Start Load 2 of 3 | 2/3/1');
+  console.log('── Driver: Stop early asks for the photo and the signature first; a tap with no answer says so ──');
+  // OA1: between trips with nothing on file, the stop-early path collects the evidence a submission needs — on the phone, not a dead end.
+  const stopBtn = async () => d.page.evaluate(() => { const card = Array.from(document.querySelectorAll('.trip-card')).find(c => /BTN-3/.test(c.innerText)); return Array.from(card.querySelectorAll('button')).map(x => x.innerText.replace(/\s+/g, ' ').trim()).find(t => /stop early/i.test(t)) || 'none'; });
+  chk('1. between trips with no ticket photo on the load, the stop-early path asks for the photo first', await stopBtn(), 'Ticket photo — needed to stop early');
+  await call(drv, 'PUT', `/api/loads/${bl.id}`, { ticketImage: PNG });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  chk('   with the photo on file, it asks for the customer\'s signature', await stopBtn(), 'Customer signature — needed to stop early');
+  await d.page.evaluate(() => { const card = Array.from(document.querySelectorAll('.trip-card')).find(c => /BTN-3/.test(c.innerText)); Array.from(card.querySelectorAll('button')).find(x => /needed to stop early/.test(x.innerText)).click(); }); await d.page.waitForTimeout(400);
+  chk('   …and the tap opens the signature pad', await d.page.evaluate(() => document.getElementById('sig-modal').style.display), 'flex');
+  await d.page.evaluate(() => closeSig());
+  await call(drv, 'PUT', `/api/loads/${bl.id}`, { pod: { signedBy: 'Site Foreman', signature: PNG, signedAt: new Date().toISOString() } });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  chk('   with both on file, Stop early is offered with the one completed trip on record', await stopBtn(), 'Stop early — submit 1 completed as incomplete');
+  // A tap that never gets an answer (no signal): said plainly, the card redrawn from the server, nothing stamped by the phone.
+  await d.page.route('**/api/loads/*/trip-action', r => r.abort());
+  const lost = await d.page.evaluate(async id => { const res = await tripAction(id, 'start-trip'); return { toast: Array.from(document.querySelectorAll('.toast')).map(x => x.textContent).join(' | '), err: res && res.error }; }, bl.id);
+  await d.page.unroute('**/api/loads/*/trip-action'); await d.page.waitForTimeout(1200);   // the card is redrawn from the server after the toast
+  const lostLoad = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === bl.id);
+  chk('2. a tap that gets no answer says "No connection…" and nothing is stamped — the card shows what the office has', `${/No connection — that tap did not get an answer/.test(lost.toast)} ${lost.err} ${lostLoad.trips.length} ${await cardState()}`, 'true no connection 1 Start Load 2 of 3 | 2/3/1');
   await runTrip(2);
   chk('3. load 2 delivered: Start Load 3 of 3, indicator 3 of 3, 2 delivered', await cardState(), 'Start Load 3 of 3 | 3/3/2');
   // Tapping the button starts trip 3 and leaves trips 1 and 2 untouched.
@@ -701,6 +874,18 @@ async function call(cookie, method, path, body) {
   await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'trip-complete' });
   await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   chk('4. load 3 delivered: no Start Load button; indicator 3 of 3, 3 delivered', await cardState(), 'no-start-button | 3/3/3');
+  console.log('── Driver: a load sent back can redo its evidence on the phone ──');
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'REJ-1', customer: 'Redo Co', deliveryDate: today, address: '1 Redo St', city: 'Fresno', plannedVendorId: 'vbt' }, splits: [{ truckId: 'beryle', truckUnitId: 'truck-12', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }] });
+  const rjData = (await call(mgr, 'GET', '/api/data')).data; const rl = rjData.loads.find(l => l.poId === rjData.pos.find(p => p.poNumber === 'REJ-1').id);
+  for (const a of [{ action: 'start-trip' }, { action: 'arrived-pickup', yardId: 'vbt' }, { action: 'loaded', ticket: { source: 'vbt', number: 'REJ-1', netTons: 10, photo: PNG } }, { action: 'arrived-jobsite' }, { action: 'trip-complete' }]) await call(drv, 'POST', `/api/loads/${rl.id}/trip-action`, a);
+  await call(drv, 'PUT', `/api/loads/${rl.id}`, { pod: { signedBy: 'Site Foreman', signature: PNG, signedAt: new Date().toISOString() } });
+  await call(drv, 'POST', `/api/loads/${rl.id}/trip-action`, { action: 'delivered' });
+  await call(mgr, 'POST', `/api/loads/${rl.id}/reject`, { reason: 'Signature is not the foreman\'s' });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  const rj = await d.page.evaluate(() => { const card = Array.from(document.querySelectorAll('.trip-card')).find(c => /REJ-1/.test(c.innerText)); if (!card) return 'no-card';
+    const btns = Array.from(card.querySelectorAll('button')).map(b => b.innerText.replace(/\s+/g, ' ').trim());
+    return `${btns.filter(t => /Replace ticket photo|Sign again|^Submit/.test(t)).join('|')} || ${(card.querySelector('.action-hint') || {}).innerText || ''}`; });
+  chk('1. a rejected load offers Replace ticket photo and Sign again under Submit, and says what to do', rj, 'Submit (1)|Replace ticket photo|Sign again || Fix what the office named — replace the photo or sign again — then Submit.');
   await d.ctx.close();
   // Access probes with the driver's own session cookie (outside the page, so
   // the page's console stays clean of expected 403s).

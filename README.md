@@ -80,6 +80,66 @@ carlos / carlos123
   The lock is held until the handler has finished its work and answered, not
   until the connection closes: a phone that drops mid-save keeps the next
   write waiting until that save has settled.
+- **A restore is all or nothing.** An admin can restore `store_prev` (before
+  the last save), `store_boot` (when the process started) or
+  `store_before_restore` (what the last restore replaced, so a restore is
+  undoable). The backup is checked before anything is written; the current row
+  is set aside and the backup installed in one transaction; only then does
+  memory follow, and the restored state becomes the point a later failed save
+  rolls back to. A restore waits its turn behind any save in flight, is refused
+  while a QuickBooks send is running, and if it fails nothing has changed.
+- **A read describes committed state.** Reads never save, and a read that
+  arrives while a write is being saved waits for that write to settle (a few
+  milliseconds), so it never shows a value that may yet roll back. The browser
+  applies answers in the order it asked for them: a slow, older answer that
+  lands after a newer one is dropped.
+- **An id is never handed out twice.** Load ids and auto PO numbers come from
+  counters that travel with the data, and from high-water marks kept outside
+  it (the `id_high_water` row, `data-ids.json` in file mode) that are never
+  rolled back, rotated or restored. A new id is always past the highest ever
+  issued: after a restart, after restoring an older backup, after a save that
+  failed. Every other id is time-based and checked against what is on record.
+- **Every screen reads one state, and a stale screen changes only what it
+  touched.** Dispatch and the Calendar are built from one row rule on the
+  server (a rejected load is its own bucket on both); "Ready to Bill" is one
+  rule shared by the strip, the Dispatch tile, the reports and the refresh
+  fingerprint (a load on an unsent batch counts nowhere). The office poll
+  repaints whichever screen is open — Approvals, Purchase Orders, Ready to
+  Bill, History — not only Dispatch. Quick Assign, the customer form, the
+  fleet rows and Edit PO send only the fields the person changed, so two
+  dispatchers editing the same record from two tabs cannot revert each
+  other; and every action is revalidated on the server against the current
+  record (locked, already approved, archived, deleted, truck already on
+  another load), so a stale tab can never bypass a rule by acting on old
+  information.
+- **A QuickBooks answer always lands on the record.** The QuickBooks routes
+  work outside the write lock (they talk to QuickBooks for seconds). The batch
+  or bill they work on, its loads and the connection are pinned for that
+  request, so another request's failed save — which rolls the store back —
+  can no longer leave the send writing onto orphans (a batch stuck "syncing"
+  while the response said "sent"). A send whose first save is refused puts
+  the batch back instead of leaving it "syncing"; the notification log's
+  background save never rolls anything back; a refused manual bill or
+  customer update changes nothing; a PO keeps its invoice fields and cannot
+  be deleted while its billed loads sit in the archive; a voided load whose
+  PO is archived waits for that history to come back before it is unvoided.
+- **The fleet, the roster and the logins are the office's.** Seed trucks,
+  drivers and logins are planted once, onto an empty fleet, an empty roster
+  and a users table with no logins; a truck, driver or login the office
+  removed stays removed across restarts and deploys. Every form that refuses
+  a change (fleet, notification settings, costing, a PO with a duplicate
+  number, a driver's submission with a count that disagrees) refuses before
+  it changes anything, so a 400 never leaves a half-applied record behind.
+- **Unfinished work holds its driver and truck.** A trip started yesterday
+  and left open, or a load half delivered, keeps its driver and truck busy on
+  today's board and in the conflict check ("unfinished since <date>"); the
+  Carried Over tile shows it and the office moves it to today or closes it.
+  Dispatch uses the Calendar's words (Approved / Billed); a load on a billing
+  batch says so; Load Details names the truck and reads the status in words;
+  Edit PO lists the PO's voided loads so a void can be undone; Material Costs
+  calls a default rate an estimate. On the phone, Stop early first asks for
+  the photo and the signature it needs, a load sent back can redo both, and a
+  tap that gets no answer says so.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on

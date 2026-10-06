@@ -11,3 +11,4 @@ service-account.json
 *.pem
 *.p12
 telemetry.json
+data-ids.json

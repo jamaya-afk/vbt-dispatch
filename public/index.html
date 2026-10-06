@@ -727,6 +727,7 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
 .qa-card.in-progress{border-left-color:#d97706}
 .qa-card.completed{border-left-color:#0a8a3a}
 .qa-card.awaiting-approval{border-left-color:#7c3aed}
+.qa-card.rejected{border-left-color:#b42318}
 .qa-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .qa-cust{font-size:15px;font-weight:750;line-height:1.25}
 .qa-sub{font-size:12px;color:var(--txt2);margin-top:2px}
@@ -1370,7 +1371,12 @@ async function uploadPhoto(kind, loadId, dataUrl) {
   }
 }
 
+// Responses are applied in the order they were REQUESTED, never in the order
+// they arrive: a slow older answer that lands after a newer one is dropped,
+// so the client copy can only move forward.
+let loadAllSeq = 0;
 async function loadAll() {
+  const seq = ++loadAllSeq;
   try {
     const r = await fetch('/api/data');
     if (!r.ok) {
@@ -1378,6 +1384,7 @@ async function loadAll() {
       return;
     }
     const d = await r.json();
+    if (seq !== loadAllSeq) { console.log('[loadAll] dropped a stale response'); return; }
     trucks = d.trucks || [];
     materials = d.materials || [];
     yards = d.yards || [];
@@ -1513,8 +1520,8 @@ function goTab(tab) {
 
   if (tab === 'today')    { document.getElementById('sec-today').classList.add('active'); document.getElementById('page-title').textContent = 'Dispatch'; renderToday(); }
   if (tab === 'calendar') { document.getElementById('sec-calendar').classList.add('active'); document.getElementById('page-title').textContent = 'Calendar'; renderCalendar(); }
-  if (tab === 'pos')      { document.getElementById('sec-pos').classList.add('active'); document.getElementById('page-title').textContent = 'Purchase Orders'; renderPOsList(); }
-  if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); }
+  if (tab === 'pos')      { document.getElementById('sec-pos').classList.add('active'); document.getElementById('page-title').textContent = 'Purchase Orders'; renderPOsList(); loadAll().then(() => { if (currentTab === 'pos') renderPOsList(); }); }
+  if (tab === 'approvals'){ document.getElementById('sec-approvals').classList.add('active'); document.getElementById('page-title').textContent = 'Approvals'; renderApprovals(); loadAll().then(() => { if (currentTab === 'approvals') { renderApprovals(); updateApproveBadge(); } }); }
   if (tab === 'billing')  { document.getElementById('sec-billing').classList.add('active'); document.getElementById('page-title').textContent = 'Ready to Bill'; renderBilling(); }
   if (tab === 'history')  { document.getElementById('sec-history').classList.add('active'); document.getElementById('page-title').textContent = 'History'; renderHistory(); }
   if (tab === 'reports')  { document.getElementById('sec-reports').classList.add('active'); document.getElementById('page-title').textContent = 'Reports'; renderReports(); }
@@ -2038,6 +2045,8 @@ function openLoadDetail(id) {
   html += `<dt style="color:var(--txt3)">Material</dt><dd>${l.material}</dd>`;
   html += `<dt style="color:var(--txt3)">Loads</dt><dd>${l.loadsDelivered}/${l.loadsAssigned}</dd>`;
   html += `<dt style="color:var(--txt3)">Driver</dt><dd>${l.driverName || 'Unassigned'}</dd>`;
+  const ldTruck = (fleet || []).find(t => t.id === l.truckUnitId);
+  html += `<dt style="color:var(--txt3)">Truck</dt><dd>${ldTruck ? escapeHtml(ldTruck.truckNum) : (l.truckUnitId ? escapeHtml(l.truckUnitId) : (l.driverName ? 'No truck yet' : '—'))}</dd>`;
   html += `<dt style="color:var(--txt3)">Date</dt><dd>${fmtDate(l.deliveryDate)}</dd>`;
   if (po.jobCode) html += `<dt style="color:var(--txt3)">Job Code</dt><dd>${po.jobCode}</dd>`;
   if (po.address) html += `<dt style="color:var(--txt3)">Address</dt><dd>${po.address}, ${po.city || ''}</dd>`;
@@ -2045,7 +2054,8 @@ function openLoadDetail(id) {
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
   if (l.trailer) html += `<dt style="color:var(--txt3)">Trailer</dt><dd>${escapeHtml(l.trailer.number)}${l.trailer.type ? ' · ' + escapeHtml(l.trailer.type) : ''}</dd>`;
   if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}${(l.tons.openTickets || []).length ? ` <span style="font-size:11px;color:var(--A);font-weight:600">${l.tons.openTickets.length} ticket${l.tons.openTickets.length === 1 ? '' : 's'} loaded, not delivered${l.tons.openTons ? ` (${l.tons.openTons.toFixed(2)} t not counted)` : ''}</span>` : ''}</dd>`;
-  html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
+  const LD_STATUS = { pending: 'Not yet submitted', submitted: 'Awaiting approval', approved: l.billStatus === 'billed' ? 'Approved · Billed' : 'Approved · Ready to Bill', rejected: 'Rejected' };
+  html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.voided ? `Voided${l.voidReason ? ' — ' + escapeHtml(l.voidReason) : ''}` : (LD_STATUS[l.approvalStatus] || escapeHtml(String(l.approvalStatus)))}${!l.voided && l.approvalStatus === 'rejected' && l.rejectReason ? ` — ${escapeHtml(l.rejectReason)}` : ''}</dd>`;
   html += `</dl>`;
   if (l.segments && l.segments.length) {
     const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'open';
@@ -2356,6 +2366,7 @@ function refreshCurrentView() {
   else if (currentTab === 'today') renderToday();
   else if (currentTab === 'approvals') renderApprovals();
   else if (currentTab === 'billing') renderBilling();
+  else if (currentTab === 'history') renderHistory();
 }
 
 // Delete a PO and every load on it. Use this to clear test POs — the server
@@ -2962,6 +2973,8 @@ function tripCard(l) {
   }
 
   let action = '';
+  // Sent back by the office: the photo or the signature it named can be redone here, then Submit again.
+  const redoBtns = rejected ? `<div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn ghost" style="flex:1" onclick="openTicketUpload('${l.loadId}')">Replace ticket photo</button><button class="btn ghost" style="flex:1" onclick="openSig('${l.loadId}')">Sign again</button></div>` : '';
   if (allTripsDone && !hasImage && !submitted) {
     // All trips done — collect ticket, signature, submit
     action = `<button class="trip-action ticket" onclick="openTicketUpload('${l.loadId}')">
@@ -2982,7 +2995,7 @@ function tripCard(l) {
         Submit (${totalTrips})
       </button>
     </div>
-    <div class="action-hint">All ${totalTrips} loads delivered. Tap Submit to send for approval.</div>`;
+    ${redoBtns}<div class="action-hint">${rejected ? 'Fix what the office named — replace the photo or sign again — then Submit.' : `All ${totalTrips} loads delivered. Tap Submit to send for approval.`}</div>`;
   } else if (betweenTrips) {
     // Between trips — show "Start Load N+1"
     const next = (l.loadsDelivered || 0) + 1;
@@ -2991,7 +3004,12 @@ function tripCard(l) {
       Start Load ${next} of ${totalTrips}
     </button>
     <div class="action-hint">Heading back to the yard for the next load</div>
-    ${totalTrips > 1 && (Number(l.tripsCompleted) || 0) > 0 ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${Number(l.tripsCompleted) || 0} completed of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${Number(l.tripsCompleted) || 0} completed as incomplete</button>` : ''}`;
+    ${totalTrips > 1 && (Number(l.tripsCompleted) || 0) > 0 ? (
+      // Stop early submits the load: it needs the ticket photo and the customer's
+      // signature like any submission, so those come first, right here.
+      !hasImage ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openTicketUpload('${l.loadId}')">Ticket photo — needed to stop early</button>`
+      : !hasSig ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openSig('${l.loadId}')">Customer signature — needed to stop early</button>`
+      : `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${Number(l.tripsCompleted) || 0} completed of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${Number(l.tripsCompleted) || 0} completed as incomplete</button>`) : ''}`;
   } else if (!started && !submitted) {
     // Brand-new load, never started — same as "Start Load 1"
     action = `<button class="trip-action start" onclick="tripAction('${l.loadId}', 'start-trip')">
@@ -3061,7 +3079,7 @@ function tripCard(l) {
         Submit
       </button>
     </div>
-    <div class="action-hint">All set? Tap Submit. Delivered less than expected? Tap Incomplete.</div>`;
+    ${redoBtns}<div class="action-hint">${rejected ? 'Fix what the office named — replace the photo or sign again — then Submit.' : 'All set? Tap Submit.'}</div>`;
   }
   // Prepend the multi-trip banner so it sits above the action button
   action = tripBanner + action;
@@ -3249,7 +3267,9 @@ async function arrivedAtOwnYard(loadId) {
 // odometer reading (a new freight segment starts here) or may refuse until
 // another customer's freight is finished. Nothing is stamped until then.
 async function arrivedAtYard(loadId, yardId, gps, odometer) {
-  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action: 'arrived-pickup', gps, yardId, ...(odometer != null ? { odometer } : {}) });
+  let d;
+  try { d = await api('POST', `/api/loads/${loadId}/trip-action`, { action: 'arrived-pickup', gps, yardId, ...(odometer != null ? { odometer } : {}) }); }
+  catch (e) { toast('No connection — that tap did not get an answer. Check your signal; the card shows what the office has.', 'error'); closeYard(); try { await loadAll(); } catch (_) {} return renderDriver(); }
   if (d.ok && d.success !== false) {
     toast('Arrived at yard', 'success');
     closeYard();
@@ -3323,13 +3343,25 @@ async function tripAction(loadId, action, extra) {
     });
   } catch (e) {}
 
-  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action, gps, ...(extra || {}) });
+  let d;
+  try { d = await api('POST', `/api/loads/${loadId}/trip-action`, { action, gps, ...(extra || {}) }); }
+  catch (e) {
+    // No answer at all (no signal, request dropped). The tap may or may not
+    // have reached the office: say so, and redraw the card from the server.
+    toast('No connection — that tap did not get an answer. Check your signal; the card shows what the office has.', 'error');
+    try { await loadAll(); } catch (_) { /* still offline */ }
+    renderDriver();
+    return { ok: false, error: 'no connection' };
+  }
   if (d.ok) {
     toast(action === 'delivered' ? 'Submitted for approval!' : 'Updated', 'success');
     await loadAll();
     renderDriver();
   } else {
+    // Refused — often because the step already happened (a reply that was
+    // lost on the way). Redraw from the server so the card shows the truth.
     toast(d.error || 'Failed', 'error');
+    loadAll().then(() => renderDriver()).catch(() => {});
   }
   return d;
 }
@@ -3712,6 +3744,7 @@ async function approvalTelemetryHtml(loadId) {
     return `<div class="ask-tel"><div class="ld-tel-k">Linxup evidence</div>${d.trips.map(tr => {
       if (!tr.linked) return `<div>Trip ${tr.tripNum}: truck not linked</div>`;
       const p = tr.pickup, j = tr.jobsite;
+      if (!tr.positions) return `<div>Trip ${tr.tripNum}: no Linxup positions in this trip's window — telemetry says nothing either way</div>`;
       const pk = p.evidence === 'geofence' ? `${escapeHtml(p.name)} ${tClock(p.visits[0].enteredAt)}–${p.visits[0].leftAt ? tClock(p.visits[0].leftAt) : 'open'} (geofence)` : p.evidence === 'gps' ? `near ${escapeHtml(p.name)} ${tClock(p.gps.firstAt)} (GPS)` : p.evidence === 'none' ? `<span style="color:var(--A)">no activity at ${escapeHtml(p.name)}</span>` : 'no reference for the yard';
       const jb = j.evidence === 'gps' ? `near jobsite ${tClock(j.gps.firstAt)}–${tClock(j.gps.lastAt)} (GPS)` : j.evidence === 'none' ? `<span style="color:var(--A)">no activity near the jobsite</span>` : 'no jobsite pin';
       return `<div>Trip ${tr.tripNum}: ${pk} · ${jb}</div>`;
@@ -4075,7 +4108,7 @@ async function renderBillBatches() {
           ${b.syncStatus === 'failed' ? `<button class="btn ghost" onclick="retryBatch('${b.id}')">Retry</button>` : ''}
           ${b.syncStatus === 'unknown' ? `<button class="btn ghost" onclick="retryBatch('${b.id}')" title="Ask QuickBooks whether the invoice exists. Nothing is sent until it answers.">Reconcile with QuickBooks</button>` : ''}
           ${b.syncStatus === 'ready_to_bill' ? `<button class="btn primary" onclick="sendBatch('${b.id}')">Send</button>` : ''}
-          ${(b.syncStatus === 'sent_to_quickbooks' || b.syncStatus === 'failed' || b.syncStatus === 'unknown') ? `<button class="btn ghost" onclick="voidBatch('${b.id}')">Void</button>` : ''}
+          ${(b.syncStatus === 'ready_to_bill' || b.syncStatus === 'sent_to_quickbooks' || b.syncStatus === 'failed' || b.syncStatus === 'unknown') ? `<button class="btn ghost" onclick="voidBatch('${b.id}')">Void</button>` : ''}
         </td>
       </tr>`).join('')}
     </tbody>
@@ -4174,7 +4207,7 @@ async function restoreBackupPrompt() {
   let info;
   try { info = await (await fetch('/api/admin/backups')).json(); } catch { alert('Could not list backups.'); return; }
   const lines = (info.backups || []).map(b => `${b.key}: ${(b.bytes / 1024).toFixed(1)} KB, written ${b.updatedAt ? new Date(b.updatedAt).toLocaleString() : 'unknown'}`);
-  const from = prompt(`Restore dispatch data from which backup?\n\n${lines.join('\n')}\n\nType store_prev or store_boot:`);
+  const from = prompt(`Restore dispatch data from which backup?\n\n${lines.join('\n')}\n\nType store_prev, store_boot or store_before_restore:`);
   if (!from) return;
   if (!(info.restorable || []).includes(from.trim())) { alert('Not a restorable backup: ' + from); return; }
   if (!confirm(`Replace the live dispatch data with "${from.trim()}"?\nThe current row is kept as store_before_restore.`)) return;
@@ -4289,6 +4322,7 @@ function openEditPO(poId) {
   const p = (pos || []).find(x => x.id === poId); if (!p) return toast('PO not found', 'error');
   closeEditPO(); editPoId = poId;
   const mine = (loads || []).filter(l => l.poId === poId && !l.voided);
+  const voidedMine = (loads || []).filter(l => l.poId === poId && l.voided);   // reachable from here, so a void can be undone (Load Details carries Restore)
   const follow = mine.filter(loadIsOperationalUI).length;
   const frozen = poIsFrozen(poId);
   const matNames = (materials || []).map(m => typeof m === 'string' ? m : (m.name || m.material || ''));
@@ -4317,6 +4351,7 @@ function openEditPO(poId) {
         <div class="field"><label>Notes</label><textarea id="pe-notes" rows="2">${escapeHtml(p.notes || '')}</textarea></div>
         <div class="field"><label>Reason for the change (optional)</label><input type="text" id="pe-reason" placeholder="e.g. customer pushed the pour a day"></div>
         <div class="pe-follow"><b>${mine.length} load${mine.length === 1 ? '' : 's'} on this PO.</b> ${follow} can still follow a date, customer-price or yard change (nothing hauled yet)${mine.length - follow ? `; ${mine.length - follow} keep their date and prices (work started or on record).` : '.'}${p.geo ? ' Changing the address clears the saved jobsite pin.' : ''}</div>
+        ${voidedMine.length ? `<div class="pe-follow">${voidedMine.length} voided load${voidedMine.length === 1 ? '' : 's'} on this PO: ${voidedMine.map(v => `<a href="#" onclick="closeEditPO();openLoadDetail('${v.id}');return false">${escapeHtml(v.id)}</a>${v.voidReason ? ' (' + escapeHtml(v.voidReason) + ')' : ''}`).join(', ')} — open one to see it or restore it.</div>` : ''}
         <details class="pe-add"><summary>Add a load to this order</summary>
           <div class="pe-grid" style="margin-top:8px">
             <div class="field"><label>Driver</label><select id="pe-al-driver" onchange="peDriverChanged(this.value)">${drvOpts}</select></div>
@@ -4396,7 +4431,7 @@ let calView = 'month';          // 'day' | 'week' | 'month'
 let calDate = null;             // YYYY-MM-DD anchor; null = today
 let calData = null;             // the last /api/calendar answer
 const CAL_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const CAL_STATUS = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In progress', 'awaiting-approval': 'Awaiting approval', 'ready-to-bill': 'Approved', completed: 'Billed', archived: 'Archived' };
+const CAL_STATUS = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In progress', rejected: 'Rejected', 'awaiting-approval': 'Awaiting approval', 'ready-to-bill': 'Approved', completed: 'Billed', archived: 'Archived' };
 function calAnchor() { return calDate || (calData && calData.today) || todayStr(); }
 function calAddDays(s, n) { const d = new Date(s + 'T12:00:00'); d.setDate(d.getDate() + n); return ymd(d); }
 function calRange() {
@@ -4406,11 +4441,14 @@ function calRange() {
   const first = new Date(d.getFullYear(), d.getMonth(), 1, 12), last = new Date(d.getFullYear(), d.getMonth() + 1, 0, 12);
   return { from: calAddDays(ymd(first), -first.getDay()), to: calAddDays(ymd(last), 6 - last.getDay()), monthFirst: ymd(first), monthLast: ymd(last) };
 }
+let calSeq = 0;   // the calendar only ever moves forward (see loadAll)
 async function renderCalendar() {
   const wrap = document.getElementById('calendar-content'); if (!wrap) return;
   if (!calData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading the calendar…</div>`;
   const r = calRange();
+  const seq = ++calSeq;
   const d = await api('GET', `/api/calendar?from=${r.from}&to=${r.to}`);
+  if (seq !== calSeq) return;   // a newer request has been made; its answer paints the calendar
   if (!d.ok) { wrap.innerHTML = `<div style="padding:24px;color:var(--R)">${escapeHtml(d.error || 'Failed to load the calendar')}</div>`; return; }
   calData = d;
   paintCalendar();
@@ -4524,10 +4562,13 @@ function calDayHtml(date, xs) {
 let todayData = null;
 let qaPick = null;          // { loadId, driverId, truckUnitId, yardId }
 
+let todaySeq = 0;   // the board, too, only ever moves forward (see loadAll)
 async function renderToday() {
   const wrap = document.getElementById('today-content');
   if (!todayData) wrap.innerHTML = `<div style="padding:24px;color:var(--txt2)">Loading the board…</div>`;
+  const seq = ++todaySeq;
   const d = await api('GET', '/api/today' + (dbDate ? '?date=' + encodeURIComponent(dbDate) : ''));
+  if (seq !== todaySeq) return;   // a newer request has been made; its answer paints the board
   if (!d.ok) { wrap.innerHTML = `<div style="padding:24px;color:var(--R)">${d.error || 'Failed to load'}</div>`; return; }
   todayData = d;
   paintToday();
@@ -4569,9 +4610,9 @@ function dbTile(key) {
   dbSetFilter(key);
 }
 
-const DB_BUCKET_LABEL = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In Progress', 'awaiting-approval': 'Awaiting Approval', 'ready-to-bill': 'Ready to Bill', completed: 'Completed' };
+const DB_BUCKET_LABEL = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In Progress', rejected: 'Rejected', 'awaiting-approval': 'Awaiting Approval', 'ready-to-bill': 'Approved', completed: 'Billed' };   // the Calendar's words for the same buckets
 const DB_STATE_LABEL  = { available: 'Available', assigned: 'Assigned', 'in-progress': 'In progress', completed: 'Done', off: 'Off', unavailable: 'In shop' };
-const DB_FILTER_TITLE = { missing: 'Missing information', conflicts: 'Conflicts', carried: 'Unfinished from earlier days' };
+const DB_FILTER_TITLE = { missing: 'Missing information', conflicts: 'Conflicts', carried: 'Unfinished from earlier days', 'ready-to-bill': 'Ready to Bill' };
 
 function paintToday() {
   const d = todayData; if (!d) return;
@@ -4584,11 +4625,12 @@ function paintToday() {
        <div class="n">${n}</div><div class="l">${label}</div>${sub ? `<div class="s">${sub}</div>` : ''}</button>`;
 
   // Loads, most urgent first
-  const order = { unassigned: 0, 'in-progress': 1, assigned: 2, 'awaiting-approval': 3, 'ready-to-bill': 4, completed: 5 };
+  const order = { unassigned: 0, rejected: 1, 'in-progress': 2, assigned: 3, 'awaiting-approval': 4, 'ready-to-bill': 5, completed: 6 };
   let list = [...d.loads].sort((x, y) => (order[x.bucket] - order[y.bucket]) || String(x.customer).localeCompare(String(y.customer)));
   if (dbFilter === 'missing') list = list.filter(l => l.missing.length);
   else if (dbFilter === 'conflicts') list = list.filter(l => l.conflicts.length);
   else if (dbFilter === 'carried') list = [...(d.carriedOver || [])].sort((x, y) => String(x.deliveryDate).localeCompare(String(y.deliveryDate)));
+  else if (dbFilter === 'ready-to-bill') list = list.filter(l => l.readyToBill);   // the tile's own rule, not the bucket (a load on a batch is approved, not ready)
   else if (dbFilter !== 'all') list = list.filter(l => l.bucket === dbFilter);
   const listTitle = dbFilter === 'all'
     ? `${d.loads.length} load${d.loads.length === 1 ? '' : 's'} · ${d.isToday ? 'today' : dateLabel}`
@@ -4712,6 +4754,8 @@ function dbLoadCard(l) {
   const carried = !!(todayData && l.deliveryDate && l.deliveryDate !== todayData.date);
   const office = role === 'manager' || role === 'admin';
   const flags = [
+    l.bucket === 'rejected' && l.rejectReason ? `<div class="db-flag missing">Rejected: ${escapeHtml(l.rejectReason)}</div>` : '',
+    l.bucket === 'ready-to-bill' ? (l.readyToBill ? `<div class="db-flag">Ready to Bill</div>` : `<div class="db-flag">On billing batch${l.billingBatchId ? ' ' + escapeHtml(l.billingBatchId) : ''} — not in Ready to Bill</div>`) : '',
     l.missing.length ? `<div class="db-flag missing">Missing: ${l.missing.map(escapeHtml).join(', ')}</div>` : '',
     ...l.conflicts.map(c => `<div class="db-flag conflict">${escapeHtml(c)}</div>`),
   ].join('');
@@ -4811,10 +4855,22 @@ async function mgrCloseSegment(id) {
 
 // ── Assignment sheet: Driver → Truck → Yard → Confirm ───────────────────────
 // Nothing commits until Confirm, so a stray tap can never reassign a load.
+// The sheet remembers what it opened with (qaBase) and sends ONLY what the
+// person changed. Another tab may have changed the driver meanwhile; this tab
+// choosing a trailer must not quietly put the old driver back. The server
+// treats an absent field as "keep", and checks the rest against its own
+// current state.
+let qaBase = null;
 function qaOpen(loadId) {
   const l = todayData.loads.find(x => x.id === loadId); if (!l) return;
   qaPick = { loadId, driverId: l.driverId, truckUnitId: l.truckUnitId, yardId: l.yardId, trailerId: l.trailerId || null };
+  qaBase = { ...qaPick };
   qaPaintSheet();
+}
+function qaChanges() {
+  const out = {};
+  for (const k of ['driverId', 'truckUnitId', 'yardId', 'trailerId']) if ((qaPick[k] || null) !== (qaBase ? qaBase[k] || null : undefined)) out[k] = qaPick[k] || null;
+  return out;
 }
 // The same sheet from anywhere else (the Board), for a load on any date: the
 // availability of drivers, trucks and trailers is fetched for that load's day.
@@ -4959,10 +5015,10 @@ async function postAssignment(url, body, verb, reason, method = 'POST') {
 async function qaConfirm() {
   const p = qaPick; if (!p) return;
   const btn = document.getElementById('qa-confirm');
+  const body = qaChanges();
+  if (!Object.keys(body).length) { qaClose(); return toast('Nothing changed', ''); }
   btn.disabled = true; btn.textContent = 'Assigning…';
-  const r = await postAssignment(`/api/loads/${p.loadId}/assign`, {
-    driverId: p.driverId, truckUnitId: p.truckUnitId, yardId: p.yardId, trailerId: p.trailerId || null,
-  }, 'Reassign');
+  const r = await postAssignment(`/api/loads/${p.loadId}/assign`, body, 'Reassign');
   if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; if (!r.cancelled) toast(r.error || 'Assign failed', 'error'); return; }
   const who = r.load.driverName || 'Unassigned';
   const truck = r.truck ? r.truck.truckNum : 'no truck';
@@ -5113,7 +5169,12 @@ async function liveCheck(force) {
       await loadAll();          // Load Details reads the client copy of the loads
       await renderCalendar();
     } else {
+      // Every other screen repaints from the fresh copy too, so Approvals,
+      // Purchase Orders, Ready to Bill and History never sit on a stale list
+      // while the board next door has moved on.
       await loadAll();
+      refreshCurrentView();
+      updateApproveBadge();
     }
   } catch (e) { /* offline — retry on the next tick */ }
 }
@@ -5587,9 +5648,11 @@ function rerenderCustomerMasterList() {
   wrap.innerHTML = h;
 }
 
+let cmBase = null;   // the record the form opened with; the save sends only what differs from it
 function openCustomerMasterForm(existing) {
   const c = existing || { id: '', name: '', code: '', address: '', city: '', phone: '', email: '', notes: '', active: true };
   const isEdit = !!c.id;
+  cmBase = isEdit ? { ...c } : null;
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
   bg.style.zIndex = 260;
@@ -5645,6 +5708,13 @@ async function saveCustomerMaster(existingId) {
   if (activeEl) body.active = activeEl.checked;
   let d;
   if (existingId) {
+    // Only what this person changed goes to the server. Another tab may have
+    // edited the same customer since this form opened (its billing basis, a
+    // phone number); untouched fields are not sent, so they are not reverted.
+    const base = cmBase && cmBase.id === existingId ? cmBase : {};
+    const same = (k) => k === 'billingBasis' ? body[k] === (base[k] || 'planned') : k === 'active' ? body[k] === (base[k] !== false) : String(body[k] ?? '') === String(base[k] ?? '');
+    for (const k of Object.keys(body)) if (same(k)) delete body[k];
+    if (!Object.keys(body).length) { document.querySelector('.modal-bg[style*="z-index: 260"]')?.remove(); return toast('Nothing changed', ''); }
     d = await api('PUT', '/api/customers/' + existingId, body);
   } else {
     d = await api('POST', '/api/customers', body);
@@ -5865,6 +5935,7 @@ async function renderMaterialCosts() {
       <div>
         <div style="font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.05em;font-weight:600">${mcMonthFilter ? mcMonthFilter : 'All time'}</div>
         <div style="font-size:24px;font-weight:700">${money(data.grandTotal)}</div>
+        ${data.estimatedTotal ? `<div style="font-size:11px;color:#b45309">${money(data.estimatedTotal)} of this is priced at a default rate — an estimate, not a vendor's price</div>` : ''}
         <div style="font-size:12px;color:var(--txt2)">${data.grandLoads} loads from outside vendors</div>
         <div style="font-size:11px;color:var(--txt3);margin-top:3px">Excludes VBT Yard (internal inventory)</div>
       </div>
@@ -5891,7 +5962,7 @@ async function renderMaterialCosts() {
               <div class="vendor-panel-sub">${v.location || ''} · ${v.totalLoads} load${v.totalLoads !== 1 ? 's' : ''} delivered</div>
             </div>
             <div style="text-align:right">
-              <div style="font-size:22px;font-weight:700;color:var(--R)">${money(v.totalCost)}${v.unconfigured ? ' <span style="font-size:11px;color:#b42318">incomplete</span>' : ''}</div>
+              <div style="font-size:22px;font-weight:700;color:var(--R)">${money(v.totalCost)}${v.unconfigured ? ' <span style="font-size:11px;color:#b42318">incomplete</span>' : ''}${v.estimated ? ` <span style="font-size:11px;color:#b45309" title="Part of this is priced at a default rate, not this vendor's price">${money(v.estimatedCost || 0)} estimated</span>` : ''}</div>
               <div style="font-size:11px;color:var(--txt3)">${pct}% of total spend</div>
               ${v.unconfigured ? `<div style="font-size:11px;color:#b42318;font-weight:600">Some loads not costed: unit ${(v.unconfiguredUnits || []).join(', ')} cannot be priced yet</div>` : ''}
             </div>
@@ -5903,8 +5974,8 @@ async function renderMaterialCosts() {
                 <td>${mat}</td>
                 <td>${d.unit || '—'}</td>
                 <td>${d.loads}</td>
-                <td>${money(d.unitPrice)}</td>
-                <td style="text-align:right;font-weight:600">${d.unconfigured ? '<span style="color:#b42318">not priceable</span>' : money(d.cost)}</td>
+                <td>${money(d.unitPrice)}${d.estimated ? ' <span style="font-size:10px;color:#b45309" title="Default rate — not this vendor\'s price. A vendor bill will not use it.">estimate</span>' : ''}</td>
+                <td style="text-align:right;font-weight:600">${d.unconfigured ? '<span style="color:#b42318">not priceable</span>' : money(d.cost)}${d.estimated && !d.unconfigured ? ' <span style="font-size:10px;color:#b45309">est.</span>' : ''}</td>
               </tr>`).join('')}
             </tbody>
           </table>
@@ -7046,13 +7117,27 @@ async function addTruckPrompt() {
   } catch (e) { toast('Add truck failed: ' + e.message, 'error'); }
 }
 
+// The Drivers & Trucks rows send ONLY the fields the person changed, compared
+// with the record the row was drawn from (fleetState). Another tab may have
+// put a truck in the shop or set a driver off since; an edit to one field here
+// must not quietly put the old value back on the others.
+function changedFields(body, base) {
+  const out = {};
+  for (const k of Object.keys(body)) {
+    const a = body[k], b = base ? base[k] : undefined;
+    const norm = v => (v === undefined || v === null || v === '') ? null : (typeof v === 'boolean' ? v : String(v));
+    if (!base || norm(a) !== norm(b)) out[k] = a;
+  }
+  return out;
+}
 async function saveTruck(id) {
   const f = (field) => document.querySelector(`[data-truck-id="${id}"][data-field="${field}"]`);
   try {
-    await fleetCall('PUT', '/api/fleet/trucks/' + encodeURIComponent(id), {
+    const body = changedFields({
       truckNum: f('truckNum')?.value, type: f('type')?.value, status: f('status')?.value,
       defaultDriverId: f('defaultDriverId')?.value || null, active: !!f('active')?.checked,
-    });
+    }, (fleetState.trucks || []).find(t => t.id === id));
+    if (Object.keys(body).length) await fleetCall('PUT', '/api/fleet/trucks/' + encodeURIComponent(id), body);
     // The Linxup link is its own action (by tracker id), only when it changed.
     const sel = f('linxupTrackerId');
     if (sel) {
@@ -7109,10 +7194,12 @@ async function addTrailerPrompt() {
 async function saveTrailer(id) {
   const f = (field) => document.querySelector(`[data-trailer-id="${id}"][data-field="${field}"]`);
   try {
-    await fleetCall('PUT', '/api/fleet/trailers/' + encodeURIComponent(id), {
+    const body = changedFields({
       number: f('number')?.value, type: f('type')?.value, status: f('status')?.value,
       defaultTruckId: f('defaultTruckId')?.value || null, active: !!f('active')?.checked,
-    });
+    }, (fleetState.trailers || []).find(t => t.id === id));
+    if (!Object.keys(body).length) return toast('Nothing changed', '');
+    await fleetCall('PUT', '/api/fleet/trailers/' + encodeURIComponent(id), body);
     toast('Trailer saved', 'success');
     await loadAll(); renderFleet();
   } catch (e) { toast('Save failed: ' + e.message, 'error'); }
@@ -7129,12 +7216,14 @@ async function deleteTrailer(id) {
 
 async function saveDriver(username) {
   const f = (field) => document.querySelector(`[data-driver="${username}"][data-field="${field}"]`);
-  const body = {
+  const base = (fleetState.drivers || []).find(d => (d.username || d.id) === username);
+  const body = changedFields({
     displayName: f('displayName')?.value, defaultTruckId: f('defaultTruckId')?.value || null,
     status: f('status')?.value, active: !!f('active')?.checked,
-  };
-  if (f('linxupPersonId')) body.linxupPersonId = f('linxupPersonId').value || null;
-  if (f('password')?.value) body.password = f('password').value;
+    ...(f('linxupPersonId') ? { linxupPersonId: f('linxupPersonId').value || null } : {}),
+  }, base);
+  if (f('password')?.value) body.password = f('password').value;   // a typed password is always a change
+  if (!Object.keys(body).length) return toast('Nothing changed', '');
   try {
     await fleetCall('PUT', '/api/drivers/' + encodeURIComponent(username), body);
     if (f('password')) f('password').value = '';

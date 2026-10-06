@@ -409,11 +409,19 @@ async function deleteBill(conn, billId) {
 // batch? Our PrivateNote names the batch id, and DocNumber carries the PO
 // number, so the lookup is exact. Falls back to the customer's recent
 // invoices when the batch had no PO number.
+// Does an invoice's private note name THIS batch? The note reads "…billing
+// batch BB-<ms>-<n>. PO …", so the id must end where it ends: "batch BB-1-1"
+// is no match for "batch BB-1-12" (two batches made in the same millisecond
+// differ only in that last number). A voided invoice keeps its note
+// (QuickBooks prefixes it with "Voided"); it is not the live invoice.
+function invoiceNoteNamesBatch(note, batchId) {
+  const s = String(note || '');
+  if (/^voided\b/i.test(s.trim())) return false;
+  const re = new RegExp('batch ' + String(batchId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![0-9A-Za-z_-])');
+  return re.test(s);
+}
 async function findInvoiceForBatch(conn, { docNumber, batchId, qbCustomerId }) {
-  const marker = `batch ${batchId}`;
-  // A voided invoice keeps its note (QuickBooks prefixes it with "Voided");
-  // it is not the live invoice for this batch.
-  const matches = inv => String(inv.PrivateNote || '').includes(marker) && !/^voided\b/i.test(String(inv.PrivateNote || '').trim());
+  const matches = inv => invoiceNoteNamesBatch(inv.PrivateNote, batchId);
   if (docNumber) {
     const q = encodeURIComponent(`select * from Invoice where DocNumber = '${String(docNumber).replace(/'/g, "\\'")}'`);
     const data = await qbFetch(conn, 'GET', `/query?query=${q}`);
@@ -544,6 +552,7 @@ module.exports = {
   deleteBill,
   getEntity,
   findInvoiceForBatch,
+  invoiceNoteNamesBatch,
   findBillByDocNumber,
   attachToEntity,
   fetchRemoteAsBuffer,

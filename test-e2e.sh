@@ -14,7 +14,7 @@ chk() { # chk "name" actual expected
 }
 
 cd "$(dirname "$0")"
-rm -f data.json telemetry.json
+rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 
@@ -917,7 +917,7 @@ chk "   trips ran all day long without a shift in every earlier section (legacy 
 
 echo "── 38. Freight Segment — the Cornelio 9/14/2026 packet, reproduced from the records ──"
 # Fresh server: the packet's ticket numbers are unique company-wide, so this day is built from nothing.
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-seg.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 curl -s -c $M -X POST -d "username=joshua&password=joshua123" $B/login -o /dev/null
@@ -1159,7 +1159,7 @@ chk "   Sept 15 history untouched throughout"                 "$(curl -s -b $M $
 echo
 echo "── 40. Phase 0 integrity: billing, attribution, deletion, archive, QuickBooks, vendor bills ──"
 # A fresh process and an empty store, so every fixture below is fully known.
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-p0.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1383,7 +1383,7 @@ import json;d=json.load(open('data.json'));print([l['notes'] for l in d['loads']
 
 echo
 echo "── 41. One dispatch board: every status from the server, one rule for who is busy ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-board.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F); YESTERDAY=$(date -d '-1 day' +%F); TOMORROW=$(date -d '+1 day' +%F)
@@ -1452,7 +1452,7 @@ chk "   every assignment path (sheet, reassign modal, PO form, date move) stays 
 
 echo
 echo "── 43. Approval confirms the record: Driver · Truck · Pickup yard · Ticket · Delivery ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-approve.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1490,7 +1490,7 @@ chk "   approve and reject are decided in the app: no prompt(), no confirm(); a 
 
 echo
 echo "── 44. Editing a PO: the order changes, the work follows only where it is still operational (PO-EDITING.md) ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-poedit.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
@@ -1550,7 +1550,7 @@ chk "   the screen: Edit PO from the PO card and the load detail; a date change 
 
 echo
 echo "── 45. Billing visibility: amounts, the state machine, guarded manual billing, unbill, unarchive ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-billing.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1600,7 +1600,7 @@ chk "   the screen: the state machine strip on Billing and History; manual billi
 
 echo
 echo "── 46. A failed save leaves nothing behind: the store rolls back to what is on disk, one write at a time ──"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 node server.js > /tmp/vbt-test-rollback.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F); TOMORROW=$(date -d '+1 day' +%F)
@@ -1668,7 +1668,7 @@ chk "   mutating requests run one at a time; QuickBooks send/retry/void, GPS pin
 echo
 echo "── 47. Linxup telemetry (L1): positions in by webhook, trucks linked by id, VBT stays the operational truth ──"
 chk "47 without LINXUP_WEBHOOK_TOKEN the webhook path does not exist (404)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST $B/api/linxup/position -H "$J" -d '{}')" "404"
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 node server.js > /tmp/vbt-test-linxup.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 J='Content-Type: application/json'; TODAY=$(date +%F)
@@ -1882,7 +1882,7 @@ l2_suite() {
   chk "$TAG after a restart: the geofence mirror and mapping, the last visit per truck, and the archived load's evidence are all still there" "$(gf "sorted((g['geofenceId'], g['mappedVendorId'], g['suggestedVendorId']) for g in d['geofences'])")|$(tel truck-14 "x['lastFence']['name']")|$(tel truck-2 "x['lastFence']['name'], x['lastFence']['leftAt']")|$(ev $LB "len(T), len(t['otherVisits']), len(t['stops']), len(t['vehicleTrips']), len(t['usage']), t['jobsite']['gps']['count'], len(t2['pickup']['visits']), [f['kind'] for f in t['flags']]")|$(hl "d['geofences'], d['mode']")" "[(9, 'vulcan', None), (10, None, 'vbt'), (55, None, None)]|Vulcan Materials Fresno|geofence 55 None|2 3 1 1 1 1 1 ['pickup-mismatch']|3 $([ "$TAG" = 48 ] && echo file || echo postgres)"
   rm -f $M $BE
 }
-pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json telemetry.json
+pkill -f "^node server.js" >/dev/null 2>&1; sleep 1; rm -f data.json data-ids.json telemetry.json
 (VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 node server.js > /tmp/vbt-test-linxup2.log 2>&1 &)
 for i in $(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done
 l2_suite $B 48 "pkill -f '^node server.js' >/dev/null 2>&1; sleep 1; (VBT_TEST_HOOKS=1 LINXUP_WEBHOOK_TOKEN=test-token LINXUP_COMPANY_ID=1 node server.js > /tmp/vbt-test-linxup2.log 2>&1 &); for i in \$(seq 1 20); do sleep 1; curl -sf $B/healthz >/dev/null 2>&1 && break; done"
@@ -2100,7 +2100,8 @@ chk "   3. thrown before the request was sent: failed, retryable" "$(mgc POST /a
 # 4. Timeout: nothing was created, but VBT cannot know that → UNKNOWN; reconcile says 'not found'; the re-send carries the same requestid.
 L4=$(mkl C4-4 Dirt vbt); B4=$(nb $L4); qbm timeout
 chk "   4. timeout → 502 external_unknown; batch 'unknown', may exist, no id invented; load claimed, not billed" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code'], d['batch']['syncStatus'], d['batch']['mayExistInQuickBooks'], repr(d['batch']['qbInvoiceId']), d['batch']['reconcile']['kind'], d['batch']['reconcile']['requestId']=='$B4'")|$(load $L4 "l['billStatus'], l['billingBatchId']=='$B4'")|$(inv)" "502 external_unknown unknown True '' timeout True|ready True|(3, 6)"
-chk "   …Send is refused (409 external_unknown), the load cannot join another batch (400), Ready to Bill shows it as batched" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code']")|$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L4\"]}")|$(rtb "[x['billingBatchId']=='$B4' for x in d['items'] if x['id']=='$L4']")|$(inv)" "409 external_unknown|400|[True]|(3, 6)"
+# (Persistence 5 changed the rule: a load on a batch — unknown, failed or unsent — belongs to that batch and is off the Ready to Bill list; before, the list showed it "as batched".)
+chk "   …Send is refused (409 external_unknown), the load cannot join another batch (400), and it is off the Ready to Bill list — it belongs to the batch, which still lists it" "$(mg POST /api/billing-batches/$B4/send '{}' -w ' %{http_code}' | pc "d['code']")|$(mgc POST /api/billing-batches "{\"loadIds\":[\"$L4\"]}")|$(rtb "[x['id'] for x in d['items'] if x['id']=='$L4']")|$(bt $B4 "'$L4' in [l['id'] for l in d['loads']]")|$(inv)" "409 external_unknown|400|[]|True|(3, 6)"
 qbm ok '"connected":false'
 chk "   …Retry with QuickBooks disconnected: 409, still unknown, no create request" "$(mgc POST /api/billing-batches/$B4/retry)|$(bt $B4 "d['batch']['syncStatus'], d['batch']['reconcile']['attempts']")|$(inv)" "409|unknown 1|(3, 6)"
 qbm ok
@@ -2166,6 +2167,298 @@ qbb ok
 chk "   static: the client sends Intuit's requestid on every create; the server never writes 'failed' for an uncertain error" "$(grep -c "requestid=" qb.js)|$(grep -c "requestId: b.id" server.js)|$(grep -c "markExternalUnknown(b, " server.js)" "1|4|7"
 rm -f $RG
 
+echo "── 54. Persistence 3 — an id is never handed out twice: not after a failed save, not under concurrency, not after a restart ──"
+# LOAD-<n> and the auto PO number PO-<n> come from counters kept in the store AND as high-water marks outside it
+# (in memory, never rolled back; beside the store on disk — data-ids.json here, the id_high_water row on Postgres).
+maxload() { curl -s -b $M $B/api/data | jq "max((int(l['id'].split('-')[1]) for l in d['loads'] if l['id'].startswith('LOAD-')), default=0)"; }
+maxpo()   { curl -s -b $M $B/api/data | jq "max((int(p['poNumber'][3:]) for p in d['pos'] if p['poNumber'].startswith('PO-') and p['poNumber'][3:].isdigit()), default=1000)"; }
+po54()    { mg POST /api/pos '{"po":{"customer":"Id Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -w ' %{http_code}' | pc "d.get('po',{}).get('poNumber') or d.get('error','')[:14]"; }
+L0=$(maxload); P0=$(maxpo)
+chk "54 sequential creation: the next load id and the next auto PO number are one past the highest on record" "$(po54)|$(maxload) $(maxpo)" "200 PO-$((P0+1))|$((L0+1)) $((P0+1))"
+mg POST /api/_test/save-mode '{"mode":"fail","count":1}' >/dev/null
+chk "   failed save: the ids the failed creation took are consumed, never handed out again — the next creation skips them (load id and PO number); the marks on disk are past them" "$(po54)|$(po54)|$(maxload) $(maxpo)|$(python3 -c "import json;d=json.load(open('data-ids.json'));print(d['load'] >= $((L0+4)), d['po'] >= $((P0+4)))")" "503 Unable to save|200 PO-$((P0+3))|$((L0+3)) $((P0+3))|True True"
+rm -f /tmp/vbt-54-codes.txt; for i in $(seq 1 10); do mg POST /api/pos '{"po":{"customer":"Id Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":2,"vendorId":"vbt"}]}' -o /dev/null -w '%{http_code}\n' >> /tmp/vbt-54-codes.txt & done; wait
+chk "   concurrent creation: ten POs (two loads each) at once → ten 200s; every PO id, PO number and load id on record is distinct" "$(sort /tmp/vbt-54-codes.txt | uniq -c | tr -s ' \n' ' ')|$(curl -s -b $M $B/api/data | jq "len(set(p['id'] for p in d['pos']))==len(d['pos']), len(set(p['poNumber'] for p in d['pos']))==len(d['pos']), len(set(l['id'] for l in d['loads']))==len(d['loads']), len([p for p in d['pos'] if p['customer']=='Id Co'])")" " 10 200 |True True True 12"
+chk "   static: one load-id generator, one auto-PO-number generator, no timestamp-plus-random id left, the marks persist with every save in both modes, and are reconciled at boot, after a restore and before every id" "$(grep -c 'store.nextLoadId++' server.js)|$(grep -c 'store.nextPoNum++' server.js)|$(grep -c "Date.now() + '-' + Math.floor" server.js)|$(grep -c "'PO-' + Date.now()" server.js)|$(grep -c 'fs.writeFileSync(ID_HIGH_WATER_FILE' server.js)|$(grep -c "VALUES('id_high_water'" server.js)|$(grep -c 'reconcileIdCounters();' server.js)" "1|1|0|0|1|1|4"
+
+echo "── 55. Persistence 4 — a read describes committed state only, a read never saves, the client copy only moves forward ──"
+P=$(mg POST /api/pos '{"po":{"poNumber":"P4-1","customer":"Read Co","deliveryDate":"'"$TODAY"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | jq "d['po']['id']")
+LA=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][0]"); LB=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$P'][1]")
+disk55() { python3 -c "import json;print([l['notes'] for l in json.load(open('data.json'))['loads'] if l['id']=='$1'][0])"; }
+R0=$(curl -s $B/healthz | jq "d['persistence']['rollbacks']")
+chk "55 save → GET: what a 200 answered is what the next read returns, in memory and on disk" "$(mgc PUT /api/loads/$LA '{"notes":"saved once"}')|$(load $LA "l['notes']")|$(disk55 $LA)" "200|saved once|saved once"
+# A read arriving while a write is in flight waits for that write to settle; it never shows a value that is still being saved and may roll back.
+mg POST /api/_test/save-mode '{"mode":"fail","count":1,"delayMs":1500}' >/dev/null
+rm -f /tmp/vbt-55-w; (mgc PUT /api/loads/$LA '{"notes":"never committed"}' > /tmp/vbt-55-w) & sleep 0.3
+T0=$(date +%s%N); SEEN=$(load $LA "l['notes']"); T1=$(date +%s%N); wait
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   GET during a write whose save then fails: the read waited (≥ 1 s) and returned the committed value, never the one being saved; the write answered 503; memory, disk and the rollback count agree" "$SEEN|$(( (T1-T0)/1000000 >= 1000 ))|$(cat /tmp/vbt-55-w)|$(load $LA "l['notes']")|$(disk55 $LA)|$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R0")" "saved once|1|503|saved once|saved once|1"
+mg POST /api/_test/save-mode '{"mode":"ok","delayMs":1200}' >/dev/null
+(mgc PUT /api/loads/$LA '{"notes":"slow commit"}' > /tmp/vbt-55-w) & sleep 0.2
+rm -f /tmp/vbt-55-g /tmp/vbt-55-g.?; for i in 1 2 3 4 5; do (load $LA "l['notes']" > /tmp/vbt-55-g.$i) & done; wait; cat /tmp/vbt-55-g.1 /tmp/vbt-55-g.2 /tmp/vbt-55-g.3 /tmp/vbt-55-g.4 /tmp/vbt-55-g.5 > /tmp/vbt-55-g   # one file per reader: five appends to one file can interleave
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   five concurrent GETs during a slow successful write: every one waited and returned the committed new value — none the pre-save value, none a mix" "$(cat /tmp/vbt-55-w)|$(sort /tmp/vbt-55-g | uniq -c | tr -s ' \n' ' ')" "200| 5 slow commit "
+chk "   write A → write B → GET: the read is B, and so is disk" "$(mgc PUT /api/loads/$LA '{"notes":"A"}') $(mgc PUT /api/loads/$LA '{"notes":"B"}')|$(load $LA "l['notes']")|$(disk55 $LA)" "200 200|B|B"
+rm -f /tmp/vbt-55-a /tmp/vbt-55-b; (mgc PUT /api/loads/$LA '{"notes":"queued A"}' > /tmp/vbt-55-a) & (mgc PUT /api/loads/$LA '{"notes":"queued B"}' > /tmp/vbt-55-b) & wait
+chk "   two writes queued at once → GET: both 200, the read is the one that ran last, and disk agrees with memory" "$(cat /tmp/vbt-55-a) $(cat /tmp/vbt-55-b)|$(python3 - "$(load $LA "l['notes']")" "$(disk55 $LA)" <<'PY'
+import sys; mem,disk=sys.argv[1:3]; print(mem in ('queued A','queued B'), disk==mem)
+PY
+)" "200 200|True True"
+# A client that drops its connection mid-write, then a read: the read is the committed state (the write landed; the lock outlived the socket — Persistence 1).
+mg POST /api/_test/save-mode '{"mode":"ok","delayMs":1000}' >/dev/null
+curl -s -b $M -H "$J" -X PUT $B/api/loads/$LA -d '{"notes":"dropped but saved"}' --max-time 0.3 -o /dev/null
+chk "   client disconnect during a write → GET: the read waits for that write and returns what it committed; disk agrees" "$(load $LA "l['notes']")|$(disk55 $LA)" "dropped but saved|dropped but saved"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+# I21 — a read never saves. Plant a stale PO status (both loads done, the PO still says active), refuse every database write, and read.
+mg POST /api/_test/set-load "{\"id\":\"$LA\",\"fields\":{\"status\":\"completed\",\"approvalStatus\":\"approved\",\"locked\":true}}" >/dev/null
+mg POST /api/_test/set-load "{\"id\":\"$LB\",\"fields\":{\"status\":\"completed\",\"approvalStatus\":\"approved\",\"locked\":true}}" >/dev/null
+R1=$(curl -s $B/healthz | jq "d['persistence']['rollbacks']"); S1=$(curl -s $B/healthz | jq "d['persistence']['lastSaveAt']")
+mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
+chk "   I21 — a read never saves: with the database refusing every write, GET /api/data answers 200, corrects the stale PO status in memory, and attempts no save (no rollback, lastSaveAt unchanged) — so a read can never sweep a concurrent write away" "$(curl -s -b $M -o /dev/null -w '%{http_code}' $B/api/data)|$(curl -s -b $M $B/api/data | jq "[p['status'] for p in d['pos'] if p['id']=='$P'][0]")|$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R1, d['persistence']['lastSaveAt'] == '$S1'")" "200|completed|0 True"
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   …the correction reaches disk with the next real save (any write carries the whole store)" "$(mgc POST /api/customers '{"name":"Persist Co"}')|$(python3 -c "import json;print([p['status'] for p in json.load(open('data.json'))['pos'] if p['id']=='$P'][0])")" "200|completed"
+chk "   static: no GET handler saves (the two PO-status reconciles are memory-only; the QuickBooks OAuth callback is the one documented exception); reads wait for writes in flight; a save with no owning request never rolls the store back" "$(python3 - <<'PY'
+import re; src=open('server.js').read().split('\n'); bad=0
+for i,l in enumerate(src):
+    m=re.match(r"^(\s*)app\.get\(", l)
+    if not m or 'quickbooks/callback' in l: continue
+    ind=m.group(1); j=i+1
+    while j<len(src) and not (src[j].startswith(ind+'});') and len(src[j])-len(src[j].lstrip())==len(ind)):
+        if 'await saveData(' in src[j]: bad+=1
+        j+=1
+print(bad)
+PY
+)|$(grep -c "const inFlight = writeLockTail;" server.js)|$(grep -c "if (!ctx || ctx.keepOnFailure || !lastGoodJson) return false;" server.js)|$(grep -c "if (seq !== loadAllSeq)" public/index.html)|$(grep -c "if (seq !== todaySeq) return;" public/index.html)|$(grep -c "if (seq !== calSeq) return;" public/index.html)" "0|1|1|1|1|1"
+
+echo "── 56. Persistence 5 — one authoritative state: Dispatch and Calendar read one row rule, one Ready-to-Bill rule, a stale copy changes only what it touched, the server decides ──"
+# Everything here lives three weeks out, a day no other section touches, so no same-day conflict is accidental.
+P5D=$(date -d '+21 day' +%F); P5D2=$(date -d '+22 day' +%F)
+P5O=$(mktemp); curl -s -c $P5O -X POST -d "username=oscar&password=oscar123" $B/login -o /dev/null      # "the other tab": a second dispatcher
+P5C=$(mktemp); curl -s -c $P5C -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
+og()  { curl -s -b $P5O -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}"; }
+ogc() { curl -s -b $P5O -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+p5po() { mg POST /api/pos "{\"po\":{\"poNumber\":\"$1\",\"customer\":\"Two Tab Co\",\"deliveryDate\":\"$P5D\",\"address\":\"1 Tab St\",\"city\":\"Fresno\",\"plannedVendorId\":\"vbt\"},\"splits\":[$2]}" | jq "d.get('po',{}).get('id') or d.get('error')"; }
+p5loads() { curl -s -b $M $B/api/data | jq "','.join(l['id'] for l in d['loads'] if l['poId']=='$1')"; }
+# The Dispatch row and the Calendar row for one load, compared field by field: the bucket when they agree, DIFF otherwise.
+row56() { curl -s -b $M "$B/api/today?date=$2" > /tmp/vbt-56-t; curl -s -b $M "$B/api/calendar?from=$2&to=$2" > /tmp/vbt-56-c; python3 - "$1" <<'PY'
+import sys,json
+lid=sys.argv[1]; t=json.load(open('/tmp/vbt-56-t')); c=json.load(open('/tmp/vbt-56-c'))
+keys=['bucket','driverId','truckUnitId','yardId','trailerId','loadsAssigned','loadsDelivered','approvalStatus','billStatus','deliveryDate','locked','poNumber','customer']
+a=[r for r in t['loads'] if r['id']==lid]; b=[r for rows in c['days'].values() for r in rows if r['id']==lid]
+if len(a)!=1 or len(b)!=1: print('dispatch:%d calendar:%d%s'%(len(a),len(b),' archived' if b and b[0].get('archived') else '')); sys.exit()
+diff=[k for k in keys if a[0].get(k)!=b[0].get(k)]
+print(a[0]['bucket'] if not diff else 'DIFF '+','.join(diff))
+PY
+}
+# ── I10: a rejected load is its own bucket, on both screens ──
+PR=$(p5po P5-R '{"truckId":"rigo","truckUnitId":"truck-14","material":"Sand","loadsAssigned":1,"vendorId":"vbt"}'); LR=$(p5loads $PR)
+mg POST /api/_test/set-load "{\"id\":\"$LR\",\"fields\":{\"approvalStatus\":\"rejected\",\"rejectReason\":\"ticket unreadable\"}}" >/dev/null
+chk "56 I10 — a rejected load is its own bucket on Dispatch and on the Calendar (never Assigned or In Progress), and the day's summary counts it" "$(row56 $LR $P5D)|$(curl -s -b $M "$B/api/today?date=$P5D" | jq "d['summary']['rejected']")|$(curl -s -b $M "$B/api/calendar?from=$P5D&to=$P5D" | jq "d['totals']['$P5D']['byBucket'].get('rejected')")" "rejected|1|1"
+chk "   …a rejected load with no driver is Unassigned on both (the work needs a driver before anything else)" "$(mgc POST /api/loads/$LR/assign '{"driverId":null}')|$(row56 $LR $P5D)" "200|unassigned"
+# ── I11: one Ready-to-Bill rule ──
+PB=$(p5po P5-B '{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}')
+IFS=, read LB1 LB2 LB3 LB4 <<< "$(p5loads $PB)"
+rtb56() { echo "$(curl -s -b $M $B/api/ready-to-bill | jq "d['totals']['count']") $(curl -s -b $M "$B/api/today?date=$P5D" | jq "d['attention']['readyToBill']") $(curl -s -b $M $B/api/reports | jq "d['totals']['readyToBill']")"; }
+read R0 A0 P0 <<< "$(rtb56)"
+for x in $LB1 $LB2 $LB3; do mg POST /api/_test/set-load "{\"id\":\"$x\",\"fields\":{\"approvalStatus\":\"approved\",\"billStatus\":\"ready\",\"locked\":true}}" >/dev/null; done
+BB2=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LB2\"]}" | jq "d['batches'][0]['id']")                        # on a batch, not yet sent
+mg POST /api/_test/set-load "{\"id\":\"$LB3\",\"fields\":{\"voided\":true,\"voidedAt\":\"2026-01-01T00:00:00Z\"}}" >/dev/null   # approved, then voided
+mg POST /api/_test/set-load "{\"id\":\"$LB4\",\"fields\":{\"approvalStatus\":\"approved\",\"billStatus\":\"billed\",\"locked\":true,\"billedAt\":\"2026-01-01T00:00:00Z\",\"manualBillRef\":\"P5 fixture\"}}" >/dev/null
+read R1 A1 P1 <<< "$(rtb56)"
+chk "   I11 — one Ready-to-Bill rule: of four approved loads (plain, on an unsent batch, voided, billed) exactly one is Ready to Bill, and the strip, the Dispatch tile and the reports each moved by that same one" "${BB2:0:3}|$((R1-R0)) $((A1-A0)) $((P1-P0))|$(curl -s -b $M $B/api/ready-to-bill | jq "[x['id'] for x in d['items'] if x['poId']=='$PB']")" "BB-|1 1 1|['$LB1']"
+chk "   …the tile's amount is the strip's total, and the batched load still reads Approved on the board (not Ready to Bill, not Billed)" "$(python3 -c "print($(curl -s -b $M "$B/api/today?date=$P5D" | jq "d['attention']['readyToBillAmount']") == $(curl -s -b $M $B/api/ready-to-bill | jq "d['totals']['amount']"))")|$(row56 $LB2 $P5D)" "True|ready-to-bill"
+# ── Dispatch and Calendar agree through a load's whole life; two tabs approve and bill the same load at once ──
+PC=$(p5po P5-C '{"truckId":"carlos","truckUnitId":"truck-2b","material":"Base Rock","loadsAssigned":1,"vendorId":"vbt"}'); LC=$(p5loads $PC)
+S1=$(row56 $LC $P5D)
+dc() { curl -s -b $P5C -H "$J" -X POST $B/api/loads/$LC/trip-action -d "$1" -o /dev/null -w '%{http_code} '; }
+F1=$(dc '{"action":"start-trip"}'); S2=$(row56 $LC $P5D)
+F2=$(dc '{"action":"arrived-pickup","yardId":"vbt"}'; dc "{\"action\":\"loaded\",\"ticket\":$(tkt)}"; dc '{"action":"arrived-jobsite"}'; dc '{"action":"trip-complete"}'); S3=$(row56 $LC $P5D)
+F3=$(curl -s -b $P5C -H "$J" -X PUT $B/api/loads/$LC -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null -w '%{http_code} '; dc '{"action":"delivered"}'); S4=$(row56 $LC $P5D)
+chk "   Dispatch and Calendar agree at every step — created, started, delivered 1/1, submitted — field by field from one row rule" "$F1$F2$F3|$S1 → $S2 → $S3 → $S4" "200 200 200 200 200 200 200 |assigned → in-progress → in-progress → awaiting-approval"
+rm -f /tmp/vbt-56-a1 /tmp/vbt-56-a2; (mgc POST /api/loads/$LC/approve > /tmp/vbt-56-a1) & (ogc POST /api/loads/$LC/approve > /tmp/vbt-56-a2) & wait
+chk "   two tabs approve the same load at once: one 200, one 400 (no longer submitted); approved once, locked, by one of them; both screens say Ready to Bill" "$(for f in /tmp/vbt-56-a1 /tmp/vbt-56-a2; do cat $f; echo; done | sort | tr '\n' ' ')|$(load $LC "l['approvalStatus']+' '+str(l['locked'])+' '+str(l['approvedBy'] in ('Joshua','Oscar'))")|$(row56 $LC $P5D)" "200 400 |approved True True|ready-to-bill"
+rm -f /tmp/vbt-56-b1 /tmp/vbt-56-b2; (mg POST /api/billing-batches "{\"loadIds\":[\"$LC\"]}" > /tmp/vbt-56-b1) & (og POST /api/billing-batches "{\"loadIds\":[\"$LC\"]}" > /tmp/vbt-56-b2) & wait
+BC=$(python3 -c "
+import json; r=[json.load(open('/tmp/vbt-56-b1')),json.load(open('/tmp/vbt-56-b2'))]; ok=[x for x in r if x.get('batches')]
+print(len(ok), len([x for x in r if x.get('error')]), ok[0]['batches'][0]['id'] if ok else '')")
+read BOK BERR BBC <<< "$BC"
+chk "   two tabs bill the same load at once: one batch created, one refused (nothing eligible); the load belongs to exactly one batch" "$BOK $BERR|$(load $LC "l['billingBatchId']=='$BBC'")|$(curl -s -b $M $B/api/billing-batches | jq "sum(1 for b in d['items'] if '$LC' in b.get('loadIds',[]) and b['syncStatus']!='voided')")" "1 1|True|1"
+chk "   …voiding that batch releases the load to Ready to Bill on both screens" "$(mgc POST /api/billing-batches/$BBC/void '{"reason":"bill it by hand"}')|$(row56 $LC $P5D)|$(load $LC "l['billStatus']+' '+str(bool(l.get('billingBatchId')))")" "200|ready-to-bill|ready False"
+rm -f /tmp/vbt-56-m1 /tmp/vbt-56-m2; (mg POST /api/loads/bill "{\"loadIds\":[\"$LC\"],\"reference\":\"INV-P5\"}" | jq "d['billed']" > /tmp/vbt-56-m1) & (og POST /api/loads/bill "{\"loadIds\":[\"$LC\"],\"reference\":\"INV-P5-AGAIN\"}" | jq "d['billed']" > /tmp/vbt-56-m2) & wait
+chk "   two tabs mark the same load billed by hand at once: billed once (1 then 0), one reference, one billedAt; both screens say Completed" "$(cat /tmp/vbt-56-m1 /tmp/vbt-56-m2 | sort | tr '\n' ' ')|$(load $LC "l['billStatus']+' '+str(l['manualBillRef'] in ('INV-P5','INV-P5-AGAIN'))+' '+str(bool(l.get('billedAt')))")|$(row56 $LC $P5D)" "0 1 |billed True True|completed"
+# ── Two tabs put the same truck on two loads at once; a date change moves both screens together ──
+PA=$(p5po P5-A '{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"},{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}'); IFS=, read LA1 LA2 <<< "$(p5loads $PA)"
+rm -f /tmp/vbt-56-t1 /tmp/vbt-56-t2; (mgc POST /api/loads/$LA1/assign '{"driverId":"leonardo","truckUnitId":"truck-12"}' > /tmp/vbt-56-t1) & (ogc POST /api/loads/$LA2/assign '{"driverId":"beryle","truckUnitId":"truck-12"}' > /tmp/vbt-56-t2) & wait
+WON=$(curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$PA' and l['truckUnitId']=='truck-12'][0]")
+chk "   two tabs put Truck #12 on two loads the same day at once: one 200, one 409 (truck on the other driver's load); exactly one load holds the truck, the other is still Unassigned on both screens" "$(for f in /tmp/vbt-56-t1 /tmp/vbt-56-t2; do cat $f; echo; done | sort | tr '\n' ' ')|$(curl -s -b $M $B/api/data | jq "sum(1 for l in d['loads'] if l['poId']=='$PA' and l['truckUnitId']=='truck-12')")|$(row56 $WON $P5D) $(row56 $([ "$WON" = "$LA1" ] && echo $LA2 || echo $LA1) $P5D)" "200 409 |1|assigned unassigned"
+chk "   a PO date change: both loads leave the old day and arrive on the new one, on Dispatch and on the Calendar alike" "$(mgc PUT /api/pos/$PA "{\"deliveryDate\":\"$P5D2\"}")|$(row56 $LA1 $P5D) $(row56 $LA2 $P5D)|$(row56 $WON $P5D2)" "200|dispatch:0 calendar:0 dispatch:0 calendar:0|assigned"
+# ── A stale copy changes only what it touched; the server applies exactly the fields it is given ──
+chk "   stale sheet: tab B moves the load to Matthew on Truck #4; tab A, opened earlier, changes only the pickup yard and sends only that — the load keeps tab B's driver and truck and takes tab A's yard" "$(ogc POST /api/loads/$WON/assign '{"driverId":"matthew","truckUnitId":"truck-4"}') $(mgc POST /api/loads/$WON/assign '{"yardId":"vulcan"}')|$(load $WON "l['truckId']+' '+l['truckUnitId']+' '+l['vendorId']")" "200 200|matthew truck-4 vulcan"
+chk "   …and a stale copy cannot bypass the server: on an approved, locked load an edit, an assignment and a second approval are refused; the PO's invoice fields are frozen" "$(mgc PUT /api/loads/$LB1 '{"notes":"from a stale tab"}') $(mgc POST /api/loads/$LB1/assign '{"driverId":"carlos"}') $(mgc POST /api/loads/$LB1/approve) $(mgc PUT /api/pos/$PB '{"customer":"Someone Else"}')" "403 403 400 403"
+# ── Archive vs a stale tab; a deleted PO vs a stale tab ──
+mg POST /api/history/archive >/dev/null     # the manually billed load (and the billed fixture) leave the live lists
+chk "   archive vs a stale tab: the archived load is off Dispatch and stays on the Calendar as history; the stale tab's update, assign, approve and void are refused (404); a stale manual bill bills nothing" "$(row56 $LC $P5D)|$(mgc PUT /api/loads/$LC '{"notes":"x"}') $(mgc POST /api/loads/$LC/assign '{"driverId":"carlos"}') $(mgc POST /api/loads/$LC/approve) $(mgc POST /api/loads/$LC/void '{"reason":"x"}')|$(mg POST /api/loads/bill "{\"loadIds\":[\"$LC\"],\"reference\":\"again\"}" | jq "d['billed']")" "dispatch:0 calendar:1 archived|404 404 404 404|0"
+PD=$(p5po P5-D '{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}'); LD=$(p5loads $PD)
+chk "   deleted PO vs a stale tab: the other tab deletes the PO (200); the stale tab's assign and edit are refused (404); neither screen shows the load" "$(ogc DELETE /api/pos/$PD)|$(mgc POST /api/loads/$LD/assign '{"driverId":"carlos"}') $(mgc PUT /api/loads/$LD '{"notes":"x"}')|$(row56 $LD $P5D)" "200|404 404|dispatch:0 calendar:0"
+chk "   static: the sheet, the customer form and the fleet rows send only what changed; one Ready-to-Bill rule in the strip, the tile, the reports and the fingerprint; the rejected bucket; the poll repaints History too; both screens label Rejected" "$(grep -c "const body = qaChanges();" public/index.html)|$(grep -c "qaBase = { ...qaPick };" public/index.html)|$(grep -c "cmBase = isEdit ? { ...c } : null;" public/index.html)|$(grep -c "changedFields(" public/index.html)|$(grep -c "isReadyToBill" server.js)|$(grep -c "if (l.approvalStatus === 'rejected' && l.truckId && l.truckId !== 'unassigned') return 'rejected';" server.js)|$(grep -c "else if (currentTab === 'history') renderHistory();" public/index.html)|$(grep -c "rejected: 'Rejected'" public/index.html)" "1|1|1|4|6|1|1|3"   # OA1: the board row carries the one rule too (readyToBill); Load Details labels Rejected
+
+echo "── 57. Persistence 6 — a rollback never reaches a QuickBooks record in flight; a background save never rolls back; a refused request changes nothing; history keeps its PO ──"
+P6D=$(date -d '+30 day' +%F)
+P6U='{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}'
+p6po() { mg POST /api/pos "{\"po\":{\"poNumber\":\"$1\",\"customer\":\"$2\",\"deliveryDate\":\"$P6D\",\"plannedVendorId\":\"vbt\"},\"splits\":[$3]}" | jq "d.get('po',{}).get('id') or d.get('error')"; }
+p6loads() { curl -s -b $M $B/api/data | jq "','.join(l['id'] for l in d['loads'] if l['poId']=='$1')"; }
+p6ok() { for x in "$@"; do mg POST /api/_test/set-load "{\"id\":\"$x\",\"fields\":{\"approvalStatus\":\"approved\",\"billStatus\":\"ready\",\"locked\":true}}" >/dev/null; done; }
+p6bt() { curl -s -b $M $B/api/billing-batches/$1 | jq "$2"; }
+p6disk() { python3 -c "import json;d=json.load(open('data.json'));$1"; }
+# The send's own answer: code, success, status, and whether the invoice id it reports is the one on record.
+p6ans() { python3 -c "import json,sys;t=open(sys.argv[1]).read();code=t.rsplit(' ',1)[1];d=json.loads(t.rsplit(' ',1)[0]);b=d.get('batch',{});print(code, d.get('success'), b.get('syncStatus'), bool(b.get('qbInvoiceId')) and b.get('qbInvoiceId')==sys.argv[2])" "$1" "$2"; }
+R57=$(curl -s $B/healthz | jq "d['persistence']['rollbacks']")
+# ── A QuickBooks send runs outside the write lock; a locked request's failed save meanwhile rolls the store back ──
+PA=$(p6po P6-A "Sixth Co" "$P6U"); LA=$(p6loads $PA); PX=$(p6po P6-X "Sixth Co" "$P6U"); LX=$(p6loads $PX); p6ok $LA
+mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
+BA=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LA\"]}" | jq "d['batches'][0]['id']")
+mg POST /api/_test/qb-fake '{"mode":"slow","delayMs":2000}' >/dev/null
+(mg POST /api/billing-batches/$BA/send '{}' -w ' %{http_code}' > /tmp/vbt-57-a) & sleep 0.6
+mg POST /api/_test/save-mode '{"mode":"fail","count":1}' >/dev/null
+XA=$(mgc PUT /api/loads/$LX '{"notes":"other tab"}'); wait
+mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
+chk "57 a QuickBooks send in flight while ANOTHER request's save is refused and rolled back (503, one rollback): the send still lands on the record — batch sent with its invoice, load billed, disk agrees; it is a sent batch (a second send 400) and can be voided" "$XA|$(p6ans /tmp/vbt-57-a "$(p6bt $BA "d['batch']['qbInvoiceId']")")|$(p6bt $BA "d['batch']['syncStatus']")|$(load $LA "l['billStatus']+' '+str(bool(l['qbInvoiceId']))")|$(p6disk "b=[x for x in d['billingBatches'] if x['id']=='$BA'][0];l=[x for x in d['loads'] if x['id']=='$LA'][0];print(b['syncStatus'], l['billStatus'])")|$(mgc POST /api/billing-batches/$BA/send) $(mgc POST /api/billing-batches/$BA/void '{"reason":"test"}')|$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R57")" "503|200 True sent_to_quickbooks True|sent_to_quickbooks|billed True|sent_to_quickbooks billed|400 200|1"
+PB=$(p6po P6-B "Sixth Co" "$P6U"); LB=$(p6loads $PB); p6ok $LB
+BB=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LB\"]}" | jq "d['batches'][0]['id']")
+mg POST /api/_test/qb-fake '{"mode":"slow","delayMs":1000}' >/dev/null
+(mg POST /api/billing-batches/$BB/send '{}' -w ' %{http_code}' > /tmp/vbt-57-b) & sleep 0.3
+mg POST /api/_test/save-mode '{"mode":"fail","count":1,"delayMs":1500}' >/dev/null
+XB=$(mgc PUT /api/loads/$LX '{"notes":"other tab 2"}'); wait
+mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null; mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
+chk "   …the rollback lands BETWEEN QuickBooks' answer and the send's own save (the other request's save was in flight the whole time): batch sent, load billed, memory = disk" "$XB|$(p6ans /tmp/vbt-57-b "$(p6bt $BB "d['batch']['qbInvoiceId']")")|$(load $LB "l['billStatus']+' '+str(bool(l['qbInvoiceId']))")|$(p6disk "b=[x for x in d['billingBatches'] if x['id']=='$BB'][0];l=[x for x in d['loads'] if x['id']=='$LB'][0];print(b['syncStatus'], l['billStatus'])")" "503|200 True sent_to_quickbooks True|billed True|sent_to_quickbooks billed"
+PC=$(p6po P6-C "Sixth Co" "$P6U"); LC=$(p6loads $PC); p6ok $LC
+BC=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LC\"]}" | jq "d['batches'][0]['id']")
+I0=$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated']")
+mg POST /api/_test/save-mode '{"mode":"fail","count":1}' >/dev/null
+C1=$(mgc POST /api/billing-batches/$BC/send); mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   the database refuses the save that marks a batch 'syncing': 503, nothing sent, and the batch is NOT left 'syncing' (send, void and restore would refuse it until a restart) — it is sendable again, and then sends exactly once" "$C1|$(p6bt $BC "d['batch']['syncStatus']")|$(mgc POST /api/billing-batches/$BC/send)|$(p6bt $BC "d['batch']['syncStatus']")|$(curl -s -b $M $B/api/_test/qb-fake | jq "d['invoicesCreated'] - $I0")" "503|ready_to_bill|200|sent_to_quickbooks|1"
+# ── A background save (the notification log, after the mail went out) runs with no request context ──
+PN=$(p6po P6-N "Sixth Co" "$P6U"); LN=$(p6loads $PN)
+mg PUT /api/pos/$PN/notifications '{"contacts":[{"name":"Pat","email":"pat@example.com"}],"events":{"driverAssigned":true},"enabled":true}' >/dev/null
+R1=$(curl -s $B/healthz | jq "d['persistence']['rollbacks']")
+mg POST /api/_test/save-mode '{"mode":"fail","after":1,"count":1,"delayMs":1200}' >/dev/null
+N1=$(mgc POST /api/loads/$LN/assign '{"driverId":"matthew","truckUnitId":"truck-4"}')      # its own save: fine; the mail callback's save, queued behind it: refused
+N2=$(mgc PUT /api/loads/$LX '{"notes":"survives the background failure"}')                  # arrives while that background save is in flight
+sleep 1.6; mg POST /api/_test/save-mode '{"mode":"ok"}' >/dev/null
+chk "   a background save that the database refuses never rolls the store back: the request that arrived meanwhile (200) keeps its change in memory and on disk; no rollback counted; the notification log recorded the mail" "$N1 $N2|$(load $LX "l['notes']")|$(p6disk "print([l['notes'] for l in d['loads'] if l['id']=='$LX'][0])")|$(curl -s $B/healthz | jq "d['persistence']['rollbacks'] - $R1")|$(curl -s -b $M "$B/api/notifications/log?limit=2000" | jq "sum(1 for n in d.get('items',[]) if n.get('loadId')=='$LN' and n.get('to')=='pat@example.com') >= 1")" "200 200|survives the background failure|survives the background failure|0|True"
+# ── A refused request changes nothing ──
+PM6=$(p6po P6-M "Sixth Co" "$P6U,$P6U"); IFS=, read LM1 LM2 <<< "$(p6loads $PM6)"; p6ok $LM1 $LM2
+BM=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LM2\"]}" | jq "d['batches'][0]['id']")
+A0=$(p6disk "print(len([a for a in d['auditLog'] if a.get('action')=='marked-billed']))")
+chk "   manual bill refused (one of the loads is on a batch, 409): the other load is NOT marked billed — not in memory, not on disk after the next save, no audit entry; billed on its own it is billed once, with its reference" "$(mgc POST /api/loads/bill "{\"loadIds\":[\"$LM1\",\"$LM2\"],\"reference\":\"INV-M\"}")|$(load $LM1 "l['billStatus']+' '+str(l.get('manualBillRef'))")|$(mgc POST /api/customers '{"name":"Sixth Save Co"}')|$(p6disk "print([l['billStatus'] for l in d['loads'] if l['id']=='$LM1'][0], len([a for a in d['auditLog'] if a.get('action')=='marked-billed']) - $A0)")|$(mg POST /api/loads/bill "{\"loadIds\":[\"$LM1\"],\"reference\":\"INV-M\"}" | jq "d['billed']")|$(load $LM1 "l['billStatus']+' '+l['manualBillRef']")" "409|ready None|200|ready 0|1|billed INV-M"
+CI=$(curl -s -b $M $B/api/data | jq "[c['id'] for c in d['customers'] if c['name']=='Sixth Co'][0]")
+chk "   customer update refused (bad billing basis, 400): the master is NOT renamed and its POs keep their customer; the valid update renames both" "$(mgc PUT /api/customers/$CI '{"name":"Sixth Renamed","billingBasis":"bogus"}')|$(curl -s -b $M $B/api/data | jq "[c['name'] for c in d['customers'] if c['id']=='$CI'][0]+' / '+[p['customer'] for p in d['pos'] if p['id']=='$PN'][0]")|$(mgc PUT /api/customers/$CI '{"name":"Sixth Renamed","billingBasis":"actual"}')|$(curl -s -b $M $B/api/data | jq "[c['name'] for c in d['customers'] if c['id']=='$CI'][0]+' / '+[p['customer'] for p in d['pos'] if p['id']=='$PN'][0]")" "400|Sixth Co / Sixth Co|200|Sixth Renamed / Sixth Renamed"
+# ── History keeps its PO ──
+PH=$(p6po P6-H "Archive Co" "$P6U,$P6U"); IFS=, read LH1 LH2 <<< "$(p6loads $PH)"
+mg POST /api/_test/set-load "{\"id\":\"$LH1\",\"fields\":{\"approvalStatus\":\"approved\",\"billStatus\":\"billed\",\"locked\":true,\"billedAt\":\"2026-01-01T00:00:00Z\",\"manualBillRef\":\"INV-H\"}}" >/dev/null
+AR=$(mg POST /api/history/archive | jq "d['archived']['batchId']")
+chk "   a PO whose billed load is archived (the PO stays live for its unbilled load): invoice fields frozen (403), delete refused (403), a note still saves (200); the archived load keeps its PO on the Calendar; unarchive works" "$(curl -s -b $M $B/api/data | jq "any(p['id']=='$PH' for p in d['pos'])")|$(mgc PUT /api/pos/$PH '{"customer":"Someone Else"}') $(mgc DELETE /api/pos/$PH) $(mgc PUT /api/pos/$PH '{"notes":"still editable"}')|$(curl -s -b $M "$B/api/calendar?from=$P6D&to=$P6D" | jq "[(r['poNumber'], r['archived']) for day in d['days'].values() for r in day if r['id']=='$LH1']")|$(mgc POST /api/history/$AR/unarchive '{"reason":"test"}')" "True|403 403 200|[('P6-H', True)]|200"
+PV=$(p6po P6-V "Void Co" "$P6U,$P6U"); IFS=, read LV1 LV2 <<< "$(p6loads $PV)"
+mg POST /api/_test/set-load "{\"id\":\"$LV1\",\"fields\":{\"approvalStatus\":\"approved\",\"billStatus\":\"billed\",\"locked\":true,\"billedAt\":\"2026-01-01T00:00:00Z\",\"manualBillRef\":\"INV-V\"}}" >/dev/null
+p6ok $LV2; mg POST /api/loads/$LV2/void '{"reason":"duplicate"}' >/dev/null
+AV=$(mg POST /api/history/archive | jq "d['archived']['batchId']")
+chk "   a voided load whose PO went to the archive (every unvoided load on it billed): unvoid is refused (409 po_archived) — it would sit in Ready to Bill with no PO; after unarchiving, unvoid works and the load is Ready to Bill under its PO" "$(curl -s -b $M $B/api/data | jq "str(any(p['id']=='$PV' for p in d['pos']))+' '+str(any(l['id']=='$LV2' for l in d['loads']))")|$(mg POST /api/loads/$LV2/unvoid | jq "d.get('code')")|$(mgc POST /api/history/$AV/unarchive '{"reason":"test"}')|$(mgc POST /api/loads/$LV2/unvoid)|$(curl -s -b $M $B/api/ready-to-bill | jq "[x['poNumber'] for x in d['items'] if x['id']=='$LV2']")" "False True|po_archived|200|200|['P6-V']"
+# ── Reconciliation names the batch exactly; the generators and guards are in place ──
+chk "   the QuickBooks invoice lookup names the batch exactly: 'batch BB-1-1' is no match for a note about BB-1-12, a match for its own note, never a voided invoice's note" "$(QB_ENCRYPTION_KEY=test-only-key node -e "const q=require('./qb.js');console.log(q.invoiceNoteNamesBatch('VBT Dispatch billing batch BB-1-12. PO 7. Loads: LOAD-1','BB-1-1'), q.invoiceNoteNamesBatch('VBT Dispatch billing batch BB-1-1. PO 7. Loads: LOAD-1','BB-1-1'), q.invoiceNoteNamesBatch('Voided: VBT Dispatch billing batch BB-1-1. PO 7','BB-1-1'))")" "false true false"
+chk "   static: ids keep a per-millisecond sequence (a vendor bill id is its 21-char QuickBooks DocNumber); the notification mail runs outside the request context; QuickBooks records are pinned across a rollback; a refused 'syncing' save is undone (two routes); manual bill decides before it marks; the customer update refuses before it changes; PO edit and delete see archived loads; unvoid needs a live PO; the test fake uses the real matcher" "$(grep -c "if (now !== idSeqMs) { idSeqMs = now; idSeq = 0; }" server.js)|$(grep -c "requestCtx.exit(() => {" server.js)|$(grep -c "const unpin = pinExemptRecords(urlPath);" server.js)|$(grep -c "const pins = \[...pinnedRecords\];" server.js)|$(grep -c "const wasStatus = b.syncStatus;" server.js)|$(grep -c "const skipped = eligible.filter(l => l.billingBatchId || l.qbInvoiceId).map(l => l.id);" server.js)|$(grep -c "if (req.body.billingBasis !== undefined && !BILLING_BASES.includes(req.body.billingBasis)) return res.status(400)" server.js)|$(grep -c "allLoadsWithArchive().some(l => l.poId === old.id\|allLoadsWithArchive().filter(l => l.poId === req.params.id)" server.js)|$(grep -c "code: 'po_archived'" server.js)|$(grep -c "qb.invoiceNoteNamesBatch(i.PrivateNote, batchId)" server.js)" "1|1|1|1|2|1|1|2|1|1"
+
+echo "── 58. Persistence 7 — the final gate: a refused request changes nothing, two dispatchers at once, a vendor bill through a rollback, the fleet is the office's ──"
+P7D=$(date -d '+35 day' +%F)
+P7U='{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}'
+p7po() { mg POST /api/pos "{\"po\":{\"poNumber\":\"$1\",\"customer\":\"$2\",\"deliveryDate\":\"$P7D\",\"plannedVendorId\":\"vbt\"},\"splits\":[$3]}" | jq "d.get('po',{}).get('id') or d.get('error')"; }
+p7loads() { curl -s -b $M $B/api/data | jq "','.join(l['id'] for l in d['loads'] if l['poId']=='$1')"; }
+p7disk() { python3 -c "import json;d=json.load(open('data.json'));$1"; }
+p7fleet() { curl -s -b $M $B/api/fleet | jq "$1"; }
+p7cost() { curl -s -b $M $B/api/costing/settings | jq "$1"; }
+# ── A refused request changes nothing (the remaining mutate-then-refuse routes) ──
+TR7=$(mg POST /api/fleet/trailers '{"number":"P7-TR","type":"Transfer"}' | jq "d['trailer']['id']")
+TN7=$(p7fleet "[t['truckNum'] for t in d['trucks'] if t['id']=='truck-4'][0]")
+chk "58 fleet forms refuse before they change: a truck update with a bad status (400) leaves the number as it was; a trailer update with a bad status (400) leaves its number as it was; a valid change still lands" "$(mgc PUT /api/fleet/trucks/truck-4 '{"truckNum":"Truck #Z","status":"bogus"}') $(python3 -c "print($(p7fleet "repr([t['truckNum'] for t in d['trucks'] if t['id']=='truck-4'][0])") == '$TN7')")|$(mgc PUT /api/fleet/trailers/$TR7 '{"number":"P7-TR-2","status":"bogus"}') $(p7fleet "[t['number'] for t in d['trailers'] if t['id']=='$TR7'][0]")|$(mgc PUT /api/fleet/trailers/$TR7 '{"status":"maintenance"}') $(p7fleet "[t['status'] for t in d['trailers'] if t['id']=='$TR7'][0]")" "400 True|400 P7-TR|200 maintenance"
+PN7=$(p7po P7-N "Seventh Co" "$P7U")
+mg PUT /api/pos/$PN7/notifications '{"contacts":[{"name":"Pat","email":"pat@example.com"}],"events":{"delivered":true},"enabled":true}' >/dev/null
+chk "   notification settings refuse before they change: turning updates on with an empty contact list (400) keeps the contact and the events that were there" "$(mgc PUT /api/pos/$PN7/notifications '{"contacts":[],"events":{"loaded":true},"enabled":true}')|$(curl -s -b $M $B/api/pos/$PN7/notifications | jq "str(len(d['notifications']['contacts']))+' '+str(d['notifications']['events'].get('loaded', False))+' '+str(d['notifications']['enabled'])")" "400|1 False True"
+U0=$(p7cost "repr(d.get('unitConfig',{}).get('byUnit',{}).get('ton'))"); W0=$(p7cost "repr(d.get('costRates',{}).get('driverWagePerHour'))")
+chk "   costing refuses before it changes: a bad material quantity (400) leaves the unit table as it was; a bad later rate (400) leaves the earlier rate as it was" "$(mgc PUT /api/costing/units '{"byUnit":{"ton":26},"byMaterial":{"Dirt":{"ton":-1}}}') $(python3 -c "print($(p7cost "repr(d.get('unitConfig',{}).get('byUnit',{}).get('ton'))") == $U0)")|$(mgc PUT /api/costing/rates '{"driverWagePerHour":31,"fuelPricePerGallon":-1}') $(python3 -c "print($(p7cost "repr(d.get('costRates',{}).get('driverWagePerHour'))") == $W0)")" "400 True|400 True"
+chk "   a PO refused for a duplicate number (409) adds no customer to the master" "$(mgc POST /api/pos "{\"po\":{\"poNumber\":\"P7-N\",\"customer\":\"Stray Seventh Co\",\"deliveryDate\":\"$P7D\"},\"splits\":[$P7U]}")|$(curl -s -b $M $B/api/data | jq "any(c['name']=='Stray Seventh Co' for c in d['customers'])")" "409|False"
+# ── Two dispatchers at once ──
+PA7=$(p7po P7-A "Seventh Co" "$P7U,$P7U"); IFS=, read LA7 LB7 <<< "$(p7loads $PA7)"
+P7O=$(mktemp); curl -s -c $P7O -X POST -d "username=oscar&password=oscar123" $B/login -o /dev/null
+oc() { curl -s -b $P7O -H "$J" -X "$1" "$B$2" -d "${3:-"{}"}" -o /dev/null -w '%{http_code}'; }
+rm -f /tmp/vbt-58-1 /tmp/vbt-58-2; (mgc POST /api/loads/$LA7/assign '{"driverId":"matthew","truckUnitId":"truck-4"}' > /tmp/vbt-58-1) & (oc POST /api/loads/$LB7/assign '{"driverId":"matthew","truckUnitId":"truck-4"}' > /tmp/vbt-58-2) & wait
+chk "   two dispatchers queue two loads for the same idle driver on his truck at once: both 200 (a driver's next job is queued, not refused), both loads on Matthew / Truck #4, on disk too" "$(for f in /tmp/vbt-58-1 /tmp/vbt-58-2; do cat $f; echo; done | sort | tr '\n' ' ')|$(curl -s -b $M $B/api/data | jq "sorted((l['truckId'], l['truckUnitId']) for l in d['loads'] if l['poId']=='$PA7')")|$(p7disk "print(sorted((l['truckId'], l['truckUnitId']) for l in d['loads'] if l['poId']=='$PA7'))")" "200 200 |[('matthew', 'truck-4'), ('matthew', 'truck-4')]|[('matthew', 'truck-4'), ('matthew', 'truck-4')]"
+rm -f /tmp/vbt-58-3 /tmp/vbt-58-4; (mgc PUT /api/loads/$LA7 '{"notes":"from Joshua"}' > /tmp/vbt-58-3) & (oc PUT /api/loads/$LA7 '{"loadsAssigned":3}' > /tmp/vbt-58-4) & wait
+chk "   two dispatchers edit the same load at once, different fields: both 200, both changes on the record and on disk — neither write lost the other's" "$(for f in /tmp/vbt-58-3 /tmp/vbt-58-4; do cat $f; echo; done | sort | tr '\n' ' ')|$(load $LA7 "l['notes']+' '+str(l['loadsAssigned'])")|$(p7disk "l=[x for x in d['loads'] if x['id']=='$LA7'][0];print(l['notes'], l['loadsAssigned'])")" "200 200 |from Joshua 3|from Joshua 3"
+# ── A driver's refused submission stamps nothing; then a vendor bill through a rollback ──
+PT7=$(p7po P7-T "Seventh Co" '{"truckId":"carlos","truckUnitId":"truck-2b","material":"3/4 Rock","loadsAssigned":2,"vendorId":"vulcan"}'); LT7=$(p7loads $PT7)
+P7C=$(mktemp); curl -s -c $P7C -X POST -d "username=carlos&password=carlos123" $B/login -o /dev/null
+d7() { curl -s -b $P7C -H "$J" -X POST $B/api/loads/$LT7/trip-action -d "$1" -o /dev/null -w '%{http_code} '; }
+T1=$(d7 '{"action":"start-trip"}'; d7 '{"action":"arrived-pickup","yardId":"vulcan"}'; d7 "{\"action\":\"loaded\",\"ticket\":$(tkt)}"; d7 '{"action":"arrived-jobsite"}'; curl -s -b $P7C -H "$J" -X PUT $B/api/loads/$LT7 -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null -w '%{http_code} ')
+chk "   a driver's Stop-early submission with a count that disagrees (400) stamps nothing: the trip at the jobsite is not completed by a refused request; the right count (1) completes it and submits" "$T1|$(d7 '{"action":"incomplete","delivered":5}')$(load $LT7 "str(bool(l['trips'][0]['timestamps'].get('completed')))+' '+str(l['loadsDelivered'])")|$(d7 '{"action":"incomplete","delivered":1}')$(load $LT7 "str(bool(l['trips'][0]['timestamps'].get('completed')))+' '+str(l['loadsDelivered'])+' '+l['approvalStatus']")" "200 200 200 200 200 |400 False 0|200 True 1 submitted"
+A7=$(mgc POST /api/loads/$LT7/approve)
+VB7=$(mg POST /api/vendor-bills "{\"loadIds\":[\"$LT7\"]}" | jq "(d.get('bills') or [{}])[0].get('id') or d.get('error')")
+mg POST /api/_test/qb-fake '{"mode":"ok","billMode":"slow","delayMs":2000}' >/dev/null
+(mg POST /api/vendor-bills/$VB7/send '{}' -w ' %{http_code}' > /tmp/vbt-58-vb) & sleep 0.6
+mg POST /api/_test/save-mode '{"mode":"fail","count":1}' >/dev/null
+XV=$(mgc PUT /api/loads/$LB7 '{"notes":"other tab"}'); wait
+mg POST /api/_test/qb-fake '{"mode":"ok","billMode":"ok"}' >/dev/null
+chk "   a vendor bill send in flight while another request's save is refused and rolled back (503): the bill is sent with its QuickBooks id, the load keeps the bill's claim and its QuickBooks bill id, memory = disk" "$A7 ${VB7:0:3}|$XV|$(python3 -c "import json;t=open('/tmp/vbt-58-vb').read();code=t.rsplit(' ',1)[1];d=json.loads(t.rsplit(' ',1)[0]);b=d.get('bill',{});print(code, d.get('success'), b.get('syncStatus'), bool(b.get('qbBillId')))")|$(curl -s -b $M $B/api/vendor-bills | jq "[b['syncStatus']+' '+str(bool(b['qbBillId'])) for b in d['items'] if b['id']=='$VB7'][0]")|$(load $LT7 "str(bool(l.get('qbBillId')))+' '+str('$VB7' in (l.get('vendorBillIds') or []))")|$(p7disk "b=[x for x in d['vendorBills'] if x['id']=='$VB7'][0];l=[x for x in d['loads'] if x['id']=='$LT7'][0];print(b['syncStatus'], bool(b['qbBillId']), bool(l.get('qbBillId')), '$VB7' in (l.get('vendorBillIds') or []))")" "200 VB-|503|200 True sent True|sent True|True True|sent True True True"
+# ── The fleet and the roster are the office's: a refused change never half-applies, and nothing is re-seeded ──
+chk "   static: seed trucks, drivers and logins are planted once (never re-added onto a store that has a fleet or a roster, never re-inserted into a users table with logins); the fleet, notification, costing, PO-create and submission routes refuse before they change; the login row goes first on a driver update and is removed after a failed save on a driver create; a QuickBooks refusal still saves refreshed tokens" "$(grep -c "if (!store.trucks.some(t => t && !isLegacyDriverRow(t))) {" server.js)|$(grep -c "if (store.drivers.length === 0) TRUCKS.forEach(d => {" server.js)|$(grep -c "seed logins not re-inserted" server.js)|$(grep -c "if (b.status !== undefined && !TRUCK_STATUSES.includes(b.status)) return res.status(400)" server.js)|$(grep -c "const num = b.number !== undefined && String(b.number).trim() ? String(b.number).trim() : null;" server.js)|$(grep -c "if (clean !== null) po.notifications.contacts = clean;" server.js)|$(grep -c "let unitOut = null; const matOut = {};" server.js)|$(grep -c "Object.assign(store.costRates, next);" server.js)|$(grep -c "// Every check passed. If a customerId was supplied" server.js)|$(grep -c "if (willComplete) stampBoth('completed');" server.js)|$(python3 -c "
+import re;s=open('server.js').read();a=s.index(\"upsertRosterDriver({ id: uname, name: b.displayName\");b=s.index(\"UPDATE users SET \${sets.join\");print(a>b)")|$(grep -c "could not remove the login after a failed save" server.js)|$(grep -c "await saveConnectionQuietly();" server.js)" "1|1|1|1|1|1|1|1|1|1|True|1|6"
+
+echo
+echo "── 59. Operational audit 1 — unfinished work holds its driver and truck on today's board; the board row, the reports and Material Costs say what the office needs ──"
+O1Y=$(TZ=America/Los_Angeles date -d yesterday +%F); O1T=$(TZ=America/Los_Angeles date -d tomorrow +%F)
+mg POST /api/drivers '{"username":"dana","password":"dana1234","displayName":"Dana"}' >/dev/null
+T59=$(mg POST /api/fleet/trucks '{"truckNum":"Truck #59","type":"End Dump"}' | jq "d['truck']['id']")
+DA=$(mktemp); curl -s -c $DA -X POST -d "username=dana&password=dana1234" $B/login -o /dev/null
+o1po()  { mg POST /api/pos "{\"po\":{\"poNumber\":\"$1\",\"customer\":\"$2\",\"deliveryDate\":\"$3\",\"plannedVendorId\":\"$4\"},\"splits\":[$5]}" | jq "d.get('po',{}).get('id') or d.get('error')"; }
+o1ld()  { curl -s -b $M $B/api/data | jq "[l['id'] for l in d['loads'] if l['poId']=='$1' and l['material']=='$2'][0]"; }
+o1tod() { curl -s -b $M "$B/api/today${2:-}" | jq "$1"; }
+o1row() { o1tod "[($2) for l in d['loads'] if l['id']=='$1'][0]"; }
+o1ph()  { curl -s -b $DA $B/api/my-dispatch | jq "$1"; }
+o1asg() { mg POST /api/loads/$1/assign "$2" -w ' %{http_code}' | python3 -c "import sys,json;t=sys.stdin.read().rsplit(' ',1);d=json.loads(t[0]);print(t[1], d.get('code') or '', $3)"; }
+o1run() { dr $DA $1 '{"action":"start-trip"}' >/dev/null; dr $DA $1 "{\"action\":\"arrived-pickup\",\"yardId\":\"$2\"}" >/dev/null; dr $DA $1 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $DA $1 '{"action":"arrived-jobsite"}' >/dev/null; dr $DA $1 '{"action":"trip-complete"}' >/dev/null; }
+# Yesterday (no Start day, no shift): Dana hauled 3/4 Rock from Vulcan for Carried Co — one trip delivered, the second left open at the yard; the PO's Dirt load was never touched.
+PY9=$(o1po OA1-Y "Carried Co" "$O1Y" vulcan "{\"truckId\":\"dana\",\"truckUnitId\":\"$T59\",\"material\":\"3/4 Rock\",\"loadsAssigned\":2,\"vendorId\":\"vulcan\"},{\"truckId\":\"dana\",\"truckUnitId\":\"$T59\",\"material\":\"Dirt\",\"loadsAssigned\":1,\"vendorId\":\"vbt\"}")
+LY9=$(o1ld $PY9 "3/4 Rock"); LU9=$(o1ld $PY9 Dirt)
+o1run $LY9 vulcan; dr $DA $LY9 '{"action":"start-trip"}' >/dev/null; dr $DA $LY9 '{"action":"arrived-pickup","yardId":"vulcan"}' >/dev/null
+chk "59 a trip left open overnight: today's board shows Dana in progress on Truck #59 with that load and the truck taken — not 'available'; both of yesterday's open loads sit in the Carried Over tile" "$(o1tod "[(x['state'], x['available'], x['truckNum'], x['openLoadIds'], x['customer'], x['stage']) for x in d['drivers'] if x['id']=='dana'][0]")|$(o1tod "[(t['state'], t['driverName'], t['available']) for t in d['trucks'] if t['id']=='$T59'][0]")|$(o1tod "sorted(l['id'] for l in d['carriedOver'] if l['id'] in ('$LY9','$LU9'))==sorted(['$LY9','$LU9'])")" "('in-progress', False, 'Truck #59', ['$LY9'], 'Carried Co', 'At yard')|('in-progress', 'Dana', False)|True"
+chk "   the phone keeps to the workday: neither load is on Dana's list; the banner names both, dated, for the office to move or close" "$(o1ph "[l['loadId'] for l in d['loads']], [next((x['date'], x['poNumber']) for x in d['earlierOpen'] if x['loadId']==i) for i in ('$LY9','$LU9')]")" "[] [('$O1Y', 'OA1-Y'), ('$O1Y', 'OA1-Y')]"
+chk "   Reports 'Active now' counts what the board counts: the open trip (1), not the untouched yesterday load, not every load ever left unapproved" "$(curl -s -b $M $B/api/reports | jq "d['driverStats']['dana']['active']")" "1"
+# Quick Assign today against the carried work
+PT9=$(o1po OA1-T "Today Co" "$TODAY" granite '{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"granite"}'); LT9=$(o1ld $PT9 Dirt)
+chk "   Quick Assign today: Dana onto a new load → 409 driver-busy (mid-haul on yesterday's); Rigo onto Truck #59 → 409 truck-busy, saying since when; the load stays unassigned" "$(o1asg $LT9 "{\"driverId\":\"dana\",\"truckUnitId\":\"$T59\"}" "[c['type'] for c in d['conflicts']]")|$(o1asg $LT9 "{\"driverId\":\"rigo\",\"truckUnitId\":\"$T59\"}" "[c['message'] for c in d['conflicts'] if c['type']=='truck-busy']")|$(load $LT9 "l.get('truckId') or '', l.get('truckUnitId')")" "409 assignment_conflict ['driver-busy']|409 assignment_conflict [\"Truck #59 is on Dana's load $LY9 (PO OA1-Y, Carried Co) unfinished since $O1Y.\"]| None"
+PF9=$(o1po OA1-F "Future Co" "$O1T" vbt '{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}'); LF9=$(o1ld $PF9 Dirt)
+chk "   planning tomorrow against today's unfinished work is not a conflict: Dana and Truck #59 on tomorrow's load → 200; 'Active now' is still 1" "$(o1asg $LF9 "{\"driverId\":\"dana\",\"truckUnitId\":\"$T59\"}" "d.get('success')")|$(curl -s -b $M $B/api/reports | jq "d['driverStats']['dana']['active']")" "200  True|1"
+mg DELETE /api/pos/$PF9 >/dev/null
+# The office's remedy, from the Carried Over tile: move the open load to today
+MV1=$(mg POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$LY9\",\"newDate\":\"$TODAY\",\"reason\":\"finishing yesterday's haul\"}" | jq "sorted(c['type'] for c in d['conflicts'])")
+MV2=$(mg POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$LY9\",\"newDate\":\"$TODAY\",\"reason\":\"finishing yesterday's haul\",\"force\":true}" | jq "d.get('success'), d.get('moved')")
+chk "   the office moves it to today: the mid-haul warning first (409 load-in-progress), then the go-ahead moves it — on Dana's phone, off the Carried Over tile; the untouched load stays carried; Dana still in progress" "$MV1|$MV2|$(o1ph "[l['loadId'] for l in d['loads']], [x['loadId'] for x in d['earlierOpen']]")|$(o1tod "sorted(l['id'] for l in d['carriedOver'] if l['id'] in ('$LY9','$LU9'))")|$(o1tod "[x['state'] for x in d['drivers'] if x['id']=='dana'][0]")" "['load-in-progress']|True 1|['$LY9'] ['$LU9']|['$LU9']|in-progress"
+# The board row carries the billing words and the reject reason
+dr $DA $LY9 "{\"action\":\"loaded\",\"ticket\":$(tkt)}" >/dev/null; dr $DA $LY9 '{"action":"arrived-jobsite"}' >/dev/null; dr $DA $LY9 '{"action":"trip-complete"}' >/dev/null
+curl -s -b $DA -H "$J" -X PUT $B/api/loads/$LY9 -d "{\"pod\":{\"signedBy\":\"Site Foreman\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null
+S9=$(dr $DA $LY9 '{"action":"delivered"}' -o /dev/null -w '%{http_code}'); R9=$(mgc POST /api/loads/$LY9/reject '{"reason":"Ticket photo is unreadable"}')
+chk "   sent back by the office: the board row says Rejected and why" "$S9 $R9|$(o1row $LY9 "l['bucket'], l['rejectReason'], l['readyToBill'], l['billingBatchId']")" "200 200|('rejected', 'Ticket photo is unreadable', False, '')"
+S9b=$(dr $DA $LY9 '{"action":"delivered"}' -o /dev/null -w '%{http_code}'); A9=$(mgc POST /api/loads/$LY9/approve)
+chk "   resubmitted and approved: the row is Ready to Bill by the one rule, no reason left on it" "$S9b $A9|$(o1row $LY9 "l['bucket'], l['readyToBill'], l['billingBatchId'], l['rejectReason']")" "200 200|('ready-to-bill', True, '', '')"
+B9=$(mg POST /api/billing-batches "{\"loadIds\":[\"$LY9\"]}" | jq "(d.get('batches') or [{}])[0].get('id') or d.get('error')")
+chk "   on a billing batch: still Approved on the board, but the row says it is not in Ready to Bill and names the batch" "$(o1row $LY9 "l['bucket'], l['readyToBill'], l['billingBatchId']=='$B9'")" "('ready-to-bill', False, True)"
+# Material Costs: a vendor with no price for the material is an estimate, said so
+mg POST /api/loads/$LT9/assign "{\"driverId\":\"dana\",\"truckUnitId\":\"$T59\"}" >/dev/null; o1run $LT9 granite
+chk "   Material Costs: Granite has no Dirt price, so its Dirt line is priced at the default rate and flagged an estimate (vendor and grand total too); Vulcan's 3/4 Rock is the vendor's price, not an estimate" "$(curl -s -b $M $B/api/material-costs | python3 -c "import json,sys;d=json.load(sys.stdin);g=d['vendors']['granite'];m=g['byMaterial']['Dirt'];print(m['estimated'], m['unitPrice'], g['estimated'], g['estimatedCost']==m['cost'], d['estimatedTotal']>=g['estimatedCost'], d['vendors']['vulcan']['byMaterial']['3/4 Rock']['estimated'])")" "True 22 True True True False"
+# Reports: customers count no voided loads
+PV9=$(o1po OA1-V "OA1 Void Co" "$TODAY" vbt '{"truckId":"","material":"Dirt","loadsAssigned":2,"vendorId":"vbt"},{"truckId":"","material":"Sand","loadsAssigned":3,"vendorId":"vbt"}'); LV9=$(o1ld $PV9 Dirt)
+mg POST /api/loads/$LV9/void '{"reason":"customer cancelled this one"}' >/dev/null
+chk "   Reports: a voided load counts nowhere in the customer table (3 of the 5 ordered remain)" "$(curl -s -b $M $B/api/reports | python3 -c "import json,sys;d=json.load(sys.stdin);c=d['custStats']['OA1 Void Co'];print(c['pos'], c['loads'], c['delivered'])")" "1 3 0"
+# Static: the office and the phone say it in the same words
+chk "   static: the Dispatch chips use the Calendar's words (Approved / Billed — the same map on both screens) and the Ready to Bill tile filters by the one rule; a batched load says so; Load Details has a Truck line and a readable status; Edit PO lists voided loads; a ready batch can be voided; Stop early asks for the photo and signature first; a rejected load can redo both; a dropped connection is said; a silent tracker is not 'no activity'; a default rate is called an estimate" "$(grep -c "'ready-to-bill': 'Approved', completed: 'Billed'" public/index.html)|$(grep -c "list.filter(l => l.readyToBill)" public/index.html)|$(grep -c "On billing batch" public/index.html)|$(grep -c ">Truck</dt>" public/index.html)|$(grep -c "const LD_STATUS = " public/index.html)|$(grep -c 'voided load${voidedMine.length' public/index.html)|$(grep -c "b.syncStatus === 'ready_to_bill' || b.syncStatus === 'sent_to_quickbooks'" public/index.html)|$(grep -c "needed to stop early" public/index.html)|$(grep -c "Replace ticket photo" public/index.html)|$(grep -c "No connection — that tap did not get an answer" public/index.html)|$(grep -c "telemetry says nothing either way" public/index.html)|$(grep -c "an estimate, not a vendor's price" public/index.html)|$(grep -c "loadWorkStarted" server.js)" "2|1|1|1|1|1|1|2|1|2|1|1|4"
 echo "── 20. Async route errors answer, they never hang ──"
 # Express 4 drops a rejected promise on the floor: the request hangs forever.
 # The central wrapper in server.js turns it into a 500. If someone removes
@@ -2179,7 +2472,7 @@ chk "healthz reports the failing route and message" "$(curl -s $B/healthz | pyth
 chk "  ...and the 500 body carries the reference"  "$(curl -s --max-time 5 $B/api/_test/async-throw | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['ref'] in d['error'])")" "True"
 
 pkill -f "^node server.js" >/dev/null 2>&1
-rm -f data.json telemetry.json
+rm -f data.json data-ids.json telemetry.json
 
 echo "── 21. Postgres: a failed store read must NEVER cause a write ──"
 if [ -z "${TEST_DATABASE_URL:-}" ]; then
@@ -2309,6 +2602,125 @@ else
   chk "damaged row kept as store_before_restore" "$($PSQL -c "select value from dispatch_data where key='store_before_restore'")" "{not json"
   chk "real PO is back after restore" "$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;print(len([p for p in json.load(sys.stdin)['pos'] if p['poNumber']=='PG-REAL']))")" "1"
   chk "writes work again after restore" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"PG-AFTER","customer":"After Restore","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"rigo","truckUnitId":"truck-4","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}')" "200"
+  # ── Persistence #2 (I27): a restore is atomic, serialized with every other write, and becomes the rollback point ──
+  r2hook() { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/save-mode -d "$1" -o /dev/null; }
+  r2po()   { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"'"$1"'","customer":"Restore Co","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null -w '%{http_code}'; }
+  r2rst()  { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/admin/restore -d "{\"from\":\"$1\",\"confirm\":\"RESTORE\"}" -w ' %{http_code}'; }
+  r2mem()  { curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R2-'))))"; }
+  r2row()  { $PSQL -c "select value from dispatch_data where key='$1'" | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R2-'))))" 2>/dev/null || echo "unreadable"; }
+  r2md5()  { $PSQL -c "select md5(value) from dispatch_data where key='$1'"; }
+  r2code() { python3 -c "import sys,json;raw=sys.stdin.read().rstrip();b,c=raw.rsplit(' ',1);d=json.loads(b);print(c, $1)"; }
+  r2po R2-A >/dev/null; r2po R2-B >/dev/null
+  chk "P2 fixture: two writes; store_prev holds the state before the last one" "$(r2mem)|$(r2row store)|$(r2row store_prev)" "A,B|A,B|A"
+  chk "   5. normal write, then restore (store_prev): 200, audit saved; memory = row = A; the replaced state is kept as store_before_restore, which is restorable" "$(r2rst store_prev | r2code "d['success'], d['restoredFrom'], d['auditSaved']")|$(r2mem)|$(r2row store)|$(r2row store_before_restore)|$(curl -s -b $PM $B2/api/admin/backups | python3 -c "import json,sys;print('store_before_restore' in json.load(sys.stdin)['restorable'])")" "200 True store_prev True|A|A|A,B|True"
+  chk "   4. restore, then a normal write: it lands on the restored state, in memory and in the row" "$(r2po R2-C)|$(r2mem)|$(r2row store)" "200|A,C|A,C"
+  chk "   7. repeated restore: undo the restore (store_before_restore → A,B), then undo the undo (→ A,C); memory = row every time" "$(r2rst store_before_restore | r2code "d['success']")|$(r2mem)|$(r2row store)|$(r2rst store_before_restore | r2code "d['success']")|$(r2mem)|$(r2row store)|$(r2row store_before_restore)" "200 True|A,B|A,B|200 True|A,C|A,C|A,B"
+  ROW0=$(r2md5 store); BR0=$(r2md5 store_before_restore)
+  $PSQL -c "update dispatch_data set value='{not json' where key='store_prev'" >/dev/null
+  chk "   2. failed restore — a backup that will not parse: 409, restored:false, still loaded; memory, the row and store_before_restore untouched" "$(r2rst store_prev | r2code "d['restored'], d['loaded']")|$(r2mem)|$([ "$(r2md5 store)" = "$ROW0" ] && echo same || echo CHANGED)|$([ "$(r2md5 store_before_restore)" = "$BR0" ] && echo same || echo CHANGED)" "409 False True|A,C|same|same"
+  chk "   …an unknown backup name is refused (400); a missing one is 409 no_backup; the row is untouched" "$(curl -s -b $PM -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B2/api/admin/restore -d '{"from":"store","confirm":"RESTORE"}')|$($PSQL -c "delete from dispatch_data where key='store_prev'" >/dev/null; r2rst store_prev | r2code "d['code']")|$([ "$(r2md5 store)" = "$ROW0" ] && echo same || echo CHANGED)" "400|409 no_backup|same"
+  r2hook '{"mode":"fail","count":1}'
+  chk "   3. the database refuses the restore's write: 409, restored:false; memory and the row untouched; the next normal write works and lands" "$(r2rst store_before_restore | r2code "d['restored']")|$(r2mem)|$([ "$(r2md5 store)" = "$ROW0" ] && echo same || echo CHANGED)|$(r2po R2-D)|$(r2mem)|$(r2row store)" "409 False|A,C|same|200|A,C,D|A,C,D"
+  # THE I27 MECHANISM: the restore commits, the save right after it (the audit entry) fails. Before: memory rolled back
+  # to the pre-restore data while the row held the restored data, and the next write put the pre-restore data back
+  # over the row — the restore undid itself, after answering 409.
+  r2hook '{"mode":"fail","after":1,"count":1}'      # the restore's own write goes through; the save after it fails
+  chk "   8. restore commits, the audit save fails: 200 with auditSaved:false and a warning (never 'the restore failed'); memory = row = the restored state (A,B), not the replaced one" "$(r2rst store_before_restore | r2code "d['success'], d['auditSaved'], d['warning'].startswith('Restored.')")|$(r2mem)|$(r2row store)|$(r2row store_before_restore)" "200 True False True|A,B|A,B|A,C,D"
+  chk "   9. …and the next normal write builds on the RESTORED state — nothing stale overwrites it; the failed audit save was counted as a rollback" "$(r2po R2-E)|$(r2mem)|$(r2row store)|$(curl -s $B2/healthz | python3 -c "import json,sys;print(json.load(sys.stdin)['persistence']['rollbacks'] >= 1)")" "200|A,B,E|A,B,E|True"
+  # One queue for every write of the row. A writer in flight finishes first (its change is what the restore sets
+  # aside); a writer that arrives during the restore runs on the restored state.
+  r2hook '{"mode":"ok","delayMs":1000}'
+  rm -f /tmp/vbt-r2-w1 /tmp/vbt-r2-rs /tmp/vbt-r2-w2
+  r2po R2-F > /tmp/vbt-r2-w1 & sleep 0.3; r2rst store_before_restore > /tmp/vbt-r2-rs & sleep 0.3; r2po R2-G > /tmp/vbt-r2-w2 & wait
+  r2hook '{"mode":"ok"}'
+  chk "   6. restore with queued concurrent writes: the write in flight (F) lands first and is what the restore sets aside; the write queued behind the restore (G) lands on the restored state; memory = row" "$(cat /tmp/vbt-r2-w1)|$(cat /tmp/vbt-r2-rs | r2code "d['success']")|$(cat /tmp/vbt-r2-w2)|$(r2mem)|$(r2row store)|$(r2row store_before_restore)" "200|200 True|200|A,C,D,G|A,C,D,G|A,B,E,F"
+  # A QuickBooks send in flight holds its batch in memory; a restore would replace it underneath the send.
+  # Carlos on Truck #2B: a driver and truck nothing else in this section touches, so no same-day conflict.
+  CD2=$(mktemp); curl -s -c $CD2 -X POST -d "username=carlos&password=carlos123" $B2/login -o /dev/null
+  F1=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"R2-QB","customer":"Restore Co","deliveryDate":"'"$(date +%F)"'","plannedVendorId":"vbt"},"splits":[{"truckId":"carlos","truckUnitId":"truck-2b","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null -w '%{http_code}')
+  QL=$(curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);po=[p for p in d['pos'] if p['poNumber']=='R2-QB'];print([l['id'] for l in d['loads'] if po and l['poId']==po[0]['id']][0] if po else '')")
+  d2() { curl -s -b $CD2 -H 'Content-Type: application/json' -X POST $B2/api/loads/$QL/trip-action -d "$1" -o /dev/null -w '%{http_code} '; }
+  F2=$(d2 '{"action":"start-trip"}'; d2 '{"action":"arrived-pickup","yardId":"vbt"}'; d2 "{\"action\":\"loaded\",\"ticket\":$(tkt)}"; d2 '{"action":"arrived-jobsite"}'; d2 '{"action":"trip-complete"}')
+  F3=$(curl -s -b $CD2 -H 'Content-Type: application/json' -X PUT $B2/api/loads/$QL -d "{\"ticketImage\":\"$PNG\",\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"2026-01-01T00:00:00Z\"}}" -o /dev/null -w '%{http_code}')
+  F4=$(d2 '{"action":"delivered"}'); F5=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/loads/$QL/approve -d '{}' -o /dev/null -w '%{http_code}')
+  BR=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches -d "{\"loadIds\":[\"$QL\"]}")
+  QB2=$(echo "$BR" | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('batches') or [{}])[0].get('id') or d.get('error'))")
+  chk "   fixture for the in-flight check: PO, five trip steps, signature, delivered, approve and batch all accepted" "$F1|$F2|$F3|$F4|$F5|${QB2:0:3}" "200|200 200 200 200 200 |200|200 |200|BB-"
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"slow","delayMs":1500}' -o /dev/null
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches/$QB2/send -d '{}' -o /dev/null & sleep 0.4
+  R2G=$(r2rst store_before_restore | r2code "d.get('code'), '$QB2' in d.get('error','')"); wait
+  chk "   a QuickBooks send in flight refuses the restore (409 send_in_flight, naming the batch); nothing changed, and the send finishes once" "$R2G|$(curl -s -b $PM $B2/api/billing-batches/$QB2 | python3 -c "import json,sys;b=json.load(sys.stdin)['batch'];print(b['syncStatus'], b['qbInvoiceId'])")|$(r2mem)" "409 send_in_flight True|sent_to_quickbooks INV-1|A,C,D,G,QB"
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+  chk "   static: one write queue for saves and restores; the restore writes both rows in one transaction; the restored state becomes the rollback point; no reload from the database inside a restore" "$(grep -c "^function queueWrite" server.js)|$(grep -c "return queueWrite(async () => {" server.js)|$(grep -c "lastGoodJson = restoredJson;" server.js)|$(grep -c "await loadData()" server.js)" "1|1|1|1"
+  # ── Persistence #3 (I31): ids never rewind on Postgres — restore, repeated restore, failed save, restart ──
+  r3max() { curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(max((int(l['id'].split('-')[1]) for l in d['loads'] if l['id'].startswith('LOAD-')), default=0))"; }
+  r3hw()  { $PSQL -c "select value from dispatch_data where key='id_high_water'" | python3 -c "import json,sys;print(json.load(sys.stdin)['load'])"; }
+  r3po()  { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"'"$1"'","customer":"Restore Co","deliveryDate":"'"$(date +%F)"'"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' -o /dev/null -w '%{http_code}'; }
+  r3po R3-A >/dev/null; A3=$(r3max); r3po R3-B >/dev/null; r3po R3-C >/dev/null; C3=$(r3max)
+  chk "P3 fixture: three loads in a row climb by one; the id_high_water row (its own row, never rotated or restored) is one past the newest" "$((C3-A3))|$(r3hw)" "2|$((C3+1))"
+  chk "   restore an older backup (store_prev = before the last creation): the newest load leaves the record, but the next id is NOT its id — it is past every id ever issued" "$(r2rst store_prev | r2code "d['success']")|$(r3max)|$(r3po R3-D)|$(r3max)" "200 True|$((C3-1))|200|$((C3+1))"
+  chk "   repeated restore (undo, create, restore again, create): every new id is unique and the high-water row only ever climbs" "$(r2rst store_before_restore | r2code "d['success']")|$(r3po R3-E)|$(r3max)|$(r2rst store_prev | r2code "d['success']")|$(r3po R3-F)|$(r3max)|$(r3hw)" "200 True|200|$((C3+2))|200 True|200|$((C3+3))|$((C3+4))"
+  r2hook '{"mode":"fail","count":1}'
+  chk "   failed save on Postgres: the id the failed creation took is consumed; the next creation skips it" "$(r3po R3-G)|$(r3po R3-H)|$(r3max)" "503|200|$((C3+5))"
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  (VBT_TEST_HOOKS=1 DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
+  chk "   after a restart the ids continue past the high-water row, not from a counter reset; the row follows" "$(r3po R3-I)|$(r3max)|$(r3hw)" "200|$((C3+6))|$((C3+7))"
+  # ── Persistence #4: a read after a restore is the restored state ──
+  r4mem() { curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R4-'))))"; }
+  r4row() { $PSQL -c "select value from dispatch_data where key='store'" | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R4-'))))"; }
+  r2po R4-A >/dev/null; r2po R4-B >/dev/null
+  chk "P4 restore → GET: the read is the restored state, and so is the row" "$(r2rst store_prev | r2code "d['success']")|$(r4mem)|$(r4row)" "200 True|A|A"
+  r2hook '{"mode":"fail","after":1,"count":1}'
+  chk "   restore whose audit save fails → GET: the read is still the restored state — the restore itself committed" "$(r2rst store_before_restore | r2code "d['success'], d['auditSaved']")|$(r4mem)|$(r4row)" "200 True False|A,B|A,B"
+  chk "   restore → write → GET: the write sits on top of the restored state, in memory and in the row" "$(r2po R4-C)|$(r4mem)|$(r4row)" "200|A,B,C|A,B,C"
+  # ── Persistence #6 on Postgres: a rollback during a QuickBooks send; restore → restart → GET; archive ↔ restore ──
+  r6po()   { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/pos -d '{"po":{"poNumber":"'"$1"'","customer":"Sixth Co","deliveryDate":"'"$(date -d '+30 day' +%F)"'","plannedVendorId":"vbt"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('po',{}).get('id') or d.get('error'))"; }
+  r6load() { curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print([l['id'] for l in d['loads'] if l['poId']=='$1'][0])"; }
+  r6set()  { curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/set-load -d "{\"id\":\"$1\",\"fields\":$2}" -o /dev/null; }
+  r6row()  { $PSQL -c "select value from dispatch_data where key='store'" | python3 -c "import json,sys;d=json.load(sys.stdin);$1"; }
+  r6mem()  { curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R6-'))))"; }
+  r6rowpo() { $PSQL -c "select value from dispatch_data where key='$1'" | python3 -c "import json,sys;d=json.load(sys.stdin);print(','.join(sorted(p['poNumber'][3:] for p in d['pos'] if p['poNumber'].startswith('R6-'))))"; }
+  r6where() { curl -s -b $PM $B2/api/history | python3 -c "import json,sys;d=json.load(sys.stdin);arc=sum(1 for b in d.get('archive',[]) for l in b.get('loads',[]) if l['id']=='$1');print('archived:%d'%arc)"; }
+  r6live()  { curl -s -b $PM $B2/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print('live:%d'%sum(1 for l in d['loads'] if l['id']=='$1'))"; }
+  P6A=$(r6po R6-A); L6A=$(r6load $P6A); P6X=$(r6po R6-X); L6X=$(r6load $P6X)
+  r6set $L6A '{"approvalStatus":"approved","billStatus":"ready","locked":true}'
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+  B6=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches -d "{\"loadIds\":[\"$L6A\"]}" | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('batches') or [{}])[0].get('id') or d.get('error'))")
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"slow","delayMs":2000}' -o /dev/null
+  (curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches/$B6/send -d '{}' -o /dev/null -w '%{http_code}' > /tmp/vbt-r6-send) & sleep 0.6
+  r2hook '{"mode":"fail","count":1}'
+  X6=$(curl -s -b $PM -H 'Content-Type: application/json' -X PUT $B2/api/loads/$L6X -d '{"notes":"other tab"}' -o /dev/null -w '%{http_code}'); wait
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+  chk "P6 Postgres: a QuickBooks send in flight while another request's save is refused and rolled back (503) — the send lands on the record AND in the row: batch sent with its invoice, load billed" "$X6 $(cat /tmp/vbt-r6-send)|$(curl -s -b $PM $B2/api/billing-batches/$B6 | python3 -c "import json,sys;b=json.load(sys.stdin)['batch'];print(b['syncStatus'], bool(b['qbInvoiceId']))")|$(r6row "b=[x for x in d['billingBatches'] if x['id']=='$B6'][0];l=[x for x in d['loads'] if x['id']=='$L6A'][0];print(b['syncStatus'], bool(b['qbInvoiceId']), l['billStatus'])")" "503 200|sent_to_quickbooks True|sent_to_quickbooks True billed"
+  # restore → restart → GET: the first state after boot is the restored row, and a write after boot lands on it
+  R6B=$(r2po R6-B)
+  R6S=$(r2rst store_prev | r2code "d['success']")
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  (VBT_TEST_HOOKS=1 DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
+  chk "   restore (store_prev: the state before R6-B) → restart → GET: the first state after boot is the restored row — R6-B gone from memory and row alike, kept in store_before_restore; a write after boot lands on the restored state" "$R6B $R6S|$(r6mem)|$(r6rowpo store)|$(r6rowpo store_before_restore)|$(r2po R6-C)|$(r6mem)|$(r6rowpo store)" "200 200 True|A,X|A,X|A,B,X|200|A,C,X|A,C,X"
+  # archive, then restore the state before it: the load is live again and in no archive batch — once, never twice — in memory and in the row
+  P6H=$(r6po R6-H); L6H=$(r6load $P6H)
+  r6set $L6H '{"approvalStatus":"approved","billStatus":"billed","locked":true,"billedAt":"2026-01-01T00:00:00Z","manualBillRef":"INV-H"}'
+  AR6=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/history/archive -d '{}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['archived']['loads'] >= 1)")
+  chk "   archive (the billed load leaves the live list) → restore the state before it (store_prev): live again, in no archive batch, memory = row; undo the restore: archived again, once" "$AR6 $(r6live $L6H) $(r6where $L6H)|$(r2rst store_prev | r2code "d['success']")|$(r6live $L6H) $(r6where $L6H)|$(r6row "live=sum(1 for l in d['loads'] if l['id']=='$L6H');arc=sum(1 for b in d.get('archive',[]) for l in b.get('loads',[]) if l['id']=='$L6H');print('live:%d archived:%d'%(live,arc))")|$(r2rst store_before_restore | r2code "d['success']")|$(r6live $L6H) $(r6where $L6H)" "True live:0 archived:1|200 True|live:1 archived:0|live:1 archived:0|200 True|live:0 archived:1"
+  # ── Persistence #7 on Postgres: removed seed records stay removed across a restart (fleet, roster, login); an UNKNOWN QuickBooks result survives a restart and reconciles first ──
+  R7T=$(curl -s -b $PM -o /dev/null -w '%{http_code}' -X DELETE $B2/api/fleet/trucks/truck-14); R7D=$(curl -s -b $PM -o /dev/null -w '%{http_code}' -X DELETE "$B2/api/drivers/leonardo?hard=1")
+  P7Q=$(r6po R7-Q); L7Q=$(r6load $P7Q); r6set $L7Q '{"approvalStatus":"approved","billStatus":"ready","locked":true}'
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null
+  B7=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches -d "{\"loadIds\":[\"$L7Q\"]}" | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('batches') or [{}])[0].get('id') or d.get('error'))")
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"timeout"}' -o /dev/null
+  R7S=$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches/$B7/send -d '{}' -o /dev/null -w '%{http_code}')
+  pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
+  (VBT_TEST_HOOKS=1 DATABASE_URL="$TEST_DATABASE_URL" PORT=$P2 node server.js > /tmp/vbt-test-pg.log 2>&1 &)
+  for i in $(seq 1 20); do sleep 1; curl -sf $B2/healthz >/dev/null 2>&1 && break; done
+  curl -s -c $PM -X POST -d "username=joshua&password=joshua123" $B2/login -o /dev/null
+  curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/_test/qb-fake -d '{"mode":"ok"}' -o /dev/null   # the fake QuickBooks lives in the process: re-armed after the restart (the connection itself was saved)
+  chk "P7 Postgres: a removed seed truck, a removed seed driver and his login stay removed across a restart — nothing is re-seeded onto a store that has a fleet and a roster, no login is re-inserted into a users table that has logins; the row agrees" "$R7T $R7D|$(curl -s -b $PM $B2/api/fleet | python3 -c "import json,sys;d=json.load(sys.stdin);print(any(t['id']=='truck-14' for t in d['trucks']), any(x['id']=='leonardo' for x in d['drivers']))")|$($PSQL -c "select count(*) from users where username='leonardo'")|$(curl -s -o /dev/null -w '%{redirect_url}' -X POST -d 'username=leonardo&password=leo123' $B2/login | sed 's|.*//[^/]*||')|$(r6row "print(any(t['id']=='truck-14' for t in d['trucks']), any(x['id']=='leonardo' for x in d['drivers']))")" "200 200|False False|0|/login?error=1|False False"
+  chk "   an UNKNOWN QuickBooks result survives the restart with its reconciliation record (same requestid); Retry reconciles first — not found → ready, nothing re-created — and the send then creates exactly one invoice" "$R7S|$(curl -s -b $PM $B2/api/billing-batches/$B7 | python3 -c "import json,sys;b=json.load(sys.stdin)['batch'];print(b['syncStatus'], b['reconcile']['requestId']=='$B7', b['reconcile']['kind'])")|$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches/$B7/retry -d '{}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('reconciled'), d['batch']['syncStatus'])")|$(curl -s -b $PM -H 'Content-Type: application/json' -X POST $B2/api/billing-batches/$B7/send -d '{}' -o /dev/null -w '%{http_code}')|$(curl -s -b $PM $B2/api/_test/qb-fake | python3 -c "import json,sys;print(json.load(sys.stdin)['invoicesCreated'])")" "502|unknown True timeout|not_found ready_to_bill|200|1"
   # A missing store row next to existing backups is a lost row, not a new company.
   pkill -f "^node server.js" >/dev/null 2>&1; sleep 1
   $PSQL -c "delete from dispatch_data where key='store'" >/dev/null
@@ -2329,10 +2741,14 @@ else
 fi
 echo
 echo "── 23. Old data: approved-but-unlocked load becomes locked on load ──"
+rm -f data-ids.json   # a fresh legacy file: no high-water marks beside it yet
 cat > data.json <<'JSON'
-{"pos":[{"id":"PO-OLD","poNumber":"OLD-1","customer":"Legacy Co","deliveryDate":"2026-01-05","status":"completed"}],
+{"pos":[{"id":"PO-OLD","poNumber":"OLD-1","customer":"Legacy Co","deliveryDate":"2026-01-05","status":"completed"},
+        {"id":"PO-AUTO","poNumber":"PO-1050","customer":"Legacy Co","deliveryDate":"2026-01-06","status":"active"}],
  "loads":[{"id":"L-OLD","poId":"PO-OLD","truckId":"beryle","material":"Dirt","loadsAssigned":1,"loadsDelivered":1,
-           "deliveryDate":"2026-01-05","status":"completed","approvalStatus":"approved","locked":false,"billingBatchId":"BB-STUCK"}],
+           "deliveryDate":"2026-01-05","status":"completed","approvalStatus":"approved","locked":false,"billingBatchId":"BB-STUCK"},
+          {"id":"LOAD-7","poId":"PO-AUTO","truckId":null,"material":"Dirt","loadsAssigned":1,"loadsDelivered":0,"deliveryDate":"2026-01-06","status":"unassigned","approvalStatus":"pending"}],
+ "nextLoadId":3,"nextPoNum":1001,
  "billingBatches":[{"id":"BB-STUCK","loadIds":["L-OLD"],"syncStatus":"syncing","qbInvoiceId":"","customer":"Legacy Co","totalAmount":0,"lineItems":[]}],
  "unitConfig":{"byUnit":{"ton":25,"load":1,"hour":1,"mile":1},"byMaterial":{}}}
 JSON
@@ -2343,8 +2759,9 @@ chk "legacy approved load is locked after normalize" "$(curl -s -b $M $B/api/dat
 chk "  ...and the generic update is refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X PUT $B/api/loads/L-OLD -d '{"material":"Sand"}')" "403"
 chk "fabricated hour:1 / mile:1 seeds are removed on load" "$(curl -s -b $M $B/api/costing/settings | python3 -c "import json,sys;u=json.load(sys.stdin)['unitConfig']['byUnit'];print('hour' in u, 'mile' in u, u['ton'])")" "False False 25"
 chk "batch stuck in 'syncing' at restart (no invoice id) becomes external-result-unknown" "$(curl -s -b $M $B/api/billing-batches | python3 -c "import json,sys;b=[x for x in json.load(sys.stdin)['items'] if x['id']=='BB-STUCK'][0];print(b['syncStatus'], 'restart' in b['errorMessage'], b['mayExistInQuickBooks'])")" "unknown True True"
+chk "Persistence 3: a legacy file whose counters sit below its own records (nextLoadId 3 beside LOAD-7, nextPoNum 1001 beside PO-1050) boots and issues past them — LOAD-8, PO-1051 — and the marks on disk follow" "$(curl -s -b $M -H 'Content-Type: application/json' -X POST $B/api/pos -d '{"po":{"customer":"Legacy Co","deliveryDate":"2026-01-07"},"splits":[{"truckId":"","material":"Dirt","loadsAssigned":1,"vendorId":"vbt"}]}' | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['po']['poNumber'])")|$(curl -s -b $M $B/api/data | python3 -c "import json,sys;d=json.load(sys.stdin);print(sorted(l['id'] for l in d['loads'] if l['id'].startswith('LOAD-')))")|$(python3 -c "import json;d=json.load(open('data-ids.json'));print(d['load'], d['po'])")" "PO-1051|['LOAD-7', 'LOAD-8']|9 1052"
 pkill -f "^node server.js" >/dev/null 2>&1
-rm -f data.json telemetry.json
+rm -f data.json data-ids.json telemetry.json
 
 [ "$SKIPPED" -gt 0 ] && SK=", $SKIPPED section(s) skipped" || SK=""
 echo "════ $PASS passed, $FAIL failed$SK ════"
