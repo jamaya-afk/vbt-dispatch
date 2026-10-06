@@ -1596,7 +1596,7 @@ function tripUnderWay(l, now = Date.now()) {
 const DRIVER_HIDDEN_LOAD_FIELDS = [
   'customerRate', 'customerUnit', 'customerRateIsDefault', 'vendorRate', 'vendorUnit', 'vendorRateIsDefault',
   'vendorIsInternal', 'pricePerUnit', 'tonsPerLoad', 'billStatus', 'billedAt', 'billingBatchId',
-  'qbInvoiceId', 'qbInvoiceNumber', 'sentToQuickBooksAt',
+  'qbInvoiceId', 'qbInvoiceNumber', 'sentToQuickBooksAt', 'billing',
 ];
 function driverSafeLoad(l) {
   const out = { ...l };
@@ -1829,7 +1829,7 @@ async function applyLocationRequest(rec, body, user, addressText) {
 function withPickup(l) {
   const po = store.pos.find(p => p.id === l.poId) || {};
   const segs = segmentsForLoad(l).map(s => { const p = segmentPublic(s); return { id: p.id, customer: p.customer, originName: p.originName, destinationLabel: p.destinationLabel, status: p.status, locked: p.locked, timeStart: p.timeStart, timeEnd: p.timeEnd, odStart: p.odStart, odEnd: p.odEnd, billableMiles: p.billableMiles, billableHours: p.billableHours, tripCount: p.tripCount, loadIds: p.loadIds }; });
-  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs,
+  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs, billing: billingSummary(l),
     // The approval checklist rides along only while a load waits for approval.
     ...(l.approvalStatus === 'submitted' ? { approval: approvalChecklist(l) } : {}) };
 }
@@ -1871,6 +1871,7 @@ function resolveVendorRate(vendorId, material) {
 //
 // The engine stays open: any other unit can be given a quantity per load in
 // costing settings, and only units actually in use are ever flagged.
+const priceOk = v => v === undefined || (v !== null && v !== '' && Number.isFinite(Number(v)) && Number(v) >= 0);   // $0 stays a legal price; negative or non-numeric never
 const DEFAULT_UNIT_QTY_PER_LOAD = {
   ton:  TONS_PER_LOAD,   // the single definition of the 25-ton rule
   load: 1,
@@ -1936,11 +1937,34 @@ function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride, mea
 // case the confirmed ticket tons are the quantity. A load on an actual-basis
 // customer with completed trips that have no ticket tons is NOT priceable —
 // it is flagged, never silently billed on the planned figure.
+// The customer rate a load bills at. An explicit price fixed when the load
+// was made (or by Edit PO on a customer change) stays fixed. A DEFAULT
+// snapshot is a placeholder, not a price — the rule vendor cost already
+// follows — so it is resolved live until a batch freezes the line: the office
+// adds the customer's price afterwards and the approved load bills at it.
+// A legacy load with no rate at all resolves the same way, never to $0.
+function effectiveCustomerRate(load, po) {
+  const snap = load.customerRate;
+  if (!load.customerRateIsDefault && snap != null && snap !== '') return { rate: Number(snap) || 0, unit: unitKey(load.customerUnit || 'ton'), isDefault: false };
+  const p = po || findPoAnywhere(load.poId) || {};
+  const live = resolveCustomerRate(p.customer, load.material);
+  return { rate: Number(live.price) || 0, unit: unitKey(live.unit || load.customerUnit || 'ton'), isDefault: !!live.isDefault, resolvedLive: true };
+}
 function revenueDetail(load) {
-  const unit = unitKey(load.customerUnit || 'ton');
+  const eff = effectiveCustomerRate(load);
+  return { ...revenueDetailAt(load, eff), rateIsDefault: eff.isDefault };
+}
+// Money on one load, for the office screens: what it bills and what it costs.
+function billingSummary(l) {
+  const r = revenueDetail(l); const c = costDetail(l);
+  return { amount: r.amount, unit: r.unit, rate: r.rate, basis: r.basis || 'planned', quantity: r.quantity, rateIsDefault: !!r.rateIsDefault, unconfigured: !!r.unconfigured, reason: r.reason || '',
+    cost: { amount: c.amount, unconfigured: !!c.unconfigured, reason: c.reason || '', estimated: (c.lines || []).some(ln => ln.isDefault && !ln.unconfigured), internal: (c.lines || []).length > 0 && (c.lines || []).every(ln => ln.internal) } };
+}
+function revenueDetailAt(load, eff) {
+  const unit = eff.unit;
   // Nothing is priced from a delivered count that disagrees with the trips.
   const dr = deliveredRecord(load);
-  if (dr.mismatch) return { unit, rate: Number(load.customerRate) || 0, delivered: dr.record, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'planned',
+  if (dr.mismatch) return { unit, rate: eff.rate, delivered: dr.record, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'planned',
     reason: `the delivered count (${dr.record}) on ${load.id} does not match its completed trips (${dr.completed}) — reject or void the load before billing` };
   // Hour and mile customers: the measure comes from the load's CLOSED freight
   // segment(s), counted once per segment and attributed to the first load
@@ -1952,11 +1976,11 @@ function revenueDetail(load) {
     if (segs.length) {
       const field = MEASURED_UNITS[unit];
       const open = segs.find(s => s.status === 'open');
-      if (open) return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${open.id} (${open.customer}) is still open — its ${field} are not final yet` };
+      if (open) return { unit, rate: eff.rate, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${open.id} (${open.customer}) is still open — its ${field} are not final yet` };
       // An ending typed by the office when it closed the driver's day is not
       // billable until a manager has confirmed or corrected it.
       const review = segs.find(s => s.needsReview);
-      if (review) return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${review.id} (${review.customer}) was closed by the office for the driver — confirm its ending time and odometer (with a reason) before its ${field} are billed` };
+      if (review) return { unit, rate: eff.rate, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${review.id} (${review.customer}) was closed by the office for the driver — confirm its ending time and odometer (with a reason) before its ${field} are billed` };
       // The measure belongs to the segment's first load. If that load was
       // voided before it was billed, the hours or miles would otherwise vanish:
       // this load would price at $0 "billed with" a load that bills nothing.
@@ -1966,7 +1990,7 @@ function revenueDetail(load) {
         if (!ownerId || ownerId === load.id) continue;
         const owner = findLoadAnywhere(ownerId);
         if (owner && owner.voided && !(owner.billStatus === 'billed' || owner.billingBatchId || owner.qbInvoiceId)) {
-          return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment',
+          return { unit, rate: eff.rate, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment',
             reason: `the ${field} on freight ${s.id} belong to ${ownerId}, which is voided and was never billed — restore ${ownerId} to bill them, or they stay unbilled` };
         }
       }
@@ -1977,13 +2001,13 @@ function revenueDetail(load) {
         if ((s.loadIds || [])[0] === load.id) measure += m || 0;
         else billedWith.push(`${s.loadIds[0]} on ${s.id}`);
       }
-      const d = computeAmount(load.customerRate, unit, dr.count, load.material, load.tonsPerLoad, { [field]: measure });
+      const d = computeAmount(eff.rate, unit, dr.count, load.material, load.tonsPerLoad, { [field]: measure });
       d.basis = 'segment'; d.segmentIds = segs.map(s => s.id);
       if (billedWith.length && measure === 0) d.reason = `${field} billed with ${billedWith.join(', ')}`;
       return d;
     }
   }
-  const d = computeAmount(load.customerRate, load.customerUnit || 'ton', dr.count, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
+  const d = computeAmount(eff.rate, eff.unit, dr.count, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
   d.basis = 'planned';
   if (d.unit !== 'ton') return d;
   const po = findPoAnywhere(load.poId) || {};
@@ -4733,6 +4757,29 @@ function approvalChecklist(l) {
   if (dr.mismatch) items.push({ key: 'count', label: 'Delivered count', ok: false, block: true,
     value: `${dr.record} submitted · ${dr.completed} completed trip${dr.completed === 1 ? '' : 's'} on record`,
     note: 'the delivered count does not match the completed trips — cannot be approved; reject it so the driver re-submits, or void it' });
+  // Money, at the moment the office locks the load for billing: what it will
+  // invoice and at what rate, and what it will cost. A $0 line is a ⚠ to
+  // acknowledge; a default rate or an unpriceable line is said in words.
+  const rev = revenueDetail(l);
+  const qtyWord = rev.quantity == null ? '' : rev.unit === 'ton' ? `${Number(rev.quantity).toFixed(2)} t` : `${rev.quantity} ${rev.unit}${Number(rev.quantity) === 1 ? '' : 's'}`;
+  const basisWord = rev.basis === 'actual' ? ' · actual tons' : rev.basis === 'segment' ? ' · freight' : '';
+  const billNotes = [];
+  // A freight load whose hours or miles are billed with another load in the
+  // same segment is $0 by design — said, not flagged.
+  const billedElsewhere = rev.basis === 'segment' && !rev.unconfigured && !(rev.amount > 0) && !!rev.reason;
+  if (rev.unconfigured) billNotes.push(`not priceable yet — ${rev.reason}`);
+  else if (billedElsewhere) billNotes.push(rev.reason);
+  else if (!(rev.amount > 0)) billNotes.push('$0 — nothing would be invoiced for this load');
+  if (rev.rateIsDefault && !rev.unconfigured) billNotes.push('default rate — no customer price on file');
+  items.push({ key: 'billing', label: 'Billing', ok: rev.unconfigured || rev.amount > 0 || billedElsewhere,
+    value: rev.unconfigured ? `not priceable · $${rev.rate}/${rev.unit}` : `$${(rev.amount || 0).toFixed(2)} · ${qtyWord ? qtyWord + ' ' : ''}@ $${rev.rate}/${rev.unit}${basisWord}`,
+    note: billNotes.join('; ') });
+  const cost = costDetail(l);
+  const costEstimated = (cost.lines || []).some(ln => ln.isDefault && !ln.unconfigured);
+  const costInternal = (cost.lines || []).length > 0 && cost.lines.every(ln => ln.internal);
+  items.push({ key: 'cost', label: 'Vendor cost', ok: true,
+    value: costInternal ? 'our own yard — none' : cost.unconfigured ? 'not priceable' : `$${(cost.amount || 0).toFixed(2)}${costEstimated ? ' (estimate — default rate)' : ''}`,
+    note: cost.unconfigured ? (cost.reason || '') : '' });
   const warnings = items.filter(i => !i.ok).map(i => `${i.label}: ${i.note}`);
   const blocking = items.filter(i => i.block).map(i => `${i.label}: ${i.note}`);
   return { items, warnings, blocking, ready: !warnings.length };
@@ -4841,6 +4888,16 @@ app.post('/api/loads/:id/void', reqMgr, async (req, res) => {
     });
   }
 
+  // The same rule for the vendor side: trips already on a vendor bill are
+  // released by voiding the bill, never left silently inside a payable for
+  // a load the office says never counted.
+  const onBills = (store.vendorBills || []).filter(b => b.syncStatus !== 'voided' && (b.loadIds || []).includes(l.id));
+  if (onBills.length) {
+    return res.status(409).json({
+      error: `This load's trips are on vendor bill ${onBills.map(b => `${b.id} (${b.syncStatus})`).join(', ')}. Void the vendor bill first — that releases the trips and keeps QuickBooks in step.`,
+      code: 'on_vendor_bill', vendorBillIds: onBills.map(b => b.id),
+    });
+  }
   const po = store.pos.find(p => p.id === l.poId) || {};
   l.voided     = true;
   l.voidedAt   = new Date().toISOString();
@@ -4908,7 +4965,7 @@ app.get('/api/ready-to-bill', reqMgr, (req, res) => {
     const priceable = r.amount != null && !r.unconfigured;
     return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address,
       amount: priceable ? Math.round(r.amount * 100) / 100 : null, priceable,
-      priceReason: priceable ? '' : (r.reason || 'not priceable yet'), basis: r.basis || 'planned', rateLabel: `$${r.rate}/${r.unit}` };
+      priceReason: priceable ? '' : (r.reason || 'not priceable yet'), basis: r.basis || 'planned', rateLabel: `$${r.rate}/${r.unit}`, customerRateIsDefault: !!r.rateIsDefault };
   });
   const priced = enriched.filter(x => x.priceable);
   res.json({ items: enriched, totals: { count: enriched.length, amount: Math.round(priced.reduce((s, x) => s + x.amount, 0) * 100) / 100, priced: priced.length, unpriced: enriched.length - priced.length } });
@@ -5074,7 +5131,7 @@ function buildBillingGroups(loadIds) {
         : basis === 'actual' ? (revD.quantity || 0)
         : (revD.qtyPerLoad != null ? revD.qtyPerLoad * (Number(load.loadsDelivered) || 0) : 0);
       const unit = revD.unit;
-      const rate = Number(load.customerRate) || 0;
+      const rate = Number(revD.rate) || 0;   // the effective rate (a default snapshot resolves live until the batch freezes it)
       const lk = `${load.material}|${unit}|${rate}|${basis}`;
       if (!lineMap.has(lk)) {
         lineMap.set(lk, {
@@ -5090,7 +5147,7 @@ function buildBillingGroups(loadIds) {
       ln.loads += Number(load.loadsDelivered) || 0;
       ln.tons  += tons;
       ln.tickets += loadTons(load).ticketsWithTons;
-      if (load.customerRateIsDefault) ln.rateIsDefault = true;
+      if (revD.rateIsDefault) ln.rateIsDefault = true;
       // Hour/mile quantity: the segment's measure, added once per segment. A
       // load whose measure went to another load in the same segment carries
       // the explanation onto the line.
@@ -5915,6 +5972,13 @@ app.post('/api/vendor-bills', reqMgr, async (req, res) => {
     };
     store.vendorBills.push(bill);
     claimVendorBillRefs(bill, true);
+    // The price this bill pays is now the trip's price: a trip priced live
+    // (no vendor price when it was loaded) is fixed at the billed rate, so
+    // Material Costs and Profitability keep agreeing with the payable.
+    for (const ln of bill.lineItems || []) for (const ref of ln.tripRefs || []) {
+      const ld = findLoadAnywhere(ref.loadId); const t = ld && (ld.trips || []).find(x => x.tripNum === ref.tripNum);
+      if (t && (t.vendorRate == null || t.vendorRateIsDefault || !(Number(t.vendorRate) > 0))) { t.vendorRate = ln.rate; t.vendorUnit = ln.unit; t.vendorRateIsDefault = false; t.vendorRateFixedBy = bill.id; }
+    }
     created.push(bill);
   }
   logAction(req.session.user, 'created-vendor-bills', '', { count: created.length, billIds: created.map(b => b.id) });
@@ -6274,9 +6338,11 @@ app.delete('/api/vendors/:id', reqMgr, async (req, res) => {
   const id = req.params.id;
   const idx = store.vendors.findIndex(v => v.id === id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  // Refuse if any active load uses this vendor
-  const inUse = store.loads.some(l => l.vendorId === id && !l.voided);
-  if (inUse) return res.status(400).json({ error: 'Cannot delete — there are loads using this vendor. Mark inactive instead.' });
+  // Refuse if any load (live or archived) plans or hauled from this yard, or a
+  // vendor bill names it: deleting it would drop real cost from every screen.
+  const inUse = allLoadsWithArchive().some(l => !l.voided && (l.vendorId === id || (l.trips || []).some(t => t.actualYardId === id)))
+    || (store.vendorBills || []).some(b => b.vendorId === id && b.syncStatus !== 'voided');
+  if (inUse) return res.status(400).json({ error: 'Cannot delete — loads were planned or hauled from this yard, or a vendor bill names it. Mark it inactive instead.' });
   const deleted = store.vendors[idx];
   store.vendors.splice(idx, 1);
   delete store.vendorPrices[id];
@@ -6291,6 +6357,7 @@ app.post('/api/vendors/:id/prices', reqMgr, async (req, res) => {
   if (!v) return res.status(404).json({ error: 'Vendor not found' });
   const { material, unit, price, notes } = req.body;
   if (!material || !material.trim()) return res.status(400).json({ error: 'Material required' });
+  if (price === undefined || !priceOk(price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
   if (!store.vendorPrices[v.id]) store.vendorPrices[v.id] = [];
   // Prevent dupes (same material+unit on the same vendor)
   if (store.vendorPrices[v.id].some(p => p.material === material.trim() && (p.unit || '') === (unit || ''))) {
@@ -6323,6 +6390,7 @@ app.put('/api/vendors/:id/prices/:priceId', reqMgr, async (req, res) => {
   if (!p) return res.status(404).json({ error: 'Price not found' });
   const v = store.vendors.find(x => x.id === req.params.id);
   const before = { material: p.material, unit: p.unit, price: p.price, active: p.active };
+  if (!priceOk(req.body.price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
   if (req.body.material !== undefined) p.material = String(req.body.material).trim();
   if (req.body.unit !== undefined)     p.unit     = String(req.body.unit).trim();
   if (req.body.price !== undefined)    p.price    = Number(req.body.price) || 0;
@@ -6764,6 +6832,7 @@ app.post('/api/customer-prices', reqMgr, async (req, res) => {
   const { customer, material, unit, price, notes } = req.body;
   if (!customer || !customer.trim()) return res.status(400).json({ error: 'Customer name required' });
   if (!material || !material.trim()) return res.status(400).json({ error: 'Material required' });
+  if (price === undefined || !priceOk(price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
 
   const key = customerKey(customer);
   if (!Array.isArray(store.customerPrices[key])) store.customerPrices[key] = [];
@@ -6796,6 +6865,7 @@ app.put('/api/customer-prices/:customerKey/:priceId', reqMgr, async (req, res) =
   if (!p) return res.status(404).json({ error: 'Price not found' });
 
   const before = { material: p.material, unit: p.unit, price: p.price, active: p.active };
+  if (!priceOk(req.body.price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
   if (req.body.material !== undefined) p.material = String(req.body.material).trim();
   if (req.body.unit !== undefined)     p.unit     = String(req.body.unit).trim();
   if (req.body.price !== undefined)    p.price    = Number(req.body.price) || 0;
@@ -6840,6 +6910,7 @@ app.put('/api/default-rates', reqAdmin, async (req, res) => {
   const { side, material, unit, price } = req.body;  // side: 'customer' | 'vendor'
   if (!['customer', 'vendor'].includes(side)) return res.status(400).json({ error: 'Invalid side' });
   if (!material) return res.status(400).json({ error: 'Material required' });
+  if (price === undefined || !priceOk(price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
   if (!store.defaultRates[side]) store.defaultRates[side] = {};
   const before = store.defaultRates[side][material] ? { ...store.defaultRates[side][material] } : null;
   store.defaultRates[side][material] = {
@@ -7144,10 +7215,13 @@ app.get('/api/profitability', reqMgr, (req, res) => {
   // the figure is incomplete instead of quietly overstating profit.
   const unpriced = { costLoads: 0, revenueLoads: 0, units: new Set() };
 
+  const est = { revenue: 0, revenueLoads: 0, cost: 0, costLoads: 0 };   // priced at a default rate — an estimate, as Material Costs already says
   eligible.forEach(l => {
     const po = allPos.find(p => p.id === l.poId) || {};
     const revD = revenueDetail(l);
     const costD = costDetail(l);
+    if (!revD.unconfigured && revD.rateIsDefault) { est.revenue += revD.amount || 0; est.revenueLoads++; }
+    if (!costD.unconfigured && (costD.lines || []).some(ln => ln.isDefault && !ln.unconfigured)) { est.cost += costD.amount || 0; est.costLoads++; }
     if (costD.unconfigured) { unpriced.costLoads++; unpriced.units.add(costD.unit); }
     if (revD.unconfigured)  { unpriced.revenueLoads++; unpriced.units.add(revD.unit); }
     const rev    = revD.amount == null ? 0 : revD.amount;
@@ -7237,6 +7311,8 @@ app.get('/api/profitability', reqMgr, (req, res) => {
     grand: {
       revenue: grandRev,
       cost: grandCost,
+      estimatedRevenue: est.revenue, estimatedRevenueLoads: est.revenueLoads,
+      estimatedCost: est.cost, estimatedCostLoads: est.costLoads,
       margin: grandRev - grandCost,
       marginPct: grandRev > 0 ? ((grandRev - grandCost) / grandRev * 100) : 0,
       loads: grandLoads,

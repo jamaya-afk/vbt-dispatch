@@ -2054,6 +2054,14 @@ function openLoadDetail(id) {
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
   if (l.trailer) html += `<dt style="color:var(--txt3)">Trailer</dt><dd>${escapeHtml(l.trailer.number)}${l.trailer.type ? ' · ' + escapeHtml(l.trailer.type) : ''}</dd>`;
   if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}${(l.tons.openTickets || []).length ? ` <span style="font-size:11px;color:var(--A);font-weight:600">${l.tons.openTickets.length} ticket${l.tons.openTickets.length === 1 ? '' : 's'} loaded, not delivered${l.tons.openTons ? ` (${l.tons.openTons.toFixed(2)} t not counted)` : ''}</span>` : ''}</dd>`;
+  if (l.billing && (role === 'manager' || role === 'admin')) {
+    const b = l.billing, c = b.cost || {};
+    const q = b.quantity == null ? '' : b.unit === 'ton' ? `${Number(b.quantity).toFixed(2)} t` : `${b.quantity} ${escapeHtml(b.unit)}`;
+    const rev = b.unconfigured ? `<span style="color:#b42318">not priceable yet</span> — ${escapeHtml(b.reason)}`
+      : `<b>${money(b.amount || 0)}</b>${q ? ' · ' + q : ''} @ $${b.rate}/${escapeHtml(b.unit)}${b.basis === 'actual' ? ' · actual tons' : b.basis === 'segment' ? ' · freight' : ''}${b.rateIsDefault ? ' <span style="color:#b45309;font-size:11px">default rate — no customer price on file</span>' : ''}${b.amount === 0 ? ' <span style="color:#b42318;font-size:11px">$0 — nothing would be invoiced</span>' : ''}`;
+    const cost = c.internal ? 'our own yard — none' : c.unconfigured ? `<span style="color:#b42318">not priceable</span> — ${escapeHtml(c.reason || '')}` : `${money(c.amount || 0)}${c.estimated ? ' <span style="color:#b45309;font-size:11px">estimate — default rate</span>' : ''}`;
+    html += `<dt style="color:var(--txt3)">Billing</dt><dd>${rev}<br><span style="font-size:12px;color:var(--txt2)">Vendor cost: ${cost}</span></dd>`;
+  }
   const LD_STATUS = { pending: 'Not yet submitted', submitted: 'Awaiting approval', approved: l.billStatus === 'billed' ? 'Approved · Billed' : l.billingBatchId ? `Approved · On billing batch ${escapeHtml(l.billingBatchId)}` : 'Approved · Ready to Bill', rejected: 'Rejected' };
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.voided ? `Voided${l.voidReason ? ' — ' + escapeHtml(l.voidReason) : ''}` : (LD_STATUS[l.approvalStatus] || escapeHtml(String(l.approvalStatus)))}${!l.voided && l.approvalStatus === 'rejected' && l.rejectReason ? ` — ${escapeHtml(l.rejectReason)}` : ''}</dd>`;
   if (l.approvalStatus === 'approved' && (l.approvedBy || l.approvedAt)) html += `<dt style="color:var(--txt3)">Approved</dt><dd>${l.approvedBy ? 'by ' + escapeHtml(l.approvedBy) : ''}${l.approvedAt ? ' · ' + new Date(l.approvedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}${(l.approvalWarnings || []).length ? ` — with gaps acknowledged: ${escapeHtml(l.approvalWarnings.join('; '))}` : ''}</dd>`;
@@ -3940,7 +3948,7 @@ async function loadBilling() {
         <td>${l.driverName}</td>
         <td>${fmtDate(l.deliveryDate)}</td>
         <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}${l.approvalWarnings && l.approvalWarnings.length ? `<div class="bill-gap-note" title="${escapeAttr(l.approvalWarnings.join('; '))}">⚠ approved with a gap</div>` : ''}</td>
-        <td class="bill-amt">${l.priceable ? `<b>${bfMoney(l.amount)}</b><div class="bill-rate">${escapeHtml(l.rateLabel || '')}${l.basis === 'actual' ? ' · actual tons' : ''}${l.customerRateIsDefault ? ' · <span class="bill-unpriced" title="No price on file for this customer and material — the default rate is what would be invoiced">default rate</span>' : ''}</div>` : `<span class="bill-unpriced" title="${escapeAttr(l.priceReason || '')}">not priceable</span><div class="bill-rate">${escapeHtml((l.priceReason || '').slice(0, 60))}${(l.priceReason || '').length > 60 ? '…' : ''}</div>`}</td>
+        <td class="bill-amt">${l.priceable ? `<b>${bfMoney(l.amount)}</b><div class="bill-rate">${escapeHtml(l.rateLabel || '')}${l.basis === 'actual' ? ' · actual tons' : ''}${l.customerRateIsDefault ? ' · <span class="bill-unpriced" title="No price on file for this customer and material — the default rate is what would be invoiced">default rate</span>' : ''}${l.amount === 0 ? ' · <span class="bill-unpriced" title="Nothing would be invoiced for this load — check the price and the tickets">$0 — check the price</span>' : ''}</div>` : `<span class="bill-unpriced" title="${escapeAttr(l.priceReason || '')}">not priceable</span><div class="bill-rate">${escapeHtml((l.priceReason || '').slice(0, 60))}${(l.priceReason || '').length > 60 ? '…' : ''}</div>`}</td>
       </tr>`).join('')}
     </tbody>
     <tfoot><tr>
@@ -4034,7 +4042,7 @@ function showInvoicePreviewModal(groups, allowSend) {
           This group cannot be sent: ${(g.unconfiguredReasons || []).join('; ')}. Fix the pricing or unit configuration and preview again.</div>` : ''}
         <table style="width:100%;font-size:13px;border-top:1px solid var(--bdr);border-collapse:collapse">
           ${g.lineItems.map(ln => `<tr>
-            <td style="padding:6px 0;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.description}${ln.rateIsDefault ? ' <span style="color:#b45309;font-size:11px;font-weight:600" title="No price on file for this customer and material">default rate — no customer price on file</span>' : ''}</td>
+            <td style="padding:6px 0;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.description}${ln.rateIsDefault ? ' <span style="color:#b45309;font-size:11px;font-weight:600" title="No price on file for this customer and material">default rate — no customer price on file</span>' : ''}${!ln.unconfigured && ln.amount === 0 ? ' <span style="color:#b42318;font-size:11px;font-weight:600">$0 — nothing invoiced for this line</span>' : ''}</td>
             <td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.unconfigured ? '—' : '$' + ln.amount.toFixed(2)}</td>
           </tr>`).join('')}
         </table>
@@ -6285,6 +6293,7 @@ async function renderProfitability() {
               <div style="font-size:11px;opacity:.7;text-transform:uppercase;letter-spacing:.05em;font-weight:600">Margin</div>
               <div style="font-size:26px;font-weight:700;color:${data.grand.margin >= 0 ? '#86efac' : '#fca5a5'}">${money(data.grand.margin)}</div>
               <div style="font-size:12px;opacity:.8;margin-top:2px">${data.grand.marginPct.toFixed(1)}% margin</div>
+              ${(data.grand.estimatedRevenueLoads || data.grand.estimatedCostLoads) ? `<div style="font-size:11px;color:#fcd34d;margin-top:6px">Estimates inside: ${[data.grand.estimatedRevenueLoads ? `${money(data.grand.estimatedRevenue)} of revenue (${data.grand.estimatedRevenueLoads} load${data.grand.estimatedRevenueLoads === 1 ? '' : 's'}) at a default customer rate` : '', data.grand.estimatedCostLoads ? `${money(data.grand.estimatedCost)} of cost (${data.grand.estimatedCostLoads} load${data.grand.estimatedCostLoads === 1 ? '' : 's'}) at a default vendor rate` : ''].filter(Boolean).join('; ')} — not real prices</div>` : ''}
             </div>
           </div>
         </div>

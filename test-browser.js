@@ -340,7 +340,7 @@ async function call(cookie, method, path, body) {
     const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText)); if (!c) return null;
     return { chips: Array.from(c.querySelectorAll('.am-check .chk')).map(e => e.innerText.replace(/\s+/g, ' ').trim()).join(' | '), warn: c.querySelectorAll('.am-check .chk.warn').length, cards: document.querySelectorAll('.approve-mini').length };
   });
-  chk('1. the approval card shows the checklist: Driver, Truck, Pickup yard, Ticket, Delivery — all ✓', card ? card.chips : 'no card', '✓ Driver Matthew | ✓ Truck Truck #4 | ✓ Pickup yard VBT Yard | ✓ Ticket 1 ticket · 24.5 t | ✓ Delivery 1/1 load · signed by Site Foreman');
+  chk('1. the approval card shows the checklist: Driver, Truck, Pickup yard, Ticket, Delivery, Billing, Vendor cost — all ✓ (OA3: the money is on the card)', card ? card.chips : 'no card', '✓ Driver Matthew | ✓ Truck Truck #4 | ✓ Pickup yard VBT Yard | ✓ Ticket 1 ticket · 24.5 t | ✓ Delivery 1/1 load · signed by Site Foreman | ✓ Billing $625.00 · 25.00 t @ $25/ton | ✓ Vendor cost our own yard — none');
   chk('   two loads wait, nothing flagged', card ? `${card.cards} ${card.warn}` : 'no card', '2 0');
   const dlg2 = await page.evaluate(async () => {
     const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText));
@@ -350,7 +350,7 @@ async function call(cookie, method, path, body) {
     return { title: m.querySelector('h2').textContent.trim(), rows: m.querySelectorAll('.ask-check .chk').length, ok: m.querySelectorAll('.ask-check .chk.ok').length,
              hint: m.querySelector('.conflict-hint').innerText.replace(/\s+/g, ' '), buttons: Array.from(m.querySelectorAll('.modal-foot button')).map(b => b.textContent.trim()).join('|'), focus: document.activeElement && document.activeElement.id };
   });
-  chk('2. Approve opens the confirmation with the five items and what approving does', dlg2 ? `${dlg2.title} ${dlg2.rows} ${dlg2.ok} ${dlg2.buttons} ${dlg2.focus}` : 'no dialog', 'Approve this load? 5 5 Cancel|Approve ask-cancel');
+  chk('2. Approve opens the confirmation with the seven items and what approving does', dlg2 ? `${dlg2.title} ${dlg2.rows} ${dlg2.ok} ${dlg2.buttons} ${dlg2.focus}` : 'no dialog', 'Approve this load? 7 7 Cancel|Approve ask-cancel');
   chk('   …in plain words', !!dlg2 && /Everything is on record\. Approving locks the load and moves it to Ready to Bill\./.test(dlg2.hint), true);
   await page.click('#ask-cancel'); await page.waitForTimeout(400);
   let lm = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
@@ -391,6 +391,7 @@ async function call(cookie, method, path, body) {
   const ldText = async id => page.evaluate(async id => { openLoadDetail(id); await new Promise(r => setTimeout(r, 300)); const m = Array.from(document.querySelectorAll('.modal-bg')).pop(); const t = m ? m.innerText.replace(/\s+/g, ' ') : 'no modal'; if (m) m.remove(); return t; }, id);
   const ldMat = await ldText(lMat.id), ldCar = await ldText(lCar.id);
   chk('2. Load Details names the truck and reads the status in words: Truck #4, Approved · Ready to Bill', `${/Truck Truck #4 /.test(ldMat)} ${/Status Approved · Ready to Bill/.test(ldMat)}`, 'true true');
+  chk('   …and the money (OA3): $625.00 · 25.00 t @ $25/ton, the default-rate word, and no vendor cost from our own yard', `${/Billing \$625\.00 · 25\.00 t @ \$25\/ton default rate — no customer price on file/.test(ldMat)} ${/Vendor cost: our own yard — none/.test(ldMat)}`, 'true true');
   chk('   …and for the rejected load: Truck #2B, Rejected — with the reason', `${/Truck Truck #2B /.test(ldCar)} ${/Status Rejected — Ticket photo is unreadable/.test(ldCar)}`, 'true true');
   // A voided load is reachable from its PO: Edit PO lists it, the link opens Load Details with Restore.
   await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'VOID-2', customer: 'Void Co', deliveryDate: '2027-03-10', address: '2 Void St', city: 'Fresno', plannedVendorId: 'vbt' },
@@ -480,7 +481,8 @@ async function call(cookie, method, path, body) {
   // OA1: a batch made but not yet sent can be voided from the list — a wrong batch never has to reach QuickBooks first.
   const bb1 = ((await call(mgr, 'POST', '/api/billing-batches', { loadIds: [lMat.id] })).data.batches || [])[0];
   await page.evaluate(async () => { await loadAll(); goTab('billing'); setBillSubview('batches'); }); await page.waitForTimeout(900);
-  const bbRow = await page.evaluate(id => { const r = Array.from(document.querySelectorAll('tr')).find(x => x.innerText.includes(id)); return r ? Array.from(r.querySelectorAll('button')).map(b => b.textContent.trim()).join('|') : 'no row'; }, bb1 ? bb1.id : 'none');
+  let bbRow = 'no row';
+  for (let i = 0; i < 20 && bbRow === 'no row'; i++) { bbRow = await page.evaluate(id => { const r = Array.from(document.querySelectorAll('tr')).find(x => x.innerText.includes(id)); return r ? Array.from(r.querySelectorAll('button')).map(b => b.textContent.trim()).join('|') : 'no row'; }, bb1 ? bb1.id : 'none'); if (bbRow === 'no row') await page.waitForTimeout(400); }
   chk('   a batch not yet sent offers Send and Void in the batches list', bbRow, 'Send|Void');
   const ldBatched = await page.evaluate(async id => { openLoadDetail(id); await new Promise(r => setTimeout(r, 300)); const m = Array.from(document.querySelectorAll('.modal-bg')).pop(); const t = m ? m.innerText.replace(/\s+/g, ' ') : ''; if (m) m.remove(); return t; }, lMat.id);
   chk('   Load Details agrees with the board for a batched load: Approved · On billing batch <id>, approved by Joshua', `${new RegExp(`Status Approved · On billing batch ${bb1.id}`).test(ldBatched)} ${/Approved by Joshua/.test(ldBatched)}`, 'true true');
