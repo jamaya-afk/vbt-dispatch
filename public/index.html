@@ -2045,6 +2045,8 @@ function openLoadDetail(id) {
   html += `<dt style="color:var(--txt3)">Material</dt><dd>${l.material}</dd>`;
   html += `<dt style="color:var(--txt3)">Loads</dt><dd>${l.loadsDelivered}/${l.loadsAssigned}</dd>`;
   html += `<dt style="color:var(--txt3)">Driver</dt><dd>${l.driverName || 'Unassigned'}</dd>`;
+  const ldTruck = (fleet || []).find(t => t.id === l.truckUnitId);
+  html += `<dt style="color:var(--txt3)">Truck</dt><dd>${ldTruck ? escapeHtml(ldTruck.truckNum) : (l.truckUnitId ? escapeHtml(l.truckUnitId) : (l.driverName ? 'No truck yet' : '—'))}</dd>`;
   html += `<dt style="color:var(--txt3)">Date</dt><dd>${fmtDate(l.deliveryDate)}</dd>`;
   if (po.jobCode) html += `<dt style="color:var(--txt3)">Job Code</dt><dd>${po.jobCode}</dd>`;
   if (po.address) html += `<dt style="color:var(--txt3)">Address</dt><dd>${po.address}, ${po.city || ''}</dd>`;
@@ -2052,7 +2054,8 @@ function openLoadDetail(id) {
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
   if (l.trailer) html += `<dt style="color:var(--txt3)">Trailer</dt><dd>${escapeHtml(l.trailer.number)}${l.trailer.type ? ' · ' + escapeHtml(l.trailer.type) : ''}</dd>`;
   if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}${(l.tons.openTickets || []).length ? ` <span style="font-size:11px;color:var(--A);font-weight:600">${l.tons.openTickets.length} ticket${l.tons.openTickets.length === 1 ? '' : 's'} loaded, not delivered${l.tons.openTons ? ` (${l.tons.openTons.toFixed(2)} t not counted)` : ''}</span>` : ''}</dd>`;
-  html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.approvalStatus}</dd>`;
+  const LD_STATUS = { pending: 'Not yet submitted', submitted: 'Awaiting approval', approved: l.billStatus === 'billed' ? 'Approved · Billed' : 'Approved · Ready to Bill', rejected: 'Rejected' };
+  html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.voided ? `Voided${l.voidReason ? ' — ' + escapeHtml(l.voidReason) : ''}` : (LD_STATUS[l.approvalStatus] || escapeHtml(String(l.approvalStatus)))}${!l.voided && l.approvalStatus === 'rejected' && l.rejectReason ? ` — ${escapeHtml(l.rejectReason)}` : ''}</dd>`;
   html += `</dl>`;
   if (l.segments && l.segments.length) {
     const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'open';
@@ -2970,6 +2973,8 @@ function tripCard(l) {
   }
 
   let action = '';
+  // Sent back by the office: the photo or the signature it named can be redone here, then Submit again.
+  const redoBtns = rejected ? `<div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn ghost" style="flex:1" onclick="openTicketUpload('${l.loadId}')">Replace ticket photo</button><button class="btn ghost" style="flex:1" onclick="openSig('${l.loadId}')">Sign again</button></div>` : '';
   if (allTripsDone && !hasImage && !submitted) {
     // All trips done — collect ticket, signature, submit
     action = `<button class="trip-action ticket" onclick="openTicketUpload('${l.loadId}')">
@@ -2990,7 +2995,7 @@ function tripCard(l) {
         Submit (${totalTrips})
       </button>
     </div>
-    <div class="action-hint">All ${totalTrips} loads delivered. Tap Submit to send for approval.</div>`;
+    ${redoBtns}<div class="action-hint">${rejected ? 'Fix what the office named — replace the photo or sign again — then Submit.' : `All ${totalTrips} loads delivered. Tap Submit to send for approval.`}</div>`;
   } else if (betweenTrips) {
     // Between trips — show "Start Load N+1"
     const next = (l.loadsDelivered || 0) + 1;
@@ -2999,7 +3004,12 @@ function tripCard(l) {
       Start Load ${next} of ${totalTrips}
     </button>
     <div class="action-hint">Heading back to the yard for the next load</div>
-    ${totalTrips > 1 && (Number(l.tripsCompleted) || 0) > 0 ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${Number(l.tripsCompleted) || 0} completed of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${Number(l.tripsCompleted) || 0} completed as incomplete</button>` : ''}`;
+    ${totalTrips > 1 && (Number(l.tripsCompleted) || 0) > 0 ? (
+      // Stop early submits the load: it needs the ticket photo and the customer's
+      // signature like any submission, so those come first, right here.
+      !hasImage ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openTicketUpload('${l.loadId}')">Ticket photo — needed to stop early</button>`
+      : !hasSig ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openSig('${l.loadId}')">Customer signature — needed to stop early</button>`
+      : `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${Number(l.tripsCompleted) || 0} completed of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${Number(l.tripsCompleted) || 0} completed as incomplete</button>`) : ''}`;
   } else if (!started && !submitted) {
     // Brand-new load, never started — same as "Start Load 1"
     action = `<button class="trip-action start" onclick="tripAction('${l.loadId}', 'start-trip')">
@@ -3069,7 +3079,7 @@ function tripCard(l) {
         Submit
       </button>
     </div>
-    <div class="action-hint">All set? Tap Submit. Delivered less than expected? Tap Incomplete.</div>`;
+    ${redoBtns}<div class="action-hint">${rejected ? 'Fix what the office named — replace the photo or sign again — then Submit.' : 'All set? Tap Submit.'}</div>`;
   }
   // Prepend the multi-trip banner so it sits above the action button
   action = tripBanner + action;
@@ -3257,7 +3267,9 @@ async function arrivedAtOwnYard(loadId) {
 // odometer reading (a new freight segment starts here) or may refuse until
 // another customer's freight is finished. Nothing is stamped until then.
 async function arrivedAtYard(loadId, yardId, gps, odometer) {
-  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action: 'arrived-pickup', gps, yardId, ...(odometer != null ? { odometer } : {}) });
+  let d;
+  try { d = await api('POST', `/api/loads/${loadId}/trip-action`, { action: 'arrived-pickup', gps, yardId, ...(odometer != null ? { odometer } : {}) }); }
+  catch (e) { toast('No connection — that tap did not get an answer. Check your signal; the card shows what the office has.', 'error'); closeYard(); try { await loadAll(); } catch (_) {} return renderDriver(); }
   if (d.ok && d.success !== false) {
     toast('Arrived at yard', 'success');
     closeYard();
@@ -3331,13 +3343,25 @@ async function tripAction(loadId, action, extra) {
     });
   } catch (e) {}
 
-  const d = await api('POST', `/api/loads/${loadId}/trip-action`, { action, gps, ...(extra || {}) });
+  let d;
+  try { d = await api('POST', `/api/loads/${loadId}/trip-action`, { action, gps, ...(extra || {}) }); }
+  catch (e) {
+    // No answer at all (no signal, request dropped). The tap may or may not
+    // have reached the office: say so, and redraw the card from the server.
+    toast('No connection — that tap did not get an answer. Check your signal; the card shows what the office has.', 'error');
+    try { await loadAll(); } catch (_) { /* still offline */ }
+    renderDriver();
+    return { ok: false, error: 'no connection' };
+  }
   if (d.ok) {
     toast(action === 'delivered' ? 'Submitted for approval!' : 'Updated', 'success');
     await loadAll();
     renderDriver();
   } else {
+    // Refused — often because the step already happened (a reply that was
+    // lost on the way). Redraw from the server so the card shows the truth.
     toast(d.error || 'Failed', 'error');
+    loadAll().then(() => renderDriver()).catch(() => {});
   }
   return d;
 }
@@ -3720,6 +3744,7 @@ async function approvalTelemetryHtml(loadId) {
     return `<div class="ask-tel"><div class="ld-tel-k">Linxup evidence</div>${d.trips.map(tr => {
       if (!tr.linked) return `<div>Trip ${tr.tripNum}: truck not linked</div>`;
       const p = tr.pickup, j = tr.jobsite;
+      if (!tr.positions) return `<div>Trip ${tr.tripNum}: no Linxup positions in this trip's window — telemetry says nothing either way</div>`;
       const pk = p.evidence === 'geofence' ? `${escapeHtml(p.name)} ${tClock(p.visits[0].enteredAt)}–${p.visits[0].leftAt ? tClock(p.visits[0].leftAt) : 'open'} (geofence)` : p.evidence === 'gps' ? `near ${escapeHtml(p.name)} ${tClock(p.gps.firstAt)} (GPS)` : p.evidence === 'none' ? `<span style="color:var(--A)">no activity at ${escapeHtml(p.name)}</span>` : 'no reference for the yard';
       const jb = j.evidence === 'gps' ? `near jobsite ${tClock(j.gps.firstAt)}–${tClock(j.gps.lastAt)} (GPS)` : j.evidence === 'none' ? `<span style="color:var(--A)">no activity near the jobsite</span>` : 'no jobsite pin';
       return `<div>Trip ${tr.tripNum}: ${pk} · ${jb}</div>`;
@@ -4083,7 +4108,7 @@ async function renderBillBatches() {
           ${b.syncStatus === 'failed' ? `<button class="btn ghost" onclick="retryBatch('${b.id}')">Retry</button>` : ''}
           ${b.syncStatus === 'unknown' ? `<button class="btn ghost" onclick="retryBatch('${b.id}')" title="Ask QuickBooks whether the invoice exists. Nothing is sent until it answers.">Reconcile with QuickBooks</button>` : ''}
           ${b.syncStatus === 'ready_to_bill' ? `<button class="btn primary" onclick="sendBatch('${b.id}')">Send</button>` : ''}
-          ${(b.syncStatus === 'sent_to_quickbooks' || b.syncStatus === 'failed' || b.syncStatus === 'unknown') ? `<button class="btn ghost" onclick="voidBatch('${b.id}')">Void</button>` : ''}
+          ${(b.syncStatus === 'ready_to_bill' || b.syncStatus === 'sent_to_quickbooks' || b.syncStatus === 'failed' || b.syncStatus === 'unknown') ? `<button class="btn ghost" onclick="voidBatch('${b.id}')">Void</button>` : ''}
         </td>
       </tr>`).join('')}
     </tbody>
@@ -4297,6 +4322,7 @@ function openEditPO(poId) {
   const p = (pos || []).find(x => x.id === poId); if (!p) return toast('PO not found', 'error');
   closeEditPO(); editPoId = poId;
   const mine = (loads || []).filter(l => l.poId === poId && !l.voided);
+  const voidedMine = (loads || []).filter(l => l.poId === poId && l.voided);   // reachable from here, so a void can be undone (Load Details carries Restore)
   const follow = mine.filter(loadIsOperationalUI).length;
   const frozen = poIsFrozen(poId);
   const matNames = (materials || []).map(m => typeof m === 'string' ? m : (m.name || m.material || ''));
@@ -4325,6 +4351,7 @@ function openEditPO(poId) {
         <div class="field"><label>Notes</label><textarea id="pe-notes" rows="2">${escapeHtml(p.notes || '')}</textarea></div>
         <div class="field"><label>Reason for the change (optional)</label><input type="text" id="pe-reason" placeholder="e.g. customer pushed the pour a day"></div>
         <div class="pe-follow"><b>${mine.length} load${mine.length === 1 ? '' : 's'} on this PO.</b> ${follow} can still follow a date, customer-price or yard change (nothing hauled yet)${mine.length - follow ? `; ${mine.length - follow} keep their date and prices (work started or on record).` : '.'}${p.geo ? ' Changing the address clears the saved jobsite pin.' : ''}</div>
+        ${voidedMine.length ? `<div class="pe-follow">${voidedMine.length} voided load${voidedMine.length === 1 ? '' : 's'} on this PO: ${voidedMine.map(v => `<a href="#" onclick="closeEditPO();openLoadDetail('${v.id}');return false">${escapeHtml(v.id)}</a>${v.voidReason ? ' (' + escapeHtml(v.voidReason) + ')' : ''}`).join(', ')} — open one to see it or restore it.</div>` : ''}
         <details class="pe-add"><summary>Add a load to this order</summary>
           <div class="pe-grid" style="margin-top:8px">
             <div class="field"><label>Driver</label><select id="pe-al-driver" onchange="peDriverChanged(this.value)">${drvOpts}</select></div>
@@ -4583,9 +4610,9 @@ function dbTile(key) {
   dbSetFilter(key);
 }
 
-const DB_BUCKET_LABEL = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In Progress', rejected: 'Rejected', 'awaiting-approval': 'Awaiting Approval', 'ready-to-bill': 'Ready to Bill', completed: 'Completed' };
+const DB_BUCKET_LABEL = { unassigned: 'Unassigned', assigned: 'Assigned', 'in-progress': 'In Progress', rejected: 'Rejected', 'awaiting-approval': 'Awaiting Approval', 'ready-to-bill': 'Approved', completed: 'Billed' };   // the Calendar's words for the same buckets
 const DB_STATE_LABEL  = { available: 'Available', assigned: 'Assigned', 'in-progress': 'In progress', completed: 'Done', off: 'Off', unavailable: 'In shop' };
-const DB_FILTER_TITLE = { missing: 'Missing information', conflicts: 'Conflicts', carried: 'Unfinished from earlier days' };
+const DB_FILTER_TITLE = { missing: 'Missing information', conflicts: 'Conflicts', carried: 'Unfinished from earlier days', 'ready-to-bill': 'Ready to Bill' };
 
 function paintToday() {
   const d = todayData; if (!d) return;
@@ -4603,6 +4630,7 @@ function paintToday() {
   if (dbFilter === 'missing') list = list.filter(l => l.missing.length);
   else if (dbFilter === 'conflicts') list = list.filter(l => l.conflicts.length);
   else if (dbFilter === 'carried') list = [...(d.carriedOver || [])].sort((x, y) => String(x.deliveryDate).localeCompare(String(y.deliveryDate)));
+  else if (dbFilter === 'ready-to-bill') list = list.filter(l => l.readyToBill);   // the tile's own rule, not the bucket (a load on a batch is approved, not ready)
   else if (dbFilter !== 'all') list = list.filter(l => l.bucket === dbFilter);
   const listTitle = dbFilter === 'all'
     ? `${d.loads.length} load${d.loads.length === 1 ? '' : 's'} · ${d.isToday ? 'today' : dateLabel}`
@@ -4726,6 +4754,8 @@ function dbLoadCard(l) {
   const carried = !!(todayData && l.deliveryDate && l.deliveryDate !== todayData.date);
   const office = role === 'manager' || role === 'admin';
   const flags = [
+    l.bucket === 'rejected' && l.rejectReason ? `<div class="db-flag missing">Rejected: ${escapeHtml(l.rejectReason)}</div>` : '',
+    l.bucket === 'ready-to-bill' ? (l.readyToBill ? `<div class="db-flag">Ready to Bill</div>` : `<div class="db-flag">On billing batch${l.billingBatchId ? ' ' + escapeHtml(l.billingBatchId) : ''} — not in Ready to Bill</div>`) : '',
     l.missing.length ? `<div class="db-flag missing">Missing: ${l.missing.map(escapeHtml).join(', ')}</div>` : '',
     ...l.conflicts.map(c => `<div class="db-flag conflict">${escapeHtml(c)}</div>`),
   ].join('');
@@ -5905,6 +5935,7 @@ async function renderMaterialCosts() {
       <div>
         <div style="font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.05em;font-weight:600">${mcMonthFilter ? mcMonthFilter : 'All time'}</div>
         <div style="font-size:24px;font-weight:700">${money(data.grandTotal)}</div>
+        ${data.estimatedTotal ? `<div style="font-size:11px;color:#b45309">${money(data.estimatedTotal)} of this is priced at a default rate — an estimate, not a vendor's price</div>` : ''}
         <div style="font-size:12px;color:var(--txt2)">${data.grandLoads} loads from outside vendors</div>
         <div style="font-size:11px;color:var(--txt3);margin-top:3px">Excludes VBT Yard (internal inventory)</div>
       </div>
@@ -5931,7 +5962,7 @@ async function renderMaterialCosts() {
               <div class="vendor-panel-sub">${v.location || ''} · ${v.totalLoads} load${v.totalLoads !== 1 ? 's' : ''} delivered</div>
             </div>
             <div style="text-align:right">
-              <div style="font-size:22px;font-weight:700;color:var(--R)">${money(v.totalCost)}${v.unconfigured ? ' <span style="font-size:11px;color:#b42318">incomplete</span>' : ''}</div>
+              <div style="font-size:22px;font-weight:700;color:var(--R)">${money(v.totalCost)}${v.unconfigured ? ' <span style="font-size:11px;color:#b42318">incomplete</span>' : ''}${v.estimated ? ` <span style="font-size:11px;color:#b45309" title="Part of this is priced at a default rate, not this vendor's price">${money(v.estimatedCost || 0)} estimated</span>` : ''}</div>
               <div style="font-size:11px;color:var(--txt3)">${pct}% of total spend</div>
               ${v.unconfigured ? `<div style="font-size:11px;color:#b42318;font-weight:600">Some loads not costed: unit ${(v.unconfiguredUnits || []).join(', ')} cannot be priced yet</div>` : ''}
             </div>
@@ -5943,8 +5974,8 @@ async function renderMaterialCosts() {
                 <td>${mat}</td>
                 <td>${d.unit || '—'}</td>
                 <td>${d.loads}</td>
-                <td>${money(d.unitPrice)}</td>
-                <td style="text-align:right;font-weight:600">${d.unconfigured ? '<span style="color:#b42318">not priceable</span>' : money(d.cost)}</td>
+                <td>${money(d.unitPrice)}${d.estimated ? ' <span style="font-size:10px;color:#b45309" title="Default rate — not this vendor\'s price. A vendor bill will not use it.">estimate</span>' : ''}</td>
+                <td style="text-align:right;font-weight:600">${d.unconfigured ? '<span style="color:#b42318">not priceable</span>' : money(d.cost)}${d.estimated && !d.unconfigured ? ' <span style="font-size:10px;color:#b45309">est.</span>' : ''}</td>
               </tr>`).join('')}
             </tbody>
           </table>

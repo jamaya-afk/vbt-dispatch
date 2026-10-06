@@ -7251,10 +7251,13 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
         bv.unconfigured = true;
         bv.unconfiguredUnits = [...new Set([...(bv.unconfiguredUnits || []), ln.unit])];
       }
-      if (!bv.byMaterial[l.material]) bv.byMaterial[l.material] = { loads: 0, cost: 0, unit: ln.unit, unitPrice: ln.rate, unconfigured: false };
+      if (!bv.byMaterial[l.material]) bv.byMaterial[l.material] = { loads: 0, cost: 0, unit: ln.unit, unitPrice: ln.rate, unconfigured: false, estimated: false };
       bv.byMaterial[l.material].loads += ln.loads;
       bv.byMaterial[l.material].cost  += ln.amount;
       if (ln.unconfigured) bv.byMaterial[l.material].unconfigured = true;
+      // A default rate is an estimate, not the vendor's price: said so here,
+      // as a vendor bill refuses it (the invoice never carries it either).
+      if (ln.isDefault) { bv.byMaterial[l.material].estimated = true; bv.estimated = true; bv.estimatedCost = (bv.estimatedCost || 0) + ln.amount; }
     }
   });
 
@@ -7264,13 +7267,15 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
   // Grand total
   const grandTotal = Object.values(byVendor).reduce((s, v) => s + v.totalCost, 0);
   const grandLoads = Object.values(byVendor).reduce((s, v) => s + v.totalLoads, 0);
+  const estimatedTotal = Object.values(byVendor).reduce((s, v) => s + (v.estimatedCost || 0), 0);
 
   res.json({
     vendors: byVendor,
     months,
     monthFilter,
     grandTotal,
-    grandLoads
+    grandLoads,
+    estimatedTotal,   // the part of grandTotal priced at a default rate, not a vendor's price
   });
 });
 // ── PO STATUS RECONCILIATION ─────────────────────────────────────────────────
@@ -7325,16 +7330,19 @@ app.get('/api/reports', reqMgr, async (req, res) => {
       totalLoads: tLoads.reduce((s, l) => s + (Number(l.loadsAssigned) || 0), 0),
       delivered: tLoads.reduce((s, l) => s + (Number(l.loadsDelivered) || 0), 0),
       completed: tLoads.filter(l => l.status === 'completed').length,
-      active:    tLoads.filter(l => l.status === 'active').length,
+      // "Active now" is the work the driver holds right now, as the board
+      // counts it — today's open loads and work begun on an earlier day and
+      // still open — not every load ever left unapproved.
+      active:    tLoads.filter(l => loadHoldsResources(l) && l.deliveryDate && (l.deliveryDate === todayStr() || (l.deliveryDate < todayStr() && loadWorkStarted(l)))).length,
     };
   });
 
-  // Customer volume
+  // Customer volume (voided loads count nowhere, as in every other table here)
   const custStats = {};
   allPos.forEach(p => {
     if (!custStats[p.customer]) custStats[p.customer] = { pos: 0, loads: 0, delivered: 0 };
     custStats[p.customer].pos++;
-    const pLoads = allLoads.filter(l => l.poId === p.id);
+    const pLoads = allLoads.filter(l => l.poId === p.id && !l.voided);
     custStats[p.customer].loads     += pLoads.reduce((s, l) => s + (Number(l.loadsAssigned) || 0), 0);
     custStats[p.customer].delivered += pLoads.reduce((s, l) => s + (Number(l.loadsDelivered) || 0), 0);
   });
@@ -7597,6 +7605,10 @@ function boardLoadRow(l, holding) {
     trailerId: l.trailerId || null, trailerNum: trailer ? trailer.number : '',
     yardId: pickup.id, yardName: pickup.name, yardIsActual: !!pickup.isActual,
     locked: !!l.locked, approvalStatus: l.approvalStatus, billStatus: l.billStatus || '',
+    // Billing, in the words the office needs: ready to bill by the one rule,
+    // or already claimed by a batch. And why a load came back, when it did.
+    readyToBill: isReadyToBill(l), billingBatchId: l.billingBatchId || '',
+    rejectReason: l.approvalStatus === 'rejected' ? (l.rejectReason || '') : '',
     isPartial: !!l.isPartial,
     stage: stage ? stage.label : '', stageKey: stage ? stage.key : '', stageSince: stage ? stage.since : null,
     missing: boardMissing(l, pickup, truck),
@@ -7864,7 +7876,12 @@ app.get('/api/today', reqMgr, async (req, res) => {
   const day = req.query.date || today;
   const now = Date.now();
   const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
-  const holding = dayLoads.filter(loadHoldsResources);
+  // Work begun on an earlier day and still open (a trip left overnight, a
+  // load half delivered) holds its driver and truck on this day just as
+  // today's work does. It is not on the day's list — the Carried Over tile
+  // shows it — but it counts for who is free and what is on which truck.
+  const carriedWork = store.loads.filter(l => !l.voided && l.deliveryDate && l.deliveryDate < day && loadHoldsResources(l) && loadWorkStarted(l));
+  const holding = [...dayLoads.filter(loadHoldsResources), ...carriedWork];
   const loads = dayLoads.map(l => boardLoadRow(l, holding));
   // Linxup, per truck: computed once here, shared by the truck, driver and load rows.
   const telByTruck = new Map((store.trucks || []).filter(t => t.active).map(t => [t.id, truckTelematics(t, holding.find(l => l.truckUnitId === t.id) || null, now, dayLoads)]));
@@ -7873,14 +7890,14 @@ app.get('/api/today', reqMgr, async (req, res) => {
   // Drivers: their state comes from the loads that hold them today, plus what
   // they are doing right now and on which truck.
   const drivers = (store.drivers || []).filter(d => d.active).map(d => {
-    const mine = dayLoads.filter(l => l.truckId === d.id);
+    const mine = [...dayLoads, ...carriedWork].filter(l => l.truckId === d.id);
     const held = mine.filter(loadHoldsResources);
     const current = held.find(loadMidTrip) || held[0] || null;
     const state = d.status === 'off' ? 'off' : held.some(loadMidTrip) ? 'in-progress' : held.length ? 'assigned' : mine.length ? 'completed' : 'available';
     const shift = openShiftFor(d.id);
     const truck = current ? getTruckForLoad(current) : (shift ? (store.trucks || []).find(t => t.id === shift.truckId) : null);
     const usual = !truck && d.defaultTruckId ? (store.trucks || []).find(t => t.id === d.defaultTruckId) : null;
-    const row = current ? loads.find(x => x.id === current.id) : null;
+    const row = current ? (loads.find(x => x.id === current.id) || boardLoadRow(current, holding)) : null;   // a carried-over load has no row on the day's list
     return {
       id: d.id, name: d.name, status: d.status, state,
       openLoadIds: held.map(l => l.id),
@@ -8060,6 +8077,10 @@ app.delete('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
 // is told exactly what, and can go ahead with `force` — the override is
 // written to the audit log with the reason given.
 function loadMidTrip(l) { return (l.trips || []).some(t => t.timestamps && t.timestamps.start && !t.timestamps.completed); }
+// Work the driver has actually begun on a load: a trip started, or a load
+// delivered. Begun on an earlier day and still open, it is the driver's
+// unfinished work today — on the phone, on the board and in the conflict check.
+function loadWorkStarted(l) { return (l.trips || []).length > 0 || (Number(l.loadsDelivered) || 0) > 0; }
 // A load holds its driver, truck and trailer while it is live work: not
 // voided, not submitted or approved, and not yet fully delivered. The conflict
 // check and the dispatch board's availability both use this one rule, so a
@@ -8080,6 +8101,13 @@ function assignmentConflicts(l, { driverId, truckUnitId, trailerId }, { extraLoa
   const label = x => x.poId === '__new__' ? x.id : `${x.id} (PO ${poOf(x.poId).poNumber || '—'}${poOf(x.poId).customer ? ', ' + poOf(x.poId).customer : ''})`;
   const drvName = id => (rosterDriver(id) || {}).name || id;
   const sameDay = [...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate === l.deliveryDate);
+  // Work begun on an earlier day and still open holds its driver and truck
+  // today too: a driver mid-haul on yesterday's load, the truck he is on.
+  // Planning a future day against today's unfinished work is not a conflict.
+  if (l.deliveryDate && l.deliveryDate <= todayStr()) {
+    sameDay.push(...[...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate && x.deliveryDate < l.deliveryDate && loadWorkStarted(x)));
+  }
+  const whenBusy = other => other.deliveryDate === l.deliveryDate ? 'the same day' : `unfinished since ${other.deliveryDate}`;
   const newDriver = driverId !== undefined ? driverId : l.truckId;
   if (driverId !== undefined && driverId !== l.truckId) {
     const open = openTripOf(l);
@@ -8094,14 +8122,14 @@ function assignmentConflicts(l, { driverId, truckUnitId, trailerId }, { extraLoa
     const other = sameDay.find(x => x.truckUnitId === truckUnitId && x.truckId && x.truckId !== newDriver);
     if (other) {
       const t = (store.trucks || []).find(x => x.id === truckUnitId);
-      out.push({ type: 'truck-busy', loadId: other.id, message: `${t ? t.truckNum : truckUnitId} is on ${other.driverName || drvName(other.truckId)}'s load ${label(other)} the same day.` });
+      out.push({ type: 'truck-busy', loadId: other.id, message: `${t ? t.truckNum : truckUnitId} is on ${other.driverName || drvName(other.truckId)}'s load ${label(other)} ${whenBusy(other)}.` });
     }
   }
   if (trailerId !== undefined && trailerId) {
     const other = sameDay.find(x => x.trailerId === trailerId && x.truckId && x.truckId !== newDriver);
     if (other) {
       const t = (store.trailers || []).find(x => x.id === trailerId);
-      out.push({ type: 'trailer-busy', loadId: other.id, message: `Trailer ${t ? t.number : trailerId} is on ${other.driverName || drvName(other.truckId)}'s load ${label(other)} the same day.` });
+      out.push({ type: 'trailer-busy', loadId: other.id, message: `Trailer ${t ? t.number : trailerId} is on ${other.driverName || drvName(other.truckId)}'s load ${label(other)} ${whenBusy(other)}.` });
     }
   }
   return out;

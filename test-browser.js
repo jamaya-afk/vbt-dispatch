@@ -373,6 +373,43 @@ async function call(cookie, method, path, body) {
   chk('   no browser confirm() or prompt() anywhere in this', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
 
+  console.log('── Office: the board speaks the Calendar\'s words; Load Details reads as a record ──');
+  // OA1: Matthew's load is approved (Ready to Bill), Carlos's was sent back with a reason.
+  await page.evaluate(async () => { await loadAll(); goTab('today'); }); await page.waitForTimeout(700);
+  const oa1 = await page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('#db-loads .qa-card'));
+    const pick = re => cards.find(c => /PO 10484/.test(c.innerText) && re.test(c.innerText));
+    const info = c => c ? `${c.querySelector('.qa-chip').textContent.trim()} | ${Array.from(c.querySelectorAll('.db-flag')).map(f => f.innerText.replace(/\s+/g, ' ').trim()).join(' / ')}` : 'missing';
+    return { mat: info(pick(/Matthew/)), car: info(pick(/Carlos/)) };
+  });
+  chk('1. the approved load\'s chip says Approved — the Calendar\'s word — and its flag says Ready to Bill', oa1.mat, 'Approved | Ready to Bill');
+  chk('   the rejected load\'s chip says Rejected and the card carries the office\'s reason', oa1.car, 'Rejected | Rejected: Ticket photo is unreadable');
+  const ldText = async id => page.evaluate(async id => { openLoadDetail(id); await new Promise(r => setTimeout(r, 300)); const m = Array.from(document.querySelectorAll('.modal-bg')).pop(); const t = m ? m.innerText.replace(/\s+/g, ' ') : 'no modal'; if (m) m.remove(); return t; }, id);
+  const ldMat = await ldText(lMat.id), ldCar = await ldText(lCar.id);
+  chk('2. Load Details names the truck and reads the status in words: Truck #4, Approved · Ready to Bill', `${/Truck Truck #4 /.test(ldMat)} ${/Status Approved · Ready to Bill/.test(ldMat)}`, 'true true');
+  chk('   …and for the rejected load: Truck #2B, Rejected — with the reason', `${/Truck Truck #2B /.test(ldCar)} ${/Status Rejected — Ticket photo is unreadable/.test(ldCar)}`, 'true true');
+  // A voided load is reachable from its PO: Edit PO lists it, the link opens Load Details with Restore.
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'VOID-2', customer: 'Void Co', deliveryDate: '2027-03-10', address: '2 Void St', city: 'Fresno', plannedVendorId: 'vbt' },
+    splits: [{ truckId: '', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }, { truckId: '', material: 'Dirt', loadsAssigned: 2, vendorId: 'vbt' }] });
+  const dv2 = (await call(mgr, 'GET', '/api/data')).data; const pv2 = dv2.pos.find(p => p.poNumber === 'VOID-2'); const lv2 = dv2.loads.find(l => l.poId === pv2.id && l.loadsAssigned === 1);
+  await call(mgr, 'POST', `/api/loads/${lv2.id}/void`, { reason: 'wrong site' });
+  await page.evaluate(async () => { await loadAll(); goTab('pos'); }); await page.waitForTimeout(500);
+  const pv = await page.evaluate(async () => {
+    const card = Array.from(document.querySelectorAll('#pos-content .qa-card')).find(c => /VOID-2/.test(c.innerText));
+    const btn = card && Array.from(card.querySelectorAll('button')).find(b => b.textContent.trim() === 'Edit PO'); if (!btn) return null;
+    btn.click(); await new Promise(r => setTimeout(r, 300));
+    const m = document.getElementById('poedit-modal'); if (!m) return null;
+    const follow = Array.from(m.querySelectorAll('.pe-follow')).map(e => e.innerText.replace(/\s+/g, ' ').trim());
+    const link = m.querySelector('.pe-follow a'); if (!link) return { follow, link: false };
+    link.click(); await new Promise(r => setTimeout(r, 300));
+    const ld = Array.from(document.querySelectorAll('.modal-bg')).pop();
+    const out = { follow, link: true, editClosed: !document.getElementById('poedit-modal'), ld: ld ? ld.innerText.replace(/\s+/g, ' ') : 'no modal' };
+    if (ld) ld.remove(); return out;
+  });
+  chk('3. Edit PO lists the voided load with its reason, as a link', pv ? `${pv.follow.length} ${pv.follow[1]}` : 'no modal', `2 1 voided load on this PO: ${lv2.id} (wrong site) — open one to see it or restore it.`);
+  chk('   …the link closes Edit PO and opens Load Details: Voided — wrong site, with Restore Load', pv ? `${pv.link} ${pv.editClosed} ${/Status Voided — wrong site/.test(pv.ld)} ${/Restore Load/.test(pv.ld)}` : 'no modal', 'true true true true');
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(400);
+
   console.log('── Office: Edit PO — the order changes, the work follows where it can ──');
   // A fresh order for Leonardo (Truck #2, nothing hauled), edited from the PO card.
   await call(mgr, 'POST', '/api/pos', { po: { poNumber: '10485', customer: 'Gate Rd Builders', deliveryDate: today, address: '9 Gate Rd', city: 'Fresno', plannedVendorId: 'vbt' },
@@ -436,6 +473,15 @@ async function call(cookie, method, path, body) {
   await page.fill('#ask-reason', 'paper invoice cancelled'); await page.click('#ask-go'); await page.waitForTimeout(900);
   lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
   chk('   …back to Ready to Bill, the reversal on the record', `${lm2.billStatus} ${lm2.manualBillRef || ''}|${(lm2.billHistory || []).map(h => h.action + ':' + h.reason + ':' + h.reference).join(',')}`, 'ready |unbilled:paper invoice cancelled:INV-7 (paper)');
+  // OA1: a batch made but not yet sent can be voided from the list — a wrong batch never has to reach QuickBooks first.
+  const bb1 = ((await call(mgr, 'POST', '/api/billing-batches', { loadIds: [lMat.id] })).data.batches || [])[0];
+  await page.evaluate(async () => { await loadAll(); goTab('billing'); setBillSubview('batches'); }); await page.waitForTimeout(900);
+  const bbRow = await page.evaluate(id => { const r = Array.from(document.querySelectorAll('tr')).find(x => x.innerText.includes(id)); return r ? Array.from(r.querySelectorAll('button')).map(b => b.textContent.trim()).join('|') : 'no row'; }, bb1 ? bb1.id : 'none');
+  chk('   a batch not yet sent offers Send and Void in the batches list', bbRow, 'Send|Void');
+  await call(mgr, 'POST', `/api/billing-batches/${bb1.id}/void`, { reason: 'made in error' });
+  lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
+  chk('   …voided before sending: the load is back in Ready to Bill, nothing went to QuickBooks', `${lm2.billStatus} ${lm2.billingBatchId || ''}`, 'ready ');
+  await page.evaluate(() => { setBillSubview('ready'); goTab('history'); }); await page.waitForTimeout(700);   // back where the section was: History, for the archive step
   await call(mgr, 'POST', '/api/loads/bill', { loadIds: [lMat.id], reference: 'INV-8' });
   await page.evaluate(() => renderHistory()); await page.waitForTimeout(700);
   await page.click('#history-content .history-head button.btn.success'); await page.waitForTimeout(400);
@@ -794,6 +840,25 @@ async function call(cookie, method, path, body) {
   await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'trip-complete' });
   await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   chk('2. load 1 delivered: Start Load 2 of 3, indicator 2 of 3, 1 delivered', await cardState(), 'Start Load 2 of 3 | 2/3/1');
+  console.log('── Driver: Stop early asks for the photo and the signature first; a tap with no answer says so ──');
+  // OA1: between trips with nothing on file, the stop-early path collects the evidence a submission needs — on the phone, not a dead end.
+  const stopBtn = async () => d.page.evaluate(() => { const card = Array.from(document.querySelectorAll('.trip-card')).find(c => /BTN-3/.test(c.innerText)); return Array.from(card.querySelectorAll('button')).map(x => x.innerText.replace(/\s+/g, ' ').trim()).find(t => /stop early/i.test(t)) || 'none'; });
+  chk('1. between trips with no ticket photo on the load, the stop-early path asks for the photo first', await stopBtn(), 'Ticket photo — needed to stop early');
+  await call(drv, 'PUT', `/api/loads/${bl.id}`, { ticketImage: PNG });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  chk('   with the photo on file, it asks for the customer\'s signature', await stopBtn(), 'Customer signature — needed to stop early');
+  await d.page.evaluate(() => { const card = Array.from(document.querySelectorAll('.trip-card')).find(c => /BTN-3/.test(c.innerText)); Array.from(card.querySelectorAll('button')).find(x => /needed to stop early/.test(x.innerText)).click(); }); await d.page.waitForTimeout(400);
+  chk('   …and the tap opens the signature pad', await d.page.evaluate(() => document.getElementById('sig-modal').style.display), 'flex');
+  await d.page.evaluate(() => closeSig());
+  await call(drv, 'PUT', `/api/loads/${bl.id}`, { pod: { signedBy: 'Site Foreman', signature: PNG, signedAt: new Date().toISOString() } });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  chk('   with both on file, Stop early is offered with the one completed trip on record', await stopBtn(), 'Stop early — submit 1 completed as incomplete');
+  // A tap that never gets an answer (no signal): said plainly, the card redrawn from the server, nothing stamped by the phone.
+  await d.page.route('**/api/loads/*/trip-action', r => r.abort());
+  const lost = await d.page.evaluate(async id => { const res = await tripAction(id, 'start-trip'); return { toast: Array.from(document.querySelectorAll('.toast')).map(x => x.textContent).join(' | '), err: res && res.error }; }, bl.id);
+  await d.page.unroute('**/api/loads/*/trip-action'); await d.page.waitForTimeout(1200);   // the card is redrawn from the server after the toast
+  const lostLoad = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === bl.id);
+  chk('2. a tap that gets no answer says "No connection…" and nothing is stamped — the card shows what the office has', `${/No connection — that tap did not get an answer/.test(lost.toast)} ${lost.err} ${lostLoad.trips.length} ${await cardState()}`, 'true no connection 1 Start Load 2 of 3 | 2/3/1');
   await runTrip(2);
   chk('3. load 2 delivered: Start Load 3 of 3, indicator 3 of 3, 2 delivered', await cardState(), 'Start Load 3 of 3 | 3/3/2');
   // Tapping the button starts trip 3 and leaves trips 1 and 2 untouched.
@@ -809,6 +874,18 @@ async function call(cookie, method, path, body) {
   await call(drv, 'POST', `/api/loads/${bl.id}/trip-action`, { action: 'trip-complete' });
   await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   chk('4. load 3 delivered: no Start Load button; indicator 3 of 3, 3 delivered', await cardState(), 'no-start-button | 3/3/3');
+  console.log('── Driver: a load sent back can redo its evidence on the phone ──');
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'REJ-1', customer: 'Redo Co', deliveryDate: today, address: '1 Redo St', city: 'Fresno', plannedVendorId: 'vbt' }, splits: [{ truckId: 'beryle', truckUnitId: 'truck-12', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }] });
+  const rjData = (await call(mgr, 'GET', '/api/data')).data; const rl = rjData.loads.find(l => l.poId === rjData.pos.find(p => p.poNumber === 'REJ-1').id);
+  for (const a of [{ action: 'start-trip' }, { action: 'arrived-pickup', yardId: 'vbt' }, { action: 'loaded', ticket: { source: 'vbt', number: 'REJ-1', netTons: 10, photo: PNG } }, { action: 'arrived-jobsite' }, { action: 'trip-complete' }]) await call(drv, 'POST', `/api/loads/${rl.id}/trip-action`, a);
+  await call(drv, 'PUT', `/api/loads/${rl.id}`, { pod: { signedBy: 'Site Foreman', signature: PNG, signedAt: new Date().toISOString() } });
+  await call(drv, 'POST', `/api/loads/${rl.id}/trip-action`, { action: 'delivered' });
+  await call(mgr, 'POST', `/api/loads/${rl.id}/reject`, { reason: 'Signature is not the foreman\'s' });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  const rj = await d.page.evaluate(() => { const card = Array.from(document.querySelectorAll('.trip-card')).find(c => /REJ-1/.test(c.innerText)); if (!card) return 'no-card';
+    const btns = Array.from(card.querySelectorAll('button')).map(b => b.innerText.replace(/\s+/g, ' ').trim());
+    return `${btns.filter(t => /Replace ticket photo|Sign again|^Submit/.test(t)).join('|')} || ${(card.querySelector('.action-hint') || {}).innerText || ''}`; });
+  chk('1. a rejected load offers Replace ticket photo and Sign again under Submit, and says what to do', rj, 'Submit (1)|Replace ticket photo|Sign again || Fix what the office named — replace the photo or sign again — then Submit.');
   await d.ctx.close();
   // Access probes with the driver's own session cookie (outside the page, so
   // the page's console stays clean of expected 403s).

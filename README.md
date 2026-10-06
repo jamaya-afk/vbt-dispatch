@@ -130,6 +130,16 @@ carlos / carlos123
   a change (fleet, notification settings, costing, a PO with a duplicate
   number, a driver's submission with a count that disagrees) refuses before
   it changes anything, so a 400 never leaves a half-applied record behind.
+- **Unfinished work holds its driver and truck.** A trip started yesterday
+  and left open, or a load half delivered, keeps its driver and truck busy on
+  today's board and in the conflict check ("unfinished since <date>"); the
+  Carried Over tile shows it and the office moves it to today or closes it.
+  Dispatch uses the Calendar's words (Approved / Billed); a load on a billing
+  batch says so; Load Details names the truck and reads the status in words;
+  Edit PO lists the PO's voided loads so a void can be undone; Material Costs
+  calls a default rate an estimate. On the phone, Stop early first asks for
+  the photo and the signature it needs, a load sent back can redo both, and a
+  tap that gets no answer says so.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on
