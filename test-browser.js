@@ -384,6 +384,10 @@ async function call(cookie, method, path, body) {
   });
   chk('1. the approved load\'s chip says Approved — the Calendar\'s word — and its flag says Ready to Bill', oa1.mat, 'Approved | Ready to Bill');
   chk('   the rejected load\'s chip says Rejected and the card carries the office\'s reason', oa1.car, 'Rejected | Rejected: Ticket photo is unreadable');
+  // OA2: the load sent back is counted in the attention row and the tile filters the board to it.
+  const rjt = await page.evaluate(async () => { const tile = Array.from(document.querySelectorAll('#db-tiles .db-tile')).find(t => (t.querySelector('.l') || {}).textContent.trim() === 'Rejected'); const tileTxt = tile ? tile.textContent.replace(/\s+/g, ' ').trim() : 'none'; dbTile('rejected'); await new Promise(r => setTimeout(r, 200));
+    const chips = Array.from(document.querySelectorAll('#db-loads .qa-card .qa-chip')).map(e => e.textContent.trim()); const title = document.querySelector('#db-loads .db-sec span').textContent.replace(/\s+/g, ' ').trim(); dbSetFilter('all'); return { tile: tileTxt, chips: [...new Set(chips)].join('|'), title }; });
+  chk('   a Rejected tile counts the load sent back and filters the board to it', `${/^1 ?Rejected/.test(rjt.tile)} ${/sent back to the driver/.test(rjt.tile)} ${rjt.chips} ${rjt.title}`, 'true true Rejected 1 · Rejected');
   const ldText = async id => page.evaluate(async id => { openLoadDetail(id); await new Promise(r => setTimeout(r, 300)); const m = Array.from(document.querySelectorAll('.modal-bg')).pop(); const t = m ? m.innerText.replace(/\s+/g, ' ') : 'no modal'; if (m) m.remove(); return t; }, id);
   const ldMat = await ldText(lMat.id), ldCar = await ldText(lCar.id);
   chk('2. Load Details names the truck and reads the status in words: Truck #4, Approved · Ready to Bill', `${/Truck Truck #4 /.test(ldMat)} ${/Status Approved · Ready to Bill/.test(ldMat)}`, 'true true');
@@ -453,7 +457,7 @@ async function call(cookie, method, path, body) {
     return { steps: steps.join(' → '), amount: row ? row.querySelector('.bill-amt').innerText.replace(/\s+/g, ' ').trim() : 'no row', total: (document.getElementById('bill-shown-total') || {}).innerText, sel: document.getElementById('bill-sel-total').innerText };
   });
   chk('1. the strip reads Submitted → Approved → Ready to Bill → Billed → Archived, with live counts, Ready active', bvis.steps, 'Submitted:0 → Approved:1 → Ready to Bill*:1 → Billed:0 → Archived:⌁');
-  chk('2. the Ready to Bill table prices each load and totals the page', `${bvis.amount} | ${bvis.total} | ${bvis.sel}`, '$625.00 $25/ton | $625.00 | ');
+  chk('2. the Ready to Bill table prices each load and totals the page', `${bvis.amount} | ${bvis.total} | ${bvis.sel}`, '$625.00 $25/ton · default rate | $625.00 | ');   // OA2: Gate Rd Builders has no price on file — the row says so
   await page.click('#bill-list tbody tr input[type=checkbox]'); await page.waitForTimeout(200);
   chk('   selecting shows the selected total next to the actions', await page.evaluate(() => document.getElementById('bill-sel-total').innerText.replace(/\s+/g, ' ')), 'Selected: 1 · $625.00');
   await page.click('#mark-billed-btn'); await page.waitForTimeout(400);
@@ -478,7 +482,12 @@ async function call(cookie, method, path, body) {
   await page.evaluate(async () => { await loadAll(); goTab('billing'); setBillSubview('batches'); }); await page.waitForTimeout(900);
   const bbRow = await page.evaluate(id => { const r = Array.from(document.querySelectorAll('tr')).find(x => x.innerText.includes(id)); return r ? Array.from(r.querySelectorAll('button')).map(b => b.textContent.trim()).join('|') : 'no row'; }, bb1 ? bb1.id : 'none');
   chk('   a batch not yet sent offers Send and Void in the batches list', bbRow, 'Send|Void');
+  const ldBatched = await page.evaluate(async id => { openLoadDetail(id); await new Promise(r => setTimeout(r, 300)); const m = Array.from(document.querySelectorAll('.modal-bg')).pop(); const t = m ? m.innerText.replace(/\s+/g, ' ') : ''; if (m) m.remove(); return t; }, lMat.id);
+  chk('   Load Details agrees with the board for a batched load: Approved · On billing batch <id>, approved by Joshua', `${new RegExp(`Status Approved · On billing batch ${bb1.id}`).test(ldBatched)} ${/Approved by Joshua/.test(ldBatched)}`, 'true true');
   await call(mgr, 'POST', `/api/billing-batches/${bb1.id}/void`, { reason: 'made in error' });
+  const pvg = (await call(mgr, 'POST', '/api/billing-batches/preview', { loadIds: [lMat.id] })).data.groups;
+  const pvTxt = await page.evaluate(groups => { showInvoicePreviewModal(groups, false); const t = (document.getElementById('qb-preview-body') || {}).innerText || ''; const m = document.getElementById('qb-preview-modal'); if (m) m.style.display = 'none'; return t.replace(/\s+/g, ' '); }, pvg);
+  chk('   the invoice preview says the line is priced at the default rate — no customer price on file', /Dirt — 1 load \(25\.00 ton @ \$25\/ton\) default rate — no customer price on file/.test(pvTxt), true);
   lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
   chk('   …voided before sending: the load is back in Ready to Bill, nothing went to QuickBooks', `${lm2.billStatus} ${lm2.billingBatchId || ''}`, 'ready ');
   await page.evaluate(() => { setBillSubview('ready'); goTab('history'); }); await page.waitForTimeout(700);   // back where the section was: History, for the archive step
@@ -631,7 +640,7 @@ async function call(cookie, method, path, body) {
   });
   chk('2. Beryle\'s row keeps VBT\'s stage and adds Linxup beside it: Moving · 8 mph S · engine on · odometer · GPS age · address · Linxup driver', `${/Loaded \/ en route/.test(lxb.stage)} ${/^Moving · 8 mph S · engine on · odo 55,959 · Linxup GPS \d+ s ago 7238 Landing Cove St, Bakersfield, CA 93313 Linxup driver: Jesus Guzman \(Rigo\)/.test(lxb.tel)}`, 'true true');
   chk('   …the disagreement is a flag and a tile, not a reassignment', `${lxb.flag} | ${lxb.tiles.includes('Telemetry')}`, 'Linxup reports Jesus Guzman in Truck #12; VBT has Beryle assigned. | true');
-  chk('   the truck chip carries the Linxup state', /Truck #12 · Beryle MOVING/.test(lxb.chip), true);
+  chk('   the truck chip carries the Linxup state, named as Linxup\'s', /Truck #12 · Beryle LINXUP · MOVING/.test(lxb.chip), true);   // OA2: the chip says whose word it is
   const lxAssign = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id);
   chk('   VBT\'s load still belongs to Beryle on Truck #12', `${lxAssign.truckId} ${lxAssign.truckUnitId}`, 'beryle truck-12');
   await page.evaluate(() => goTab('fleet')); await page.waitForTimeout(700);
@@ -886,6 +895,22 @@ async function call(cookie, method, path, body) {
     const btns = Array.from(card.querySelectorAll('button')).map(b => b.innerText.replace(/\s+/g, ' ').trim());
     return `${btns.filter(t => /Replace ticket photo|Sign again|^Submit/.test(t)).join('|')} || ${(card.querySelector('.action-hint') || {}).innerText || ''}`; });
   chk('1. a rejected load offers Replace ticket photo and Sign again under Submit, and says what to do', rj, 'Submit (1)|Replace ticket photo|Sign again || Fix what the office named — replace the photo or sign again — then Submit.');
+  console.log('── Driver: Stop early while a trip is under way; redo on a rejected partial load; a trip under way since yesterday ──');
+  // Beryle's day is open on Truck #2, so an outside yard would ask for an odometer here; our own yard asks nothing, and the card states under test are the same.
+  const mkPo = async (num, date, n) => { await call(mgr, 'POST', '/api/pos', { po: { poNumber: num, customer: num + ' Co', deliveryDate: date, address: '1 Audit St', city: 'Fresno', plannedVendorId: 'vbt' }, splits: [{ truckId: 'beryle', truckUnitId: 'truck-12', material: 'Dirt', loadsAssigned: n, vendorId: 'vbt' }] }); const dd = (await call(mgr, 'GET', '/api/data')).data; return dd.loads.find(l => l.poId === dd.pos.find(p => p.poNumber === num).id); };
+  const tripOf = async (id, n) => { for (const a of [{ action: 'start-trip' }, { action: 'arrived-pickup', yardId: 'vbt' }, { action: 'loaded', ticket: { source: 'vbt', number: `OA2-${n}-${Date.now()}`, netTons: 24, photo: PNG } }, { action: 'arrived-jobsite' }, { action: 'trip-complete' }]) await call(drv, 'POST', `/api/loads/${id}/trip-action`, a); };
+  const sign = id => call(drv, 'PUT', `/api/loads/${id}`, { pod: { signedBy: 'F', signature: PNG, signedAt: new Date().toISOString() } });
+  const oa = await mkPo('OA2-A', today, 3); await tripOf(oa.id, 1); await tripOf(oa.id, 2); await call(drv, 'POST', `/api/loads/${oa.id}/trip-action`, { action: 'start-trip' }); await sign(oa.id);
+  const ob = await mkPo('OA2-B', today, 3); await tripOf(ob.id, 1); await sign(ob.id); await call(drv, 'POST', `/api/loads/${ob.id}/trip-action`, { action: 'incomplete' }); await call(mgr, 'POST', `/api/loads/${ob.id}/reject`, { reason: 'Ticket photo is unreadable' });
+  const yday = new Date(Date.parse(today + 'T12:00:00Z') - 86400000).toISOString().slice(0, 10);
+  const oc = await mkPo('OA2-C', yday, 2); for (const a of [{ action: 'start-trip' }, { action: 'arrived-pickup', yardId: 'vbt' }, { action: 'loaded', ticket: { source: 'vbt', number: `OA2-C-${Date.now()}`, netTons: 24, photo: PNG } }]) await call(drv, 'POST', `/api/loads/${oc.id}/trip-action`, a);
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1500);
+  const cardOf = re => d.page.evaluate(re => { const c = Array.from(document.querySelectorAll('.trip-card')).find(c => new RegExp(re).test(c.innerText)); if (!c) return null; return { badge: (c.querySelector('.today-badge') || {}).innerText || '', buttons: Array.from(c.querySelectorAll('button')).map(b => b.innerText.replace(/\s+/g, ' ').trim()).filter(Boolean).join('|'), hint: Array.from(c.querySelectorAll('.action-hint')).map(h => h.innerText.replace(/\s+/g, ' ').trim()).join(' | ') }; }, re);
+  const ca = await cardOf('OA2-A'), cb = await cardOf('OA2-B'), cc = await cardOf('OA2-C');
+  chk('1. two delivered and trip 3 started by mistake: the card still offers Stop early beside the next step', ca ? ca.buttons : 'no card', 'Arrived at VBT Yard|Stop early — submit 2 completed as incomplete');
+  chk('2. a rejected partial load offers Replace ticket photo and Sign again, and Stop early to resubmit', cb ? `${cb.buttons} || ${cb.hint}` : 'no card', 'Start Load 2 of 3|Replace ticket photo|Sign again|Stop early — submit 1 completed as incomplete || Fix what the office named — replace the photo or sign again — then Stop early to resubmit, or keep hauling.');
+  chk('3. a trip under way since yesterday is on the phone, badged with its day, with its next step', cc ? `${cc.badge} ${cc.buttons}` : 'no card', `FROM ${yday} Arrived at Job Site`);
+  chk('   …and the earlier-days banner no longer names it', await d.page.evaluate(() => !/OA2-C/.test(document.getElementById('day-card').innerText)), true);
   await d.ctx.close();
   // Access probes with the driver's own session cookie (outside the page, so
   // the page's console stays clean of expected 403s).

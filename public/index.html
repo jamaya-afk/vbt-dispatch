@@ -2054,8 +2054,11 @@ function openLoadDetail(id) {
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
   if (l.trailer) html += `<dt style="color:var(--txt3)">Trailer</dt><dd>${escapeHtml(l.trailer.number)}${l.trailer.type ? ' · ' + escapeHtml(l.trailer.type) : ''}</dd>`;
   if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}${(l.tons.openTickets || []).length ? ` <span style="font-size:11px;color:var(--A);font-weight:600">${l.tons.openTickets.length} ticket${l.tons.openTickets.length === 1 ? '' : 's'} loaded, not delivered${l.tons.openTons ? ` (${l.tons.openTons.toFixed(2)} t not counted)` : ''}</span>` : ''}</dd>`;
-  const LD_STATUS = { pending: 'Not yet submitted', submitted: 'Awaiting approval', approved: l.billStatus === 'billed' ? 'Approved · Billed' : 'Approved · Ready to Bill', rejected: 'Rejected' };
+  const LD_STATUS = { pending: 'Not yet submitted', submitted: 'Awaiting approval', approved: l.billStatus === 'billed' ? 'Approved · Billed' : l.billingBatchId ? `Approved · On billing batch ${escapeHtml(l.billingBatchId)}` : 'Approved · Ready to Bill', rejected: 'Rejected' };
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.voided ? `Voided${l.voidReason ? ' — ' + escapeHtml(l.voidReason) : ''}` : (LD_STATUS[l.approvalStatus] || escapeHtml(String(l.approvalStatus)))}${!l.voided && l.approvalStatus === 'rejected' && l.rejectReason ? ` — ${escapeHtml(l.rejectReason)}` : ''}</dd>`;
+  if (l.approvalStatus === 'approved' && (l.approvedBy || l.approvedAt)) html += `<dt style="color:var(--txt3)">Approved</dt><dd>${l.approvedBy ? 'by ' + escapeHtml(l.approvedBy) : ''}${l.approvedAt ? ' · ' + new Date(l.approvedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}${(l.approvalWarnings || []).length ? ` — with gaps acknowledged: ${escapeHtml(l.approvalWarnings.join('; '))}` : ''}</dd>`;
+  if (l.voided && (l.voidedBy || l.voidedAt)) html += `<dt style="color:var(--txt3)">Voided</dt><dd>${l.voidedBy ? 'by ' + escapeHtml(l.voidedBy) : ''}${l.voidedAt ? ' · ' + new Date(l.voidedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}</dd>`;
+  if ((l.reassignHistory || []).length) html += `<dt style="color:var(--txt3)">Handed over</dt><dd>${l.reassignHistory.map(h => `${escapeHtml(h.fromName || h.from || '—')} → ${escapeHtml(h.toName || h.to || 'unassigned')}${h.atTrip ? ` during trip ${h.atTrip}` : ''}${h.tripsDone ? ` (${h.tripsDone} done before)` : ''}${h.reason ? ` — ${escapeHtml(h.reason)}` : ''}`).join('<br>')}</dd>`;
   html += `</dl>`;
   if (l.segments && l.segments.length) {
     const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'open';
@@ -2205,14 +2208,18 @@ function openLoadDetail(id) {
     }
     actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openEditPO('${l.poId}')">Edit PO</button>`;
     actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openNotifySheet('${l.poId}')">Customer updates: ${po.notifications && po.notifications.enabled ? 'On' : 'Off'}</button>`;
-    if (!l.approvalStatus || l.approvalStatus === 'pending') {
+    // The server's rule: a load with a field record (a ticket, a completed
+    // trip, a delivery, a signature) is never deleted — it is voided, and the
+    // evidence stays. Offer the button the server will honour, not the other.
+    const hasRecord = (Number(l.loadsDelivered) || 0) > 0 || (l.trips || []).some(t => t.ticket || (t.timestamps && t.timestamps.completed)) || !!(l.pod && (l.pod.signature || l.pod.signatureUrl));
+    if ((!l.approvalStatus || l.approvalStatus === 'pending') && !hasRecord && !l.voided) {
       actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
     }
-    // Void is the correction path for delivered work. An approved load is
+    // Void is the correction path for work on record. An approved load is
     // never deleted — the ticket, signature and GPS are proof and stay put.
     if (l.voided) {
       actions += `<button class="btn ghost" onclick="unvoidLoad('${l.id}')">Restore Load</button>`;
-    } else if (l.approvalStatus === 'approved' || l.approvalStatus === 'submitted') {
+    } else if (l.approvalStatus === 'approved' || l.approvalStatus === 'submitted' || l.approvalStatus === 'rejected' || hasRecord) {
       actions += `<button class="btn danger" onclick="voidLoad('${l.id}')">Void Load</button>`;
     }
     // Removing a whole PO (and its loads) had no UI at all, so test POs piled
@@ -2660,6 +2667,7 @@ async function renderDriver() {
     dispatch = d.loads || [];
     window._currentDispatch = dispatch;
     window._earlierOpen = d.earlierOpen || [];
+    window._serverToday = d.today || '';   // the operating day, from the server — never the phone's clock
     if (dispatch.length && dispatch[0].photoUploadAvailable !== undefined) window._photoUploadAvailable = !!dispatch[0].photoUploadAvailable;
     console.log('[DRIVER VIEW] Loads received from server:', dispatch.length);
     dispatch.forEach(l => console.log('  -', l.loadId, l.poNumber, l.material, '(' + l.loadsAssigned + ' loads)'));
@@ -2684,7 +2692,7 @@ async function renderDriver() {
 
 async function renderDriverContent(dispatch, welcome, wrap) {
 
-  const todayCount = dispatch.filter(l => l.deliveryDate === todayStr()).length;
+  const todayCount = dispatch.length;   // the list is the workday: today's loads, the open shift's, and a trip under way
   const submittedCount = dispatch.filter(l => l.approvalStatus === 'submitted').length;
   const firstName = myDisplayName || (myUsername.charAt(0).toUpperCase() + myUsername.slice(1));
 
@@ -2910,7 +2918,7 @@ function tripCard(l) {
   const ats = activeTrip.timestamps || {};
   const ts = ats;  // alias used by the step-tracker code below — drives display of the CURRENT trip
   const pod = l.pod || {};
-  const isToday = l.deliveryDate === todayStr();
+  const isToday = l.deliveryDate === (window._serverToday || todayStr());
   const started = !!ats.start;
   const atPickup = !!ats.arrivedPickup;
   const isLoaded = !!ats.loadedAt;
@@ -2973,6 +2981,16 @@ function tripCard(l) {
   }
 
   let action = '';
+  // Stop early submits the completed trips: it needs the ticket photo and the
+  // customer's signature like any submission, so those come first, right
+  // here. Offered between trips and while a trip is under way but not yet at
+  // the jobsite (started by mistake, truck broke down) — the open trip is
+  // left on the record and counted nowhere, as the server already does.
+  const doneCount = Number(l.tripsCompleted) || 0;
+  const stopEarly = (totalTrips > 1 && doneCount > 0 && !submitted) ? (
+      !hasImage ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openTicketUpload('${l.loadId}')">Ticket photo — needed to stop early</button>`
+      : !hasSig ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openSig('${l.loadId}')">Customer signature — needed to stop early</button>`
+      : `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${doneCount} completed of ${totalTrips} as incomplete?${started ? ' The trip under way is not counted.' : ''}')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${doneCount} completed as incomplete</button>`) : '';
   // Sent back by the office: the photo or the signature it named can be redone here, then Submit again.
   const redoBtns = rejected ? `<div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn ghost" style="flex:1" onclick="openTicketUpload('${l.loadId}')">Replace ticket photo</button><button class="btn ghost" style="flex:1" onclick="openSig('${l.loadId}')">Sign again</button></div>` : '';
   if (allTripsDone && !hasImage && !submitted) {
@@ -3003,13 +3021,8 @@ function tripCard(l) {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
       Start Load ${next} of ${totalTrips}
     </button>
-    <div class="action-hint">Heading back to the yard for the next load</div>
-    ${totalTrips > 1 && (Number(l.tripsCompleted) || 0) > 0 ? (
-      // Stop early submits the load: it needs the ticket photo and the customer's
-      // signature like any submission, so those come first, right here.
-      !hasImage ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openTicketUpload('${l.loadId}')">Ticket photo — needed to stop early</button>`
-      : !hasSig ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openSig('${l.loadId}')">Customer signature — needed to stop early</button>`
-      : `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${Number(l.tripsCompleted) || 0} completed of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${Number(l.tripsCompleted) || 0} completed as incomplete</button>`) : ''}`;
+    ${redoBtns}<div class="action-hint">${rejected ? 'Fix what the office named — replace the photo or sign again — then Stop early to resubmit, or keep hauling.' : 'Heading back to the yard for the next load'}</div>
+    ${stopEarly}`;
   } else if (!started && !submitted) {
     // Brand-new load, never started — same as "Start Load 1"
     action = `<button class="trip-action start" onclick="tripAction('${l.loadId}', 'start-trip')">
@@ -3024,25 +3037,25 @@ function tripCard(l) {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
       Arrived at ${escapeHtml(l.pickupLocation || 'VBT Yard')}
     </button>
-    <div class="action-hint">Tap when you arrive · <a href="#" onclick="event.preventDefault();openYardPicker('${l.loadId}')">picked up somewhere else?</a></div>`;
+    <div class="action-hint">Tap when you arrive · <a href="#" onclick="event.preventDefault();openYardPicker('${l.loadId}')">picked up somewhere else?</a></div>${stopEarly}`;
   } else if (started && !atPickup) {
     action = `<button class="trip-action pickup" onclick="openYardPicker('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
       Arrived at Yard
     </button>
-    <div class="action-hint">Tap when you arrive — pick which yard</div>`;
+    <div class="action-hint">Tap when you arrive — pick which yard</div>${stopEarly}`;
   } else if (atPickup && !isLoaded) {
     action = `<button class="trip-action loaded" style="background:var(--T,#0d9488);color:#fff" onclick="openLoadedForm('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
       Loaded — enter ticket
     </button>
-    <div class="action-hint required">Photo, ticket number and net tons — captured once, here</div>`;
+    <div class="action-hint required">Photo, ticket number and net tons — captured once, here</div>${stopEarly}`;
   } else if (isLoaded && !atJobsite) {
     action = `<button class="trip-action jobsite" style="background:var(--I,#4f46e5);color:#fff" onclick="tripAction('${l.loadId}', 'arrived-jobsite')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
       Arrived at Job Site
     </button>
-    <div class="action-hint">Tap when you reach the delivery address</div>`;
+    <div class="action-hint">Tap when you reach the delivery address</div>${stopEarly}`;
   } else if (atJobsite && totalTrips > 1) {
     // Multi-trip: confirm this trip's drop, then either start next trip or
     // move on to ticket+sig if this was the last.
@@ -3086,7 +3099,7 @@ function tripCard(l) {
 
   return `<div class="trip-card ${isToday ? 'is-today' : ''}">
     <div class="trip-head">
-      <div class="trip-po">${l.poNumber}${isToday ? '<span class="today-badge">TODAY</span>' : ''}</div>
+      <div class="trip-po">${l.poNumber}${isToday ? '<span class="today-badge">TODAY</span>' : `<span class="today-badge" style="background:var(--Ab);color:var(--A)" title="Started on an earlier day and still under way">FROM ${escapeHtml(l.deliveryDate || '')}</span>`}</div>
       <div class="trip-customer">${l.customer}</div>
     </div>
     <div class="trip-body">
@@ -3927,7 +3940,7 @@ async function loadBilling() {
         <td>${l.driverName}</td>
         <td>${fmtDate(l.deliveryDate)}</td>
         <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}${l.approvalWarnings && l.approvalWarnings.length ? `<div class="bill-gap-note" title="${escapeAttr(l.approvalWarnings.join('; '))}">⚠ approved with a gap</div>` : ''}</td>
-        <td class="bill-amt">${l.priceable ? `<b>${bfMoney(l.amount)}</b><div class="bill-rate">${escapeHtml(l.rateLabel || '')}${l.basis === 'actual' ? ' · actual tons' : ''}</div>` : `<span class="bill-unpriced" title="${escapeAttr(l.priceReason || '')}">not priceable</span><div class="bill-rate">${escapeHtml((l.priceReason || '').slice(0, 60))}${(l.priceReason || '').length > 60 ? '…' : ''}</div>`}</td>
+        <td class="bill-amt">${l.priceable ? `<b>${bfMoney(l.amount)}</b><div class="bill-rate">${escapeHtml(l.rateLabel || '')}${l.basis === 'actual' ? ' · actual tons' : ''}${l.customerRateIsDefault ? ' · <span class="bill-unpriced" title="No price on file for this customer and material — the default rate is what would be invoiced">default rate</span>' : ''}</div>` : `<span class="bill-unpriced" title="${escapeAttr(l.priceReason || '')}">not priceable</span><div class="bill-rate">${escapeHtml((l.priceReason || '').slice(0, 60))}${(l.priceReason || '').length > 60 ? '…' : ''}</div>`}</td>
       </tr>`).join('')}
     </tbody>
     <tfoot><tr>
@@ -4021,7 +4034,7 @@ function showInvoicePreviewModal(groups, allowSend) {
           This group cannot be sent: ${(g.unconfiguredReasons || []).join('; ')}. Fix the pricing or unit configuration and preview again.</div>` : ''}
         <table style="width:100%;font-size:13px;border-top:1px solid var(--bdr);border-collapse:collapse">
           ${g.lineItems.map(ln => `<tr>
-            <td style="padding:6px 0;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.description}</td>
+            <td style="padding:6px 0;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.description}${ln.rateIsDefault ? ' <span style="color:#b45309;font-size:11px;font-weight:600" title="No price on file for this customer and material">default rate — no customer price on file</span>' : ''}</td>
             <td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.unconfigured ? '—' : '$' + ln.amount.toFixed(2)}</td>
           </tr>`).join('')}
         </table>
@@ -4658,6 +4671,7 @@ function paintToday() {
       ${tile('unassigned', a.unassigned, 'Unassigned', a.unassigned ? 'alert' : 'ok', a.unassigned ? 'need a driver' : 'all assigned')}
       ${tile('in-progress', a.inProgress, 'In Progress', a.inProgress ? 'live' : '', 'hauling now')}
       ${tile('awaiting-approval', a.awaitingApproval, 'Awaiting Approval', a.awaitingApproval ? 'warn' : '', a.awaitingApproval ? 'review now' : 'nothing waiting')}
+      ${a.rejected ? tile('rejected', a.rejected, 'Rejected', 'alert', 'sent back to the driver') : ''}
       ${tile('ready-to-bill', a.readyToBill, 'Ready to Bill', a.readyToBill ? 'bill' : '', a.readyToBill ? money(a.readyToBillAmount) : 'nothing queued')}
       ${tile('missing', a.missingInfo, 'Missing Info', a.missingInfo ? 'alert' : 'ok', a.missingInfo ? 'cannot proceed' : 'nothing missing')}
       ${a.conflicts ? tile('conflicts', a.conflicts, 'Conflicts', 'alert', 'double-booked') : ''}
@@ -4676,7 +4690,7 @@ function paintToday() {
           <span class="db-sec-meta">${stk.inProgress || 0} hauling · ${stk.assigned || 0} assigned · ${stk.available || 0} free${stk.unavailable ? ` · ${stk.unavailable} in shop` : ''}</span></div>
         ${(d.telemetryIssues || []).length ? `<div class="db-flag conflict" id="db-tel-issues" style="margin:0 0 8px">${d.telemetryIssues.map(i => escapeHtml(i.text)).join('<br>')}</div>` : ''}
         <div class="db-trucks">${trucks.map(t => { const x = t.telematics && t.telematics.state !== 'not-linked' ? t.telematics : null; return `<span class="db-truck ${t.state}" title="${escapeAttr((t.driverName ? DB_STATE_LABEL[t.state] + ' · ' + t.driverName : DB_STATE_LABEL[t.state] || t.state) + (x ? ` · Linxup: ${x.label}${x.at ? ' ' + dbTelAge(x.ageSeconds) : ''}` : ''))}">
-            <b>${escapeHtml(t.truckNum)}</b> · ${t.driverName ? escapeHtml(t.driverName) : (DB_STATE_LABEL[t.state] || t.state).toLowerCase()}${x ? ` <i class="db-tel-mini ${x.state}">${escapeHtml(x.label)}</i>` : ''}</span>`; }).join('') || '<span class="db-empty">No trucks free.</span>'}</div>
+            <b>${escapeHtml(t.truckNum)}</b> · ${t.driverName ? escapeHtml(t.driverName) : (DB_STATE_LABEL[t.state] || t.state).toLowerCase()}${x ? ` <i class="db-tel-mini ${x.state}" title="Linxup, the truck's own tracker — not the driver's record">Linxup · ${escapeHtml(x.label)}</i>` : ''}</span>`; }).join('') || '<span class="db-empty">No trucks free.</span>'}</div>
       </section>
       <section class="db-loads" id="db-loads">
         <div class="db-sec"><span>${listTitle}</span>${dbFilter !== 'all' ? `<button type="button" class="db-clear" onclick="dbSetFilter('all')">Show all</button>` : ''}</div>

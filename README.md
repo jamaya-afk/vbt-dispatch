@@ -140,6 +140,20 @@ carlos / carlos123
   calls a default rate an estimate. On the phone, Stop early first asks for
   the photo and the signature it needs, a load sent back can redo both, and a
   tap that gets no answer says so.
+- **A trip under way is the driver's wherever the calendar put it; a
+  cancelled load takes no more work.** A load with a trip under way (started
+  within the 20 hours a workday stays active) stays on the driver's phone
+  (badged FROM <date>) and holds its driver and truck on today's board even
+  when it is dated yesterday or was moved to tomorrow mid-haul; an older open
+  trip, a load merely assigned or one paused on an earlier day stays the
+  office's to move or close. A voided load refuses the driver's taps, Approve,
+  Reject and Mark Billed. Stop early is offered on every in-progress step
+  before the jobsite; a rejected partial load can redo its photo and
+  signature. Two open trips are allowed and change no count. Freight hours
+  whose first load was voided are not priceable (never a $0 invoice); a
+  default customer rate is called one on Ready to Bill and the preview;
+  Dispatch has a Rejected tile; Load Details names the batch, the approver,
+  handovers and the void, and offers Void wherever Delete is refused.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on

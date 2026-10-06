@@ -1563,7 +1563,14 @@ function driverWorkdayLoads(u) {
     !l.voided &&
     l.status !== 'completed' &&
     l.approvalStatus !== 'approved' &&
-    ((l.deliveryDate || today) === today || act.dates.has(l.deliveryDate) || act.ids.has(l.id))
+    ((l.deliveryDate || today) === today || act.dates.has(l.deliveryDate) || act.ids.has(l.id)
+      // A trip under way is the driver's current work whatever the calendar
+      // says — he is in the truck with the material (started before midnight
+      // with no Start day, or the office moved the load's date mid-haul) —
+      // for the same hours a workday stays active. Older than that it is an
+      // abandoned trip, and a load merely assigned on another day, or paused
+      // between trips, is the office's to move or close (§39's rule).
+      || tripUnderWay(l))
   );
 }
 function driverEarlierOpenLoads(u) {
@@ -1571,8 +1578,18 @@ function driverEarlierOpenLoads(u) {
   const act = activeShiftLoadIds(u);
   return store.loads.filter(l =>
     l.truckId === u.truckId && !l.voided && l.status !== 'completed' && l.approvalStatus !== 'approved' &&
-    l.deliveryDate && l.deliveryDate < today && !act.dates.has(l.deliveryDate) && !act.ids.has(l.id)
+    l.deliveryDate && l.deliveryDate < today && !act.dates.has(l.deliveryDate) && !act.ids.has(l.id) && !tripUnderWay(l)
   );
+}
+// A trip started and not completed within the window a workday stays active
+// (SHIFT_STALE_HOURS, 20 h): the driver is in the truck with the material,
+// whatever date the load carries. Needs the trip's own ISO start stamp; a
+// legacy trip without one, or one older than the window, is stale work.
+function tripUnderWay(l, now = Date.now()) {
+  const t = (l.trips || []).find(x => x.timestamps && x.timestamps.start && !x.timestamps.completed);
+  const iso = t && t.isoStamps && t.isoStamps.start;
+  const at = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(at) && now - at < SHIFT_STALE_HOURS * 3600e3;
 }
 // Rates and billing state are office information; the driver payload never
 // carries them.
@@ -1940,6 +1957,19 @@ function revenueDetail(load) {
       // billable until a manager has confirmed or corrected it.
       const review = segs.find(s => s.needsReview);
       if (review) return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${review.id} (${review.customer}) was closed by the office for the driver — confirm its ending time and odometer (with a reason) before its ${field} are billed` };
+      // The measure belongs to the segment's first load. If that load was
+      // voided before it was billed, the hours or miles would otherwise vanish:
+      // this load would price at $0 "billed with" a load that bills nothing.
+      // Refused instead, with the way out named.
+      for (const s of segs) {
+        const ownerId = (s.loadIds || [])[0];
+        if (!ownerId || ownerId === load.id) continue;
+        const owner = findLoadAnywhere(ownerId);
+        if (owner && owner.voided && !(owner.billStatus === 'billed' || owner.billingBatchId || owner.qbInvoiceId)) {
+          return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment',
+            reason: `the ${field} on freight ${s.id} belong to ${ownerId}, which is voided and was never billed — restore ${ownerId} to bill them, or they stay unbilled` };
+        }
+      }
       let measure = 0; const billedWith = [];
       for (const s of segs) {
         const p = segmentPublic(s);
@@ -3671,6 +3701,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
 
   if (u.role === 'driver') {
     if (l.truckId !== u.truckId) return res.status(403).json({ error: 'Not your load' });
+    if (l.voided) return res.status(409).json({ error: `This load was cancelled by the office${l.voidReason ? ` (${l.voidReason})` : ''}. Nothing more can be recorded on it — call dispatch.`, code: 'load_voided' });
     // Drivers attach the signature, the ticket photo and notes here. Progress
     // (delivered count, timestamps, GPS) comes ONLY from the trip steps — the
     // state machine is the record, so a direct write is refused, not ignored.
@@ -3807,6 +3838,10 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const l = store.loads[idx];
   if (u.role === 'driver' && l.truckId !== u.truckId) return res.status(403).json({ error: 'Not your load' });
   if (l.locked) return res.status(403).json({ error: 'Load is locked' });
+  // A load the office cancelled takes no more work. A phone that has not
+  // refreshed may still show the card; its tap is refused and told why, so
+  // the driver is never told "Submitted" about a load that no longer counts.
+  if (l.voided) return res.status(409).json({ error: `This load was cancelled by the office${l.voidReason ? ` (${l.voidReason})` : ''}. Nothing more can be recorded on it — call dispatch.`, code: 'load_voided' });
   // A stale open day blocks every trip action for that driver — the same
   // rule the screen shows, enforced here so a direct request cannot add
   // work to (or around) a day the office has to close first.
@@ -4707,6 +4742,10 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const l = store.loads[idx];
+  // A voided load is history: it is neither approved nor sent back. (A stale
+  // Approvals screen, or the API, could otherwise approve it and turn its
+  // billStatus from 'voided' to 'ready'.)
+  if (l.voided) return res.status(409).json({ error: `This load is voided${l.voidReason ? ` (${l.voidReason})` : ''} — restore it first if it should be approved.`, code: 'load_voided' });
   if (l.approvalStatus !== 'submitted') return res.status(400).json({ error: 'Load not submitted for approval' });
   // The checklist is confirmed in the app; a load with a ⚠ item is approved
   // only with an explicit acknowledgement, and what was missing is recorded.
@@ -4757,6 +4796,7 @@ app.post('/api/loads/:id/reject', reqMgr, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const l = store.loads[idx];
+  if (l.voided) return res.status(409).json({ error: `This load is voided${l.voidReason ? ` (${l.voidReason})` : ''} — restore it first if it should go back to the driver.`, code: 'load_voided' });
   if (l.approvalStatus !== 'submitted') return res.status(400).json({ error: 'Load not submitted' });
   l.approvalStatus = 'rejected';
   l.rejectReason   = req.body.reason || 'No reason provided';
@@ -4882,7 +4922,7 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
   // Decide first, change nothing until every load passes: a refused request
   // must leave no load marked billed behind it (that mark would ride along
   // with the next save, with no reference and no audit entry).
-  const eligible = store.loads.filter(l => ids.includes(l.id) && l.approvalStatus === 'approved' && l.billStatus === 'ready');
+  const eligible = store.loads.filter(l => ids.includes(l.id) && !l.voided && l.approvalStatus === 'approved' && l.billStatus === 'ready');
   // Duplicate-billing guard: a load already claimed by a billing batch must
   // not be manually marked billed — void the batch first to release it.
   const skipped = eligible.filter(l => l.billingBatchId || l.qbInvoiceId).map(l => l.id);
@@ -5042,6 +5082,7 @@ function buildBillingGroups(loadIds) {
           unit, rate, basis,
           loads: 0, tons: 0, amount: 0, tickets: 0, measure: 0, segmentIds: [],
           unconfigured: false, reasons: [],
+          rateIsDefault: false,   // a load priced at the default customer rate (no price on file) — flagged on the preview, never silently a price
           loadIds: [],
         });
       }
@@ -5049,6 +5090,7 @@ function buildBillingGroups(loadIds) {
       ln.loads += Number(load.loadsDelivered) || 0;
       ln.tons  += tons;
       ln.tickets += loadTons(load).ticketsWithTons;
+      if (load.customerRateIsDefault) ln.rateIsDefault = true;
       // Hour/mile quantity: the segment's measure, added once per segment. A
       // load whose measure went to another load in the same segment carries
       // the explanation onto the line.
@@ -7876,15 +7918,17 @@ app.get('/api/today', reqMgr, async (req, res) => {
   const day = req.query.date || today;
   const now = Date.now();
   const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
-  // Work begun on an earlier day and still open (a trip left overnight, a
-  // load half delivered) holds its driver and truck on this day just as
-  // today's work does. It is not on the day's list — the Carried Over tile
-  // shows it — but it counts for who is free and what is on which truck.
-  const carriedWork = store.loads.filter(l => !l.voided && l.deliveryDate && l.deliveryDate < day && loadHoldsResources(l) && loadWorkStarted(l));
+  // Work begun on another day and still open (a trip left overnight, a load
+  // half delivered, a mid-haul load whose date the office moved forward)
+  // holds its driver and truck on today's board just as today's work does.
+  // It is not on the day's list — the Carried Over tile shows the earlier
+  // ones — but it counts for who is free and what is on which truck. On a
+  // past or future day's board only earlier work counts, as before.
+  const carriedWork = store.loads.filter(l => !l.voided && l.deliveryDate && l.deliveryDate !== day && loadHoldsResources(l) && loadWorkStarted(l) && (l.deliveryDate < day || day === today));
   const holding = [...dayLoads.filter(loadHoldsResources), ...carriedWork];
   const loads = dayLoads.map(l => boardLoadRow(l, holding));
   // Linxup, per truck: computed once here, shared by the truck, driver and load rows.
-  const telByTruck = new Map((store.trucks || []).filter(t => t.active).map(t => [t.id, truckTelematics(t, holding.find(l => l.truckUnitId === t.id) || null, now, dayLoads)]));
+  const telByTruck = new Map((store.trucks || []).filter(t => t.active).map(t => [t.id, truckTelematics(t, holding.find(l => l.truckUnitId === t.id && loadMidTrip(l)) || holding.find(l => l.truckUnitId === t.id) || null, now, dayLoads)]));
   loads.forEach(l => { l.telematics = l.truckUnitId ? telByTruck.get(l.truckUnitId) || null : null; });
 
   // Drivers: their state comes from the loads that hold them today, plus what
@@ -7919,8 +7963,11 @@ app.get('/api/today', reqMgr, async (req, res) => {
     };
   });
 
+  // One load per truck: the one with a trip under way wins over one merely
+  // assigned, so the chip's state is the truck's real state (two open loads
+  // on one truck are both still on the driver's row and the cards).
   const truckLoad = new Map();
-  holding.forEach(l => { if (l.truckUnitId) truckLoad.set(l.truckUnitId, l); });
+  holding.forEach(l => { if (l.truckUnitId && (!truckLoad.has(l.truckUnitId) || loadMidTrip(l))) truckLoad.set(l.truckUnitId, l); });
   const trucks = (store.trucks || []).filter(t => t.active).map(t => {
     const l = truckLoad.get(t.id) || null;
     const unavailable = t.status === 'maintenance' || t.status === 'out-of-service';
@@ -7992,6 +8039,7 @@ app.get('/api/today', reqMgr, async (req, res) => {
       unassigned: count('unassigned'),
       inProgress: count('in-progress'),
       awaitingApproval: submittedAll.length,
+      rejected: count('rejected'),   // sent back to the driver: his to fix, the office's to re-approve
       readyToBill: readyAll.length,
       readyToBillAmount: readyAmount,
       missingInfo: loads.filter(l => l.missing.length).length,
@@ -8101,13 +8149,14 @@ function assignmentConflicts(l, { driverId, truckUnitId, trailerId }, { extraLoa
   const label = x => x.poId === '__new__' ? x.id : `${x.id} (PO ${poOf(x.poId).poNumber || '—'}${poOf(x.poId).customer ? ', ' + poOf(x.poId).customer : ''})`;
   const drvName = id => (rosterDriver(id) || {}).name || id;
   const sameDay = [...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate === l.deliveryDate);
-  // Work begun on an earlier day and still open holds its driver and truck
-  // today too: a driver mid-haul on yesterday's load, the truck he is on.
-  // Planning a future day against today's unfinished work is not a conflict.
+  // Work begun on another day and still open holds its driver and truck
+  // today too: a driver mid-haul on yesterday's load, or on a load the office
+  // moved to tomorrow mid-haul, and the truck he is on. Planning a future day
+  // against today's unfinished work is not a conflict.
   if (l.deliveryDate && l.deliveryDate <= todayStr()) {
-    sameDay.push(...[...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate && x.deliveryDate < l.deliveryDate && loadWorkStarted(x)));
+    sameDay.push(...[...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate && x.deliveryDate !== l.deliveryDate && loadWorkStarted(x) && (x.deliveryDate < l.deliveryDate || l.deliveryDate === todayStr())));
   }
-  const whenBusy = other => other.deliveryDate === l.deliveryDate ? 'the same day' : `unfinished since ${other.deliveryDate}`;
+  const whenBusy = other => other.deliveryDate === l.deliveryDate ? 'the same day' : other.deliveryDate < l.deliveryDate ? `unfinished since ${other.deliveryDate}` : `under way now (dated ${other.deliveryDate})`;
   const newDriver = driverId !== undefined ? driverId : l.truckId;
   if (driverId !== undefined && driverId !== l.truckId) {
     const open = openTripOf(l);
