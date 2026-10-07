@@ -6184,7 +6184,12 @@ async function editVendorInfo(vendorId) {
   if (address === null) return;
   const location = prompt('City, state:', v.location || '');
   if (location === null) return;
-  const d = await api('PUT', '/api/vendors/' + vendorId, { name: name.trim(), location: location.trim(), address: address.trim() });
+  // Only what this person changed goes to the server (as the customer form and
+  // the fleet rows do): another tab may have edited this yard since the copy
+  // was read — its untouched fields are not sent, so they are not reverted.
+  const body = changedFields({ name: name.trim(), location: location.trim(), address: address.trim() }, { name: v.name, location: v.location || '', address: v.address || '' });
+  if (!Object.keys(body).length) return toast('Nothing changed', '');
+  const d = await api('PUT', '/api/vendors/' + vendorId, body);
   if (d.ok) {
     toast('Updated', 'success');
     await refreshVendorData();

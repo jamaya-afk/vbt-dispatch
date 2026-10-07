@@ -112,7 +112,7 @@ carlos / carlos123
   fingerprint (a load on an unsent batch counts nowhere). The office poll
   repaints whichever screen is open — Approvals, Purchase Orders, Ready to
   Bill, History — not only Dispatch. Quick Assign, the customer form, the
-  fleet rows and Edit PO send only the fields the person changed, so two
+  fleet rows, the yard edit and Edit PO send only the fields the person changed, so two
   dispatchers editing the same record from two tabs cannot revert each
   other's unrelated fields; Quick Assign and Edit PO also send what the form
   showed for each field they change (`base`), so the same field changed by

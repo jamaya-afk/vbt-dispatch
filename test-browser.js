@@ -780,6 +780,17 @@ async function call(cookie, method, path, body) {
   await page.evaluate(async () => { await loadAll(); await refreshVendorData(); goTab('vendors'); }); await page.waitForTimeout(600);
   await page.evaluate(() => { currentVendorTab = 'vulcan'; renderVendors(); }); await page.waitForTimeout(900);
   chk('1. the Vendors panel shows the yard\'s street address beside its city', await page.evaluate(() => (document.querySelector('.vendor-panel-sub') || {}).innerText), '2 Mine Rd · Fresno, CA');
+  // OA6 closure: two operators on one yard. Tab A opens the edit (its copy says 2 Mine Rd); tab B changes the street meanwhile; A changes only the city.
+  await call(mgr, 'PUT', '/api/vendors/vulcan', { address: '3 Quarry Rd' });
+  const [vReq] = await Promise.all([
+    page.waitForRequest(r => /\/api\/vendors\/vulcan$/.test(r.url()) && r.method() === 'PUT', { timeout: 5000 }),
+    page.evaluate(async () => { const realPrompt = window.prompt; window.prompt = (msg, def) => /City/.test(msg) ? 'Clovis, CA' : def; try { await editVendorInfo('vulcan'); } finally { window.prompt = realPrompt; } }),
+  ]);
+  await page.waitForTimeout(500);
+  const vAfter = (await call(mgr, 'GET', '/api/vendors')).data.vendors.find(v => v.id === 'vulcan');
+  chk('   two operators on one yard: tab A\'s edit sends only the field it changed (the city), so tab B\'s new street is kept beside it — nothing reverted', `${Object.keys(vReq.postDataJSON() || {}).sort().join(',')} ${vAfter.address} ${vAfter.location}`, 'location 3 Quarry Rd Clovis, CA');
+  await call(mgr, 'PUT', '/api/vendors/vulcan', { address: '2 Mine Rd', location: 'Fresno, CA' });
+  await page.evaluate(async () => { await refreshVendorData(); renderVendors(); }); await page.waitForTimeout(400);
   await page.evaluate(() => { currentVendorTab = 'hanson'; renderVendors(); }); await page.waitForTimeout(1200);
   const fenceNote = await page.evaluate(() => ({ note: (document.getElementById('v-fence') || {}).innerText.replace(/\s+/g, ' '), opt: (() => { const s = document.getElementById('v-fence-sel'); return s ? s.options[s.selectedIndex].text : 'no select'; })() }));
   chk('2. a yard mapped to a geofence Linxup deleted says so, keeps the mapping until a person changes it, and names the fix', `${/mapped to geofence 9014, which Linxup deleted/.test(fenceNote.note)} ${/Pick a current geofence, or clear it/.test(fenceNote.note)} ${fenceNote.opt}`, 'true true geofence 9014 "Hanson Bakersfield" — deleted in Linxup');
