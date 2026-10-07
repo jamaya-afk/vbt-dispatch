@@ -31,7 +31,7 @@ record itself.
 | **Alert** | when Linxup raises an alert | `alertId`, code, descriptions, time, location, tracker, person, geofence. Speeding, harsh events, geofence alerts, maintenance alerts — whatever the account has configured. |
 | **Device Status** | ACTIVATE / INACTIVATE | A tracker came online or was retired. |
 | **Device Update** | rename, fleet move, driver assignment change | The tracker mirror changes: name, fleet, person, asset. |
-| **Geofence Change** | CREATE / UPDATE / DELETE | The geofence itself: name, group, type (Landmark / Polygon / Circle), radius, points, who it notifies. Lets VBT keep a mirror of Linxup's geofences without a pull API. |
+| **Geofence Change** | CREATE / UPDATE / DELETE | The geofence itself: name, group, type (Landmark / Polygon / Circle), radius, points, who it notifies. Lets VBT keep a mirror of Linxup's geofences without a pull API. VBT interprets these (OA5): CREATE/UPDATE refresh the mirrored name and group; DELETE marks the geofence deleted, so a yard still mapped to it is named stale on Vendors and on the board — the mapping itself is never rewritten. |
 | **Media** | dashcam clip or thumbnail uploaded | URLs for inside/outside/aux video and thumbnails, `mediaId`, timestamp. |
 | Item Tracking (Location / Left Behind) | tool trackers | Not relevant to dump-truck dispatch; ignore (accept and drop). |
 

@@ -722,7 +722,7 @@ async function call(cookie, method, path, body) {
   chk('3. the telemetry timeline is chronological and every line names its source, with the driver\'s taps between Linxup\'s entries', `${l2d.timeline.length >= 7} ${[...new Set(l2d.sources)].sort().join('|')} ${l2d.timeline.some(t => /Driver tapped Arrived at pickup VBT driver app$/.test(t))} ${l2d.timeline.some(t => /Entered Vulcan geofence Linxup geofence$/.test(t))}`, 'true Linxup geofence|Linxup stop|Linxup vehicle trip|VBT driver app true true');
   const l2load = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id);
   chk('   reading the evidence changed nothing on the load: still Beryle, Truck #12, trip 1 loaded and not arrived', `${l2load.truckId} ${l2load.truckUnitId} ${!!l2load.trips[0].timestamps.loadedAt} ${l2load.trips[0].timestamps.arrivedJobsite || 'none'}`, 'beryle truck-12 true none');
-  await page.evaluate(() => document.querySelector('.modal-bg') && document.querySelector('.modal-bg').remove());
+  await page.evaluate(() => { const ms = Array.from(document.querySelectorAll('.modal-bg')); const last = ms[ms.length - 1]; if (last && last.id !== 'po-modal') last.remove(); });   // the Load Details modal it opened — not the page's static New PO modal, which is the first .modal-bg
   const l2a = await page.evaluate(async id => (await approvalTelemetryHtml(id)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(), load.id);
   chk('4. the approval dialog gets a one-line Linxup evidence summary per trip', /^Linxup evidence Trip 1: Vulcan \d{1,2}:\d\d [AP]M–\d{1,2}:\d\d [AP]M \(geofence\) · no activity near the jobsite$/.test(l2a), true);
   chk('   …and it is part of the approval confirmation', await page.evaluate(() => /const tel = await approvalTelemetryHtml\(l\.id\);/.test(confirmApproval.toString())), true);
@@ -733,6 +733,55 @@ async function call(cookie, method, path, body) {
   const l2m = await call(mgr, 'GET', '/api/linxup/geofences');
   chk('   Save maps it (a manager\'s decision, audited); the panel now says visits count as pickup evidence', `${l2m.data.geofences.find(g => g.geofenceId === 21).mappedVendorId} ${await page.evaluate(() => /Geofence visits count as pickup evidence for this yard\./.test(document.getElementById('v-fence').innerText))}`, 'vulcan true');
   chk('   no browser confirm() or prompt()', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
+
+  console.log('── Office: a yard is one record with an address; a price is suggested from what was paid or invoiced, never applied; a saved jobsite is offered back ──');
+  // OA5 fixtures: Vulcan gets a street address; Rigo hauls Sand from Hanson twice at two list prices (billed and sent) and Dirt for Nopr Co (invoiced and sent); Hanson's Linxup geofence is mapped, then deleted in Linxup.
+  const rig = await login('rigo', 'rigo123');
+  await call(mgr, 'POST', '/api/_test/qb-fake', { mode: 'ok', billMode: 'ok' });
+  await call(mgr, 'PUT', '/api/vendors/vulcan', { address: '2 Mine Rd' });
+  await call(mgr, 'POST', '/api/vendors/hanson/prices', { material: 'Sand', unit: 'ton', price: 31 });
+  const o5mk = async (num, cust, splits, vendor) => { await call(mgr, 'POST', '/api/pos', { po: { poNumber: num, customer: cust, deliveryDate: today, address: '1 Hint St', city: 'Fresno', plannedVendorId: vendor }, splits }); const d5 = (await call(mgr, 'GET', '/api/data')).data; return d5.loads.filter(l => l.poId === d5.pos.find(p => p.poNumber === num).id); };
+  const o5trip = async (id, yard, n) => { for (const a of [{ action: 'start-trip' }, { action: 'arrived-pickup', yardId: yard }, { action: 'loaded', ticket: { source: 'supplier', number: `OA5-${n}-${Date.now()}`, netTons: 24, photo: PNG } }, { action: 'arrived-jobsite' }, { action: 'trip-complete' }]) await call(rig, 'POST', `/api/loads/${id}/trip-action`, a); };
+  const o5sub = async id => { await call(rig, 'PUT', `/api/loads/${id}`, { pod: { signedBy: 'F', signature: PNG, signedAt: new Date().toISOString() } }); await call(rig, 'POST', `/api/loads/${id}/trip-action`, { action: 'delivered' }); await call(mgr, 'POST', `/api/loads/${id}/approve`, {}); };
+  const [hv] = await o5mk('OA5-V', 'Hint Co', [{ truckId: 'rigo', truckUnitId: 'truck-14', material: 'Sand', loadsAssigned: 2, vendorId: 'hanson' }], 'hanson');
+  await o5trip(hv.id, 'hanson', 1);
+  const hp = (await call(mgr, 'GET', '/api/vendors')).data.vendorPrices.hanson.find(p => p.material === 'Sand'); await call(mgr, 'PUT', `/api/vendors/hanson/prices/${hp.id}`, { price: 34 });
+  await o5trip(hv.id, 'hanson', 2); await o5sub(hv.id);
+  const vbill = (await call(mgr, 'POST', '/api/vendor-bills', { loadIds: [hv.id] })).data.bills[0]; await call(mgr, 'POST', `/api/vendor-bills/${vbill.id}/send`, {});
+  await call(mgr, 'POST', '/api/customer-prices', { customer: 'Nopr Co', material: 'Dirt', unit: 'ton', price: 50 });
+  const [hc] = await o5mk('OA5-C', 'Nopr Co', [{ truckId: 'rigo', truckUnitId: 'truck-14', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }], 'vbt');
+  await o5trip(hc.id, 'vbt', 3); await o5sub(hc.id);
+  const cbatch = (await call(mgr, 'POST', '/api/billing-batches', { loadIds: [hc.id] })).data.batches[0]; await call(mgr, 'POST', `/api/billing-batches/${cbatch.id}/send`, {});
+  const lx5Post = (path, body) => fetch(B + '/api/linxup/' + path, { method: 'POST', headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await call(mgr, 'PUT', '/api/fleet/trucks/truck-14/linxup', { trackerId: 7014 });
+  await lx5Post('geofence-event', { eventType: 'FENCE_ENTER', enterDateTime: Date.now() - 7200000, tracker: { trackerId: 7014, name: 'VBT #7014' }, geofence: { geofenceId: 9014, name: 'Hanson Bakersfield', fenceGroup: 'Yards' }, company: { companyId: 1 } });
+  await call(mgr, 'PUT', '/api/vendors/hanson/linxup-geofence', { geofenceId: 9014 });
+  await lx5Post('geofence-change', { geofenceId: 9014, action: 'DELETE', name: 'Hanson Bakersfield', company: { companyId: 1 } });
+  await page.evaluate(async () => { await loadAll(); await refreshVendorData(); goTab('vendors'); }); await page.waitForTimeout(600);
+  await page.evaluate(() => { currentVendorTab = 'vulcan'; renderVendors(); }); await page.waitForTimeout(900);
+  chk('1. the Vendors panel shows the yard\'s street address beside its city', await page.evaluate(() => (document.querySelector('.vendor-panel-sub') || {}).innerText), '2 Mine Rd · Fresno, CA');
+  await page.evaluate(() => { currentVendorTab = 'hanson'; renderVendors(); }); await page.waitForTimeout(1200);
+  const fenceNote = await page.evaluate(() => ({ note: (document.getElementById('v-fence') || {}).innerText.replace(/\s+/g, ' '), opt: (() => { const s = document.getElementById('v-fence-sel'); return s ? s.options[s.selectedIndex].text : 'no select'; })() }));
+  chk('2. a yard mapped to a geofence Linxup deleted says so, keeps the mapping until a person changes it, and names the fix', `${/mapped to geofence 9014, which Linxup deleted/.test(fenceNote.note)} ${/Pick a current geofence, or clear it/.test(fenceNote.note)} ${fenceNote.opt}`, 'true true geofence 9014 "Hanson Bakersfield" — deleted in Linxup');
+  await page.evaluate(() => { document.getElementById('new-mat').value = 'Sand'; vendorPriceHint('hanson'); }); await page.waitForTimeout(900);
+  const hint = await page.evaluate(() => document.getElementById('new-price-hint').innerText.replace(/\s+/g, ' '));
+  chk('3. typing a material on the price form shows what VBT last paid this yard for it, from the sent bill — a suggestion with "Use", never a value', /^Last paid: \$34\.00\/ton on \d{4}-\d\d-\d\d \(vendor bill VB-\S+, 1 load\) · 2 prices on record · Use \$34\.00 or enter a different price\.$/.test(hint) ? 'ok' : hint, 'ok');
+  const used = await page.evaluate(() => { document.querySelector('#new-price-hint a').click(); return document.getElementById('new-price').value; });
+  const beforeP = requests.filter(r => /\/prices$/.test(r)).length;
+  await page.evaluate(() => { document.getElementById('new-price').value = ''; addNewPrice('hanson'); }); await page.waitForTimeout(400);
+  chk('   "Use" fills the field; a blank price is refused on the page, never saved as $0', `${used} ${requests.filter(r => /\/prices$/.test(r)).length - beforeP}`, '34.00 0');
+  await page.evaluate(() => renderCustomerPrices()); await page.waitForTimeout(900);
+  const cp = await page.evaluate(async () => { const opts = Array.from(document.getElementById('new-cp-material').options).map(o => o.value); document.getElementById('new-cp-customer').value = 'Nopr Co'; document.getElementById('new-cp-material').value = 'Dirt'; customerPriceHint(); await new Promise(r => setTimeout(r, 900)); return { sand: opts.includes('Sand'), hint: document.getElementById('new-cp-hint').innerText.replace(/\s+/g, ' ') }; });
+  chk('4. the customer price form offers every material a yard sells ("Sand") and shows what the customer was last invoiced for one, from the sent invoice', `${cp.sand} ${/^Last invoiced: \$50\.00\/ton on \d{4}-\d\d-\d\d \(invoice BB-\S+, 1 load\) · Use \$50\.00 or enter a different price\.$/.test(cp.hint) ? 'ok' : cp.hint}`, 'true ok');
+  await page.evaluate(() => renderMaterialCosts()); await page.waitForTimeout(1200);
+  chk('5. Material Costs says a unit price is mixed, with its range, when the trips carried two fixed rates', await page.evaluate(() => { const r = Array.from(document.querySelectorAll('#sec-vendors tr')).find(tr => /^Sand/.test(tr.innerText.trim()) && /mixed/.test(tr.innerText)); return r ? r.innerText.replace(/\s+/g, ' ') : 'no row'; }), 'Sand ton 2 $31.00–$34.00 mixed $1,625.00');
+  await page.evaluate(() => openNewPO()); await page.waitForTimeout(400);
+  const js = await page.evaluate(async () => { document.getElementById('po-customer').value = 'ABC Materials'; await poLoadJobsites('ABC Materials'); document.getElementById('po-address').value = '500 main st.'; document.getElementById('po-city').value = 'merced'; poJobsiteEdited(); const hint = document.getElementById('po-jobsite-hint').innerText.replace(/\s+/g, ' '); poUseJobsite(0); return { hint, address: document.getElementById('po-address').value, city: document.getElementById('po-city').value, from: !!document.getElementById('po-jobsite-from').value, after: document.getElementById('po-jobsite-hint').innerText }; });
+  chk('6. New PO: an address typed by hand that is one of the customer\'s saved sites is offered back ("Use it"); using it restores the saved spelling and links the site', `${/^Looks like a jobsite this customer has used: 500 Main St, Merced \(\d+ POs?(, pinned)?\) · Use it$/.test(js.hint) ? 'ok' : js.hint} ${js.address} ${js.city} ${js.from} '${js.after}'`, "ok 500 Main St Merced true ''");
+  await page.evaluate(() => closePO());
+  await call(mgr, 'PUT', '/api/vendors/hanson/linxup-geofence', { geofenceId: null });   // the stale mapping is cleared and the tracker unlinked again
+  await call(mgr, 'PUT', '/api/fleet/trucks/truck-14/linxup', { trackerId: null });
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(700);
 
   console.log('── Office: the Calendar — scheduled work by date, beside the Dispatch board ──');
   await page.evaluate(() => goTab('calendar')); await page.waitForTimeout(1200);
@@ -781,6 +830,8 @@ async function call(cookie, method, path, body) {
   }));
   chk('driver view renders', dv.driverTab, true);
   chk('   driver cannot see the Fleet Map tab', dv.mapNav, 0);
+  // OA5: the yard picker shows the yard's street address beside its city, so the driver picks the right place.
+  chk('   the yard picker names the yard with its street address', await d.page.evaluate(id => { openYardPicker(id); const c = Array.from(document.querySelectorAll('#yard-list .yard-card')).find(x => /Vulcan/.test(x.innerText)); const t = c ? c.innerText.replace(/\s+/g, ' ') : 'none'; closeYard(); return t; }, load.id), 'Vulcan 2 Mine Rd · Fresno, CA ✓ Assigned pickup');
   // CRITICAL 1: "Stop early" shows the completed trips on record and offers nothing to adjust; the server refuses any other number.
   const inc = await d.page.evaluate(id => { openIncompleteDialog(id, 3, 1); const m = document.getElementById('incomplete-modal');
     const out = { shown: getComputedStyle(m).display !== 'none', count: document.getElementById('inc-count').textContent, steppers: m.querySelectorAll('.inc-stepper, button[onclick*="adjustIncomplete"]').length, txt: m.innerText.replace(/\s+/g, ' ') }; closeIncomplete(); return out; }, load.id);

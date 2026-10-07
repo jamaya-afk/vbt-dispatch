@@ -200,6 +200,7 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .db-tel-where{width:100%;color:var(--txt3)}
 .db-tel-mini{font-style:normal;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--txt3);margin-left:4px}
 .rv-row{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--bdr);font-size:13px}.rv-why{font-size:12px;color:var(--txt2);margin-top:2px}.rv-group{margin-top:12px}.rv-head{font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:700}.rv-counts{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}.rv-recon{margin:10px 0 0 18px;padding:0;font-size:13px;color:var(--txt2)}.rv-clean{margin-top:12px;color:var(--G);font-weight:600}
+.price-hint{font-size:12px;color:var(--txt2);margin:6px 0 0 2px;min-height:14px}
 .db-tel-mini.moving{color:var(--G)}.db-tel-mini.idling{color:#b45309}.db-tel-mini.at-place{color:#1d4ed8}.db-tel-mini.stale,.db-tel-mini.offline{color:var(--R)}
 .qa-fact.tel-stale,.qa-fact.tel-offline{border-color:#fca5a5;background:#fef2f2}
 /* Linxup evidence on the load detail and the approval dialog */
@@ -989,6 +990,7 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <div class="field"><label>Address</label><input id="po-address" placeholder="123 Main St" oninput="poJobsiteEdited()"></div>
         <div class="field"><label>City</label><input id="po-city" placeholder="Fresno" oninput="poJobsiteEdited()"></div>
       </div>
+      <div class="po-inline" id="po-jobsite-hint"></div>
       <div class="field"><label>Planned Pickup Yard <span class="po-hint">(each load can use a different yard; the driver confirms at pickup)</span></label>
         <select id="po-vendor" onchange="onPoVendorChange(this.value)"></select>
       </div>
@@ -1694,6 +1696,21 @@ function poJobsiteEdited() {
   const j = poJobsites[Number(document.getElementById('po-jobsite').value)];
   const a = document.getElementById('po-address').value.trim(), c = document.getElementById('po-city').value.trim();
   if (!j || j.address !== a || j.city !== c) { document.getElementById('po-jobsite').value = ''; document.getElementById('po-jobsite-from').value = ''; }
+  // …but an address typed by hand that is one of this customer's saved sites
+  // (same words; case, spacing and a trailing period aside) is offered back,
+  // so the site's pin and spelling are reused instead of a near-duplicate.
+  const hint = document.getElementById('po-jobsite-hint'); if (!hint) return;
+  const norm = x => String(x || '').toLowerCase().replace(/\s+/g, ' ').replace(/[\s.,#]+$/, '').trim();
+  const idx = (a || c) && document.getElementById('po-jobsite').value === '' ? poJobsites.findIndex(s => norm(s.address) === norm(a) && norm(s.city) === norm(c)) : -1;
+  if (idx < 0) { hint.innerHTML = ''; hint.className = 'po-inline'; return; }
+  const s = poJobsites[idx];
+  hint.className = 'po-inline ok';
+  hint.innerHTML = `Looks like a jobsite this customer has used: <b>${escapeHtml([s.address, s.city].filter(Boolean).join(', '))}</b> (${s.count} PO${s.count === 1 ? '' : 's'}${s.geo ? ', pinned' : ''}) · <a href="#" onclick="event.preventDefault();poUseJobsite(${idx})">Use it</a>`;
+}
+function poUseJobsite(idx) {
+  document.getElementById('po-jobsite').value = String(idx);
+  onPoJobsitePick(idx);
+  const hint = document.getElementById('po-jobsite-hint'); if (hint) { hint.innerHTML = ''; hint.className = 'po-inline'; }
 }
 
 // Driver/truck availability for the delivery date, from the same source
@@ -2272,13 +2289,13 @@ function telemetryPanelHtml(d) {
     if (p.evidence === 'geofence') h += p.visits.map(v => `<div><b>Pickup — ${escapeHtml(p.name)}</b> · entered ${tClock(v.enteredAt)}${v.leftAt ? ` · exited ${tClock(v.leftAt)} · ${v.minutes} min inside` : ' · still inside'} ${src('Linxup geofence' + (p.fence && p.fence.confidence === 'name' ? ' (matched by name)' : ''))}</div>`).join('');
     else if (p.evidence === 'gps') h += `<div><b>Pickup — near ${escapeHtml(p.name)} based on GPS</b> · first ${tClock(p.gps.firstAt)} · last ${tClock(p.gps.lastAt)} · ${p.gps.count} fixes ${src('Linxup GPS')}</div>`;
     else if (p.evidence === 'none') h += `<div><b>Pickup — ${escapeHtml(p.name)}</b> · no Linxup activity there during this trip (${tr.positions} positions) ${src(p.fence ? 'Linxup geofence' : 'Linxup GPS')}</div>`;
-    else h += `<div><b>Pickup — ${escapeHtml(p.name)}</b> · no Linxup geofence mapped and no saved pin, so nothing to compare ${src('—')}</div>`;
+    else h += `<div><b>Pickup — ${escapeHtml(p.name)}</b> · no Linxup geofence mapped and ${p.pinUnconfirmed ? 'its saved pin is not confirmed (geocoded, unchecked — confirm it on Vendors)' : 'no saved pin'}, so nothing to compare ${src('—')}</div>`;
     if (p.stops.length) h += `<div class="ld-tel-sub">${p.stops.map(s => `${s.type === 'idle' ? 'Idling' : s.type === 'off' ? 'Engine off' : 'Stop'} ${s.minutes != null ? s.minutes + ' min' : ''} from ${tClock(s.startAt)}`).join(' · ')} ${src('Linxup stop')}</div>`;
     // Jobsite
     const j = tr.jobsite;
     if (j.evidence === 'gps') h += `<div><b>Jobsite — near jobsite based on GPS</b> · first detected ${tClock(j.gps.firstAt)} · last ${tClock(j.gps.lastAt)} ${src('Linxup GPS')}</div>`;
     else if (j.evidence === 'none') h += `<div><b>Jobsite</b> · no Linxup activity within the jobsite pin during this trip ${src('Linxup GPS')}</div>`;
-    else h += `<div><b>Jobsite</b> · no saved jobsite pin, so nothing to compare ${src('—')}</div>`;
+    else h += `<div><b>Jobsite</b> · ${j.pinUnconfirmed ? 'the jobsite pin is not confirmed (geocoded, unchecked — confirm it on the PO)' : 'no saved jobsite pin'}, so nothing to compare ${src('—')}</div>`;
     if (j.stops.length) h += `<div class="ld-tel-sub">${j.stops.map(s => `Stop detected ${tClock(s.startAt)}${s.minutes != null ? ` · ${s.minutes} min` : ''}${s.type === 'off' ? ' · engine off' : s.type === 'idle' ? ' · idling' : ''}`).join(' · ')} ${src('Linxup stop')}</div>`;
     // Activity
     const act = [];
@@ -3251,7 +3268,7 @@ function openYardPicker(loadId) {
       <div class="yard-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg></div>
       <div style="flex:1">
         <div class="yard-name">${y.name}</div>
-        ${y.location ? `<div class="yard-loc"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> ${y.location}</div>` : ''}
+        ${(y.address || y.location) ? `<div class="yard-loc"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> ${escapeHtml([y.address, y.location].filter(Boolean).join(' · '))}</div>` : ''}
         ${isSuggestion ? '<span class="yard-tag">✓ Assigned pickup</span>' : ''}
       </div>
     </div>`;
@@ -5506,10 +5523,12 @@ async function paintVendorFence(vendorId) {
   const v = (d.vendors || []).find(x => x.id === vendorId) || {};
   const cur = v.linxupGeofenceId != null ? Number(v.linxupGeofenceId) : null;
   const sug = cur == null ? (d.geofences || []).find(g => g.suggestedVendorId === vendorId) : null;
+  // Mapped to a fence Linxup deleted (or VBT no longer knows): said here; the mapping itself is this yard's until a person changes it.
+  const stale = (d.staleMappings || []).find(x => x.vendorId === vendorId) || null;
   el.innerHTML = `<label>Linxup geofence</label>
-    <select id="v-fence-sel"><option value="">— not mapped —</option>${(d.geofences || []).map(g => `<option value="${g.geofenceId}" ${cur === g.geofenceId ? 'selected' : ''} ${g.mappedVendorId && g.mappedVendorId !== vendorId ? 'disabled' : ''}>${escapeHtml(g.name || ('fence ' + g.geofenceId))}${g.fenceGroup ? ' · ' + escapeHtml(g.fenceGroup) : ''}${g.mappedVendorId && g.mappedVendorId !== vendorId ? ` (mapped to ${escapeHtml(g.mappedVendorName)})` : ''}</option>`).join('')}</select>
+    <select id="v-fence-sel"><option value="">— not mapped —</option>${stale ? `<option value="${stale.geofenceId}" selected>geofence ${stale.geofenceId}${stale.geofenceName ? ' "' + escapeHtml(stale.geofenceName) + '"' : ''} — ${stale.deleted ? 'deleted in Linxup' : 'unknown to VBT'}</option>` : ''}${(d.geofences || []).map(g => `<option value="${g.geofenceId}" ${cur === g.geofenceId ? 'selected' : ''} ${g.mappedVendorId && g.mappedVendorId !== vendorId ? 'disabled' : ''}>${escapeHtml(g.name || ('fence ' + g.geofenceId))}${g.fenceGroup ? ' · ' + escapeHtml(g.fenceGroup) : ''}${g.mappedVendorId && g.mappedVendorId !== vendorId ? ` (mapped to ${escapeHtml(g.mappedVendorName)})` : ''}</option>`).join('')}</select>
     <button class="btn ghost" style="padding:6px 12px;font-size:12px" onclick="saveVendorFence('${escapeAttr(vendorId)}')">Save</button>
-    <span class="v-fence-note">${cur != null ? 'Geofence visits count as pickup evidence for this yard.' : sug ? `Suggested by name: <b>${escapeHtml(sug.name)}</b> — pick it and Save to confirm.` : (d.geofences || []).length ? 'Pick the Linxup geofence for this yard, or leave unmapped (GPS near the saved pin is used instead).' : 'No Linxup geofence has reported yet.'}</span>`;
+    <span class="v-fence-note">${stale ? `<b style="color:var(--R)">This yard is mapped to geofence ${stale.geofenceId}, which ${stale.deleted ? 'Linxup deleted' : 'VBT no longer knows'} — its visits no longer count as evidence. Pick a current geofence, or clear it.</b>` : cur != null ? 'Geofence visits count as pickup evidence for this yard.' : sug ? `Suggested by name: <b>${escapeHtml(sug.name)}</b> — pick it and Save to confirm.` : (d.geofences || []).length ? 'Pick the Linxup geofence for this yard, or leave unmapped (GPS near the saved pin is used instead).' : 'No Linxup geofence has reported yet.'}</span>`;
 }
 async function saveVendorFence(vendorId) {
   const sel = document.getElementById('v-fence-sel'); if (!sel) return;
@@ -5590,7 +5609,7 @@ function renderVendors() {
     <div class="vendor-panel-head">
       <div>
         <div class="vendor-panel-title" id="v-title">${v.name} Material Prices</div>
-        <div class="vendor-panel-sub">${v.location || 'No location set'}${geoLabel(v.geo)}</div>
+        <div class="vendor-panel-sub">${escapeHtml([v.address, v.location].filter(Boolean).join(' · ')) || 'No location set'}${geoLabel(v.geo)}</div>
       </div>
       <div class="vendor-panel-actions">
         <button class="btn ghost" onclick="setLocationPrompt('vendor', '${v.id}')">📍 Set Location</button>
@@ -5632,12 +5651,13 @@ function renderVendors() {
 
   // Add a new material row
   h += `<div class="add-price-row">
-    <div><label>Material</label><input type="text" id="new-mat" placeholder="e.g. 3/4 Rock" onkeydown="if(event.key==='Enter')addNewPrice('${v.id}')"></div>
-    <div><label>Unit</label><input type="text" id="new-unit" placeholder="CY"></div>
-    <div><label>Price</label><input type="number" min="0" step="0.01" id="new-price" placeholder="0"></div>
+    <div><label>Material</label><input type="text" id="new-mat" placeholder="e.g. 3/4 Rock" oninput="vendorPriceHint('${v.id}')" onkeydown="if(event.key==='Enter')addNewPrice('${v.id}')"></div>
+    <div><label>Unit</label><input type="text" id="new-unit" placeholder="ton" oninput="vendorPriceHint('${v.id}')"></div>
+    <div><label>Price</label><input type="number" min="0" step="0.01" id="new-price" placeholder="0.00"></div>
     <div><label>Notes</label><input type="text" id="new-notes" placeholder="Optional"></div>
     <button class="btn primary" onclick="addNewPrice('${v.id}')">+ Add Material</button>
-  </div>`;
+  </div>
+  <div class="price-hint" id="new-price-hint"></div>`;
 
   h += '</div>'; // close panel
   h += '</div>'; // close wrap
@@ -5841,15 +5861,15 @@ async function renderCustomerPrices() {
       <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
         <div style="flex:1;min-width:200px">
           <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:4px">Add price for customer</label>
-          <input list="cust-suggestions" id="new-cp-customer" placeholder="Type or pick a customer name" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
+          <input list="cust-suggestions" id="new-cp-customer" placeholder="Type or pick a customer name" oninput="customerPriceHint()" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
           <datalist id="cust-suggestions">
             ${(data.allPoCustomers || []).map(c => `<option value="${c}">`).join('')}
           </datalist>
         </div>
         <div style="width:160px">
           <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:4px">Material</label>
-          <select id="new-cp-material" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
-            ${materials.map(m => `<option value="${m}">${m}</option>`).join('')}
+          <select id="new-cp-material" onchange="customerPriceHint()" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
+            ${priceFormMaterials().map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('')}
           </select>
         </div>
         <div style="width:80px">
@@ -5865,6 +5885,7 @@ async function renderCustomerPrices() {
         </div>
         <button class="btn primary" onclick="addCustomerPrice()">+ Add</button>
       </div>
+      <div class="price-hint" id="new-cp-hint"></div>
     </div>`;
 
     if (!data.customers.length) {
@@ -5905,6 +5926,25 @@ async function renderCustomerPrices() {
   }
 }
 
+// The materials a price can be set for: the standard list plus every material
+// a yard sells or a load has carried, so a yard's own name for a material
+// ("Sand") can get a customer price instead of billing at the default forever.
+function priceFormMaterials() {
+  const vp = typeof vendorPrices !== 'undefined' && vendorPrices ? Object.values(vendorPrices).flat().map(p => p.material) : [];
+  return [...new Set([...(materials || []), ...vp, ...(loads || []).map(l => l.material)].map(m => String(m || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+let cpHintTimer = null;
+function customerPriceHint() {
+  clearTimeout(cpHintTimer);
+  const el = document.getElementById('new-cp-hint'); if (!el) return;
+  const customer = (document.getElementById('new-cp-customer').value || '').trim(), material = document.getElementById('new-cp-material').value;
+  if (!customer || !material) { el.innerHTML = ''; return; }
+  cpHintTimer = setTimeout(async () => {
+    const d = await api('GET', `/api/price-history?side=customer&customer=${encodeURIComponent(customer)}&material=${encodeURIComponent(material)}`);
+    if ((document.getElementById('new-cp-customer') || {}).value.trim() !== customer) return;
+    el.innerHTML = priceHintHtml(d, 'invoiced', 'new-cp-price');
+  }, 250);
+}
 async function addCustomerPrice() {
   const customer = document.getElementById('new-cp-customer').value.trim();
   const material = document.getElementById('new-cp-material').value;
@@ -6055,7 +6095,7 @@ async function renderMaterialCosts() {
                 <td>${mat}</td>
                 <td>${d.unit || '—'}</td>
                 <td>${d.loads}</td>
-                <td>${money(d.unitPrice)}${d.estimated ? ' <span style="font-size:10px;color:#b45309" title="Default rate — not this vendor\'s price. A vendor bill will not use it.">estimate</span>' : ''}</td>
+                <td>${d.mixedRates ? `${money(d.unitPriceMin)}–${money(d.unitPriceMax)} <span style="font-size:10px;color:var(--txt3)" title="Trips of this material at this yard carried different fixed rates (a price change between hauls). The subtotal is exact.">mixed</span>` : money(d.unitPrice)}${d.estimated ? ' <span style="font-size:10px;color:#b45309" title="Default rate — not this vendor\'s price. A vendor bill will not use it.">estimate</span>' : ''}</td>
                 <td style="text-align:right;font-weight:600">${d.unconfigured ? '<span style="color:#b42318">not priceable</span>' : money(d.cost)}${d.estimated && !d.unconfigured ? ' <span style="font-size:10px;color:#b45309">est.</span>' : ''}</td>
               </tr>`).join('')}
             </tbody>
@@ -6078,8 +6118,16 @@ function money(n) {
 async function addNewVendor() {
   const name = prompt('Vendor name:');
   if (!name || !name.trim()) return;
-  const location = prompt('Location (optional):') || '';
-  const d = await api('POST', '/api/vendors', { name: name.trim(), location });
+  const address = prompt('Street address (optional — used to pin the yard on the map):') || '';
+  const location = prompt('City, state (optional):') || '';
+  let d = await api('POST', '/api/vendors', { name: name.trim(), location, address: address.trim() });
+  // A yard that looks like an existing one is a possible duplicate: the
+  // office says whether it really is another place. Nothing is merged.
+  if (!d.ok && d.code === 'possible_duplicate') {
+    const names = (d.candidates || []).map(c => `${c.name}${c.location ? ' (' + c.location + ')' : ''}${c.active ? '' : ' — inactive'}`).join(', ');
+    if (!confirm(`Possible existing yard: ${names}.\n\nCreate "${name.trim()}" anyway as a separate yard?\nOK = create it · Cancel = use the existing yard`)) { toast('Not created — use the existing yard', 'success'); return; }
+    d = await api('POST', '/api/vendors', { name: name.trim(), location, address: address.trim(), force: true });
+  }
   if (d.ok) {
     toast(`Added ${d.vendor.name}`, 'success');
     currentVendorTab = d.vendor.id;
@@ -6105,9 +6153,11 @@ async function editVendorInfo(vendorId) {
   if (!v) return;
   const name = prompt('Vendor name:', v.name);
   if (name === null) return;
-  const location = prompt('Location:', v.location || '');
+  const address = prompt('Street address:', v.address || '');
+  if (address === null) return;
+  const location = prompt('City, state:', v.location || '');
   if (location === null) return;
-  const d = await api('PUT', '/api/vendors/' + vendorId, { name: name.trim(), location: location.trim() });
+  const d = await api('PUT', '/api/vendors/' + vendorId, { name: name.trim(), location: location.trim(), address: address.trim() });
   if (d.ok) {
     toast('Updated', 'success');
     await refreshVendorData();
@@ -6139,12 +6189,37 @@ async function deleteVendorConfirm(vendorId) {
   } else toast(d.error || 'Failed', 'error');
 }
 
+// What VBT last paid this yard for the material, from its sent vendor bills:
+// shown beside the form as a suggestion. "Use" fills the field; nothing is
+// saved until + Add. No bill yet → said so, no number invented.
+let priceHintTimer = null;
+function vendorPriceHint(vendorId) {
+  clearTimeout(priceHintTimer);
+  const el = document.getElementById('new-price-hint'); if (!el) return;
+  const material = (document.getElementById('new-mat').value || '').trim(), unit = (document.getElementById('new-unit').value || '').trim();
+  if (!material) { el.innerHTML = ''; return; }
+  priceHintTimer = setTimeout(async () => {
+    const d = await api('GET', `/api/price-history?side=vendor&vendorId=${encodeURIComponent(vendorId)}&material=${encodeURIComponent(material)}${unit ? '&unit=' + encodeURIComponent(unit) : ''}`);
+    if ((document.getElementById('new-mat') || {}).value.trim() !== material) return;   // typed more since
+    el.innerHTML = priceHintHtml(d, 'paid', 'new-price');
+  }, 250);
+}
+function priceHintHtml(d, verb, inputId) {
+  if (!d || !d.ok) return '';
+  if (!d.last) return `<span style="color:var(--txt3)">No ${verb === 'paid' ? 'vendor bill' : 'invoice'} sent for ${escapeHtml(d.material || 'this material')} yet — nothing to suggest.</span>`;
+  const l = d.last;
+  return `Last ${verb}: <b>$${Number(l.rate).toFixed(2)}/${escapeHtml(l.unit)}</b> on ${escapeHtml(l.date)} (${escapeHtml(l.kind)} ${escapeHtml(l.docId)}, ${l.loads} load${l.loads === 1 ? '' : 's'})${d.count > 1 ? ` · ${d.count} prices on record` : ''}
+    · <a href="#" onclick="event.preventDefault();document.getElementById('${inputId}').value='${Number(l.rate).toFixed(2)}';document.getElementById('${inputId}').focus()">Use $${Number(l.rate).toFixed(2)}</a> or enter a different price.`;
+}
 async function addNewPrice(vendorId) {
   const material = document.getElementById('new-mat').value.trim();
   const unit     = document.getElementById('new-unit').value.trim();
-  const price    = Number(document.getElementById('new-price').value) || 0;
+  const rawPrice = document.getElementById('new-price').value.trim();
   const notes    = document.getElementById('new-notes').value.trim();
   if (!material) { toast('Material required', 'error'); return; }
+  // A blank price is not $0: $0 is a price the office types on purpose.
+  if (rawPrice === '' || !isFinite(Number(rawPrice)) || Number(rawPrice) < 0) { toast('Enter the price (0 or more)', 'error'); return; }
+  const price = Number(rawPrice);
   const d = await api('POST', '/api/vendors/' + vendorId + '/prices', { material, unit, price, notes });
   if (d.ok) {
     toast(`Added ${material}`, 'success');

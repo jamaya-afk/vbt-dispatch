@@ -1766,6 +1766,7 @@ function resolvePickupYard(load, po, trip) {
     id,
     name: v?.name || load?.vendorName || 'VBT Yard',
     location: v?.location || '',
+    address: v?.address || '',
     isInternal: id === 'vbt',
     isActual,
     // Saved coordinates for this yard, or null. Never a guess.
@@ -2356,12 +2357,16 @@ app.get('/api/loads/:id/telemetry', reqMgr, async (req, res) => {
 // Linxup's geofences (learned from its events) and how they map to VBT yards.
 app.get('/api/linxup/geofences', reqMgr, (req, res) => {
   const vendors = (store.vendors || []).filter(v => v.active !== false);
-  const byId = new Map(vendors.filter(v => v.linxupGeofenceId != null).map(v => [Number(v.linxupGeofenceId), v]));
+  // A mapping held by an inactive yard still holds the fence: shown, named inactive.
+  const byId = new Map((store.vendors || []).filter(v => v.linxupGeofenceId != null).map(v => [Number(v.linxupGeofenceId), v]));
   const lc = s => String(s || '').trim().toLowerCase();
+  const stale = (store.vendors || []).filter(v => v.linxupGeofenceId != null && !linxup.geofence(v.linxupGeofenceId))
+    .map(v => { const gone = linxup.deletedGeofence(v.linxupGeofenceId); return { vendorId: v.id, name: v.name, active: v.active !== false, geofenceId: Number(v.linxupGeofenceId), deleted: !!gone, deletedAt: gone ? gone.deletedAt : null, geofenceName: gone ? gone.name : null }; });
   res.json({ enabled: linxup.enabled,
     geofences: linxup.listGeofences().map(g => { const m = byId.get(g.geofenceId) || null; const s = m ? null : vendors.find(v => lc(v.name) === lc(g.name)) || null;
-      return { ...g, mappedVendorId: m ? m.id : null, mappedVendorName: m ? m.name : '', suggestedVendorId: s ? s.id : null, suggestedVendorName: s ? s.name : '' }; }),
-    vendors: vendors.map(v => ({ id: v.id, name: v.name, linxupGeofenceId: v.linxupGeofenceId ?? null })) });
+      return { ...g, mappedVendorId: m ? m.id : null, mappedVendorName: m ? m.name : '', mappedVendorActive: m ? m.active !== false : null, suggestedVendorId: s ? s.id : null, suggestedVendorName: s ? s.name : '' }; }),
+    vendors: vendors.map(v => ({ id: v.id, name: v.name, linxupGeofenceId: v.linxupGeofenceId ?? null, stale: stale.some(x => x.vendorId === v.id) })),
+    staleMappings: stale });
 });
 // Map a VBT yard to a Linxup geofence by id (a manager's decision, saved on the vendor).
 app.put('/api/vendors/:id/linxup-geofence', reqMgr, async (req, res) => {
@@ -2369,9 +2374,9 @@ app.put('/api/vendors/:id/linxup-geofence', reqMgr, async (req, res) => {
   if (!v) return res.status(404).json({ error: 'Vendor not found' });
   const gid = req.body?.geofenceId == null || req.body.geofenceId === '' ? null : Number(req.body.geofenceId);
   if (gid != null && !Number.isFinite(gid)) return res.status(400).json({ error: 'geofenceId must be a number' });
-  if (gid != null && !linxup.geofence(gid)) return res.status(400).json({ error: 'Unknown Linxup geofence — VBT has not heard from it yet' });
+  if (gid != null && !linxup.geofence(gid)) { const gone = linxup.deletedGeofence(gid); return res.status(400).json({ error: gone ? `Linxup deleted that geofence${gone.name ? ` ("${gone.name}")` : ''} on ${String(gone.deletedAt || '').slice(0, 10)} — pick a current one.` : 'Unknown Linxup geofence — VBT has not heard from it yet' }); }
   const other = gid != null ? (store.vendors || []).find(x => x.id !== v.id && Number(x.linxupGeofenceId) === gid) : null;
-  if (other) return res.status(409).json({ error: `That geofence is already mapped to ${other.name}.` });
+  if (other) return res.status(409).json({ error: `That geofence is already mapped to ${other.name}${other.active === false ? ' (inactive — clear its mapping there first)' : ''}.` });
   const before = v.linxupGeofenceId ?? null;
   if (gid == null) delete v.linxupGeofenceId; else v.linxupGeofenceId = gid;
   logAction(req.session.user, 'mapped-geofence', v.id, { vendor: v.name, from: before, to: gid, geofenceName: gid != null ? linxup.geofence(gid).name : '' });
@@ -3049,7 +3054,7 @@ app.get('/api/data', reqAuth, async (req, res) => {
     if (fixed.length) console.log(`[/api/data] Reconciled ${fixed.length} stale PO status(es) in memory; the next save persists them`);
   }
   // Build "yards" view (just the active vendors with name + location, for the driver yard picker)
-  const yards = store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, location: v.location }));
+  const yards = store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, location: v.location, address: v.address || '' }));
 
   if (u.role === 'driver') {
     // Same workday scope as /api/my-dispatch, and no pricing/billing fields.
@@ -3201,6 +3206,23 @@ app.get('/api/pos/check-number', reqMgr, (req, res) => {
 // Jobsites a customer has been delivered to before (active + archived POs),
 // so a dispatcher picks an existing address instead of retyping it. Saved
 // coordinates ride along so a new PO for the same site can inherit them.
+// One jobsite = one address in one city. Case, doubled spaces and a trailing
+// period or comma are the same site ("400 Ridge Rd." is "400 Ridge Rd");
+// "Road" and "Rd" are not guessed to be. Display only — no record is merged.
+function jobsiteKey(address, city) {
+  const n = x => String(x || '').toLowerCase().replace(/\s+/g, ' ').replace(/[\s.,#]+$/, '').trim();
+  return `${n(address)}|${n(city)}`;
+}
+// The pin a site should carry: a confirmed one over an unconfirmed one, and
+// among equals the one set most recently (a correction wins over a copy).
+function bestJobsitePin(poList) {
+  let best = null;
+  for (const p of poList) {
+    const g = p.geo; if (!g || !validLatLng(g.lat, g.lng)) continue;
+    if (!best || (!!g.confirmed && !best.geo.confirmed) || (!!g.confirmed === !!best.geo.confirmed && String(g.setAt || '') > String(best.geo.setAt || ''))) best = { po: p, geo: g };
+  }
+  return best;
+}
 app.get('/api/jobsites', reqMgr, (req, res) => {
   const cust = customerKey(req.query.customer || '');
   const all = [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])]
@@ -3208,15 +3230,14 @@ app.get('/api/jobsites', reqMgr, (req, res) => {
     .filter(p => (p.address || '').trim() || (p.city || '').trim());
   const sites = new Map();
   all.forEach(p => {
-    const key = [String(p.address || '').trim().toLowerCase(), String(p.city || '').trim().toLowerCase()].join('|');
-    const cur = sites.get(key) || { address: (p.address || '').trim(), city: (p.city || '').trim(), customer: p.customer || '', count: 0, lastUsed: '', lastPoId: null, geo: null, geoPoId: null };
-    cur.count++;
-    if ((p.deliveryDate || '') >= cur.lastUsed) { cur.lastUsed = p.deliveryDate || ''; cur.lastPoId = p.id; }
-    const g = geoPublic(p.geo);
-    if (g && (!cur.geo || (g.confirmed && !cur.geo.confirmed))) { cur.geo = g; cur.geoPoId = p.id; }
+    const key = jobsiteKey(p.address, p.city);
+    const cur = sites.get(key) || { address: (p.address || '').trim(), city: (p.city || '').trim(), customer: p.customer || '', count: 0, lastUsed: '', lastPoId: null, geo: null, geoPoId: null, pos: [] };
+    cur.count++; cur.pos.push(p);
+    if ((p.deliveryDate || '') >= cur.lastUsed) { cur.lastUsed = p.deliveryDate || ''; cur.lastPoId = p.id; cur.address = (p.address || '').trim(); cur.city = (p.city || '').trim(); }
     sites.set(key, cur);
   });
-  res.json({ jobsites: [...sites.values()].sort((a, b) => b.lastUsed.localeCompare(a.lastUsed)) });
+  const out = [...sites.values()].map(({ pos: list, ...site }) => { const b = bestJobsitePin(list); return { ...site, geo: b ? geoPublic(b.geo) : null, geoPoId: b ? b.po.id : null }; });
+  res.json({ jobsites: out.sort((a, b) => b.lastUsed.localeCompare(a.lastUsed)) });
 });
 
 app.post('/api/pos', reqMgr, async (req, res) => {
@@ -3243,9 +3264,13 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   } else {
     poNumber = nextAutoPoNumber();
   }
+  // The yards: a pickup yard is a record VBT owns, never free text or a stale id.
+  const yardProblem = yardId => { if (!yardId) return null; const vv = store.vendors.find(v => v.id === yardId); if (!vv) return `Unknown pickup yard "${yardId}"`; if (vv.active === false) return `${vv.name} is inactive — mark it active on Vendors or pick another yard`; return null; };
+  { const yp = yardProblem(po.plannedVendorId); if (yp) return res.status(400).json({ error: yp }); }
   for (const sp of (splits || [])) {
     if (sp.truckUnitId && !(store.trucks || []).some(t => t.id === sp.truckUnitId)) return res.status(400).json({ error: `Unknown truck "${sp.truckUnitId}"` });
     if (sp.truckId && !driverRoster().some(d => d.id === sp.truckId)) return res.status(400).json({ error: `Unknown or inactive driver "${sp.truckId}"` });
+    if (sp.material && sp.loadsAssigned) { const yp = yardProblem(sp.vendorId); if (yp) return res.status(400).json({ error: yp }); }
   }
   // The same rules as Quick Assign. An off-duty driver or a truck in the shop
   // is refused outright. A conflict with work already on the board that day
@@ -3278,8 +3303,10 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     const c = store.customers.find(x => x.id === po.customerId);
     if (c) resolvedCustomer = c.name;
   } else {
-    const lc = resolvedCustomer.toLowerCase();
-    const existing = store.customers.find(x => String(x.name || '').toLowerCase().trim() === lc);
+    // Doubled spaces are the same customer ("Hilltop  Grading" is Hilltop Grading); the master's spelling wins.
+    const normName = x => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const lc = normName(resolvedCustomer);
+    const existing = store.customers.find(x => normName(x.name) === lc);
     if (existing) {
       resolvedCustomer = existing.name;  // canonicalize spelling
     } else if (resolvedCustomer) {
@@ -3298,9 +3325,18 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   }
   // Same jobsite as an earlier PO: inherit its saved coordinates (never guessed).
   let inheritedGeo;
+  const allPosForSite = [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])];
   if (po.jobsiteFromPoId) {
-    const src = [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])].find(x => x.id === po.jobsiteFromPoId);
+    const src = allPosForSite.find(x => x.id === po.jobsiteFromPoId);
     if (src && src.geo && validLatLng(src.geo.lat, src.geo.lng)) inheritedGeo = { ...src.geo, inheritedFromPoId: src.id };
+  }
+  // The same address typed again (not picked) is the same site: its best pin
+  // is carried, marked as inherited. Nothing is geocoded or guessed.
+  if (!inheritedGeo && ((po.address || '').trim() || (po.city || '').trim())) {
+    const key = jobsiteKey(po.address, po.city);
+    const same = allPosForSite.filter(x => customerKey(x.customer) === customerKey(resolvedCustomer) && jobsiteKey(x.address, x.city) === key);
+    const b = bestJobsitePin(same);
+    if (b) inheritedGeo = { ...b.geo, inheritedFromPoId: b.po.id, inheritedBy: 'same-address' };
   }
   const newPo = {
     ...(inheritedGeo ? { geo: inheritedGeo } : {}),
@@ -3465,6 +3501,10 @@ function poStatusFromLoads(po) {
 // order on an invoice are frozen. Nothing changes until every check passes.
 const PO_EDITABLE = ['poNumber', 'customer', 'customerId', 'job', 'jobCode', 'address', 'city', 'deliveryDate', 'plannedVendorId', 'notes', 'reason', 'force'];
 const PO_INVOICE_FIELDS = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'];
+// Where the work went and for whom: frozen as soon as any load on the order
+// has delivered work or is submitted (the ticket, the signature and the GPS
+// stamps describe a delivery to this address for this customer).
+const PO_WORK_FIELDS = ['customer', 'address', 'city'];
 function loadIsOperational(l) {
   return !l.voided && !l.locked && l.approvalStatus !== 'submitted' && l.approvalStatus !== 'approved'
     && !(l.trips || []).length && !(Number(l.loadsDelivered) || 0);
@@ -3511,6 +3551,14 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   if (hasApproved) {
     const frozen = PO_INVOICE_FIELDS.filter(changed);
     if (frozen.length) return res.status(403).json({ error: `This PO has approved loads; ${frozen.join(', ')} cannot change.`, frozenFields: frozen });
+  }
+  // Delivered or submitted work is history even before approval: the record
+  // of where it went (address, city) and for whom (customer) stays. A new
+  // address is a new order; a typo is corrected on the next PO.
+  const hasDelivered = allLoadsWithArchive().some(l => l.poId === old.id && !l.voided && (l.approvalStatus === 'submitted' || (Number(l.loadsDelivered) || 0) > 0 || (l.trips || []).some(tripIsCompleted)));
+  if (hasDelivered) {
+    const frozen = PO_WORK_FIELDS.filter(changed);
+    if (frozen.length) return res.status(403).json({ error: `This PO has delivered loads; ${frozen.join(', ')} cannot change — the deliveries on record went to this jobsite for this customer. Put a new address on a new PO.`, frozenFields: frozen, code: 'po_work_frozen' });
   }
   if (changed('poNumber')) {
     if (!next.poNumber) return res.status(400).json({ error: 'PO number cannot be blank' });
@@ -3634,7 +3682,8 @@ app.post('/api/pos/:id/loads', reqMgr, async (req, res) => {
 async function locationHandler(kind, req, res) {
   const rec = kind === 'vendor' ? store.vendors.find(v => v.id === req.params.id) : store.pos.find(p => p.id === req.params.id);
   if (!rec) return res.status(404).json({ error: 'Not found' });
-  const addressText = kind === 'vendor' ? [rec.name, rec.location].filter(Boolean).join(', ') : [rec.address, rec.city].filter(Boolean).join(', ');
+  // A yard with a street address geocodes by it; without one, the name and the city are all there is (a city-level point at best — confirm it on the map).
+  const addressText = kind === 'vendor' ? ([rec.address, rec.location].filter(Boolean).join(', ') || [rec.name, rec.location].filter(Boolean).join(', ')) : [rec.address, rec.city].filter(Boolean).join(', ');
   try {
     const result = await applyLocationRequest(rec, req.body, req.session.user, addressText);
     logAction(req.session.user, 'set-location', `${kind}:${rec.id}`, { action: result.action, geo: result.geo, name: rec.name || rec.poNumber || rec.customer });
@@ -5375,7 +5424,15 @@ app.post('/api/billing-batches', reqMgr, async (req, res) => {
     // Mark loads as part of this batch (lock against duplicate billing)
     for (const lid of g.loadIds) {
       const l = store.loads.find(x => x.id === lid);
-      if (l) l.billingBatchId = batchId;
+      if (!l) continue;
+      l.billingBatchId = batchId;
+      // A default customer rate was a placeholder until now. The line this
+      // batch froze is the load's rate from here on, so Load Details,
+      // Profitability and the end-of-day review say what the invoice says.
+      if (l.customerRateIsDefault || l.customerRate == null || l.customerRate === '') {
+        const eff = effectiveCustomerRate(l);
+        l.customerRate = eff.rate; l.customerUnit = eff.unit; l.customerRateIsDefault = false; l.customerRateFixedBy = batchId;
+      }
     }
     created.push(batch);
   }
@@ -5787,6 +5844,8 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
     const l = findLoadAnywhere(lid);
     if (l) {
       l.billingBatchId = '';
+      // A rate this batch fixed is a placeholder again, resolved live from the list.
+      if (l.customerRateFixedBy === b.id) { l.customerRateIsDefault = true; l.customerRateFixedBy = ''; }
       l.billStatus = 'ready';     // back to ready-to-bill so a corrected batch can pick it up
       l.qbInvoiceId = '';
       l.qbInvoiceNumber = '';
@@ -6167,8 +6226,16 @@ app.post('/api/vendor-bills/:id/void', reqMgr, async (req, res) => {
   b.voidedBy = user;
   b.voidReason = reason;
   claimVendorBillRefs(b, false);
+  // The price this bill fixed onto trips it priced live goes with it: those
+  // trips are placeholders again (priced from the list), so a corrected price
+  // reaches the next bill instead of the voided bill's rate.
+  let tripsUnfixed = 0;
+  for (const ln of b.lineItems || []) for (const ref of ln.tripRefs || []) {
+    const ld = findLoadAnywhere(ref.loadId); const t = ld && (ld.trips || []).find(x => x.tripNum === ref.tripNum);
+    if (t && t.vendorRateFixedBy === b.id) { t.vendorRateIsDefault = true; t.vendorRateFixedBy = ''; t.vendorRateUnfixedBy = b.id; tripsUnfixed++; }
+  }
   for (const lid of b.loadIds) { const l = findLoadAnywhere(lid); if (l && b.qbBillId && l.qbBillId === b.qbBillId) l.qbBillId = ''; }
-  logAction(req.session.user, 'voided-vendor-bill', b.id, { reason, qbDeleted, manualQbDelete: req.body?.alreadyDeletedInQuickBooks === true, vendor: b.vendorName, loads: b.loadIds.length });
+  logAction(req.session.user, 'voided-vendor-bill', b.id, { reason, qbDeleted, manualQbDelete: req.body?.alreadyDeletedInQuickBooks === true, vendor: b.vendorName, loads: b.loadIds.length, tripsUnfixed });
   await saveData();
   res.json({ success: true, bill: b, qbDeleted });
 });
@@ -6303,15 +6370,38 @@ app.get('/api/vendors', reqMgr, (req, res) => {
 });
 
 // Add a new vendor
+// A new yard that looks like an existing one (one name inside the other, a
+// distinctive word in common, or the same street address) is a POSSIBLE
+// EXISTING LOCATION: said to the office, never merged, created only when the
+// office says it really is another place. Two records for one yard would
+// split its cost history and its Linxup mapping.
+const VENDOR_GENERIC_WORDS = new Set(['yard', 'yards', 'materials', 'material', 'inc', 'llc', 'co', 'company', 'construction', 'the', 'and', 'of', 'sand', 'rock', 'gravel', 'plant', 'quarry', 'pit', 'supply', 'aggregates', 'aggregate', 'ready', 'mix', 'trucking', 'farms', 'farm', 'north', 'south', 'east', 'west']);
+function vendorNameTokens(name) { return String(name || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !VENDOR_GENERIC_WORDS.has(w)); }
+function vendorLookalikes(name, address, exceptId) {
+  const squash = x => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const n = squash(name), toks = new Set(vendorNameTokens(name)), addr = squash(address);
+  return (store.vendors || []).filter(v => v.id !== exceptId).filter(v => {
+    const vn = squash(v.name); if (!vn) return false;
+    if (vn === n || (n.length >= 4 && vn.length >= 4 && (vn.includes(n) || n.includes(vn)))) return true;
+    if (vendorNameTokens(v.name).some(t => toks.has(t))) return true;
+    if (addr && addr.length >= 6 && squash(v.address) === addr) return true;
+    return false;
+  }).map(v => ({ id: v.id, name: v.name, location: v.location || '', address: v.address || '', active: v.active !== false }));
+}
 app.post('/api/vendors', reqMgr, async (req, res) => {
-  const { name, location } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
-  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || ('vendor-' + Date.now());
+  const { name, location, address, force } = req.body || {};
+  if (!name || !String(name).trim()) return res.status(400).json({ error: 'Name required' });
+  const id = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || ('vendor-' + Date.now());
   if (store.vendors.find(v => v.id === id)) return res.status(400).json({ error: 'A vendor with that name already exists' });
-  const newVendor = { id, name: name.trim(), location: (location || '').trim(), active: true };
+  if (store.vendors.some(v => String(v.name || '').trim().toLowerCase() === String(name).trim().toLowerCase())) return res.status(400).json({ error: 'A vendor with that name already exists' });
+  const lookalikes = vendorLookalikes(name, address);
+  if (lookalikes.length && force !== true) {
+    return res.status(409).json({ error: `Possible existing yard: ${lookalikes.map(v => `${v.name}${v.location ? ' (' + v.location + ')' : ''}${v.active ? '' : ' — inactive'}`).join(', ')}. Use it, or create "${String(name).trim()}" anyway as a separate yard.`, code: 'possible_duplicate', candidates: lookalikes });
+  }
+  const newVendor = { id, name: String(name).trim(), location: String(location || '').trim(), address: String(address || '').trim(), active: true };
   store.vendors.push(newVendor);
   store.vendorPrices[id] = [];
-  logAction(req.session.user, 'created-vendor', id, { name: newVendor.name });
+  logAction(req.session.user, 'created-vendor', id, { name: newVendor.name, address: newVendor.address, ...(lookalikes.length ? { lookalikesOverridden: lookalikes.map(v => v.id) } : {}) });
   await saveData();
   res.json({ success: true, vendor: newVendor });
 });
@@ -6320,9 +6410,16 @@ app.post('/api/vendors', reqMgr, async (req, res) => {
 app.put('/api/vendors/:id', reqMgr, async (req, res) => {
   const v = store.vendors.find(x => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Not found' });
-  const before = { name: v.name, location: v.location, active: v.active };
+  const before = { name: v.name, location: v.location, address: v.address || '', active: v.active };
+  // Every refusal before the first change.
+  if (req.body.name !== undefined) {
+    const nn = String(req.body.name).trim();
+    if (!nn) return res.status(400).json({ error: 'Name required' });
+    if (store.vendors.some(x => x.id !== v.id && String(x.name || '').trim().toLowerCase() === nn.toLowerCase())) return res.status(400).json({ error: 'Another yard already has that name' });
+  }
   if (req.body.name !== undefined)     v.name = String(req.body.name).trim();
   if (req.body.location !== undefined) v.location = String(req.body.location).trim();
+  if (req.body.address !== undefined)  v.address = String(req.body.address).trim();
   if (req.body.active !== undefined)   v.active = !!req.body.active;
   logAction(req.session.user, 'updated-vendor', v.id, {
     name: v.name,
@@ -6341,6 +6438,7 @@ app.delete('/api/vendors/:id', reqMgr, async (req, res) => {
   // Refuse if any load (live or archived) plans or hauled from this yard, or a
   // vendor bill names it: deleting it would drop real cost from every screen.
   const inUse = allLoadsWithArchive().some(l => !l.voided && (l.vendorId === id || (l.trips || []).some(t => t.actualYardId === id)))
+    || [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])].some(p => p.plannedVendorId === id)
     || (store.vendorBills || []).some(b => b.vendorId === id && b.syncStatus !== 'voided');
   if (inUse) return res.status(400).json({ error: 'Cannot delete — loads were planned or hauled from this yard, or a vendor bill names it. Mark it inactive instead.' });
   const deleted = store.vendors[idx];
@@ -6398,13 +6496,14 @@ app.put('/api/vendors/:id/prices/:priceId', reqMgr, async (req, res) => {
   if (req.body.notes !== undefined)    p.notes    = String(req.body.notes).trim();
   // Only log price-edits if price actually changed (not on every blur from inline editing)
   const priceChanged = req.body.price !== undefined && Number(req.body.price) !== before.price;
-  if (priceChanged || req.body.active !== undefined) {
+  const rowChanged = p.material !== before.material || p.unit !== before.unit;
+  if (priceChanged || rowChanged || req.body.active !== undefined) {
     logAction(req.session.user, 'edited-price', req.params.id + ':' + p.id, {
       vendorName: v?.name || req.params.id,
       material:   p.material,
       unit:       p.unit,
-      before:     { price: before.price, active: before.active },
-      after:      { price: p.price, active: p.active },
+      before:     { price: before.price, active: before.active, material: before.material, unit: before.unit },
+      after:      { price: p.price, active: p.active, material: p.material, unit: p.unit },
     });
   }
   await saveData();
@@ -6902,6 +7001,46 @@ app.delete('/api/customer-prices/:customerKey/:priceId', reqMgr, async (req, res
 });
 
 // ── API: DEFAULT RATES (admin-only) ─────────────────────────────────────────
+// ── PRICE HISTORY (read-only) ────────────────────────────────────────────────
+// What VBT actually paid a yard, or billed a customer, for a material: read
+// from the vendor bills and the invoice batches that were SENT (voided and
+// unsent documents are not history; default-rate lines are estimates, not
+// prices). A suggestion for the price forms — never a price source, never
+// applied on its own.
+app.get('/api/price-history', reqMgr, (req, res) => {
+  const side = req.query.side === 'customer' ? 'customer' : 'vendor';
+  const material = String(req.query.material || '').trim().toLowerCase();
+  const unit = req.query.unit ? unitKey(req.query.unit) : null;
+  if (!material) return res.status(400).json({ error: 'material required' });
+  const rows = [];
+  if (side === 'vendor') {
+    const vendorId = String(req.query.vendorId || '');
+    if (!vendorId) return res.status(400).json({ error: 'vendorId required' });
+    for (const b of store.vendorBills || []) {
+      if (b.vendorId !== vendorId || b.syncStatus !== 'sent') continue;
+      for (const ln of [...(b.lineItems || [])].reverse()) {   // within one bill the later line is the later haul
+        if (String(ln.material || '').trim().toLowerCase() !== material || ln.isDefault || ln.unconfigured) continue;
+        if (unit && unitKey(ln.unit || 'ton') !== unit) continue;
+        rows.push({ rate: Number(ln.rate), unit: unitKey(ln.unit || 'ton'), loads: ln.loads, amount: ln.amount, date: String(b.sentAt || b.createdAt || '').slice(0, 10), hauled: b.deliveryEnd || b.deliveryStart || '', docId: b.id, kind: 'vendor bill', party: b.vendorName });
+      }
+    }
+  } else {
+    const ck = customerKey(req.query.customer || '');
+    if (!ck) return res.status(400).json({ error: 'customer required' });
+    for (const b of store.billingBatches || []) {
+      if (customerKey(b.customer) !== ck || b.syncStatus !== 'sent_to_quickbooks') continue;
+      for (const ln of [...(b.lineItems || [])].reverse()) {
+        const mat = String(ln.material || String(ln.description || '').split(' — ')[0] || '').trim().toLowerCase();
+        if (mat !== material || ln.rateIsDefault || ln.rate == null) continue;
+        if (unit && unitKey(ln.unit || 'ton') !== unit) continue;
+        rows.push({ rate: Number(ln.rate), unit: unitKey(ln.unit || 'ton'), loads: ln.loads, amount: ln.amount, date: String(b.sentAt || b.sentToQuickBooksAt || b.createdAt || '').slice(0, 10), hauled: b.deliveryEnd || b.deliveryStart || '', docId: b.id, kind: 'invoice', party: b.customer });
+      }
+    }
+  }
+  rows.sort((a, b) => b.date.localeCompare(a.date) || String(b.docId).localeCompare(String(a.docId)));
+  res.json({ side, material: req.query.material, unit, last: rows[0] || null, history: rows.slice(0, 12), count: rows.length });
+});
+
 app.get('/api/default-rates', reqMgr, (req, res) => {
   res.json({ defaultRates: store.defaultRates, materials: MATERIALS });
 });
@@ -7369,9 +7508,13 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
         bv.unconfigured = true;
         bv.unconfiguredUnits = [...new Set([...(bv.unconfiguredUnits || []), ln.unit])];
       }
-      if (!bv.byMaterial[l.material]) bv.byMaterial[l.material] = { loads: 0, cost: 0, unit: ln.unit, unitPrice: ln.rate, unconfigured: false, estimated: false };
-      bv.byMaterial[l.material].loads += ln.loads;
-      bv.byMaterial[l.material].cost  += ln.amount;
+      if (!bv.byMaterial[l.material]) bv.byMaterial[l.material] = { loads: 0, cost: 0, unit: ln.unit, unitPrice: ln.rate, unitPriceMin: ln.rate, unitPriceMax: ln.rate, mixedRates: false, unconfigured: false, estimated: false };
+      const bm = bv.byMaterial[l.material];
+      bm.loads += ln.loads;
+      bm.cost  += ln.amount;
+      // Trips of one material at one yard can carry different fixed rates
+      // (a price change between hauls): said as a range, never one number.
+      if (ln.rate !== bm.unitPrice) { bm.mixedRates = true; bm.unitPriceMin = Math.min(bm.unitPriceMin, ln.rate); bm.unitPriceMax = Math.max(bm.unitPriceMax, ln.rate); }
       if (ln.unconfigured) bv.byMaterial[l.material].unconfigured = true;
       // A default rate is an estimate, not the vendor's price: said so here,
       // as a vendor bill refuses it (the invoice never carries it either).
@@ -7754,7 +7897,7 @@ function metersBetween(aLat, aLng, bLat, bLng) {
 function nearestVbtPlace(lat, lng, dayLoads) {
   let best = null;
   const consider = (kind, id, name, geo, radius) => {
-    if (!geo || !validLatLng(geo.lat, geo.lng)) return;
+    if (!geo || !validLatLng(geo.lat, geo.lng) || !geo.confirmed) return;   // an unconfirmed geocode is not a place
     const d = metersBetween(lat, lng, geo.lat, geo.lng);
     if (d <= radius && (!best || d < best.distance)) best = { kind, id, name, distance: Math.round(d), source: 'vbt' };
   };
@@ -7877,8 +8020,12 @@ async function loadTelemetryEvidence(load, opts = {}) {
     const pickup = resolvePickupYard(load, po, trip);
     const vendor = (store.vendors || []).find(v => v.id === pickup.id) || null;
     const fence = fenceForVendor(vendor);
-    const vendorGeo = vendor && vendor.geo && validLatLng(vendor.geo.lat, vendor.geo.lng) ? vendor.geo : null;
-    const jobGeo = po.geo && validLatLng(po.geo.lat, po.geo.lng) ? po.geo : null;
+    // A pin is a reference only once a person confirmed it; a geocoded point
+    // nobody checked (often city-level) must not call a driver's tap wrong.
+    const vendorPin = vendor && vendor.geo && validLatLng(vendor.geo.lat, vendor.geo.lng) ? vendor.geo : null;
+    const jobPin = po.geo && validLatLng(po.geo.lat, po.geo.lng) ? po.geo : null;
+    const vendorGeo = vendorPin && vendorPin.confirmed ? vendorPin : null;
+    const jobGeo = jobPin && jobPin.confirmed ? jobPin : null;
     const pickupVisits = fence ? w.visits.filter(v => Number(v.geofenceId) === Number(fence.geofenceId)) : [];
     const pickupGps = vendorGeo ? nearWindow(w.positions, vendorGeo, PLACE_RADIUS_M.vendor) : null;
     const jobsiteGps = jobGeo ? nearWindow(w.positions, jobGeo, PLACE_RADIUS_M.jobsite) : null;
@@ -7886,11 +8033,11 @@ async function loadTelemetryEvidence(load, opts = {}) {
     const jobsiteStops = w.stops.filter(s => near(s, jobGeo, PLACE_RADIUS_M.jobsite));
     const pickupStops = w.stops.filter(s => near(s, vendorGeo, PLACE_RADIUS_M.vendor) || (fence && s.geofenceId != null && Number(s.geofenceId) === Number(fence.geofenceId)));
     ev.positions = w.positions.length;
-    ev.pickup = { name: pickup.name, fence: fence ? { geofenceId: fence.geofenceId, name: fence.name, confidence: fence.confidence } : null, pinned: !!vendorGeo,
+    ev.pickup = { name: pickup.name, fence: fence ? { geofenceId: fence.geofenceId, name: fence.name, confidence: fence.confidence } : null, pinned: !!vendorGeo, pinUnconfirmed: !!(vendorPin && !vendorGeo),
       visits: pickupVisits.map(v => ({ enteredAt: v.enteredAt, leftAt: v.leftAt, minutes: v.durationMin, source: 'Linxup geofence' })),
       gps: pickupGps, stops: pickupStops.map(stopPublic),
       evidence: pickupVisits.length ? 'geofence' : pickupGps ? 'gps' : (fence || vendorGeo) ? 'none' : 'no-reference' };
-    ev.jobsite = { name: [po.address, po.city].filter(Boolean).join(', ') || po.customer || 'Jobsite', pinned: !!jobGeo, gps: jobsiteGps, stops: jobsiteStops.map(stopPublic),
+    ev.jobsite = { name: [po.address, po.city].filter(Boolean).join(', ') || po.customer || 'Jobsite', pinned: !!jobGeo, pinUnconfirmed: !!(jobPin && !jobGeo), gps: jobsiteGps, stops: jobsiteStops.map(stopPublic),
       evidence: jobsiteGps ? 'gps' : jobGeo ? 'none' : 'no-reference' };
     ev.otherVisits = w.visits.filter(v => !fence || Number(v.geofenceId) !== Number(fence.geofenceId)).map(v => ({ name: v.geofenceName, enteredAt: v.enteredAt, leftAt: v.leftAt, minutes: v.durationMin, source: 'Linxup geofence' }));
     ev.stops = w.stops.map(stopPublic); ev.vehicleTrips = w.trips.map(vtripPublic); ev.usage = w.usage.map(usagePublic);
@@ -8069,6 +8216,24 @@ async function buildBoard(dayArg) {
       const ev = await loadTelemetryEvidence(l, { now, tripIndexes: [started.length - 1] });
       ev.flags.forEach(f => telIssues.push({ truckId: truck.id, truckNum: truck.truckNum, loadId: l.id, kind: f.kind, text: f.text }));
     } catch (e) { console.error('[linxup] evidence failed for', l.id, e.message); }
+  }
+  // The day's submitted loads: every trip is checked once more, so the
+  // approver and the end-of-day review see a yard or a jobsite the telemetry
+  // disagrees with before the load is approved. Evidence only.
+  for (const l of dayLoads.filter(x => x.approvalStatus === 'submitted')) {
+    const truck = l.truckUnitId ? (store.trucks || []).find(x => x.id === l.truckUnitId) : null;
+    if (!linxup.enabled || !truck || !truck.linxup || truck.linxup.trackerId == null) continue;
+    try {
+      const ev = await loadTelemetryEvidence(l, { now });
+      ev.flags.forEach(f => telIssues.push({ truckId: truck.id, truckNum: truck.truckNum, loadId: l.id, kind: f.kind, text: `${f.text} Check the yard and the jobsite before approving.` }));
+    } catch (e) { console.error('[linxup] evidence failed for', l.id, e.message); }
+  }
+  // A yard mapped to a geofence Linxup has deleted (or VBT no longer knows):
+  // its visits no longer count as evidence. Said here; the mapping is a
+  // person's to change on Vendors.
+  if (linxup.enabled) for (const v of (store.vendors || []).filter(v => v.active !== false && v.linxupGeofenceId != null && !linxup.geofence(v.linxupGeofenceId))) {
+    const gone = linxup.deletedGeofence(v.linxupGeofenceId);
+    telIssues.push({ truckId: null, truckNum: '', vendorId: v.id, kind: 'fence-gone', text: `${v.name} is mapped to Linxup geofence ${gone && gone.name ? `"${gone.name}" (${v.linxupGeofenceId})` : v.linxupGeofenceId}, which ${gone ? 'Linxup deleted' : 'VBT no longer knows'} — its visits no longer count as pickup evidence. Remap the yard on Vendors.` });
   }
   const trailerBusy = new Map();
   holding.forEach(l => { if (l.trailerId) trailerBusy.set(l.trailerId, l.id); });
@@ -8402,6 +8567,7 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   if (yardId !== undefined) {
     v = store.vendors.find(x => x.id === yardId);
     if (yardId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
+    if (v && v.active === false) return res.status(400).json({ error: `${v.name} is inactive — mark it active on Vendors or pick another yard` });
   }
   const conflicts = assignmentConflicts(l, { driverId, truckUnitId, trailerId });
   if (conflicts.length && force !== true) {

@@ -175,6 +175,18 @@ carlos / carlos123
   changes nothing; Details opens the load. On the phone the planned outside
   yard is one tap ("Arrived at Vulcan"), with "picked up somewhere else?" one
   link away.
+- **Locations and prices are records, reused.** A yard has a name, a street
+  address, a city, a confirmed pin and a Linxup geofence; a new yard that looks
+  like an existing one is a "possible existing yard" to confirm, never a
+  silent second record; an unknown or inactive yard cannot be put on an order.
+  A customer's jobsites are its past PO addresses: the New PO form offers them
+  (and offers one back when it is typed by hand), and the same address carries
+  its confirmed pin. Once any load on an order has delivered work, the order's
+  jobsite and customer are frozen — a new address is a new PO. A voided vendor
+  bill or invoice batch gives the rates it fixed back to the list; a sent one
+  is the price history the price forms suggest from ("Last paid $X on DATE ·
+  Use"), never apply. Evidence trusts confirmed pins only; a geofence Linxup
+  deleted names its yard's mapping stale instead of changing the yard.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on

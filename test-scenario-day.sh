@@ -78,6 +78,7 @@ board
 chk "8. after submission Leonardo and Truck #12 are no longer shown occupied" "$(curl -s -b $M $B/api/today | jq "[x['available'] for x in d['drivers'] if x['id']=='leonardo'][0], [x['available'] for x in d['trucks'] if x['id']=='truck-12'][0], [l['bucket'] for l in d['loads'] if l['id']=='$LB'][0]")" "True True awaiting-approval"
 
 say "3. BILLING END TO END — Leonardo's 3 loads: approve → Ready to Bill → batch → QuickBooks"
+chk "the order has delivered loads: its jobsite and customer are frozen (403), its notes still change — where the work went stays on record" "$(mg PUT /api/pos/$P1 '{"address":"1 Elsewhere Ave"}' | jq "d.get('code'), d.get('frozenFields')")|$(mgc PUT /api/pos/$P1 '{"notes":"gate code 4411"}')" "po_work_frozen ['address']|200"
 mg POST /api/loads/$LB/approve >/dev/null
 chk "approved → locked, Ready to Bill lists it" "$(load $LB "l['locked'], l['billStatus']")|$(curl -s -b $M $B/api/ready-to-bill | jq "len([x for x in d['items'] if x['id']=='$LB'])")" "True ready|1"
 chk "invoice preview: 3 loads × 25 t × \$25 = \$1,875 to Hilltop Grading, PO HG-101" "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$LB\"]}" | jq "d['groups'][0]['customer'], d['groups'][0]['poNumber'], d['groups'][0]['totalLoads'], d['groups'][0]['totalAmount']")" "Hilltop Grading HG-101 3 1875"
@@ -161,6 +162,7 @@ import json,sys;d=json.load(sys.stdin);l=[x for b in d['archive'] for x in b['lo
 print(len(po), len(l['trips']), l['qbInvoiceId'], l['billingBatchId']=='$B3')")" "['$LM']|0 2 INV-3 True"
 echo "  $(review "' | '.join(f\"{i['state']}: {i['poNumber']} {i['id']} — {' · '.join(i['reasons'])}\" for i in d['items'])")"
 chk "the end-of-day list follows the board: the two billed loads leave it; the two orders saved since (HG-LOST, HG-103 — HG-102 was refused during the outage) are open" "$(review "d['counts'], [i['id'] for i in d['items'] if i['id'] in ('$LB','$LM')]")" "{'total': 4, 'clean': 0, 'open': 2, 'attention': 2, 'blocked': 0} []"
+chk "the archived order's jobsite is still a saved site for its customer (the New PO picker offers it, with its pin if one was set)" "$(curl -s -b $M "$B/api/jobsites?customer=Hilltop%20Grading" | jq "[(s['address'], s['city'], s['count']>=1) for s in d['jobsites'] if s['address']=='400 Ridge Rd']")" "[('400 Ridge Rd', 'Clovis', True)]"
 chk "Material Costs and Reports unchanged by archiving" "$(curl -s -b $M $B/api/material-costs | jq "int(d['grandTotal'])==$BEFORE")|$(curl -s -b $M $B/api/reports | jq "d['totals']['billedThisMonth']")" "True|2"
 chk "Case E: voiding the batch after archive releases the archived copy too" "$(mg POST /api/billing-batches/$B3/void '{"reason":"customer dispute"}' | jq "d['success'], d['qbVoided']")|$(curl -s -b $M $B/api/history | python3 -c "
 import json,sys;d=json.load(sys.stdin);l=[x for b in d['archive'] for x in b['loads'] if x['id']=='$LM'][0];print(l['billStatus'], repr(l['qbInvoiceId']))")" "True True|ready ''"
