@@ -209,6 +209,7 @@ class Linxup {
     this.trackers = new Map();   // trackerId → mirror row
     this.latest = new Map();     // trackerId → latest position
     this.geofences = new Map();  // geofenceId → { geofenceId, name, fenceGroup }
+    this.deletedGeofences = new Map();   // geofenceId → { geofenceId, name, deletedAt } — fences Linxup told us it deleted (a mapping to one is stale)
     this.lastVisit = new Map();  // trackerId → most recent geofence visit (for the board's "Last geofence")
     this.file = null;            // dev mode: { trackers, latest, positions[], visits[], stops[], trips[], usage[], geofences{}, log[] }
     this.version = 0;
@@ -257,6 +258,8 @@ class Linxup {
       l.rows.forEach(r => this.latest.set(Number(r.tracker_id), rowToMemPosition(r)));
       const g = await this.pg.query(`SELECT geofence_id, name, fence_group FROM linxup_geofences WHERE deleted_at IS NULL`);
       g.rows.forEach(r => this.geofences.set(Number(r.geofence_id), { geofenceId: Number(r.geofence_id), name: r.name, fenceGroup: r.fence_group }));
+      const gd = await this.pg.query(`SELECT geofence_id, name, deleted_at FROM linxup_geofences WHERE deleted_at IS NOT NULL`);
+      gd.rows.forEach(r => this.deletedGeofences.set(Number(r.geofence_id), { geofenceId: Number(r.geofence_id), name: r.name, deletedAt: iso(r.deleted_at) }));
       const lv = await this.pg.query(`SELECT DISTINCT ON (tracker_id) * FROM linxup_geofence_events ORDER BY tracker_id, entered_at DESC`);
       lv.rows.forEach(r => this.lastVisit.set(Number(r.tracker_id), rowVisit(r)));
     } else {
@@ -265,6 +268,7 @@ class Linxup {
       Object.values(this.file.trackers).forEach(t => this.trackers.set(Number(t.trackerId), t));
       Object.values(this.file.latest).forEach(p => this.latest.set(Number(p.trackerId), p));
       Object.values(this.file.geofences).forEach(g => this.geofences.set(Number(g.geofenceId), g));
+      Object.values(this.file.deletedGeofences || {}).forEach(g => this.deletedGeofences.set(Number(g.geofenceId), g));
       this.file.visits.forEach(v => this._noteVisit(v));
     }
     this.mode = this.pg ? 'postgres' : 'file';
@@ -344,11 +348,27 @@ class Linxup {
     const cur = this.geofences.get(f.geofenceId);
     const next = { geofenceId: f.geofenceId, name: f.name ?? (cur ? cur.name : null), fenceGroup: f.fenceGroup ?? (cur ? cur.fenceGroup : null) };
     if (cur && cur.name === next.name && cur.fenceGroup === next.fenceGroup) return;
+    // A fence heard from again is alive again: a deletion VBT recorded is undone.
     if (this.pg) await this.pg.query(`INSERT INTO linxup_geofences (geofence_id, name, fence_group, updated_at) VALUES ($1,$2,$3,now())
-      ON CONFLICT (geofence_id) DO UPDATE SET name = COALESCE(EXCLUDED.name, linxup_geofences.name), fence_group = COALESCE(EXCLUDED.fence_group, linxup_geofences.fence_group), updated_at = now()`, [next.geofenceId, next.name, next.fenceGroup]);
-    else { this.file.geofences[next.geofenceId] = next; this._flushFile(); }
-    this.geofences.set(next.geofenceId, next); this.version++;
+      ON CONFLICT (geofence_id) DO UPDATE SET name = COALESCE(EXCLUDED.name, linxup_geofences.name), fence_group = COALESCE(EXCLUDED.fence_group, linxup_geofences.fence_group), deleted_at = NULL, updated_at = now()`, [next.geofenceId, next.name, next.fenceGroup]);
+    else { this.file.geofences[next.geofenceId] = next; if (this.file.deletedGeofences) delete this.file.deletedGeofences[next.geofenceId]; this._flushFile(); }
+    this.geofences.set(next.geofenceId, next); this.deletedGeofences.delete(next.geofenceId); this.version++;
   }
+  // Linxup deleted a geofence (Geofence Change DELETE): it leaves the mirror
+  // and is remembered as deleted, so a VBT yard still mapped to it can be
+  // named stale. VBT's own records (the vendor, its mapping) are not touched.
+  async deleteGeofence(id, at) {
+    this._guard();
+    const gid = num(id); if (gid == null) return;
+    const cur = this.geofences.get(gid) || null;
+    const when = at instanceof Date ? at.toISOString() : new Date(at || Date.now()).toISOString();
+    const rec = { geofenceId: gid, name: cur ? cur.name : (this.deletedGeofences.get(gid) || {}).name || null, deletedAt: when };
+    if (this.pg) await this.pg.query(`INSERT INTO linxup_geofences (geofence_id, name, deleted_at, updated_at) VALUES ($1,$2,$3,now())
+      ON CONFLICT (geofence_id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at, updated_at = now()`, [gid, rec.name, when]);
+    else { delete this.file.geofences[gid]; this.file.deletedGeofences = this.file.deletedGeofences || {}; this.file.deletedGeofences[gid] = rec; this._flushFile(); }
+    this.geofences.delete(gid); this.deletedGeofences.set(gid, rec); this.version++;
+  }
+  deletedGeofence(id) { return this.deletedGeofences.get(num(id)) || null; }
   // One visit per (tracker, fence, enter time). An EXIT completes the visit
   // whether its ENTER came before or after it; repeats change nothing.
   async storeVisit(v, receivedAt) {
@@ -550,6 +570,15 @@ class Linxup {
           const r = t === 'stop' ? await this.storeStop(x, receivedAt) : t === 'trip' ? await this.storeVehicleTrip(x, receivedAt) : await this.storeUsage(x, receivedAt);
           if (r.stored) { summary.stored++; this.counters.stored++; } else { summary.duplicates++; this.counters.duplicates++; }
           await this.logMessage({ type: t, trackerId: x.trackerId, outcome: r.stored ? 'stored' : 'duplicate', status: 200, sha1 });
+        } else if (t === 'geofence-change') {
+          // The fence itself changed in Linxup: CREATE/UPDATE refresh the mirror's
+          // name and group; DELETE marks it gone. The raw message is kept too.
+          const gid = num(raw.geofenceId); const action = String(raw.action || '').toUpperCase();
+          if (gid == null) { errors.push('geofenceId missing'); continue; }
+          if (action === 'DELETE') await this.deleteGeofence(gid, receivedAt);
+          else await this.upsertGeofence({ geofenceId: gid, name: raw.name ?? (raw.geofence && raw.geofence.name) ?? undefined, fenceGroup: raw.fenceGroup ?? raw.group ?? (raw.geofence && raw.geofence.fenceGroup) ?? undefined });
+          summary.stored++; this.counters.stored++;
+          await this.logMessage({ type: t, trackerId: null, outcome: action ? action.toLowerCase() : 'change', status: 200, sha1, body: raw });
         } else if (k === 2) {
           // Kept raw for L3: the tracker is still mirrored so the link screen knows it.
           const tr = normTracker(raw.tracker);

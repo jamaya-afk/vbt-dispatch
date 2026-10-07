@@ -54,7 +54,13 @@ carlos / carlos123
 - **Quick Assign** is Driver → Truck → Yard → (Trailer) → Confirm, from a card
   or by dragging a load onto a driver. A conflict (driver mid-haul elsewhere,
   truck or trailer on another driver's load) is shown in the app with Cancel
-  or go ahead; a go-ahead is written to the audit log with its reason.
+  or go ahead; a go-ahead is written to the audit log with its reason. Picking
+  a driver suggests his usual truck when it is free today; nothing is written
+  until Confirm. A sheet opened before another dispatcher changed the same
+  field is refused at Confirm ("This load changed while the sheet was open",
+  409) and reopens on the current state — the older choice never overwrites
+  the newer one unseen; fields the sheet did not touch still merge. Edit PO
+  works the same way (409 `stale_po`).
 - **Approve** confirms five facts before a load locks: Driver, Truck, Pickup
   yard, Ticket, Delivery. A ⚠ item can be approved anyway, and what was
   missing stays on the load and in the audit log for billing to see.
@@ -106,9 +112,12 @@ carlos / carlos123
   fingerprint (a load on an unsent batch counts nowhere). The office poll
   repaints whichever screen is open — Approvals, Purchase Orders, Ready to
   Bill, History — not only Dispatch. Quick Assign, the customer form, the
-  fleet rows and Edit PO send only the fields the person changed, so two
+  fleet rows, the yard edit and Edit PO send only the fields the person changed, so two
   dispatchers editing the same record from two tabs cannot revert each
-  other; and every action is revalidated on the server against the current
+  other's unrelated fields; Quick Assign and Edit PO also send what the form
+  showed for each field they change (`base`), so the same field changed by
+  both is refused for the later form, never merged over (409
+  `stale_assignment` / `stale_po`); and every action is revalidated on the server against the current
   record (locked, already approved, archived, deleted, truck already on
   another load), so a stale tab can never bypass a rule by acting on old
   information.
@@ -134,12 +143,66 @@ carlos / carlos123
   and left open, or a load half delivered, keeps its driver and truck busy on
   today's board and in the conflict check ("unfinished since <date>"); the
   Carried Over tile shows it and the office moves it to today or closes it.
+  A load whose every trip was delivered after midnight stays on the driver's
+  Today (badged with its day) for the 20-hour workday window so he signs and
+  submits it himself; after that it is the office's, like other leftovers.
+  The live-refresh version carries the operating date, so a screen left open
+  across midnight repaints onto the new day.
   Dispatch uses the Calendar's words (Approved / Billed); a load on a billing
   batch says so; Load Details names the truck and reads the status in words;
   Edit PO lists the PO's voided loads so a void can be undone; Material Costs
   calls a default rate an estimate. On the phone, Stop early first asks for
   the photo and the signature it needs, a load sent back can redo both, and a
   tap that gets no answer says so.
+- **A trip under way is the driver's wherever the calendar put it; a
+  cancelled load takes no more work.** A load with a trip under way (started
+  within the 20 hours a workday stays active) stays on the driver's phone
+  (badged FROM <date>) and holds its driver and truck on today's board even
+  when it is dated yesterday or was moved to tomorrow mid-haul; an older open
+  trip, a load merely assigned or one paused on an earlier day stays the
+  office's to move or close. A voided load refuses the driver's taps, Approve,
+  Reject and Mark Billed. Stop early is offered on every in-progress step
+  before the jobsite; a rejected partial load can redo its photo and
+  signature. Two open trips are allowed and change no count. Freight hours
+  whose first load was voided are not priceable (never a $0 invoice); a
+  default customer rate is called one on Ready to Bill and the preview;
+  Dispatch has a Rejected tile; Load Details names the batch, the approver,
+  handovers and the void, and offers Void wherever Delete is refused.
+- **The money trace.** One engine prices Ready to Bill, the preview, the
+  batch, the invoice, the vendor bill, Material Costs and Profitability from
+  completed trips only. An explicit customer price is fixed when the load is
+  made; a default is a placeholder resolved live until the batch freezes the
+  line, so adding the customer's price later bills the approved load at it.
+  The approval card shows the amount, the rate (and whether it is a default),
+  and the vendor cost; a $0 amount is a ⚠ to acknowledge. A load on a vendor
+  bill is voided through the bill, never around it; the bill fixes the rate it
+  pays onto the trips; a yard that hauled anything is not deleted; a price is
+  a number of 0 or more; Profitability names its estimates.
+- **The end of the day is one list.** The End of day tile on Dispatch (and
+  `/api/day-review`) sorts every load of the day — plus unfinished work from
+  earlier days — into clean, still open, needs attention or blocked, by the
+  rules the screens already apply, each with its reasons in words and its next
+  step, and reads the day back in sentences (deliveries against approval and
+  billing, default rates, batches to reconcile, open work). A load waiting for
+  the office's approval is open work, not clean ("completed — waiting for
+  approval — approve it"); a load whose every trip is delivered but not
+  submitted says so; work carried from earlier days is listed with its day
+  and reconciled apart from the day's own deliveries. It reads and
+  changes nothing; Details opens the load. On the phone the planned outside
+  yard is one tap ("Arrived at Vulcan"), with "picked up somewhere else?" one
+  link away.
+- **Locations and prices are records, reused.** A yard has a name, a street
+  address, a city, a confirmed pin and a Linxup geofence; a new yard that looks
+  like an existing one is a "possible existing yard" to confirm, never a
+  silent second record; an unknown or inactive yard cannot be put on an order.
+  A customer's jobsites are its past PO addresses: the New PO form offers them
+  (and offers one back when it is typed by hand), and the same address carries
+  its confirmed pin. Once any load on an order has delivered work, the order's
+  jobsite and customer are frozen — a new address is a new PO. A voided vendor
+  bill or invoice batch gives the rates it fixed back to the list; a sent one
+  is the price history the price forms suggest from ("Last paid $X on DATE ·
+  Use"), never apply. Evidence trusts confirmed pins only; a geofence Linxup
+  deleted names its yard's mapping stale instead of changing the yard.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on

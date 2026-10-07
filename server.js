@@ -1563,7 +1563,14 @@ function driverWorkdayLoads(u) {
     !l.voided &&
     l.status !== 'completed' &&
     l.approvalStatus !== 'approved' &&
-    ((l.deliveryDate || today) === today || act.dates.has(l.deliveryDate) || act.ids.has(l.id))
+    ((l.deliveryDate || today) === today || act.dates.has(l.deliveryDate) || act.ids.has(l.id)
+      // A trip under way is the driver's current work whatever the calendar
+      // says — he is in the truck with the material (started before midnight
+      // with no Start day, or the office moved the load's date mid-haul) —
+      // for the same hours a workday stays active. Older than that it is an
+      // abandoned trip, and a load merely assigned on another day, or paused
+      // between trips, is the office's to move or close (§39's rule).
+      || tripUnderWay(l) || deliveredAwaitingSubmission(l))
   );
 }
 function driverEarlierOpenLoads(u) {
@@ -1571,15 +1578,35 @@ function driverEarlierOpenLoads(u) {
   const act = activeShiftLoadIds(u);
   return store.loads.filter(l =>
     l.truckId === u.truckId && !l.voided && l.status !== 'completed' && l.approvalStatus !== 'approved' &&
-    l.deliveryDate && l.deliveryDate < today && !act.dates.has(l.deliveryDate) && !act.ids.has(l.id)
+    l.deliveryDate && l.deliveryDate < today && !act.dates.has(l.deliveryDate) && !act.ids.has(l.id) && !tripUnderWay(l) && !deliveredAwaitingSubmission(l)
   );
+}
+// A trip started and not completed within the window a workday stays active
+// (SHIFT_STALE_HOURS, 20 h): the driver is in the truck with the material,
+// whatever date the load carries. Needs the trip's own ISO start stamp; a
+// legacy trip without one, or one older than the window, is stale work.
+// Every trip delivered within the same window and not yet submitted: the
+// driver still owes the signature and the submission, so the card stays on
+// his phone (badged with its day) instead of going back to the office.
+function deliveredAwaitingSubmission(l, now = Date.now()) {
+  if (l.approvalStatus === 'submitted' || l.approvalStatus === 'approved' || l.status === 'completed') return false;
+  const done = (l.trips || []).filter(tripIsCompleted);
+  if (!done.length || done.length < (Number(l.loadsAssigned) || 0)) return false;
+  const last = Math.max(...done.map(t => Date.parse((t.isoStamps || {}).completed || '') || NaN).filter(Number.isFinite), -Infinity);
+  return Number.isFinite(last) && now - last < SHIFT_STALE_HOURS * 3600e3;
+}
+function tripUnderWay(l, now = Date.now()) {
+  const t = (l.trips || []).find(x => x.timestamps && x.timestamps.start && !x.timestamps.completed);
+  const iso = t && t.isoStamps && t.isoStamps.start;
+  const at = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(at) && now - at < SHIFT_STALE_HOURS * 3600e3;
 }
 // Rates and billing state are office information; the driver payload never
 // carries them.
 const DRIVER_HIDDEN_LOAD_FIELDS = [
   'customerRate', 'customerUnit', 'customerRateIsDefault', 'vendorRate', 'vendorUnit', 'vendorRateIsDefault',
   'vendorIsInternal', 'pricePerUnit', 'tonsPerLoad', 'billStatus', 'billedAt', 'billingBatchId',
-  'qbInvoiceId', 'qbInvoiceNumber', 'sentToQuickBooksAt',
+  'qbInvoiceId', 'qbInvoiceNumber', 'sentToQuickBooksAt', 'billing',
 ];
 function driverSafeLoad(l) {
   const out = { ...l };
@@ -1749,6 +1776,7 @@ function resolvePickupYard(load, po, trip) {
     id,
     name: v?.name || load?.vendorName || 'VBT Yard',
     location: v?.location || '',
+    address: v?.address || '',
     isInternal: id === 'vbt',
     isActual,
     // Saved coordinates for this yard, or null. Never a guess.
@@ -1812,7 +1840,7 @@ async function applyLocationRequest(rec, body, user, addressText) {
 function withPickup(l) {
   const po = store.pos.find(p => p.id === l.poId) || {};
   const segs = segmentsForLoad(l).map(s => { const p = segmentPublic(s); return { id: p.id, customer: p.customer, originName: p.originName, destinationLabel: p.destinationLabel, status: p.status, locked: p.locked, timeStart: p.timeStart, timeEnd: p.timeEnd, odStart: p.odStart, odEnd: p.odEnd, billableMiles: p.billableMiles, billableHours: p.billableHours, tripCount: p.tripCount, loadIds: p.loadIds }; });
-  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs,
+  return { ...l, pickup: resolvePickupYard(l, po), trailer: trailerPublic(getTrailerForLoad(l)), tons: loadTons(l), segments: segs, billing: billingSummary(l),
     // The approval checklist rides along only while a load waits for approval.
     ...(l.approvalStatus === 'submitted' ? { approval: approvalChecklist(l) } : {}) };
 }
@@ -1854,6 +1882,7 @@ function resolveVendorRate(vendorId, material) {
 //
 // The engine stays open: any other unit can be given a quantity per load in
 // costing settings, and only units actually in use are ever flagged.
+const priceOk = v => v === undefined || (v !== null && v !== '' && Number.isFinite(Number(v)) && Number(v) >= 0);   // $0 stays a legal price; negative or non-numeric never
 const DEFAULT_UNIT_QTY_PER_LOAD = {
   ton:  TONS_PER_LOAD,   // the single definition of the 25-ton rule
   load: 1,
@@ -1919,11 +1948,34 @@ function computeAmount(rate, unit, delivered, material, tonsPerLoadOverride, mea
 // case the confirmed ticket tons are the quantity. A load on an actual-basis
 // customer with completed trips that have no ticket tons is NOT priceable —
 // it is flagged, never silently billed on the planned figure.
+// The customer rate a load bills at. An explicit price fixed when the load
+// was made (or by Edit PO on a customer change) stays fixed. A DEFAULT
+// snapshot is a placeholder, not a price — the rule vendor cost already
+// follows — so it is resolved live until a batch freezes the line: the office
+// adds the customer's price afterwards and the approved load bills at it.
+// A legacy load with no rate at all resolves the same way, never to $0.
+function effectiveCustomerRate(load, po) {
+  const snap = load.customerRate;
+  if (!load.customerRateIsDefault && snap != null && snap !== '') return { rate: Number(snap) || 0, unit: unitKey(load.customerUnit || 'ton'), isDefault: false };
+  const p = po || findPoAnywhere(load.poId) || {};
+  const live = resolveCustomerRate(p.customer, load.material);
+  return { rate: Number(live.price) || 0, unit: unitKey(live.unit || load.customerUnit || 'ton'), isDefault: !!live.isDefault, resolvedLive: true };
+}
 function revenueDetail(load) {
-  const unit = unitKey(load.customerUnit || 'ton');
+  const eff = effectiveCustomerRate(load);
+  return { ...revenueDetailAt(load, eff), rateIsDefault: eff.isDefault };
+}
+// Money on one load, for the office screens: what it bills and what it costs.
+function billingSummary(l) {
+  const r = revenueDetail(l); const c = costDetail(l);
+  return { amount: r.amount, unit: r.unit, rate: r.rate, basis: r.basis || 'planned', quantity: r.quantity, rateIsDefault: !!r.rateIsDefault, unconfigured: !!r.unconfigured, reason: r.reason || '',
+    cost: { amount: c.amount, unconfigured: !!c.unconfigured, reason: c.reason || '', estimated: (c.lines || []).some(ln => ln.isDefault && !ln.unconfigured), internal: (c.lines || []).length > 0 && (c.lines || []).every(ln => ln.internal) } };
+}
+function revenueDetailAt(load, eff) {
+  const unit = eff.unit;
   // Nothing is priced from a delivered count that disagrees with the trips.
   const dr = deliveredRecord(load);
-  if (dr.mismatch) return { unit, rate: Number(load.customerRate) || 0, delivered: dr.record, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'planned',
+  if (dr.mismatch) return { unit, rate: eff.rate, delivered: dr.record, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'planned',
     reason: `the delivered count (${dr.record}) on ${load.id} does not match its completed trips (${dr.completed}) — reject or void the load before billing` };
   // Hour and mile customers: the measure comes from the load's CLOSED freight
   // segment(s), counted once per segment and attributed to the first load
@@ -1935,11 +1987,24 @@ function revenueDetail(load) {
     if (segs.length) {
       const field = MEASURED_UNITS[unit];
       const open = segs.find(s => s.status === 'open');
-      if (open) return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${open.id} (${open.customer}) is still open — its ${field} are not final yet` };
+      if (open) return { unit, rate: eff.rate, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${open.id} (${open.customer}) is still open — its ${field} are not final yet` };
       // An ending typed by the office when it closed the driver's day is not
       // billable until a manager has confirmed or corrected it.
       const review = segs.find(s => s.needsReview);
-      if (review) return { unit, rate: Number(load.customerRate) || 0, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${review.id} (${review.customer}) was closed by the office for the driver — confirm its ending time and odometer (with a reason) before its ${field} are billed` };
+      if (review) return { unit, rate: eff.rate, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment', reason: `freight segment ${review.id} (${review.customer}) was closed by the office for the driver — confirm its ending time and odometer (with a reason) before its ${field} are billed` };
+      // The measure belongs to the segment's first load. If that load was
+      // voided before it was billed, the hours or miles would otherwise vanish:
+      // this load would price at $0 "billed with" a load that bills nothing.
+      // Refused instead, with the way out named.
+      for (const s of segs) {
+        const ownerId = (s.loadIds || [])[0];
+        if (!ownerId || ownerId === load.id) continue;
+        const owner = findLoadAnywhere(ownerId);
+        if (owner && owner.voided && !(owner.billStatus === 'billed' || owner.billingBatchId || owner.qbInvoiceId)) {
+          return { unit, rate: eff.rate, delivered: Number(load.loadsDelivered) || 0, amount: null, unconfigured: true, qtyPerLoad: null, quantity: null, basis: 'segment',
+            reason: `the ${field} on freight ${s.id} belong to ${ownerId}, which is voided and was never billed — restore ${ownerId} to bill them, or they stay unbilled` };
+        }
+      }
       let measure = 0; const billedWith = [];
       for (const s of segs) {
         const p = segmentPublic(s);
@@ -1947,13 +2012,13 @@ function revenueDetail(load) {
         if ((s.loadIds || [])[0] === load.id) measure += m || 0;
         else billedWith.push(`${s.loadIds[0]} on ${s.id}`);
       }
-      const d = computeAmount(load.customerRate, unit, dr.count, load.material, load.tonsPerLoad, { [field]: measure });
+      const d = computeAmount(eff.rate, unit, dr.count, load.material, load.tonsPerLoad, { [field]: measure });
       d.basis = 'segment'; d.segmentIds = segs.map(s => s.id);
       if (billedWith.length && measure === 0) d.reason = `${field} billed with ${billedWith.join(', ')}`;
       return d;
     }
   }
-  const d = computeAmount(load.customerRate, load.customerUnit || 'ton', dr.count, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
+  const d = computeAmount(eff.rate, eff.unit, dr.count, load.material, load.tonsPerLoad, { miles: load.miles, hours: load.hours });
   d.basis = 'planned';
   if (d.unit !== 'ton') return d;
   const po = findPoAnywhere(load.poId) || {};
@@ -2302,12 +2367,16 @@ app.get('/api/loads/:id/telemetry', reqMgr, async (req, res) => {
 // Linxup's geofences (learned from its events) and how they map to VBT yards.
 app.get('/api/linxup/geofences', reqMgr, (req, res) => {
   const vendors = (store.vendors || []).filter(v => v.active !== false);
-  const byId = new Map(vendors.filter(v => v.linxupGeofenceId != null).map(v => [Number(v.linxupGeofenceId), v]));
+  // A mapping held by an inactive yard still holds the fence: shown, named inactive.
+  const byId = new Map((store.vendors || []).filter(v => v.linxupGeofenceId != null).map(v => [Number(v.linxupGeofenceId), v]));
   const lc = s => String(s || '').trim().toLowerCase();
+  const stale = (store.vendors || []).filter(v => v.linxupGeofenceId != null && !linxup.geofence(v.linxupGeofenceId))
+    .map(v => { const gone = linxup.deletedGeofence(v.linxupGeofenceId); return { vendorId: v.id, name: v.name, active: v.active !== false, geofenceId: Number(v.linxupGeofenceId), deleted: !!gone, deletedAt: gone ? gone.deletedAt : null, geofenceName: gone ? gone.name : null }; });
   res.json({ enabled: linxup.enabled,
     geofences: linxup.listGeofences().map(g => { const m = byId.get(g.geofenceId) || null; const s = m ? null : vendors.find(v => lc(v.name) === lc(g.name)) || null;
-      return { ...g, mappedVendorId: m ? m.id : null, mappedVendorName: m ? m.name : '', suggestedVendorId: s ? s.id : null, suggestedVendorName: s ? s.name : '' }; }),
-    vendors: vendors.map(v => ({ id: v.id, name: v.name, linxupGeofenceId: v.linxupGeofenceId ?? null })) });
+      return { ...g, mappedVendorId: m ? m.id : null, mappedVendorName: m ? m.name : '', mappedVendorActive: m ? m.active !== false : null, suggestedVendorId: s ? s.id : null, suggestedVendorName: s ? s.name : '' }; }),
+    vendors: vendors.map(v => ({ id: v.id, name: v.name, linxupGeofenceId: v.linxupGeofenceId ?? null, stale: stale.some(x => x.vendorId === v.id) })),
+    staleMappings: stale });
 });
 // Map a VBT yard to a Linxup geofence by id (a manager's decision, saved on the vendor).
 app.put('/api/vendors/:id/linxup-geofence', reqMgr, async (req, res) => {
@@ -2315,9 +2384,9 @@ app.put('/api/vendors/:id/linxup-geofence', reqMgr, async (req, res) => {
   if (!v) return res.status(404).json({ error: 'Vendor not found' });
   const gid = req.body?.geofenceId == null || req.body.geofenceId === '' ? null : Number(req.body.geofenceId);
   if (gid != null && !Number.isFinite(gid)) return res.status(400).json({ error: 'geofenceId must be a number' });
-  if (gid != null && !linxup.geofence(gid)) return res.status(400).json({ error: 'Unknown Linxup geofence — VBT has not heard from it yet' });
+  if (gid != null && !linxup.geofence(gid)) { const gone = linxup.deletedGeofence(gid); return res.status(400).json({ error: gone ? `Linxup deleted that geofence${gone.name ? ` ("${gone.name}")` : ''} on ${String(gone.deletedAt || '').slice(0, 10)} — pick a current one.` : 'Unknown Linxup geofence — VBT has not heard from it yet' }); }
   const other = gid != null ? (store.vendors || []).find(x => x.id !== v.id && Number(x.linxupGeofenceId) === gid) : null;
-  if (other) return res.status(409).json({ error: `That geofence is already mapped to ${other.name}.` });
+  if (other) return res.status(409).json({ error: `That geofence is already mapped to ${other.name}${other.active === false ? ' (inactive — clear its mapping there first)' : ''}.` });
   const before = v.linxupGeofenceId ?? null;
   if (gid == null) delete v.linxupGeofenceId; else v.linxupGeofenceId = gid;
   logAction(req.session.user, 'mapped-geofence', v.id, { vendor: v.name, from: before, to: gid, geofenceName: gid != null ? linxup.geofence(gid).name : '' });
@@ -2467,6 +2536,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
   // Plant a record the state machine would never produce (older data, a bypass), to prove the guards downstream.
   app.post('/api/_test/set-load', reqMgr, async (req, res) => { const l = findLoadAnywhere(String(req.body?.id || '')); if (!l) return res.status(404).json({ error: 'no load' }); Object.assign(l, req.body?.fields || {}); await saveData(); res.json({ ok: true, load: l }); });
+  app.post('/api/_test/set-po', reqMgr, async (req, res) => { const p = findPoAnywhere(String(req.body?.id || '')); if (!p) return res.status(404).json({ error: 'no po' }); Object.assign(p, req.body?.patch || {}); await saveData(); res.json({ success: true, po: p }); });
   // 'fail' makes every save throw until set back to 'ok'.
   app.post('/api/_test/linxup-prune', reqMgr, async (req, res) => { try { res.json(await linxup.prune(req.body?.now ? Number(req.body.now) : Date.now())); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; testSaveDelayMs = Math.max(0, Number(req.body?.delayMs || 0)); res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft, delayMs: testSaveDelayMs }); });
@@ -2995,7 +3065,7 @@ app.get('/api/data', reqAuth, async (req, res) => {
     if (fixed.length) console.log(`[/api/data] Reconciled ${fixed.length} stale PO status(es) in memory; the next save persists them`);
   }
   // Build "yards" view (just the active vendors with name + location, for the driver yard picker)
-  const yards = store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, location: v.location }));
+  const yards = store.vendors.filter(v => v.active).map(v => ({ id: v.id, name: v.name, location: v.location, address: v.address || '' }));
 
   if (u.role === 'driver') {
     // Same workday scope as /api/my-dispatch, and no pricing/billing fields.
@@ -3147,6 +3217,23 @@ app.get('/api/pos/check-number', reqMgr, (req, res) => {
 // Jobsites a customer has been delivered to before (active + archived POs),
 // so a dispatcher picks an existing address instead of retyping it. Saved
 // coordinates ride along so a new PO for the same site can inherit them.
+// One jobsite = one address in one city. Case, doubled spaces and a trailing
+// period or comma are the same site ("400 Ridge Rd." is "400 Ridge Rd");
+// "Road" and "Rd" are not guessed to be. Display only — no record is merged.
+function jobsiteKey(address, city) {
+  const n = x => String(x || '').toLowerCase().replace(/\s+/g, ' ').replace(/[\s.,#]+$/, '').trim();
+  return `${n(address)}|${n(city)}`;
+}
+// The pin a site should carry: a confirmed one over an unconfirmed one, and
+// among equals the one set most recently (a correction wins over a copy).
+function bestJobsitePin(poList) {
+  let best = null;
+  for (const p of poList) {
+    const g = p.geo; if (!g || !validLatLng(g.lat, g.lng)) continue;
+    if (!best || (!!g.confirmed && !best.geo.confirmed) || (!!g.confirmed === !!best.geo.confirmed && String(g.setAt || '') > String(best.geo.setAt || ''))) best = { po: p, geo: g };
+  }
+  return best;
+}
 app.get('/api/jobsites', reqMgr, (req, res) => {
   const cust = customerKey(req.query.customer || '');
   const all = [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])]
@@ -3154,15 +3241,14 @@ app.get('/api/jobsites', reqMgr, (req, res) => {
     .filter(p => (p.address || '').trim() || (p.city || '').trim());
   const sites = new Map();
   all.forEach(p => {
-    const key = [String(p.address || '').trim().toLowerCase(), String(p.city || '').trim().toLowerCase()].join('|');
-    const cur = sites.get(key) || { address: (p.address || '').trim(), city: (p.city || '').trim(), customer: p.customer || '', count: 0, lastUsed: '', lastPoId: null, geo: null, geoPoId: null };
-    cur.count++;
-    if ((p.deliveryDate || '') >= cur.lastUsed) { cur.lastUsed = p.deliveryDate || ''; cur.lastPoId = p.id; }
-    const g = geoPublic(p.geo);
-    if (g && (!cur.geo || (g.confirmed && !cur.geo.confirmed))) { cur.geo = g; cur.geoPoId = p.id; }
+    const key = jobsiteKey(p.address, p.city);
+    const cur = sites.get(key) || { address: (p.address || '').trim(), city: (p.city || '').trim(), customer: p.customer || '', count: 0, lastUsed: '', lastPoId: null, geo: null, geoPoId: null, pos: [] };
+    cur.count++; cur.pos.push(p);
+    if ((p.deliveryDate || '') >= cur.lastUsed) { cur.lastUsed = p.deliveryDate || ''; cur.lastPoId = p.id; cur.address = (p.address || '').trim(); cur.city = (p.city || '').trim(); }
     sites.set(key, cur);
   });
-  res.json({ jobsites: [...sites.values()].sort((a, b) => b.lastUsed.localeCompare(a.lastUsed)) });
+  const out = [...sites.values()].map(({ pos: list, ...site }) => { const b = bestJobsitePin(list); return { ...site, geo: b ? geoPublic(b.geo) : null, geoPoId: b ? b.po.id : null }; });
+  res.json({ jobsites: out.sort((a, b) => b.lastUsed.localeCompare(a.lastUsed)) });
 });
 
 app.post('/api/pos', reqMgr, async (req, res) => {
@@ -3189,9 +3275,20 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   } else {
     poNumber = nextAutoPoNumber();
   }
+  // The yards: a pickup yard is a record VBT owns, never free text or a stale id.
+  const yardProblem = yardId => { if (!yardId) return null; const vv = store.vendors.find(v => v.id === yardId); if (!vv) return `Unknown pickup yard "${yardId}"`; if (vv.active === false) return `${vv.name} is inactive — mark it active on Vendors or pick another yard`; return null; };
+  { const yp = yardProblem(po.plannedVendorId); if (yp) return res.status(400).json({ error: yp }); }
   for (const sp of (splits || [])) {
     if (sp.truckUnitId && !(store.trucks || []).some(t => t.id === sp.truckUnitId)) return res.status(400).json({ error: `Unknown truck "${sp.truckUnitId}"` });
     if (sp.truckId && !driverRoster().some(d => d.id === sp.truckId)) return res.status(400).json({ error: `Unknown or inactive driver "${sp.truckId}"` });
+    if (sp.material && sp.loadsAssigned) { const yp = yardProblem(sp.vendorId); if (yp) return res.status(400).json({ error: yp }); }
+    if (sp.material && sp.loadsAssigned && !(Number.isInteger(Number(sp.loadsAssigned)) && Number(sp.loadsAssigned) >= 1)) return res.status(400).json({ error: `Loads for ${sp.material} must be a whole number, 1 or more (got ${sp.loadsAssigned})` });
+    if (sp.trailerId) {   // the same refusals as Quick Assign
+      const tr = (store.trailers || []).find(x => x.id === sp.trailerId);
+      if (!tr) return res.status(400).json({ error: `Unknown trailer "${sp.trailerId}"` });
+      if (tr.active === false) return res.status(400).json({ error: `Trailer ${tr.number} is deactivated` });
+      if (tr.status === 'maintenance' || tr.status === 'out-of-service') return res.status(400).json({ error: `Trailer ${tr.number} is ${tr.status}` });
+    }
   }
   // The same rules as Quick Assign. An off-duty driver or a truck in the shop
   // is refused outright. A conflict with work already on the board that day
@@ -3224,8 +3321,10 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     const c = store.customers.find(x => x.id === po.customerId);
     if (c) resolvedCustomer = c.name;
   } else {
-    const lc = resolvedCustomer.toLowerCase();
-    const existing = store.customers.find(x => String(x.name || '').toLowerCase().trim() === lc);
+    // Doubled spaces are the same customer ("Hilltop  Grading" is Hilltop Grading); the master's spelling wins.
+    const normName = x => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const lc = normName(resolvedCustomer);
+    const existing = store.customers.find(x => normName(x.name) === lc);
     if (existing) {
       resolvedCustomer = existing.name;  // canonicalize spelling
     } else if (resolvedCustomer) {
@@ -3244,9 +3343,18 @@ app.post('/api/pos', reqMgr, async (req, res) => {
   }
   // Same jobsite as an earlier PO: inherit its saved coordinates (never guessed).
   let inheritedGeo;
+  const allPosForSite = [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])];
   if (po.jobsiteFromPoId) {
-    const src = [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])].find(x => x.id === po.jobsiteFromPoId);
+    const src = allPosForSite.find(x => x.id === po.jobsiteFromPoId);
     if (src && src.geo && validLatLng(src.geo.lat, src.geo.lng)) inheritedGeo = { ...src.geo, inheritedFromPoId: src.id };
+  }
+  // The same address typed again (not picked) is the same site: its best pin
+  // is carried, marked as inherited. Nothing is geocoded or guessed.
+  if (!inheritedGeo && ((po.address || '').trim() || (po.city || '').trim())) {
+    const key = jobsiteKey(po.address, po.city);
+    const same = allPosForSite.filter(x => customerKey(x.customer) === customerKey(resolvedCustomer) && jobsiteKey(x.address, x.city) === key);
+    const b = bestJobsitePin(same);
+    if (b) inheritedGeo = { ...b.geo, inheritedFromPoId: b.po.id, inheritedBy: 'same-address' };
   }
   const newPo = {
     ...(inheritedGeo ? { geo: inheritedGeo } : {}),
@@ -3409,8 +3517,12 @@ function poStatusFromLoads(po) {
 // an approval, an invoice — are HISTORY and keep the facts they were done
 // under. Once any load is approved or billed, the fields that identify the
 // order on an invoice are frozen. Nothing changes until every check passes.
-const PO_EDITABLE = ['poNumber', 'customer', 'customerId', 'job', 'jobCode', 'address', 'city', 'deliveryDate', 'plannedVendorId', 'notes', 'reason', 'force'];
+const PO_EDITABLE = ['base', 'poNumber', 'customer', 'customerId', 'job', 'jobCode', 'address', 'city', 'deliveryDate', 'plannedVendorId', 'notes', 'reason', 'force'];
 const PO_INVOICE_FIELDS = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'];
+// Where the work went and for whom: frozen as soon as any load on the order
+// has delivered work or is submitted (the ticket, the signature and the GPS
+// stamps describe a delivery to this address for this customer).
+const PO_WORK_FIELDS = ['customer', 'address', 'city'];
 function loadIsOperational(l) {
   return !l.voided && !l.locked && l.approvalStatus !== 'submitted' && l.approvalStatus !== 'approved'
     && !(l.trips || []).length && !(Number(l.loadsDelivered) || 0);
@@ -3421,6 +3533,13 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   const old = store.pos[idx];
   const body = req.body || {};
   const unknown = Object.keys(body).filter(k => !PO_EDITABLE.includes(k));
+  // Two operators: the form says what it showed (base) for each field it
+  // changes; a field that no longer reads that way was changed by someone
+  // else while the form was open — refused (409 stale_po), never merged over.
+  if (body.base && typeof body.base === 'object') {
+    const stale = Object.keys(body.base).filter(k => PO_EDITABLE.includes(k) && !['base', 'reason', 'force', 'customerId'].includes(k) && body[k] !== undefined && String(body.base[k] ?? '').trim() !== String(old[k] ?? '').trim());
+    if (stale.length) return res.status(409).json({ error: `This PO changed while the form was open (${stale.join(', ')}). The form shows the current order; check it and save again.`, code: 'stale_po', stale, current: Object.fromEntries(stale.map(k => [k, old[k] ?? ''])) });
+  }
   if (unknown.length) return res.status(400).json({ error: `These fields cannot be changed through a PO update: ${unknown.join(', ')}. Status and materials follow the loads; jobsite coordinates and customer updates have their own actions.`, rejectedFields: unknown });
 
   // The customer, resolved as on creation: canonical spelling from the master,
@@ -3457,6 +3576,14 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   if (hasApproved) {
     const frozen = PO_INVOICE_FIELDS.filter(changed);
     if (frozen.length) return res.status(403).json({ error: `This PO has approved loads; ${frozen.join(', ')} cannot change.`, frozenFields: frozen });
+  }
+  // Delivered or submitted work is history even before approval: the record
+  // of where it went (address, city) and for whom (customer) stays. A new
+  // address is a new order; a typo is corrected on the next PO.
+  const hasDelivered = allLoadsWithArchive().some(l => l.poId === old.id && !l.voided && (l.approvalStatus === 'submitted' || (Number(l.loadsDelivered) || 0) > 0 || (l.trips || []).some(tripIsCompleted)));
+  if (hasDelivered) {
+    const frozen = PO_WORK_FIELDS.filter(changed);
+    if (frozen.length) return res.status(403).json({ error: `This PO has delivered loads; ${frozen.join(', ')} cannot change — the deliveries on record went to this jobsite for this customer. Put a new address on a new PO.`, frozenFields: frozen, code: 'po_work_frozen' });
   }
   if (changed('poNumber')) {
     if (!next.poNumber) return res.status(400).json({ error: 'PO number cannot be blank' });
@@ -3580,7 +3707,8 @@ app.post('/api/pos/:id/loads', reqMgr, async (req, res) => {
 async function locationHandler(kind, req, res) {
   const rec = kind === 'vendor' ? store.vendors.find(v => v.id === req.params.id) : store.pos.find(p => p.id === req.params.id);
   if (!rec) return res.status(404).json({ error: 'Not found' });
-  const addressText = kind === 'vendor' ? [rec.name, rec.location].filter(Boolean).join(', ') : [rec.address, rec.city].filter(Boolean).join(', ');
+  // A yard with a street address geocodes by it; without one, the name and the city are all there is (a city-level point at best — confirm it on the map).
+  const addressText = kind === 'vendor' ? ([rec.address, rec.location].filter(Boolean).join(', ') || [rec.name, rec.location].filter(Boolean).join(', ')) : [rec.address, rec.city].filter(Boolean).join(', ');
   try {
     const result = await applyLocationRequest(rec, req.body, req.session.user, addressText);
     logAction(req.session.user, 'set-location', `${kind}:${rec.id}`, { action: result.action, geo: result.geo, name: rec.name || rec.poNumber || rec.customer });
@@ -3671,6 +3799,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
 
   if (u.role === 'driver') {
     if (l.truckId !== u.truckId) return res.status(403).json({ error: 'Not your load' });
+    if (l.voided) return res.status(409).json({ error: `This load was cancelled by the office${l.voidReason ? ` (${l.voidReason})` : ''}. Nothing more can be recorded on it — call dispatch.`, code: 'load_voided' });
     // Drivers attach the signature, the ticket photo and notes here. Progress
     // (delivered count, timestamps, GPS) comes ONLY from the trip steps — the
     // state machine is the record, so a direct write is refused, not ignored.
@@ -3807,6 +3936,10 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   const l = store.loads[idx];
   if (u.role === 'driver' && l.truckId !== u.truckId) return res.status(403).json({ error: 'Not your load' });
   if (l.locked) return res.status(403).json({ error: 'Load is locked' });
+  // A load the office cancelled takes no more work. A phone that has not
+  // refreshed may still show the card; its tap is refused and told why, so
+  // the driver is never told "Submitted" about a load that no longer counts.
+  if (l.voided) return res.status(409).json({ error: `This load was cancelled by the office${l.voidReason ? ` (${l.voidReason})` : ''}. Nothing more can be recorded on it — call dispatch.`, code: 'load_voided' });
   // A stale open day blocks every trip action for that driver — the same
   // rule the screen shows, enforced here so a direct request cannot add
   // work to (or around) a day the office has to close first.
@@ -4698,6 +4831,29 @@ function approvalChecklist(l) {
   if (dr.mismatch) items.push({ key: 'count', label: 'Delivered count', ok: false, block: true,
     value: `${dr.record} submitted · ${dr.completed} completed trip${dr.completed === 1 ? '' : 's'} on record`,
     note: 'the delivered count does not match the completed trips — cannot be approved; reject it so the driver re-submits, or void it' });
+  // Money, at the moment the office locks the load for billing: what it will
+  // invoice and at what rate, and what it will cost. A $0 line is a ⚠ to
+  // acknowledge; a default rate or an unpriceable line is said in words.
+  const rev = revenueDetail(l);
+  const qtyWord = rev.quantity == null ? '' : rev.unit === 'ton' ? `${Number(rev.quantity).toFixed(2)} t` : `${rev.quantity} ${rev.unit}${Number(rev.quantity) === 1 ? '' : 's'}`;
+  const basisWord = rev.basis === 'actual' ? ' · actual tons' : rev.basis === 'segment' ? ' · freight' : '';
+  const billNotes = [];
+  // A freight load whose hours or miles are billed with another load in the
+  // same segment is $0 by design — said, not flagged.
+  const billedElsewhere = rev.basis === 'segment' && !rev.unconfigured && !(rev.amount > 0) && !!rev.reason;
+  if (rev.unconfigured) billNotes.push(`not priceable yet — ${rev.reason}`);
+  else if (billedElsewhere) billNotes.push(rev.reason);
+  else if (!(rev.amount > 0)) billNotes.push('$0 — nothing would be invoiced for this load');
+  if (rev.rateIsDefault && !rev.unconfigured) billNotes.push('default rate — no customer price on file');
+  items.push({ key: 'billing', label: 'Billing', ok: rev.unconfigured || rev.amount > 0 || billedElsewhere,
+    value: rev.unconfigured ? `not priceable · $${rev.rate}/${rev.unit}` : `$${(rev.amount || 0).toFixed(2)} · ${qtyWord ? qtyWord + ' ' : ''}@ $${rev.rate}/${rev.unit}${basisWord}`,
+    note: billNotes.join('; ') });
+  const cost = costDetail(l);
+  const costEstimated = (cost.lines || []).some(ln => ln.isDefault && !ln.unconfigured);
+  const costInternal = (cost.lines || []).length > 0 && cost.lines.every(ln => ln.internal);
+  items.push({ key: 'cost', label: 'Vendor cost', ok: true,
+    value: costInternal ? 'our own yard — none' : cost.unconfigured ? 'not priceable' : `$${(cost.amount || 0).toFixed(2)}${costEstimated ? ' (estimate — default rate)' : ''}`,
+    note: cost.unconfigured ? (cost.reason || '') : '' });
   const warnings = items.filter(i => !i.ok).map(i => `${i.label}: ${i.note}`);
   const blocking = items.filter(i => i.block).map(i => `${i.label}: ${i.note}`);
   return { items, warnings, blocking, ready: !warnings.length };
@@ -4707,6 +4863,10 @@ app.post('/api/loads/:id/approve', reqMgr, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const l = store.loads[idx];
+  // A voided load is history: it is neither approved nor sent back. (A stale
+  // Approvals screen, or the API, could otherwise approve it and turn its
+  // billStatus from 'voided' to 'ready'.)
+  if (l.voided) return res.status(409).json({ error: `This load is voided${l.voidReason ? ` (${l.voidReason})` : ''} — restore it first if it should be approved.`, code: 'load_voided' });
   if (l.approvalStatus !== 'submitted') return res.status(400).json({ error: 'Load not submitted for approval' });
   // The checklist is confirmed in the app; a load with a ⚠ item is approved
   // only with an explicit acknowledgement, and what was missing is recorded.
@@ -4757,6 +4917,7 @@ app.post('/api/loads/:id/reject', reqMgr, async (req, res) => {
   const idx = store.loads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
   const l = store.loads[idx];
+  if (l.voided) return res.status(409).json({ error: `This load is voided${l.voidReason ? ` (${l.voidReason})` : ''} — restore it first if it should go back to the driver.`, code: 'load_voided' });
   if (l.approvalStatus !== 'submitted') return res.status(400).json({ error: 'Load not submitted' });
   l.approvalStatus = 'rejected';
   l.rejectReason   = req.body.reason || 'No reason provided';
@@ -4801,6 +4962,16 @@ app.post('/api/loads/:id/void', reqMgr, async (req, res) => {
     });
   }
 
+  // The same rule for the vendor side: trips already on a vendor bill are
+  // released by voiding the bill, never left silently inside a payable for
+  // a load the office says never counted.
+  const onBills = (store.vendorBills || []).filter(b => b.syncStatus !== 'voided' && (b.loadIds || []).includes(l.id));
+  if (onBills.length) {
+    return res.status(409).json({
+      error: `This load's trips are on vendor bill ${onBills.map(b => `${b.id} (${b.syncStatus})`).join(', ')}. Void the vendor bill first — that releases the trips and keeps QuickBooks in step.`,
+      code: 'on_vendor_bill', vendorBillIds: onBills.map(b => b.id),
+    });
+  }
   const po = store.pos.find(p => p.id === l.poId) || {};
   l.voided     = true;
   l.voidedAt   = new Date().toISOString();
@@ -4868,7 +5039,7 @@ app.get('/api/ready-to-bill', reqMgr, (req, res) => {
     const priceable = r.amount != null && !r.unconfigured;
     return { ...l, poNumber: po.poNumber, customer: po.customer, city: po.city, address: po.address,
       amount: priceable ? Math.round(r.amount * 100) / 100 : null, priceable,
-      priceReason: priceable ? '' : (r.reason || 'not priceable yet'), basis: r.basis || 'planned', rateLabel: `$${r.rate}/${r.unit}` };
+      priceReason: priceable ? '' : (r.reason || 'not priceable yet'), basis: r.basis || 'planned', rateLabel: `$${r.rate}/${r.unit}`, customerRateIsDefault: !!r.rateIsDefault };
   });
   const priced = enriched.filter(x => x.priceable);
   res.json({ items: enriched, totals: { count: enriched.length, amount: Math.round(priced.reduce((s, x) => s + x.amount, 0) * 100) / 100, priced: priced.length, unpriced: enriched.length - priced.length } });
@@ -4882,7 +5053,7 @@ app.post('/api/loads/bill', reqMgr, async (req, res) => {
   // Decide first, change nothing until every load passes: a refused request
   // must leave no load marked billed behind it (that mark would ride along
   // with the next save, with no reference and no audit entry).
-  const eligible = store.loads.filter(l => ids.includes(l.id) && l.approvalStatus === 'approved' && l.billStatus === 'ready');
+  const eligible = store.loads.filter(l => ids.includes(l.id) && !l.voided && l.approvalStatus === 'approved' && l.billStatus === 'ready');
   // Duplicate-billing guard: a load already claimed by a billing batch must
   // not be manually marked billed — void the batch first to release it.
   const skipped = eligible.filter(l => l.billingBatchId || l.qbInvoiceId).map(l => l.id);
@@ -5034,7 +5205,7 @@ function buildBillingGroups(loadIds) {
         : basis === 'actual' ? (revD.quantity || 0)
         : (revD.qtyPerLoad != null ? revD.qtyPerLoad * (Number(load.loadsDelivered) || 0) : 0);
       const unit = revD.unit;
-      const rate = Number(load.customerRate) || 0;
+      const rate = Number(revD.rate) || 0;   // the effective rate (a default snapshot resolves live until the batch freezes it)
       const lk = `${load.material}|${unit}|${rate}|${basis}`;
       if (!lineMap.has(lk)) {
         lineMap.set(lk, {
@@ -5042,6 +5213,7 @@ function buildBillingGroups(loadIds) {
           unit, rate, basis,
           loads: 0, tons: 0, amount: 0, tickets: 0, measure: 0, segmentIds: [],
           unconfigured: false, reasons: [],
+          rateIsDefault: false,   // a load priced at the default customer rate (no price on file) — flagged on the preview, never silently a price
           loadIds: [],
         });
       }
@@ -5049,6 +5221,7 @@ function buildBillingGroups(loadIds) {
       ln.loads += Number(load.loadsDelivered) || 0;
       ln.tons  += tons;
       ln.tickets += loadTons(load).ticketsWithTons;
+      if (revD.rateIsDefault) ln.rateIsDefault = true;
       // Hour/mile quantity: the segment's measure, added once per segment. A
       // load whose measure went to another load in the same segment carries
       // the explanation onto the line.
@@ -5276,7 +5449,15 @@ app.post('/api/billing-batches', reqMgr, async (req, res) => {
     // Mark loads as part of this batch (lock against duplicate billing)
     for (const lid of g.loadIds) {
       const l = store.loads.find(x => x.id === lid);
-      if (l) l.billingBatchId = batchId;
+      if (!l) continue;
+      l.billingBatchId = batchId;
+      // A default customer rate was a placeholder until now. The line this
+      // batch froze is the load's rate from here on, so Load Details,
+      // Profitability and the end-of-day review say what the invoice says.
+      if (l.customerRateIsDefault || l.customerRate == null || l.customerRate === '') {
+        const eff = effectiveCustomerRate(l);
+        l.customerRate = eff.rate; l.customerUnit = eff.unit; l.customerRateIsDefault = false; l.customerRateFixedBy = batchId;
+      }
     }
     created.push(batch);
   }
@@ -5688,6 +5869,8 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
     const l = findLoadAnywhere(lid);
     if (l) {
       l.billingBatchId = '';
+      // A rate this batch fixed is a placeholder again, resolved live from the list.
+      if (l.customerRateFixedBy === b.id) { l.customerRateIsDefault = true; l.customerRateFixedBy = ''; }
       l.billStatus = 'ready';     // back to ready-to-bill so a corrected batch can pick it up
       l.qbInvoiceId = '';
       l.qbInvoiceNumber = '';
@@ -5873,6 +6056,13 @@ app.post('/api/vendor-bills', reqMgr, async (req, res) => {
     };
     store.vendorBills.push(bill);
     claimVendorBillRefs(bill, true);
+    // The price this bill pays is now the trip's price: a trip priced live
+    // (no vendor price when it was loaded) is fixed at the billed rate, so
+    // Material Costs and Profitability keep agreeing with the payable.
+    for (const ln of bill.lineItems || []) for (const ref of ln.tripRefs || []) {
+      const ld = findLoadAnywhere(ref.loadId); const t = ld && (ld.trips || []).find(x => x.tripNum === ref.tripNum);
+      if (t && (t.vendorRate == null || t.vendorRateIsDefault || !(Number(t.vendorRate) > 0))) { t.vendorRate = ln.rate; t.vendorUnit = ln.unit; t.vendorRateIsDefault = false; t.vendorRateFixedBy = bill.id; }
+    }
     created.push(bill);
   }
   logAction(req.session.user, 'created-vendor-bills', '', { count: created.length, billIds: created.map(b => b.id) });
@@ -6061,8 +6251,16 @@ app.post('/api/vendor-bills/:id/void', reqMgr, async (req, res) => {
   b.voidedBy = user;
   b.voidReason = reason;
   claimVendorBillRefs(b, false);
+  // The price this bill fixed onto trips it priced live goes with it: those
+  // trips are placeholders again (priced from the list), so a corrected price
+  // reaches the next bill instead of the voided bill's rate.
+  let tripsUnfixed = 0;
+  for (const ln of b.lineItems || []) for (const ref of ln.tripRefs || []) {
+    const ld = findLoadAnywhere(ref.loadId); const t = ld && (ld.trips || []).find(x => x.tripNum === ref.tripNum);
+    if (t && t.vendorRateFixedBy === b.id) { t.vendorRateIsDefault = true; t.vendorRateFixedBy = ''; t.vendorRateUnfixedBy = b.id; tripsUnfixed++; }
+  }
   for (const lid of b.loadIds) { const l = findLoadAnywhere(lid); if (l && b.qbBillId && l.qbBillId === b.qbBillId) l.qbBillId = ''; }
-  logAction(req.session.user, 'voided-vendor-bill', b.id, { reason, qbDeleted, manualQbDelete: req.body?.alreadyDeletedInQuickBooks === true, vendor: b.vendorName, loads: b.loadIds.length });
+  logAction(req.session.user, 'voided-vendor-bill', b.id, { reason, qbDeleted, manualQbDelete: req.body?.alreadyDeletedInQuickBooks === true, vendor: b.vendorName, loads: b.loadIds.length, tripsUnfixed });
   await saveData();
   res.json({ success: true, bill: b, qbDeleted });
 });
@@ -6197,15 +6395,38 @@ app.get('/api/vendors', reqMgr, (req, res) => {
 });
 
 // Add a new vendor
+// A new yard that looks like an existing one (one name inside the other, a
+// distinctive word in common, or the same street address) is a POSSIBLE
+// EXISTING LOCATION: said to the office, never merged, created only when the
+// office says it really is another place. Two records for one yard would
+// split its cost history and its Linxup mapping.
+const VENDOR_GENERIC_WORDS = new Set(['yard', 'yards', 'materials', 'material', 'inc', 'llc', 'co', 'company', 'construction', 'the', 'and', 'of', 'sand', 'rock', 'gravel', 'plant', 'quarry', 'pit', 'supply', 'aggregates', 'aggregate', 'ready', 'mix', 'trucking', 'farms', 'farm', 'north', 'south', 'east', 'west']);
+function vendorNameTokens(name) { return String(name || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !VENDOR_GENERIC_WORDS.has(w)); }
+function vendorLookalikes(name, address, exceptId) {
+  const squash = x => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const n = squash(name), toks = new Set(vendorNameTokens(name)), addr = squash(address);
+  return (store.vendors || []).filter(v => v.id !== exceptId).filter(v => {
+    const vn = squash(v.name); if (!vn) return false;
+    if (vn === n || (n.length >= 4 && vn.length >= 4 && (vn.includes(n) || n.includes(vn)))) return true;
+    if (vendorNameTokens(v.name).some(t => toks.has(t))) return true;
+    if (addr && addr.length >= 6 && squash(v.address) === addr) return true;
+    return false;
+  }).map(v => ({ id: v.id, name: v.name, location: v.location || '', address: v.address || '', active: v.active !== false }));
+}
 app.post('/api/vendors', reqMgr, async (req, res) => {
-  const { name, location } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
-  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || ('vendor-' + Date.now());
+  const { name, location, address, force } = req.body || {};
+  if (!name || !String(name).trim()) return res.status(400).json({ error: 'Name required' });
+  const id = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || ('vendor-' + Date.now());
   if (store.vendors.find(v => v.id === id)) return res.status(400).json({ error: 'A vendor with that name already exists' });
-  const newVendor = { id, name: name.trim(), location: (location || '').trim(), active: true };
+  if (store.vendors.some(v => String(v.name || '').trim().toLowerCase() === String(name).trim().toLowerCase())) return res.status(400).json({ error: 'A vendor with that name already exists' });
+  const lookalikes = vendorLookalikes(name, address);
+  if (lookalikes.length && force !== true) {
+    return res.status(409).json({ error: `Possible existing yard: ${lookalikes.map(v => `${v.name}${v.location ? ' (' + v.location + ')' : ''}${v.active ? '' : ' — inactive'}`).join(', ')}. Use it, or create "${String(name).trim()}" anyway as a separate yard.`, code: 'possible_duplicate', candidates: lookalikes });
+  }
+  const newVendor = { id, name: String(name).trim(), location: String(location || '').trim(), address: String(address || '').trim(), active: true };
   store.vendors.push(newVendor);
   store.vendorPrices[id] = [];
-  logAction(req.session.user, 'created-vendor', id, { name: newVendor.name });
+  logAction(req.session.user, 'created-vendor', id, { name: newVendor.name, address: newVendor.address, ...(lookalikes.length ? { lookalikesOverridden: lookalikes.map(v => v.id) } : {}) });
   await saveData();
   res.json({ success: true, vendor: newVendor });
 });
@@ -6214,9 +6435,16 @@ app.post('/api/vendors', reqMgr, async (req, res) => {
 app.put('/api/vendors/:id', reqMgr, async (req, res) => {
   const v = store.vendors.find(x => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Not found' });
-  const before = { name: v.name, location: v.location, active: v.active };
+  const before = { name: v.name, location: v.location, address: v.address || '', active: v.active };
+  // Every refusal before the first change.
+  if (req.body.name !== undefined) {
+    const nn = String(req.body.name).trim();
+    if (!nn) return res.status(400).json({ error: 'Name required' });
+    if (store.vendors.some(x => x.id !== v.id && String(x.name || '').trim().toLowerCase() === nn.toLowerCase())) return res.status(400).json({ error: 'Another yard already has that name' });
+  }
   if (req.body.name !== undefined)     v.name = String(req.body.name).trim();
   if (req.body.location !== undefined) v.location = String(req.body.location).trim();
+  if (req.body.address !== undefined)  v.address = String(req.body.address).trim();
   if (req.body.active !== undefined)   v.active = !!req.body.active;
   logAction(req.session.user, 'updated-vendor', v.id, {
     name: v.name,
@@ -6232,9 +6460,12 @@ app.delete('/api/vendors/:id', reqMgr, async (req, res) => {
   const id = req.params.id;
   const idx = store.vendors.findIndex(v => v.id === id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  // Refuse if any active load uses this vendor
-  const inUse = store.loads.some(l => l.vendorId === id && !l.voided);
-  if (inUse) return res.status(400).json({ error: 'Cannot delete — there are loads using this vendor. Mark inactive instead.' });
+  // Refuse if any load (live or archived) plans or hauled from this yard, or a
+  // vendor bill names it: deleting it would drop real cost from every screen.
+  const inUse = allLoadsWithArchive().some(l => !l.voided && (l.vendorId === id || (l.trips || []).some(t => t.actualYardId === id)))
+    || [...store.pos, ...(store.archive || []).flatMap(b => b.pos || [])].some(p => p.plannedVendorId === id)
+    || (store.vendorBills || []).some(b => b.vendorId === id && b.syncStatus !== 'voided');
+  if (inUse) return res.status(400).json({ error: 'Cannot delete — loads were planned or hauled from this yard, or a vendor bill names it. Mark it inactive instead.' });
   const deleted = store.vendors[idx];
   store.vendors.splice(idx, 1);
   delete store.vendorPrices[id];
@@ -6249,6 +6480,7 @@ app.post('/api/vendors/:id/prices', reqMgr, async (req, res) => {
   if (!v) return res.status(404).json({ error: 'Vendor not found' });
   const { material, unit, price, notes } = req.body;
   if (!material || !material.trim()) return res.status(400).json({ error: 'Material required' });
+  if (price === undefined || !priceOk(price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
   if (!store.vendorPrices[v.id]) store.vendorPrices[v.id] = [];
   // Prevent dupes (same material+unit on the same vendor)
   if (store.vendorPrices[v.id].some(p => p.material === material.trim() && (p.unit || '') === (unit || ''))) {
@@ -6281,6 +6513,7 @@ app.put('/api/vendors/:id/prices/:priceId', reqMgr, async (req, res) => {
   if (!p) return res.status(404).json({ error: 'Price not found' });
   const v = store.vendors.find(x => x.id === req.params.id);
   const before = { material: p.material, unit: p.unit, price: p.price, active: p.active };
+  if (!priceOk(req.body.price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
   if (req.body.material !== undefined) p.material = String(req.body.material).trim();
   if (req.body.unit !== undefined)     p.unit     = String(req.body.unit).trim();
   if (req.body.price !== undefined)    p.price    = Number(req.body.price) || 0;
@@ -6288,13 +6521,14 @@ app.put('/api/vendors/:id/prices/:priceId', reqMgr, async (req, res) => {
   if (req.body.notes !== undefined)    p.notes    = String(req.body.notes).trim();
   // Only log price-edits if price actually changed (not on every blur from inline editing)
   const priceChanged = req.body.price !== undefined && Number(req.body.price) !== before.price;
-  if (priceChanged || req.body.active !== undefined) {
+  const rowChanged = p.material !== before.material || p.unit !== before.unit;
+  if (priceChanged || rowChanged || req.body.active !== undefined) {
     logAction(req.session.user, 'edited-price', req.params.id + ':' + p.id, {
       vendorName: v?.name || req.params.id,
       material:   p.material,
       unit:       p.unit,
-      before:     { price: before.price, active: before.active },
-      after:      { price: p.price, active: p.active },
+      before:     { price: before.price, active: before.active, material: before.material, unit: before.unit },
+      after:      { price: p.price, active: p.active, material: p.material, unit: p.unit },
     });
   }
   await saveData();
@@ -6722,6 +6956,7 @@ app.post('/api/customer-prices', reqMgr, async (req, res) => {
   const { customer, material, unit, price, notes } = req.body;
   if (!customer || !customer.trim()) return res.status(400).json({ error: 'Customer name required' });
   if (!material || !material.trim()) return res.status(400).json({ error: 'Material required' });
+  if (price === undefined || !priceOk(price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
 
   const key = customerKey(customer);
   if (!Array.isArray(store.customerPrices[key])) store.customerPrices[key] = [];
@@ -6754,6 +6989,7 @@ app.put('/api/customer-prices/:customerKey/:priceId', reqMgr, async (req, res) =
   if (!p) return res.status(404).json({ error: 'Price not found' });
 
   const before = { material: p.material, unit: p.unit, price: p.price, active: p.active };
+  if (!priceOk(req.body.price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
   if (req.body.material !== undefined) p.material = String(req.body.material).trim();
   if (req.body.unit !== undefined)     p.unit     = String(req.body.unit).trim();
   if (req.body.price !== undefined)    p.price    = Number(req.body.price) || 0;
@@ -6790,6 +7026,46 @@ app.delete('/api/customer-prices/:customerKey/:priceId', reqMgr, async (req, res
 });
 
 // ── API: DEFAULT RATES (admin-only) ─────────────────────────────────────────
+// ── PRICE HISTORY (read-only) ────────────────────────────────────────────────
+// What VBT actually paid a yard, or billed a customer, for a material: read
+// from the vendor bills and the invoice batches that were SENT (voided and
+// unsent documents are not history; default-rate lines are estimates, not
+// prices). A suggestion for the price forms — never a price source, never
+// applied on its own.
+app.get('/api/price-history', reqMgr, (req, res) => {
+  const side = req.query.side === 'customer' ? 'customer' : 'vendor';
+  const material = String(req.query.material || '').trim().toLowerCase();
+  const unit = req.query.unit ? unitKey(req.query.unit) : null;
+  if (!material) return res.status(400).json({ error: 'material required' });
+  const rows = [];
+  if (side === 'vendor') {
+    const vendorId = String(req.query.vendorId || '');
+    if (!vendorId) return res.status(400).json({ error: 'vendorId required' });
+    for (const b of store.vendorBills || []) {
+      if (b.vendorId !== vendorId || b.syncStatus !== 'sent') continue;
+      for (const ln of [...(b.lineItems || [])].reverse()) {   // within one bill the later line is the later haul
+        if (String(ln.material || '').trim().toLowerCase() !== material || ln.isDefault || ln.unconfigured) continue;
+        if (unit && unitKey(ln.unit || 'ton') !== unit) continue;
+        rows.push({ rate: Number(ln.rate), unit: unitKey(ln.unit || 'ton'), loads: ln.loads, amount: ln.amount, date: String(b.sentAt || b.createdAt || '').slice(0, 10), hauled: b.deliveryEnd || b.deliveryStart || '', docId: b.id, kind: 'vendor bill', party: b.vendorName });
+      }
+    }
+  } else {
+    const ck = customerKey(req.query.customer || '');
+    if (!ck) return res.status(400).json({ error: 'customer required' });
+    for (const b of store.billingBatches || []) {
+      if (customerKey(b.customer) !== ck || b.syncStatus !== 'sent_to_quickbooks') continue;
+      for (const ln of [...(b.lineItems || [])].reverse()) {
+        const mat = String(ln.material || String(ln.description || '').split(' — ')[0] || '').trim().toLowerCase();
+        if (mat !== material || ln.rateIsDefault || ln.rate == null) continue;
+        if (unit && unitKey(ln.unit || 'ton') !== unit) continue;
+        rows.push({ rate: Number(ln.rate), unit: unitKey(ln.unit || 'ton'), loads: ln.loads, amount: ln.amount, date: String(b.sentAt || b.sentToQuickBooksAt || b.createdAt || '').slice(0, 10), hauled: b.deliveryEnd || b.deliveryStart || '', docId: b.id, kind: 'invoice', party: b.customer });
+      }
+    }
+  }
+  rows.sort((a, b) => b.date.localeCompare(a.date) || String(b.docId).localeCompare(String(a.docId)));
+  res.json({ side, material: req.query.material, unit, last: rows[0] || null, history: rows.slice(0, 12), count: rows.length });
+});
+
 app.get('/api/default-rates', reqMgr, (req, res) => {
   res.json({ defaultRates: store.defaultRates, materials: MATERIALS });
 });
@@ -6798,6 +7074,7 @@ app.put('/api/default-rates', reqAdmin, async (req, res) => {
   const { side, material, unit, price } = req.body;  // side: 'customer' | 'vendor'
   if (!['customer', 'vendor'].includes(side)) return res.status(400).json({ error: 'Invalid side' });
   if (!material) return res.status(400).json({ error: 'Material required' });
+  if (price === undefined || !priceOk(price)) return res.status(400).json({ error: 'Price must be a number of 0 or more' });
   if (!store.defaultRates[side]) store.defaultRates[side] = {};
   const before = store.defaultRates[side][material] ? { ...store.defaultRates[side][material] } : null;
   store.defaultRates[side][material] = {
@@ -7102,10 +7379,13 @@ app.get('/api/profitability', reqMgr, (req, res) => {
   // the figure is incomplete instead of quietly overstating profit.
   const unpriced = { costLoads: 0, revenueLoads: 0, units: new Set() };
 
+  const est = { revenue: 0, revenueLoads: 0, cost: 0, costLoads: 0 };   // priced at a default rate — an estimate, as Material Costs already says
   eligible.forEach(l => {
     const po = allPos.find(p => p.id === l.poId) || {};
     const revD = revenueDetail(l);
     const costD = costDetail(l);
+    if (!revD.unconfigured && revD.rateIsDefault) { est.revenue += revD.amount || 0; est.revenueLoads++; }
+    if (!costD.unconfigured && (costD.lines || []).some(ln => ln.isDefault && !ln.unconfigured)) { est.cost += costD.amount || 0; est.costLoads++; }
     if (costD.unconfigured) { unpriced.costLoads++; unpriced.units.add(costD.unit); }
     if (revD.unconfigured)  { unpriced.revenueLoads++; unpriced.units.add(revD.unit); }
     const rev    = revD.amount == null ? 0 : revD.amount;
@@ -7195,6 +7475,8 @@ app.get('/api/profitability', reqMgr, (req, res) => {
     grand: {
       revenue: grandRev,
       cost: grandCost,
+      estimatedRevenue: est.revenue, estimatedRevenueLoads: est.revenueLoads,
+      estimatedCost: est.cost, estimatedCostLoads: est.costLoads,
       margin: grandRev - grandCost,
       marginPct: grandRev > 0 ? ((grandRev - grandCost) / grandRev * 100) : 0,
       loads: grandLoads,
@@ -7251,9 +7533,13 @@ app.get('/api/material-costs', reqMgr, (req, res) => {
         bv.unconfigured = true;
         bv.unconfiguredUnits = [...new Set([...(bv.unconfiguredUnits || []), ln.unit])];
       }
-      if (!bv.byMaterial[l.material]) bv.byMaterial[l.material] = { loads: 0, cost: 0, unit: ln.unit, unitPrice: ln.rate, unconfigured: false, estimated: false };
-      bv.byMaterial[l.material].loads += ln.loads;
-      bv.byMaterial[l.material].cost  += ln.amount;
+      if (!bv.byMaterial[l.material]) bv.byMaterial[l.material] = { loads: 0, cost: 0, unit: ln.unit, unitPrice: ln.rate, unitPriceMin: ln.rate, unitPriceMax: ln.rate, mixedRates: false, unconfigured: false, estimated: false };
+      const bm = bv.byMaterial[l.material];
+      bm.loads += ln.loads;
+      bm.cost  += ln.amount;
+      // Trips of one material at one yard can carry different fixed rates
+      // (a price change between hauls): said as a range, never one number.
+      if (ln.rate !== bm.unitPrice) { bm.mixedRates = true; bm.unitPriceMin = Math.min(bm.unitPriceMin, ln.rate); bm.unitPriceMax = Math.max(bm.unitPriceMax, ln.rate); }
       if (ln.unconfigured) bv.byMaterial[l.material].unconfigured = true;
       // A default rate is an estimate, not the vendor's price: said so here,
       // as a vendor bill refuses it (the invoice never carries it either).
@@ -7512,7 +7798,7 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
     return res.json({ version: officeFingerprint(today), count: dayLoads.length, at: new Date().toISOString() });
   }
   const scope = driverWorkdayLoads(u);
-  res.json({ version: dispatchFingerprint(scope), count: scope.length, at: new Date().toISOString() });
+  res.json({ version: dispatchFingerprint(scope) + '-' + today.slice(5), count: scope.length, at: new Date().toISOString() });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -7636,7 +7922,7 @@ function metersBetween(aLat, aLng, bLat, bLng) {
 function nearestVbtPlace(lat, lng, dayLoads) {
   let best = null;
   const consider = (kind, id, name, geo, radius) => {
-    if (!geo || !validLatLng(geo.lat, geo.lng)) return;
+    if (!geo || !validLatLng(geo.lat, geo.lng) || !geo.confirmed) return;   // an unconfirmed geocode is not a place
     const d = metersBetween(lat, lng, geo.lat, geo.lng);
     if (d <= radius && (!best || d < best.distance)) best = { kind, id, name, distance: Math.round(d), source: 'vbt' };
   };
@@ -7759,8 +8045,12 @@ async function loadTelemetryEvidence(load, opts = {}) {
     const pickup = resolvePickupYard(load, po, trip);
     const vendor = (store.vendors || []).find(v => v.id === pickup.id) || null;
     const fence = fenceForVendor(vendor);
-    const vendorGeo = vendor && vendor.geo && validLatLng(vendor.geo.lat, vendor.geo.lng) ? vendor.geo : null;
-    const jobGeo = po.geo && validLatLng(po.geo.lat, po.geo.lng) ? po.geo : null;
+    // A pin is a reference only once a person confirmed it; a geocoded point
+    // nobody checked (often city-level) must not call a driver's tap wrong.
+    const vendorPin = vendor && vendor.geo && validLatLng(vendor.geo.lat, vendor.geo.lng) ? vendor.geo : null;
+    const jobPin = po.geo && validLatLng(po.geo.lat, po.geo.lng) ? po.geo : null;
+    const vendorGeo = vendorPin && vendorPin.confirmed ? vendorPin : null;
+    const jobGeo = jobPin && jobPin.confirmed ? jobPin : null;
     const pickupVisits = fence ? w.visits.filter(v => Number(v.geofenceId) === Number(fence.geofenceId)) : [];
     const pickupGps = vendorGeo ? nearWindow(w.positions, vendorGeo, PLACE_RADIUS_M.vendor) : null;
     const jobsiteGps = jobGeo ? nearWindow(w.positions, jobGeo, PLACE_RADIUS_M.jobsite) : null;
@@ -7768,11 +8058,11 @@ async function loadTelemetryEvidence(load, opts = {}) {
     const jobsiteStops = w.stops.filter(s => near(s, jobGeo, PLACE_RADIUS_M.jobsite));
     const pickupStops = w.stops.filter(s => near(s, vendorGeo, PLACE_RADIUS_M.vendor) || (fence && s.geofenceId != null && Number(s.geofenceId) === Number(fence.geofenceId)));
     ev.positions = w.positions.length;
-    ev.pickup = { name: pickup.name, fence: fence ? { geofenceId: fence.geofenceId, name: fence.name, confidence: fence.confidence } : null, pinned: !!vendorGeo,
+    ev.pickup = { name: pickup.name, fence: fence ? { geofenceId: fence.geofenceId, name: fence.name, confidence: fence.confidence } : null, pinned: !!vendorGeo, pinUnconfirmed: !!(vendorPin && !vendorGeo),
       visits: pickupVisits.map(v => ({ enteredAt: v.enteredAt, leftAt: v.leftAt, minutes: v.durationMin, source: 'Linxup geofence' })),
       gps: pickupGps, stops: pickupStops.map(stopPublic),
       evidence: pickupVisits.length ? 'geofence' : pickupGps ? 'gps' : (fence || vendorGeo) ? 'none' : 'no-reference' };
-    ev.jobsite = { name: [po.address, po.city].filter(Boolean).join(', ') || po.customer || 'Jobsite', pinned: !!jobGeo, gps: jobsiteGps, stops: jobsiteStops.map(stopPublic),
+    ev.jobsite = { name: [po.address, po.city].filter(Boolean).join(', ') || po.customer || 'Jobsite', pinned: !!jobGeo, pinUnconfirmed: !!(jobPin && !jobGeo), gps: jobsiteGps, stops: jobsiteStops.map(stopPublic),
       evidence: jobsiteGps ? 'gps' : jobGeo ? 'none' : 'no-reference' };
     ev.otherVisits = w.visits.filter(v => !fence || Number(v.geofenceId) !== Number(fence.geofenceId)).map(v => ({ name: v.geofenceName, enteredAt: v.enteredAt, leftAt: v.leftAt, minutes: v.durationMin, source: 'Linxup geofence' }));
     ev.stops = w.stops.map(stopPublic); ev.vehicleTrips = w.trips.map(vtripPublic); ev.usage = w.usage.map(usagePublic);
@@ -7867,24 +8157,30 @@ function officeFingerprint(day) {
     'sh:' + (store.shifts || []).filter(s => s.status === 'open').map(s => s.id + ':' + (s.truckId || '')).sort().join(','),
     'lx:' + linxup.version,   // a new truck position or tracker change repaints the board
     'cal:' + calendarFingerprint(),   // any scheduled day changing repaints the calendar
+    'd:' + todayStr(),   // midnight repaints an open screen onto the new day
   ].join('|');
   return require('crypto').createHash('sha1').update(dispatchFingerprint(dayLoads) + '#' + extra).digest('hex').slice(0, 16);
 }
 
-app.get('/api/today', reqMgr, async (req, res) => {
+// The board for one day — Dispatch reads it, the Calendar's day view reads
+// it, and the end-of-day review sorts it. One function so nothing is counted
+// two ways.
+async function buildBoard(dayArg) {
   const today = todayStr();
-  const day = req.query.date || today;
+  const day = dayArg || today;
   const now = Date.now();
   const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
-  // Work begun on an earlier day and still open (a trip left overnight, a
-  // load half delivered) holds its driver and truck on this day just as
-  // today's work does. It is not on the day's list — the Carried Over tile
-  // shows it — but it counts for who is free and what is on which truck.
-  const carriedWork = store.loads.filter(l => !l.voided && l.deliveryDate && l.deliveryDate < day && loadHoldsResources(l) && loadWorkStarted(l));
+  // Work begun on another day and still open (a trip left overnight, a load
+  // half delivered, a mid-haul load whose date the office moved forward)
+  // holds its driver and truck on today's board just as today's work does.
+  // It is not on the day's list — the Carried Over tile shows the earlier
+  // ones — but it counts for who is free and what is on which truck. On a
+  // past or future day's board only earlier work counts, as before.
+  const carriedWork = store.loads.filter(l => !l.voided && l.deliveryDate && l.deliveryDate !== day && loadHoldsResources(l) && loadWorkStarted(l) && (l.deliveryDate < day || day === today));
   const holding = [...dayLoads.filter(loadHoldsResources), ...carriedWork];
   const loads = dayLoads.map(l => boardLoadRow(l, holding));
   // Linxup, per truck: computed once here, shared by the truck, driver and load rows.
-  const telByTruck = new Map((store.trucks || []).filter(t => t.active).map(t => [t.id, truckTelematics(t, holding.find(l => l.truckUnitId === t.id) || null, now, dayLoads)]));
+  const telByTruck = new Map((store.trucks || []).filter(t => t.active).map(t => [t.id, truckTelematics(t, holding.find(l => l.truckUnitId === t.id && loadMidTrip(l)) || holding.find(l => l.truckUnitId === t.id) || null, now, dayLoads)]));
   loads.forEach(l => { l.telematics = l.truckUnitId ? telByTruck.get(l.truckUnitId) || null : null; });
 
   // Drivers: their state comes from the loads that hold them today, plus what
@@ -7919,8 +8215,11 @@ app.get('/api/today', reqMgr, async (req, res) => {
     };
   });
 
+  // One load per truck: the one with a trip under way wins over one merely
+  // assigned, so the chip's state is the truck's real state (two open loads
+  // on one truck are both still on the driver's row and the cards).
   const truckLoad = new Map();
-  holding.forEach(l => { if (l.truckUnitId) truckLoad.set(l.truckUnitId, l); });
+  holding.forEach(l => { if (l.truckUnitId && (!truckLoad.has(l.truckUnitId) || loadMidTrip(l))) truckLoad.set(l.truckUnitId, l); });
   const trucks = (store.trucks || []).filter(t => t.active).map(t => {
     const l = truckLoad.get(t.id) || null;
     const unavailable = t.status === 'maintenance' || t.status === 'out-of-service';
@@ -7944,6 +8243,24 @@ app.get('/api/today', reqMgr, async (req, res) => {
       ev.flags.forEach(f => telIssues.push({ truckId: truck.id, truckNum: truck.truckNum, loadId: l.id, kind: f.kind, text: f.text }));
     } catch (e) { console.error('[linxup] evidence failed for', l.id, e.message); }
   }
+  // The day's submitted loads: every trip is checked once more, so the
+  // approver and the end-of-day review see a yard or a jobsite the telemetry
+  // disagrees with before the load is approved. Evidence only.
+  for (const l of dayLoads.filter(x => x.approvalStatus === 'submitted')) {
+    const truck = l.truckUnitId ? (store.trucks || []).find(x => x.id === l.truckUnitId) : null;
+    if (!linxup.enabled || !truck || !truck.linxup || truck.linxup.trackerId == null) continue;
+    try {
+      const ev = await loadTelemetryEvidence(l, { now });
+      ev.flags.forEach(f => telIssues.push({ truckId: truck.id, truckNum: truck.truckNum, loadId: l.id, kind: f.kind, text: `${f.text} Check the yard and the jobsite before approving.` }));
+    } catch (e) { console.error('[linxup] evidence failed for', l.id, e.message); }
+  }
+  // A yard mapped to a geofence Linxup has deleted (or VBT no longer knows):
+  // its visits no longer count as evidence. Said here; the mapping is a
+  // person's to change on Vendors.
+  if (linxup.enabled) for (const v of (store.vendors || []).filter(v => v.active !== false && v.linxupGeofenceId != null && !linxup.geofence(v.linxupGeofenceId))) {
+    const gone = linxup.deletedGeofence(v.linxupGeofenceId);
+    telIssues.push({ truckId: null, truckNum: '', vendorId: v.id, kind: 'fence-gone', text: `${v.name} is mapped to Linxup geofence ${gone && gone.name ? `"${gone.name}" (${v.linxupGeofenceId})` : v.linxupGeofenceId}, which ${gone ? 'Linxup deleted' : 'VBT no longer knows'} — its visits no longer count as pickup evidence. Remap the yard on Vendors.` });
+  }
   const trailerBusy = new Map();
   holding.forEach(l => { if (l.trailerId) trailerBusy.set(l.trailerId, l.id); });
   const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({
@@ -7962,7 +8279,7 @@ app.get('/api/today', reqMgr, async (req, res) => {
 
   const count = b => loads.filter(l => l.bucket === b).length;
   const st = (arr, s) => arr.filter(x => x.state === s).length;
-  res.json({
+  const board = ({
     date: day, today, isToday: day === today,
     version: officeFingerprint(day),
     loads, drivers, trucks, trailers,
@@ -7992,6 +8309,7 @@ app.get('/api/today', reqMgr, async (req, res) => {
       unassigned: count('unassigned'),
       inProgress: count('in-progress'),
       awaitingApproval: submittedAll.length,
+      rejected: count('rejected'),   // sent back to the driver: his to fix, the office's to re-approve
       readyToBill: readyAll.length,
       readyToBillAmount: readyAmount,
       missingInfo: loads.filter(l => l.missing.length).length,
@@ -8004,6 +8322,128 @@ app.get('/api/today', reqMgr, async (req, res) => {
     telemetryIssues: telIssues,
     linxup: { enabled: linxup.enabled, linkedTrucks: trucks.filter(t => t.telematics && t.telematics.state !== 'not-linked').length },
   });
+  board.review = classifyDay(board).counts;   // the End-of-day tile: how many loads need a person
+  return board;
+}
+app.get('/api/today', reqMgr, async (req, res) => {
+  if (req.query.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date))) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  res.json(await buildBoard(req.query.date));
+});
+
+// ── END-OF-DAY REVIEW ────────────────────────────────────────────────────────
+// The day's work sorted into clean / still open / needs attention / blocked,
+// from the rules the screens already apply: the board rows (missing, conflicts,
+// telemetry), the approval checklist, the one billing engine and the batch
+// state machine. Nothing here decides anything or writes anything — it tells
+// the office which loads need a person tonight, and why, so the nightly check
+// is a short list of exceptions instead of every load on every screen.
+function classifyDay(board) {
+  const day = board.date;
+  const batches = store.billingBatches || [];
+  // Today's review carries the backlog (unfinished work from earlier days);
+  // another day's review judges that day's loads on their own.
+  const rows = [...board.loads, ...(board.isToday ? (board.carriedOver || []) : []).filter(c => !board.loads.some(l => l.id === c.id))];
+  const items = [];
+  for (const r of rows) {
+    const l = store.loads.find(x => x.id === r.id); if (!l) continue;
+    const reasons = []; let state = 'clean'; let next = '';
+    const open  = (why, nxt) => { if (state === 'clean') state = 'open'; reasons.push(why); if (nxt && !next) next = nxt; };
+    const attn  = (why, nxt) => { if (state !== 'blocked') state = 'attention'; reasons.push(why); if (nxt && !next) next = nxt; };
+    const block = (why, nxt) => { state = 'blocked'; reasons.push(why); if (nxt) next = nxt; };
+    const money = billingSummary(l);
+    const carried = !!(r.deliveryDate && r.deliveryDate < day);
+    const batch = l.billingBatchId ? batches.find(b => b.id === l.billingBatchId) : null;
+    // Gaps the approval checklist raised (or the approver acknowledged) are
+    // said once, by the checklist's words; the money checks below skip what
+    // the checklist already covers.
+    let said = [];
+    switch (r.bucket) {
+      case 'unassigned': attn('no driver', 'assign a driver'); break;
+      case 'assigned': if (carried) attn(`assigned since ${r.deliveryDate}, never started`, 'move it to a day or close it'); else open('assigned, not started yet'); break;
+      case 'in-progress': {
+        const where = `${r.stage || 'under way'}, ${r.loadsDelivered}/${r.loadsAssigned} delivered`;
+        // Every trip delivered but not submitted: the hauling is done, the
+        // driver's signature and submission are what is missing.
+        const allDone = (Number(r.loadsAssigned) || 0) > 0 && (Number(r.loadsDelivered) || 0) >= Number(r.loadsAssigned);
+        if (carried && allDone) attn(`all ${r.loadsAssigned} delivered on ${r.deliveryDate}, not yet submitted`, 'the driver signs and submits from the phone, or the office moves it to today');
+        else if (carried) attn(`unfinished since ${r.deliveryDate} — ${where}`, 'the driver finishes it or stops early');
+        else if (allDone) open(`all ${r.loadsAssigned} delivered — waiting for the driver's submission`);
+        else open(`still under way — ${where}`);
+        break;
+      }
+      case 'rejected': attn(`sent back to the driver${r.rejectReason ? `: ${r.rejectReason}` : ''}`, 'waiting on the driver to fix and resubmit'); break;
+      case 'awaiting-approval': {
+        const ck = approvalChecklist(l); said = ck.warnings;
+        if (ck.blocking.length) block(ck.blocking.join('; '), 'reject or void it');
+        else if (ck.warnings.length) attn(`waiting for approval with gaps — ${ck.warnings.join('; ')}`, 'approve with the gaps acknowledged, or reject');
+        else open('completed — waiting for approval', 'approve it');   // the office's step: open work, not clean
+        break;
+      }
+      case 'ready-to-bill': {
+        if (batch && batch.syncStatus === 'unknown') block(`QuickBooks result unknown on batch ${batch.id}`, 'reconcile the batch');
+        else if (batch && batch.syncStatus === 'failed') attn(`QuickBooks refused batch ${batch.id}${batch.errorMessage ? `: ${batch.errorMessage}` : ''}`, 'retry or fix the batch');
+        else if (batch) { next = 'send the batch'; reasons.push(`approved · on batch ${batch.id}, not sent`); }
+        else { next = 'bill it'; reasons.push('approved, not yet billed'); }   // the day's work and its approval are done; billing is its own cycle (Ready to Bill)
+        // Acknowledged at approval by a person: said, not raised again.
+        said = l.approvalWarnings || [];
+        if (said.length) reasons.push(`gaps acknowledged at approval: ${said.join('; ')}`);
+        break;
+      }
+      case 'completed': {
+        if (batch && batch.syncStatus === 'unknown') block(`QuickBooks result unknown on batch ${batch.id}`, 'reconcile the batch');
+        else reasons.push(batch ? `billed · ${batch.qbInvoiceNumber ? 'invoice ' + batch.qbInvoiceNumber : 'batch ' + batch.id}` : `billed by hand${l.manualBillRef ? ' · ' + l.manualBillRef : ''}`);
+        break;
+      }
+    }
+    // Money, on anything delivered and not yet billed: what the office would
+    // otherwise find only on Ready to Bill or the approval card.
+    const moneyMatters = (r.bucket === 'awaiting-approval' || r.bucket === 'ready-to-bill');
+    const billingSaid = said.some(w => String(w).startsWith('Billing:'));
+    if (moneyMatters) {
+      if (money.unconfigured) block(`not priceable: ${money.reason}`, 'fix the price or the unit');
+      else if (money.amount === 0 && !billingSaid && !(money.basis === 'segment' && money.reason)) attn('$0 — nothing would be invoiced');
+      if (money.rateIsDefault && !money.unconfigured && !billingSaid) attn('default customer rate — no price on file');
+      if (money.cost && money.cost.estimated) attn('vendor cost at a default rate — an estimate');
+      if (money.cost && money.cost.unconfigured) attn(`vendor cost not priceable: ${money.cost.reason}`);
+    }
+    if (r.bucket !== 'awaiting-approval') for (const m of r.missing || []) if (!(r.bucket === 'unassigned' && m === 'driver')) attn(`missing ${m}`);
+    for (const c of r.conflicts || []) attn(c);
+    for (const t of (board.telemetryIssues || []).filter(t => t.loadId === r.id)) attn(t.text);
+    items.push({ id: r.id, poNumber: r.poNumber, customer: r.customer, driverName: r.driverName, truckNum: r.truckNum, material: r.material, bucket: r.bucket, deliveryDate: r.deliveryDate,
+      loadsDelivered: r.loadsDelivered, loadsAssigned: r.loadsAssigned, amount: (moneyMatters || r.bucket === 'completed') && !money.unconfigured ? money.amount : null, state, reasons, next });
+  }
+  const order = { blocked: 0, attention: 1, open: 2, clean: 3 };
+  items.sort((a, b) => order[a.state] - order[b.state] || String(a.customer).localeCompare(String(b.customer)));
+  const counts = { total: items.length, clean: items.filter(i => i.state === 'clean').length, open: items.filter(i => i.state === 'open').length, attention: items.filter(i => i.state === 'attention').length, blocked: items.filter(i => i.state === 'blocked').length };
+  // Reconciliation, in sentences: the day's deliveries against approval and billing.
+  const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+  const own = items.filter(i => !i.deliveryDate || i.deliveryDate >= day);   // carried rows (dated earlier) are reconciled apart
+  const delivered = own.reduce((s, i) => s + (i.loadsDelivered || 0), 0);
+  const withWork = own.filter(i => (i.loadsDelivered || 0) > 0);
+  const carriedRows = items.filter(i => i.deliveryDate && i.deliveryDate < day);
+  const carriedDelivered = carriedRows.reduce((s, i) => s + (i.loadsDelivered || 0), 0);
+  const by = b => items.filter(i => i.bucket === b).length;
+  const batched = items.filter(i => i.bucket === 'ready-to-bill' && store.loads.find(x => x.id === i.id)?.billingBatchId).length;
+  const reconciliation = [];
+  if (!delivered) reconciliation.push(`No deliveries on ${day}.`);
+  else {
+    reconciliation.push(`${n(delivered, 'delivery', 'deliveries')} on ${n(withWork.length, 'load', 'loads')} — ${by('awaiting-approval')} waiting for approval, ${by('ready-to-bill') - batched} ready to bill, ${batched} on a batch, ${by('completed')} billed.`);
+    const notSubmitted = withWork.filter(i => i.bucket === 'in-progress' || i.bucket === 'rejected' || i.bucket === 'assigned').length;
+    reconciliation.push(notSubmitted ? `${n(notSubmitted, 'load has', 'loads have')} deliveries but ${notSubmitted === 1 ? 'is' : 'are'} not submitted (still open or sent back).` : 'Every delivered load is submitted, approved or billed.');
+  }
+  if (carriedRows.length) reconciliation.push(`${n(carriedRows.length, 'load', 'loads')} carried from earlier days (${n(carriedDelivered, 'delivery', 'deliveries')} on record there).`);
+  const defaults = items.filter(i => i.reasons.some(x => x.startsWith('default customer rate'))).length;
+  if (defaults) reconciliation.push(`${n(defaults, 'load is', 'loads are')} priced at a default customer rate.`);
+  const estimates = items.filter(i => i.reasons.some(x => x.startsWith('vendor cost at a default rate'))).length;
+  if (estimates) reconciliation.push(`${n(estimates, 'vendor cost is', 'vendor costs are')} at a default rate (estimates).`);
+  const unknown = new Set(items.flatMap(i => i.reasons.filter(x => x.startsWith('QuickBooks result unknown')))).size;
+  if (unknown) reconciliation.push(`${n(unknown, 'batch needs', 'batches need')} QuickBooks reconciliation.`);
+  if (counts.open) reconciliation.push(`${n(counts.open, 'load is', 'loads are')} still open.`);
+  return { date: day, counts, items, reconciliation };
+}
+app.get('/api/day-review', reqMgr, async (req, res) => {
+  const board = await buildBoard(req.query.date);
+  res.json({ ...classifyDay(board), isToday: board.isToday, version: board.version });
 });
 
 app.post('/api/fleet/trucks', reqMgr, async (req, res) => {
@@ -8101,13 +8541,14 @@ function assignmentConflicts(l, { driverId, truckUnitId, trailerId }, { extraLoa
   const label = x => x.poId === '__new__' ? x.id : `${x.id} (PO ${poOf(x.poId).poNumber || '—'}${poOf(x.poId).customer ? ', ' + poOf(x.poId).customer : ''})`;
   const drvName = id => (rosterDriver(id) || {}).name || id;
   const sameDay = [...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate === l.deliveryDate);
-  // Work begun on an earlier day and still open holds its driver and truck
-  // today too: a driver mid-haul on yesterday's load, the truck he is on.
-  // Planning a future day against today's unfinished work is not a conflict.
+  // Work begun on another day and still open holds its driver and truck
+  // today too: a driver mid-haul on yesterday's load, or on a load the office
+  // moved to tomorrow mid-haul, and the truck he is on. Planning a future day
+  // against today's unfinished work is not a conflict.
   if (l.deliveryDate && l.deliveryDate <= todayStr()) {
-    sameDay.push(...[...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate && x.deliveryDate < l.deliveryDate && loadWorkStarted(x)));
+    sameDay.push(...[...store.loads, ...extraLoads].filter(x => x.id !== l.id && loadHoldsResources(x) && x.deliveryDate && x.deliveryDate !== l.deliveryDate && loadWorkStarted(x) && (x.deliveryDate < l.deliveryDate || l.deliveryDate === todayStr())));
   }
-  const whenBusy = other => other.deliveryDate === l.deliveryDate ? 'the same day' : `unfinished since ${other.deliveryDate}`;
+  const whenBusy = other => other.deliveryDate === l.deliveryDate ? 'the same day' : other.deliveryDate < l.deliveryDate ? `unfinished since ${other.deliveryDate}` : `under way now (dated ${other.deliveryDate})`;
   const newDriver = driverId !== undefined ? driverId : l.truckId;
   if (driverId !== undefined && driverId !== l.truckId) {
     const open = openTripOf(l);
@@ -8139,6 +8580,7 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   const l = store.loads.find(x => x.id === req.params.id);
   if (!l) return res.status(404).json({ error: 'Load not found' });
   if (l.locked) return res.status(403).json({ error: 'Load is approved and locked' });
+  if (l.voided) return res.status(409).json({ error: `This load is voided${l.voidReason ? ` (${l.voidReason})` : ''} — restore it first if it should be dispatched.`, code: 'load_voided' });
   const { driverId, truckUnitId, yardId, trailerId, force, reason } = req.body || {};
 
   // Validate every part first; nothing on the load changes until the whole
@@ -8165,6 +8607,21 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   if (yardId !== undefined) {
     v = store.vendors.find(x => x.id === yardId);
     if (yardId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
+    if (v && v.active === false) return res.status(400).json({ error: `${v.name} is inactive — mark it active on Vendors or pick another yard` });
+  }
+  // Two operators: the sheet says what it showed (base) for each field it
+  // changes; a field another operator changed meanwhile is refused (409
+  // stale_assignment) and the sheet reopens on the current state. Fields the
+  // sheet did not touch merge as before. Never bypassed by `force` — that is
+  // for conflicts the operator saw, not for ones hidden from him.
+  const base = req.body && req.body.base && typeof req.body.base === 'object' ? req.body.base : null;
+  if (base) {
+    const poOf = store.pos.find(p => p.id === l.poId);
+    const now = { driverId: l.truckId || null, truckUnitId: l.truckUnitId || null, yardId: resolvePickupYard(l, poOf).id || null, trailerId: l.trailerId || null };
+    const word = { driverId: 'driver', truckUnitId: 'truck', yardId: 'yard', trailerId: 'trailer' };
+    const label = (k, v) => k === 'driverId' ? (v ? (driverRoster().find(x => x.id === v) || {}).label || v : 'unassigned') : k === 'truckUnitId' ? (v ? ((store.trucks || []).find(x => x.id === v) || {}).truckNum || v : 'no truck') : k === 'yardId' ? (v ? ((store.vendors || []).find(x => x.id === v) || {}).name || v : 'none') : (v ? ((store.trailers || []).find(x => x.id === v) || {}).number || v : 'none');
+    const stale = Object.keys(word).filter(k => k in base && req.body[k] !== undefined && (base[k] || null) !== now[k]);
+    if (stale.length) return res.status(409).json({ error: `This load changed while the sheet was open — ${stale.map(k => `the ${word[k]} is now ${label(k, now[k])}`).join(', ')}. The sheet shows the current state; check it and confirm again.`, code: 'stale_assignment', stale: stale.map(k => word[k]), current: now });
   }
   const conflicts = assignmentConflicts(l, { driverId, truckUnitId, trailerId });
   if (conflicts.length && force !== true) {

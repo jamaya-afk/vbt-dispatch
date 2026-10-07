@@ -61,6 +61,13 @@ chk "driver already mid-haul → 409, load unchanged" "$(echo "$R" | jq "d['code
 R=$(mg POST /api/loads/$LR/assign '{"truckUnitId":"truck-2"}')
 echo "  → $(echo "$R" | jq "d['error']")"
 chk "truck on another driver's open load → 409, load unchanged" "$(echo "$R" | jq "d['conflicts'][0]['type']")|$(load $LR "l['truckUnitId']")" "truck-busy|truck-14"
+say "   Two dispatchers, one sheet: Joshua opens Quick Assign on Rigo's load; Perla puts Carlos on it meanwhile; Joshua submits his older choice"
+PE=$(login perla perla123)
+curl -s -b $PE -H "$J" -X POST $B/api/loads/$LR/assign -d '{"driverId":"carlos","base":{"driverId":"rigo"}}' -o /dev/null
+R=$(mg POST /api/loads/$LR/assign '{"driverId":"matthew","base":{"driverId":"rigo"}}')
+echo "  → $(echo "$R" | jq "d['error']")"
+chk "the older sheet is refused (409 stale_assignment) and Perla's assignment stands; nothing is overwritten unseen" "$(echo "$R" | jq "d['code'], d['stale'], d['current']['driverId']")|$(load $LR "l['driverName']")" "stale_assignment ['driver'] carlos|Carlos"
+chk "   reopened on the current state, Joshua puts Rigo back (200)" "$(mg POST /api/loads/$LR/assign '{"driverId":"rigo","base":{"driverId":"carlos"}}' | jq "d['success'], d['load']['driverName']")" "True Rigo"
 say "   Reassignment mid-haul: Beryle (at the yard on trip 1 of 3) goes home sick → Leonardo takes over on Truck #12"
 R=$(mg POST /api/loads/$LB/assign '{"driverId":"leonardo","truckUnitId":"truck-12"}')
 echo "  → $(echo "$R" | jq "d['error']")"
@@ -78,6 +85,7 @@ board
 chk "8. after submission Leonardo and Truck #12 are no longer shown occupied" "$(curl -s -b $M $B/api/today | jq "[x['available'] for x in d['drivers'] if x['id']=='leonardo'][0], [x['available'] for x in d['trucks'] if x['id']=='truck-12'][0], [l['bucket'] for l in d['loads'] if l['id']=='$LB'][0]")" "True True awaiting-approval"
 
 say "3. BILLING END TO END — Leonardo's 3 loads: approve → Ready to Bill → batch → QuickBooks"
+chk "the order has delivered loads: its jobsite and customer are frozen (403), its notes still change — where the work went stays on record" "$(mg PUT /api/pos/$P1 '{"address":"1 Elsewhere Ave"}' | jq "d.get('code'), d.get('frozenFields')")|$(mgc PUT /api/pos/$P1 '{"notes":"gate code 4411"}')" "po_work_frozen ['address']|200"
 mg POST /api/loads/$LB/approve >/dev/null
 chk "approved → locked, Ready to Bill lists it" "$(load $LB "l['locked'], l['billStatus']")|$(curl -s -b $M $B/api/ready-to-bill | jq "len([x for x in d['items'] if x['id']=='$LB'])")" "True ready|1"
 chk "invoice preview: 3 loads × 25 t × \$25 = \$1,875 to Hilltop Grading, PO HG-101" "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$LB\"]}" | jq "d['groups'][0]['customer'], d['groups'][0]['poNumber'], d['groups'][0]['totalLoads'], d['groups'][0]['totalAmount']")" "Hilltop Grading HG-101 3 1875"
@@ -124,11 +132,18 @@ dr $CA $LU '{"action":"delivered"}' >/dev/null; mg POST /api/loads/$LU/approve >
 chk "vendor bill: Vulcan, 1 load, \$950 — not a \$0 VBT line" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$LU\"]}" | jq "[(g['vendorName'], g['totalAmount'], g['lineItems'][0]['description']) for g in d['groups']]")" "[('Vulcan', 950, '3/4 Rock — 1 load (25.00 ton @ \$38/ton)')]"
 chk "customer invoice for the same load is unaffected by the yard: \$625" "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$LU\"]}" | jq "d['groups'][0]['totalAmount']")" "625"
 say "   …and the opposite: planned Vulcan, actually loaded at OUR yard (Rigo, 2 loads)"
-for n in 1 2; do dr $RG $LR '{"action":"start-trip"}' >/dev/null; dr $RG $LR '{"action":"arrived-pickup","yardId":"vbt"}' >/dev/null; dr $RG $LR "{\"action\":\"loaded\",\"ticket\":{\"source\":\"vbt\",\"number\":\"VBT-R$n\"}}" >/dev/null; dr $RG $LR '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $LR '{"action":"trip-complete"}' >/dev/null; done
+for n in 1 2; do dr $RG $LR '{"action":"start-trip"}' >/dev/null; dr $RG $LR '{"action":"arrived-pickup","yardId":"vbt"}' >/dev/null; dr $RG $LR "{\"action\":\"loaded\",\"ticket\":{\"source\":\"vbt\",\"number\":\"VBT-R$n\",\"photo\":\"$PNG\"}}" >/dev/null; dr $RG $LR '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $LR '{"action":"trip-complete"}' >/dev/null; done
 curl -s -b $RG -H "$J" -X PUT $B/api/loads/$LR -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"$(date -u +%FT%TZ)\"}}" -o /dev/null
-dr $RG $LR '{"action":"delivered"}' >/dev/null; mg POST /api/loads/$LR/approve >/dev/null
+chk "Rigo submits (2/2, photo and signature on file) and the office approves" "$(dr $RG $LR '{"action":"delivered"}' | jq "d.get('success')")|$(mg POST /api/loads/$LR/approve | jq "d.get('success') or d.get('code')")" "True|True"
 chk "planned Vulcan (\$38 snapshot) but loaded at VBT: no vendor cost, no vendor bill" "$(load $LR "l['vendorRate'], [t['actualYardId'] for t in l['trips']]")|$(mgc POST /api/vendor-bills/preview "{\"loadIds\":[\"$LR\"]}")" "38 ['vbt', 'vbt']|400"
 chk "Profitability and Material Costs agree: Vulcan 6 loads = \$5,700 in material, nothing for the VBT hauls" "$(curl -s -b $M $B/api/profitability | jq "int(d['grand']['cost']), d['grand']['costIncomplete']")|$(curl -s -b $M $B/api/material-costs | jq "int(d['grandTotal']), d['vendors']['vulcan']['totalLoads'], 'vbt' in d['vendors']")" "5700 False|5700 6 False"
+
+say "5b. END OF DAY — one list instead of five screens: what is clean, what is open, what needs a person, what is blocked"
+review() { curl -s -b $M "$B/api/day-review" | python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+chk "the day's 4 loads: 2 billed (clean), 2 approved at the default rate (attention, 'bill it'); nothing open, nothing blocked; the board tile carries the same counts" "$(review "d['counts']")|$(curl -s -b $M $B/api/today | jq "d['review']['attention'], d['review']['blocked']")" "{'total': 4, 'clean': 2, 'open': 0, 'attention': 2, 'blocked': 0}|2 0"
+chk "   each line says why and what is next" "$(review "sorted((i['id'], i['state'], ' · '.join(i['reasons']), i['next']) for i in d['items'])")" "[('$LB', 'clean', 'billed by hand', ''), ('$LM', 'clean', 'billed · invoice HG-101', ''), ('$LR', 'attention', 'approved, not yet billed · default customer rate — no price on file', 'bill it'), ('$LU', 'attention', 'approved, not yet billed · default customer rate — no price on file', 'bill it')]"
+chk "   the reconciliation reads as sentences: 8 deliveries on 4 loads, every delivered load accounted for, 2 at a default rate" "$(review "' / '.join(d['reconciliation'])")" "8 deliveries on 4 loads — 0 waiting for approval, 2 ready to bill, 0 on a batch, 2 billed. / Every delivered load is submitted, approved or billed. / 2 loads are priced at a default customer rate."
+echo "  $(review "' | '.join(f\"{i['state']}: {i['customer']} {i['poNumber']} {i['id']} — {' · '.join(i['reasons'])}\" for i in d['items'])")"
 
 say "6. SAVE FAILURE — what the dispatcher sees when the database refuses the write"
 mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
@@ -152,6 +167,9 @@ chk "archive: Leonardo's (manual) and Matthew's (QuickBooks) billed loads leave 
 chk "the batch still knows its load; the archived load still knows its PO, trips and invoice" "$(curl -s -b $M $B/api/billing-batches/$B3 | jq "[l['id'] for l in d['loads']]")|$(curl -s -b $M $B/api/history | python3 -c "
 import json,sys;d=json.load(sys.stdin);l=[x for b in d['archive'] for x in b['loads'] if x['id']=='$LM'][0];po=[p for b in d['archive'] for p in b['pos'] if p['id']==l['poId']]
 print(len(po), len(l['trips']), l['qbInvoiceId'], l['billingBatchId']=='$B3')")" "['$LM']|0 2 INV-3 True"
+echo "  $(review "' | '.join(f\"{i['state']}: {i['poNumber']} {i['id']} — {' · '.join(i['reasons'])}\" for i in d['items'])")"
+chk "the end-of-day list follows the board: the two billed loads leave it; the two orders saved since (HG-LOST, HG-103 — HG-102 was refused during the outage) are open" "$(review "d['counts'], [i['id'] for i in d['items'] if i['id'] in ('$LB','$LM')]")" "{'total': 4, 'clean': 0, 'open': 2, 'attention': 2, 'blocked': 0} []"
+chk "the archived order's jobsite is still a saved site for its customer (the New PO picker offers it, with its pin if one was set)" "$(curl -s -b $M "$B/api/jobsites?customer=Hilltop%20Grading" | jq "[(s['address'], s['city'], s['count']>=1) for s in d['jobsites'] if s['address']=='400 Ridge Rd']")" "[('400 Ridge Rd', 'Clovis', True)]"
 chk "Material Costs and Reports unchanged by archiving" "$(curl -s -b $M $B/api/material-costs | jq "int(d['grandTotal'])==$BEFORE")|$(curl -s -b $M $B/api/reports | jq "d['totals']['billedThisMonth']")" "True|2"
 chk "Case E: voiding the batch after archive releases the archived copy too" "$(mg POST /api/billing-batches/$B3/void '{"reason":"customer dispute"}' | jq "d['success'], d['qbVoided']")|$(curl -s -b $M $B/api/history | python3 -c "
 import json,sys;d=json.load(sys.stdin);l=[x for b in d['archive'] for x in b['loads'] if x['id']=='$LM'][0];print(l['billStatus'], repr(l['qbInvoiceId']))")" "True True|ready ''"

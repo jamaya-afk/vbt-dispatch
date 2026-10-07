@@ -31,7 +31,7 @@ record itself.
 | **Alert** | when Linxup raises an alert | `alertId`, code, descriptions, time, location, tracker, person, geofence. Speeding, harsh events, geofence alerts, maintenance alerts — whatever the account has configured. |
 | **Device Status** | ACTIVATE / INACTIVATE | A tracker came online or was retired. |
 | **Device Update** | rename, fleet move, driver assignment change | The tracker mirror changes: name, fleet, person, asset. |
-| **Geofence Change** | CREATE / UPDATE / DELETE | The geofence itself: name, group, type (Landmark / Polygon / Circle), radius, points, who it notifies. Lets VBT keep a mirror of Linxup's geofences without a pull API. |
+| **Geofence Change** | CREATE / UPDATE / DELETE | The geofence itself: name, group, type (Landmark / Polygon / Circle), radius, points, who it notifies. Lets VBT keep a mirror of Linxup's geofences without a pull API. VBT interprets these (OA5): CREATE/UPDATE refresh the mirrored name and group; DELETE marks the geofence deleted, so a yard still mapped to it is named stale on Vendors and on the board — the mapping itself is never rewritten. |
 | **Media** | dashcam clip or thumbnail uploaded | URLs for inside/outside/aux video and thumbnails, `mediaId`, timestamp. |
 | Item Tracking (Location / Left Behind) | tool trackers | Not relevant to dump-truck dispatch; ignore (accept and drop). |
 
@@ -330,6 +330,28 @@ default off, each writing "by telemetry" on the stamp it sets):
 - A3: set `actualYardId` from the fence the truck actually loaded in when it
   differs from the plan — shown as a suggestion to the dispatcher first, not
   applied silently, because it changes vendor cost.
+
+### Limitation: VBT learns about a fence only from what Linxup sends
+
+The mirror of Linxup's geofences is built from the messages VBT receives:
+Geofence Events, Stops and Trips name a fence (id, name, group), and Geofence
+Change messages (CREATE / UPDATE / DELETE) refresh or retire it. There is no
+polling of Linxup. So:
+
+- A **renamed** fence is learned from the next message that names it.
+- A **deleted** fence is known deleted only if Linxup is configured to send
+  Geofence Change messages. If it is not, the deleted fence simply stops
+  producing events: VBT's mapping stays as it was and never produces evidence
+  again, and nothing in VBT can tell "deleted" from "no truck has been there".
+- VBT therefore never assumes a mapping is current because a geofence id is
+  on the yard. When the mirror knows the fence is gone (or has never heard of
+  it), the mapping is named **stale** on `/api/linxup/geofences`, on the board
+  (attention) and on the yard's Vendors panel; mapping a yard to a deleted
+  fence is refused. When the mirror does not know, the only signals are a yard
+  whose evidence reads "no visit" trip after trip — a person checks the fence
+  in Linxup and remaps.
+- None of this is a synchronization guarantee, and none of it rewrites a VBT
+  yard: the mapping is a person's to change.
 
 ## I. Position storage and retention strategy
 

@@ -199,6 +199,8 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .db-tel.stale .db-tel-dot,.db-tel.offline .db-tel-dot{background:var(--R)}
 .db-tel-where{width:100%;color:var(--txt3)}
 .db-tel-mini{font-style:normal;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--txt3);margin-left:4px}
+.rv-row{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--bdr);font-size:13px}.rv-why{font-size:12px;color:var(--txt2);margin-top:2px}.rv-group{margin-top:12px}.rv-head{font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:700}.rv-counts{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}.rv-recon{margin:10px 0 0 18px;padding:0;font-size:13px;color:var(--txt2)}.rv-clean{margin-top:12px;color:var(--G);font-weight:600}
+.price-hint{font-size:12px;color:var(--txt2);margin:6px 0 0 2px;min-height:14px}
 .db-tel-mini.moving{color:var(--G)}.db-tel-mini.idling{color:#b45309}.db-tel-mini.at-place{color:#1d4ed8}.db-tel-mini.stale,.db-tel-mini.offline{color:var(--R)}
 .qa-fact.tel-stale,.qa-fact.tel-offline{border-color:#fca5a5;background:#fef2f2}
 /* Linxup evidence on the load detail and the approval dialog */
@@ -988,6 +990,7 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
         <div class="field"><label>Address</label><input id="po-address" placeholder="123 Main St" oninput="poJobsiteEdited()"></div>
         <div class="field"><label>City</label><input id="po-city" placeholder="Fresno" oninput="poJobsiteEdited()"></div>
       </div>
+      <div class="po-inline" id="po-jobsite-hint"></div>
       <div class="field"><label>Planned Pickup Yard <span class="po-hint">(each load can use a different yard; the driver confirms at pickup)</span></label>
         <select id="po-vendor" onchange="onPoVendorChange(this.value)"></select>
       </div>
@@ -1693,6 +1696,21 @@ function poJobsiteEdited() {
   const j = poJobsites[Number(document.getElementById('po-jobsite').value)];
   const a = document.getElementById('po-address').value.trim(), c = document.getElementById('po-city').value.trim();
   if (!j || j.address !== a || j.city !== c) { document.getElementById('po-jobsite').value = ''; document.getElementById('po-jobsite-from').value = ''; }
+  // …but an address typed by hand that is one of this customer's saved sites
+  // (same words; case, spacing and a trailing period aside) is offered back,
+  // so the site's pin and spelling are reused instead of a near-duplicate.
+  const hint = document.getElementById('po-jobsite-hint'); if (!hint) return;
+  const norm = x => String(x || '').toLowerCase().replace(/\s+/g, ' ').replace(/[\s.,#]+$/, '').trim();
+  const idx = (a || c) && document.getElementById('po-jobsite').value === '' ? poJobsites.findIndex(s => norm(s.address) === norm(a) && norm(s.city) === norm(c)) : -1;
+  if (idx < 0) { hint.innerHTML = ''; hint.className = 'po-inline'; return; }
+  const s = poJobsites[idx];
+  hint.className = 'po-inline ok';
+  hint.innerHTML = `Looks like a jobsite this customer has used: <b>${escapeHtml([s.address, s.city].filter(Boolean).join(', '))}</b> (${s.count} PO${s.count === 1 ? '' : 's'}${s.geo ? ', pinned' : ''}) · <a href="#" onclick="event.preventDefault();poUseJobsite(${idx})">Use it</a>`;
+}
+function poUseJobsite(idx) {
+  document.getElementById('po-jobsite').value = String(idx);
+  onPoJobsitePick(idx);
+  const hint = document.getElementById('po-jobsite-hint'); if (hint) { hint.innerHTML = ''; hint.className = 'po-inline'; }
 }
 
 // Driver/truck availability for the delivery date, from the same source
@@ -2054,8 +2072,19 @@ function openLoadDetail(id) {
   if (po.notes) html += `<dt style="color:var(--txt3)">Notes</dt><dd>${po.notes}</dd>`;
   if (l.trailer) html += `<dt style="color:var(--txt3)">Trailer</dt><dd>${escapeHtml(l.trailer.number)}${l.trailer.type ? ' · ' + escapeHtml(l.trailer.type) : ''}</dd>`;
   if (l.tons && l.tons.plannedTons != null) html += `<dt style="color:var(--txt3)">Tons</dt><dd>Planned <b>${l.tons.plannedTons.toFixed(2)}</b> · Actual <b>${l.tons.actualTons ? l.tons.actualTons.toFixed(2) : '—'}</b>${l.tons.tickets ? ` <span style="font-size:11px;color:var(--txt3)">(${l.tons.ticketsWithTons} of ${l.loadsDelivered || 0} delivered ticketed)</span>` : ''}${(l.tons.missingTickets || []).length ? ` <span style="font-size:11px;color:var(--R);font-weight:600">no ticket on load ${l.tons.missingTickets.join(', ')}</span>` : ''}${(l.tons.openTickets || []).length ? ` <span style="font-size:11px;color:var(--A);font-weight:600">${l.tons.openTickets.length} ticket${l.tons.openTickets.length === 1 ? '' : 's'} loaded, not delivered${l.tons.openTons ? ` (${l.tons.openTons.toFixed(2)} t not counted)` : ''}</span>` : ''}</dd>`;
-  const LD_STATUS = { pending: 'Not yet submitted', submitted: 'Awaiting approval', approved: l.billStatus === 'billed' ? 'Approved · Billed' : 'Approved · Ready to Bill', rejected: 'Rejected' };
+  if (l.billing && (role === 'manager' || role === 'admin')) {
+    const b = l.billing, c = b.cost || {};
+    const q = b.quantity == null ? '' : b.unit === 'ton' ? `${Number(b.quantity).toFixed(2)} t` : `${b.quantity} ${escapeHtml(b.unit)}`;
+    const rev = b.unconfigured ? `<span style="color:#b42318">not priceable yet</span> — ${escapeHtml(b.reason)}`
+      : `<b>${money(b.amount || 0)}</b>${q ? ' · ' + q : ''} @ $${b.rate}/${escapeHtml(b.unit)}${b.basis === 'actual' ? ' · actual tons' : b.basis === 'segment' ? ' · freight' : ''}${b.rateIsDefault ? ' <span style="color:#b45309;font-size:11px">default rate — no customer price on file</span>' : ''}${b.amount === 0 ? ' <span style="color:#b42318;font-size:11px">$0 — nothing would be invoiced</span>' : ''}`;
+    const cost = c.internal ? 'our own yard — none' : c.unconfigured ? `<span style="color:#b42318">not priceable</span> — ${escapeHtml(c.reason || '')}` : `${money(c.amount || 0)}${c.estimated ? ' <span style="color:#b45309;font-size:11px">estimate — default rate</span>' : ''}`;
+    html += `<dt style="color:var(--txt3)">Billing</dt><dd>${rev}<br><span style="font-size:12px;color:var(--txt2)">Vendor cost: ${cost}</span></dd>`;
+  }
+  const LD_STATUS = { pending: 'Not yet submitted', submitted: 'Awaiting approval', approved: l.billStatus === 'billed' ? 'Approved · Billed' : l.billingBatchId ? `Approved · On billing batch ${escapeHtml(l.billingBatchId)}` : 'Approved · Ready to Bill', rejected: 'Rejected' };
   html += `<dt style="color:var(--txt3)">Status</dt><dd>${l.voided ? `Voided${l.voidReason ? ' — ' + escapeHtml(l.voidReason) : ''}` : (LD_STATUS[l.approvalStatus] || escapeHtml(String(l.approvalStatus)))}${!l.voided && l.approvalStatus === 'rejected' && l.rejectReason ? ` — ${escapeHtml(l.rejectReason)}` : ''}</dd>`;
+  if (l.approvalStatus === 'approved' && (l.approvedBy || l.approvedAt)) html += `<dt style="color:var(--txt3)">Approved</dt><dd>${l.approvedBy ? 'by ' + escapeHtml(l.approvedBy) : ''}${l.approvedAt ? ' · ' + new Date(l.approvedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}${(l.approvalWarnings || []).length ? ` — with gaps acknowledged: ${escapeHtml(l.approvalWarnings.join('; '))}` : ''}</dd>`;
+  if (l.voided && (l.voidedBy || l.voidedAt)) html += `<dt style="color:var(--txt3)">Voided</dt><dd>${l.voidedBy ? 'by ' + escapeHtml(l.voidedBy) : ''}${l.voidedAt ? ' · ' + new Date(l.voidedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}</dd>`;
+  if ((l.reassignHistory || []).length) html += `<dt style="color:var(--txt3)">Handed over</dt><dd>${l.reassignHistory.map(h => `${escapeHtml(h.fromName || h.from || '—')} → ${escapeHtml(h.toName || h.to || 'unassigned')}${h.atTrip ? ` during trip ${h.atTrip}` : ''}${h.tripsDone ? ` (${h.tripsDone} done before)` : ''}${h.reason ? ` — ${escapeHtml(h.reason)}` : ''}`).join('<br>')}</dd>`;
   html += `</dl>`;
   if (l.segments && l.segments.length) {
     const t = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'open';
@@ -2205,14 +2234,18 @@ function openLoadDetail(id) {
     }
     actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openEditPO('${l.poId}')">Edit PO</button>`;
     actions += `<button class="btn ghost" onclick="this.closest('.modal-bg').remove();openNotifySheet('${l.poId}')">Customer updates: ${po.notifications && po.notifications.enabled ? 'On' : 'Off'}</button>`;
-    if (!l.approvalStatus || l.approvalStatus === 'pending') {
+    // The server's rule: a load with a field record (a ticket, a completed
+    // trip, a delivery, a signature) is never deleted — it is voided, and the
+    // evidence stays. Offer the button the server will honour, not the other.
+    const hasRecord = (Number(l.loadsDelivered) || 0) > 0 || (l.trips || []).some(t => t.ticket || (t.timestamps && t.timestamps.completed)) || !!(l.pod && (l.pod.signature || l.pod.signatureUrl));
+    if ((!l.approvalStatus || l.approvalStatus === 'pending') && !hasRecord && !l.voided) {
       actions += `<button class="btn danger" onclick="if(confirm('Delete this load?')){deleteLoad('${l.id}')}">Delete Load</button>`;
     }
-    // Void is the correction path for delivered work. An approved load is
+    // Void is the correction path for work on record. An approved load is
     // never deleted — the ticket, signature and GPS are proof and stay put.
     if (l.voided) {
       actions += `<button class="btn ghost" onclick="unvoidLoad('${l.id}')">Restore Load</button>`;
-    } else if (l.approvalStatus === 'approved' || l.approvalStatus === 'submitted') {
+    } else if (l.approvalStatus === 'approved' || l.approvalStatus === 'submitted' || l.approvalStatus === 'rejected' || hasRecord) {
       actions += `<button class="btn danger" onclick="voidLoad('${l.id}')">Void Load</button>`;
     }
     // Removing a whole PO (and its loads) had no UI at all, so test POs piled
@@ -2256,13 +2289,13 @@ function telemetryPanelHtml(d) {
     if (p.evidence === 'geofence') h += p.visits.map(v => `<div><b>Pickup — ${escapeHtml(p.name)}</b> · entered ${tClock(v.enteredAt)}${v.leftAt ? ` · exited ${tClock(v.leftAt)} · ${v.minutes} min inside` : ' · still inside'} ${src('Linxup geofence' + (p.fence && p.fence.confidence === 'name' ? ' (matched by name)' : ''))}</div>`).join('');
     else if (p.evidence === 'gps') h += `<div><b>Pickup — near ${escapeHtml(p.name)} based on GPS</b> · first ${tClock(p.gps.firstAt)} · last ${tClock(p.gps.lastAt)} · ${p.gps.count} fixes ${src('Linxup GPS')}</div>`;
     else if (p.evidence === 'none') h += `<div><b>Pickup — ${escapeHtml(p.name)}</b> · no Linxup activity there during this trip (${tr.positions} positions) ${src(p.fence ? 'Linxup geofence' : 'Linxup GPS')}</div>`;
-    else h += `<div><b>Pickup — ${escapeHtml(p.name)}</b> · no Linxup geofence mapped and no saved pin, so nothing to compare ${src('—')}</div>`;
+    else h += `<div><b>Pickup — ${escapeHtml(p.name)}</b> · no Linxup geofence mapped and ${p.pinUnconfirmed ? 'its saved pin is not confirmed (geocoded, unchecked — confirm it on Vendors)' : 'no saved pin'}, so nothing to compare ${src('—')}</div>`;
     if (p.stops.length) h += `<div class="ld-tel-sub">${p.stops.map(s => `${s.type === 'idle' ? 'Idling' : s.type === 'off' ? 'Engine off' : 'Stop'} ${s.minutes != null ? s.minutes + ' min' : ''} from ${tClock(s.startAt)}`).join(' · ')} ${src('Linxup stop')}</div>`;
     // Jobsite
     const j = tr.jobsite;
     if (j.evidence === 'gps') h += `<div><b>Jobsite — near jobsite based on GPS</b> · first detected ${tClock(j.gps.firstAt)} · last ${tClock(j.gps.lastAt)} ${src('Linxup GPS')}</div>`;
     else if (j.evidence === 'none') h += `<div><b>Jobsite</b> · no Linxup activity within the jobsite pin during this trip ${src('Linxup GPS')}</div>`;
-    else h += `<div><b>Jobsite</b> · no saved jobsite pin, so nothing to compare ${src('—')}</div>`;
+    else h += `<div><b>Jobsite</b> · ${j.pinUnconfirmed ? 'the jobsite pin is not confirmed (geocoded, unchecked — confirm it on the PO)' : 'no saved jobsite pin'}, so nothing to compare ${src('—')}</div>`;
     if (j.stops.length) h += `<div class="ld-tel-sub">${j.stops.map(s => `Stop detected ${tClock(s.startAt)}${s.minutes != null ? ` · ${s.minutes} min` : ''}${s.type === 'off' ? ' · engine off' : s.type === 'idle' ? ' · idling' : ''}`).join(' · ')} ${src('Linxup stop')}</div>`;
     // Activity
     const act = [];
@@ -2660,6 +2693,7 @@ async function renderDriver() {
     dispatch = d.loads || [];
     window._currentDispatch = dispatch;
     window._earlierOpen = d.earlierOpen || [];
+    window._serverToday = d.today || '';   // the operating day, from the server — never the phone's clock
     if (dispatch.length && dispatch[0].photoUploadAvailable !== undefined) window._photoUploadAvailable = !!dispatch[0].photoUploadAvailable;
     console.log('[DRIVER VIEW] Loads received from server:', dispatch.length);
     dispatch.forEach(l => console.log('  -', l.loadId, l.poNumber, l.material, '(' + l.loadsAssigned + ' loads)'));
@@ -2684,7 +2718,7 @@ async function renderDriver() {
 
 async function renderDriverContent(dispatch, welcome, wrap) {
 
-  const todayCount = dispatch.filter(l => l.deliveryDate === todayStr()).length;
+  const todayCount = dispatch.length;   // the list is the workday: today's loads, the open shift's, and a trip under way
   const submittedCount = dispatch.filter(l => l.approvalStatus === 'submitted').length;
   const firstName = myDisplayName || (myUsername.charAt(0).toUpperCase() + myUsername.slice(1));
 
@@ -2910,7 +2944,7 @@ function tripCard(l) {
   const ats = activeTrip.timestamps || {};
   const ts = ats;  // alias used by the step-tracker code below — drives display of the CURRENT trip
   const pod = l.pod || {};
-  const isToday = l.deliveryDate === todayStr();
+  const isToday = l.deliveryDate === (window._serverToday || todayStr());
   const started = !!ats.start;
   const atPickup = !!ats.arrivedPickup;
   const isLoaded = !!ats.loadedAt;
@@ -2973,6 +3007,16 @@ function tripCard(l) {
   }
 
   let action = '';
+  // Stop early submits the completed trips: it needs the ticket photo and the
+  // customer's signature like any submission, so those come first, right
+  // here. Offered between trips and while a trip is under way but not yet at
+  // the jobsite (started by mistake, truck broke down) — the open trip is
+  // left on the record and counted nowhere, as the server already does.
+  const doneCount = Number(l.tripsCompleted) || 0;
+  const stopEarly = (totalTrips > 1 && doneCount > 0 && !submitted) ? (
+      !hasImage ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openTicketUpload('${l.loadId}')">Ticket photo — needed to stop early</button>`
+      : !hasSig ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openSig('${l.loadId}')">Customer signature — needed to stop early</button>`
+      : `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${doneCount} completed of ${totalTrips} as incomplete?${started ? ' The trip under way is not counted.' : ''}')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${doneCount} completed as incomplete</button>`) : '';
   // Sent back by the office: the photo or the signature it named can be redone here, then Submit again.
   const redoBtns = rejected ? `<div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn ghost" style="flex:1" onclick="openTicketUpload('${l.loadId}')">Replace ticket photo</button><button class="btn ghost" style="flex:1" onclick="openSig('${l.loadId}')">Sign again</button></div>` : '';
   if (allTripsDone && !hasImage && !submitted) {
@@ -3003,13 +3047,8 @@ function tripCard(l) {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
       Start Load ${next} of ${totalTrips}
     </button>
-    <div class="action-hint">Heading back to the yard for the next load</div>
-    ${totalTrips > 1 && (Number(l.tripsCompleted) || 0) > 0 ? (
-      // Stop early submits the load: it needs the ticket photo and the customer's
-      // signature like any submission, so those come first, right here.
-      !hasImage ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openTicketUpload('${l.loadId}')">Ticket photo — needed to stop early</button>`
-      : !hasSig ? `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="openSig('${l.loadId}')">Customer signature — needed to stop early</button>`
-      : `<button class="btn ghost" style="width:100%;margin-top:8px" onclick="if(confirm('Stop here and submit ${Number(l.tripsCompleted) || 0} completed of ${totalTrips} as incomplete?')){openIncompleteDialog('${l.loadId}', ${totalTrips}, ${Number(l.tripsCompleted) || 0})}">Stop early — submit ${Number(l.tripsCompleted) || 0} completed as incomplete</button>`) : ''}`;
+    ${redoBtns}<div class="action-hint">${rejected ? 'Fix what the office named — replace the photo or sign again — then Stop early to resubmit, or keep hauling.' : 'Heading back to the yard for the next load'}</div>
+    ${stopEarly}`;
   } else if (!started && !submitted) {
     // Brand-new load, never started — same as "Start Load 1"
     action = `<button class="trip-action start" onclick="tripAction('${l.loadId}', 'start-trip')">
@@ -3024,25 +3063,33 @@ function tripCard(l) {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
       Arrived at ${escapeHtml(l.pickupLocation || 'VBT Yard')}
     </button>
-    <div class="action-hint">Tap when you arrive · <a href="#" onclick="event.preventDefault();openYardPicker('${l.loadId}')">picked up somewhere else?</a></div>`;
+    <div class="action-hint">Tap when you arrive · <a href="#" onclick="event.preventDefault();openYardPicker('${l.loadId}')">picked up somewhere else?</a></div>${stopEarly}`;
+  } else if (started && !atPickup && l.pickupYardId && (yards || []).some(y => y.id === l.pickupYardId)) {
+    // The load already names the yard: one tap confirms it (the office planned
+    // it, the driver confirms he is there). A different yard is one link away.
+    action = `<button class="trip-action pickup" onclick="arrivedAtPlannedYard('${l.loadId}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
+      Arrived at ${escapeHtml(l.pickupLocation || 'Yard')}
+    </button>
+    <div class="action-hint">Tap when you arrive · <a href="#" onclick="event.preventDefault();openYardPicker('${l.loadId}')">picked up somewhere else?</a></div>${stopEarly}`;
   } else if (started && !atPickup) {
     action = `<button class="trip-action pickup" onclick="openYardPicker('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
       Arrived at Yard
     </button>
-    <div class="action-hint">Tap when you arrive — pick which yard</div>`;
+    <div class="action-hint">Tap when you arrive — pick which yard</div>${stopEarly}`;
   } else if (atPickup && !isLoaded) {
     action = `<button class="trip-action loaded" style="background:var(--T,#0d9488);color:#fff" onclick="openLoadedForm('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
       Loaded — enter ticket
     </button>
-    <div class="action-hint required">Photo, ticket number and net tons — captured once, here</div>`;
+    <div class="action-hint required">Photo, ticket number and net tons — captured once, here</div>${stopEarly}`;
   } else if (isLoaded && !atJobsite) {
     action = `<button class="trip-action jobsite" style="background:var(--I,#4f46e5);color:#fff" onclick="tripAction('${l.loadId}', 'arrived-jobsite')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
       Arrived at Job Site
     </button>
-    <div class="action-hint">Tap when you reach the delivery address</div>`;
+    <div class="action-hint">Tap when you reach the delivery address</div>${stopEarly}`;
   } else if (atJobsite && totalTrips > 1) {
     // Multi-trip: confirm this trip's drop, then either start next trip or
     // move on to ticket+sig if this was the last.
@@ -3086,7 +3133,7 @@ function tripCard(l) {
 
   return `<div class="trip-card ${isToday ? 'is-today' : ''}">
     <div class="trip-head">
-      <div class="trip-po">${l.poNumber}${isToday ? '<span class="today-badge">TODAY</span>' : ''}</div>
+      <div class="trip-po">${l.poNumber}${isToday ? '<span class="today-badge">TODAY</span>' : `<span class="today-badge" style="background:var(--Ab);color:var(--A)" title="Started on an earlier day and still under way">FROM ${escapeHtml(l.deliveryDate || '')}</span>`}</div>
       <div class="trip-customer">${l.customer}</div>
     </div>
     <div class="trip-body">
@@ -3221,7 +3268,7 @@ function openYardPicker(loadId) {
       <div class="yard-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M7 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/><line x1="6" y1="11" x2="6" y2="11"/><line x1="10" y1="11" x2="10" y2="11"/><line x1="14" y1="11" x2="14" y2="11"/><line x1="18" y1="11" x2="18" y2="11"/></svg></div>
       <div style="flex:1">
         <div class="yard-name">${y.name}</div>
-        ${y.location ? `<div class="yard-loc"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> ${y.location}</div>` : ''}
+        ${(y.address || y.location) ? `<div class="yard-loc"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:-2px;flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg> ${escapeHtml([y.address, y.location].filter(Boolean).join(' · '))}</div>` : ''}
         ${isSuggestion ? '<span class="yard-tag">✓ Assigned pickup</span>' : ''}
       </div>
     </div>`;
@@ -3250,6 +3297,15 @@ async function confirmYard(yardId) {
   } catch (e) {}
 
   await arrivedAtYard(yardLoadId, yardId, gps, null);
+}
+// Arrived at the planned pickup yard (outside yard): the load already says
+// where. One tap; the odometer and freight rules apply exactly as from the
+// picker, because arrivedAtYard decides them.
+async function arrivedAtPlannedYard(loadId) {
+  const l = (window._currentDispatch || []).find(x => x.loadId === loadId);
+  if (!l || !l.pickupYardId) return openYardPicker(loadId);
+  yardLoadId = loadId;
+  await confirmYard(l.pickupYardId);
 }
 // Arrived at our own yard: the planned pickup is sent as-is, no picker.
 async function arrivedAtOwnYard(loadId) {
@@ -3927,7 +3983,7 @@ async function loadBilling() {
         <td>${l.driverName}</td>
         <td>${fmtDate(l.deliveryDate)}</td>
         <td style="font-size:11px;color:var(--txt2)">${l.approvedAt ? new Date(l.approvedAt).toLocaleDateString() : ''}${l.approvalWarnings && l.approvalWarnings.length ? `<div class="bill-gap-note" title="${escapeAttr(l.approvalWarnings.join('; '))}">⚠ approved with a gap</div>` : ''}</td>
-        <td class="bill-amt">${l.priceable ? `<b>${bfMoney(l.amount)}</b><div class="bill-rate">${escapeHtml(l.rateLabel || '')}${l.basis === 'actual' ? ' · actual tons' : ''}</div>` : `<span class="bill-unpriced" title="${escapeAttr(l.priceReason || '')}">not priceable</span><div class="bill-rate">${escapeHtml((l.priceReason || '').slice(0, 60))}${(l.priceReason || '').length > 60 ? '…' : ''}</div>`}</td>
+        <td class="bill-amt">${l.priceable ? `<b>${bfMoney(l.amount)}</b><div class="bill-rate">${escapeHtml(l.rateLabel || '')}${l.basis === 'actual' ? ' · actual tons' : ''}${l.customerRateIsDefault ? ' · <span class="bill-unpriced" title="No price on file for this customer and material — the default rate is what would be invoiced">default rate</span>' : ''}${l.amount === 0 ? ' · <span class="bill-unpriced" title="Nothing would be invoiced for this load — check the price and the tickets">$0 — check the price</span>' : ''}</div>` : `<span class="bill-unpriced" title="${escapeAttr(l.priceReason || '')}">not priceable</span><div class="bill-rate">${escapeHtml((l.priceReason || '').slice(0, 60))}${(l.priceReason || '').length > 60 ? '…' : ''}</div>`}</td>
       </tr>`).join('')}
     </tbody>
     <tfoot><tr>
@@ -4021,7 +4077,7 @@ function showInvoicePreviewModal(groups, allowSend) {
           This group cannot be sent: ${(g.unconfiguredReasons || []).join('; ')}. Fix the pricing or unit configuration and preview again.</div>` : ''}
         <table style="width:100%;font-size:13px;border-top:1px solid var(--bdr);border-collapse:collapse">
           ${g.lineItems.map(ln => `<tr>
-            <td style="padding:6px 0;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.description}</td>
+            <td style="padding:6px 0;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.description}${ln.rateIsDefault ? ' <span style="color:#b45309;font-size:11px;font-weight:600" title="No price on file for this customer and material">default rate — no customer price on file</span>' : ''}${!ln.unconfigured && ln.amount === 0 ? ' <span style="color:#b42318;font-size:11px;font-weight:600">$0 — nothing invoiced for this line</span>' : ''}</td>
             <td style="padding:6px 0;text-align:right;font-variant-numeric:tabular-nums;${ln.unconfigured ? 'color:var(--R)' : ''}">${ln.unconfigured ? '—' : '$' + ln.amount.toFixed(2)}</td>
           </tr>`).join('')}
         </table>
@@ -4395,10 +4451,18 @@ async function saveEditPO() {
   set('deliveryDate', g('pe-date')); set('plannedVendorId', g('pe-yard')); set('notes', g('pe-notes'));
   const reason = (g('pe-reason') || '').trim();
   if (!Object.keys(body).length) { closeEditPO(); return toast('Nothing changed', ''); }
+  // What the form showed for each field it changes (409 stale_po if another
+  // operator changed that field meanwhile — the form reopens on the current order).
+  body.base = Object.fromEntries(Object.keys(body).map(k => [k, p[k] ?? '']));
   if (reason) body.reason = reason;
   const btn = document.getElementById('pe-save'); btn.disabled = true; btn.textContent = 'Saving…';
   // A date change is an assignment on the new date: the same conflict check, the same Cancel / go-ahead choice.
   const d = await postAssignment(`/api/pos/${p.id}`, body, 'Move', reason, 'PUT');
+  if (!d.ok && d.code === 'stale_po') {
+    toast(d.error || 'This PO changed while the form was open — check it and save again', 'error');
+    await loadAll(); refreshCurrentView(); openEditPO(p.id);
+    return;
+  }
   if (!d.ok) { btn.disabled = false; btn.textContent = 'Save changes'; if (!d.cancelled) toast(d.error || 'Save failed', 'error'); return; }
   closeEditPO();
   toast(propagationSummary(d, p), 'success');
@@ -4595,7 +4659,37 @@ function dbGo(deltaDays) {
 function dbToday() { dbDate = null; dbFilter = 'all'; renderToday(); }
 function dbSetFilter(f) { dbFilter = (dbFilter === f && f !== 'all') ? 'all' : f; paintToday(); }
 // Every tile is an action: it filters the board or opens the workflow it names.
+// End of day: the day's loads sorted by the server into blocked / needs
+// attention / still open / clean, each with its reasons and its next step.
+// Read-only — the list points at Load Details; nothing is decided here.
+async function openDayReview() {
+  const date = todayData ? todayData.date : '';
+  const d = await api('GET', '/api/day-review' + (date ? '?date=' + encodeURIComponent(date) : ''));
+  if (!d.ok) return toast(d.error || 'Could not build the review', 'error');
+  const c = d.counts;
+  const row = i => `<div class="rv-row"><div><div><b>${escapeHtml(i.customer || '(no customer)')}</b> · PO ${escapeHtml(i.poNumber || '—')} · ${escapeHtml(i.id)}${i.driverName ? ' · ' + escapeHtml(i.driverName) : ''}${i.truckNum ? ' · ' + escapeHtml(i.truckNum) : ''}${i.amount != null ? ' · ' + money(i.amount) : ''}</div>
+      <div class="rv-why">${i.reasons.map(escapeHtml).join(' · ')}${i.next ? ` — <i>${escapeHtml(i.next)}</i>` : ''}</div></div>
+    <button class="btn ghost" onclick="this.closest('.modal-bg').remove();openLoadDetail('${i.id}')">Details</button></div>`;
+  const group = (title, list, color) => list.length ? `<div class="rv-group"><div class="rv-head" style="color:${color}">${title} · ${list.length}</div>${list.map(row).join('')}</div>` : '';
+  const bg = document.createElement('div'); bg.className = 'modal-bg'; bg.id = 'review-modal'; bg.style.zIndex = 250;
+  bg.onclick = e => { if (e.target === bg) bg.remove(); };
+  bg.innerHTML = `<div class="modal" style="max-width:760px">
+    <div class="modal-head"><h2>End of day · ${escapeHtml(fmtDate(d.date))}</h2><button class="modal-close" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div class="modal-body">
+      <div class="rv-counts"><span><b>${c.total}</b> load${c.total === 1 ? '' : 's'}</span><span style="color:var(--G)"><b>${c.clean}</b> clean</span><span><b>${c.open}</b> still open</span><span style="color:var(--A)"><b>${c.attention}</b> need attention</span><span style="color:var(--R)"><b>${c.blocked}</b> blocked</span></div>
+      <ul class="rv-recon">${(d.reconciliation || []).map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>
+      ${group('Blocked', d.items.filter(i => i.state === 'blocked'), 'var(--R)')}
+      ${group('Needs attention', d.items.filter(i => i.state === 'attention'), 'var(--A)')}
+      ${group('Still open', d.items.filter(i => i.state === 'open'), 'var(--txt2)')}
+      ${(c.attention + c.blocked) === 0 ? `<div class="rv-clean">Nothing needs you${c.open ? ' once the open work is done' : ''}.</div>` : ''}
+      ${group('Clean', d.items.filter(i => i.state === 'clean'), 'var(--G)')}
+    </div>
+    <div class="modal-foot"><button class="btn ghost" onclick="this.closest('.modal-bg').remove()">Close</button></div>
+  </div>`;
+  document.body.appendChild(bg);
+}
 function dbTile(key) {
+  if (key === 'review') return openDayReview();
   if (key === 'awaiting-approval') return goTab('approvals');
   if (key === 'ready-to-bill') return goTab('billing');
   if (key === 'trucks' || key === 'drivers') {
@@ -4658,6 +4752,8 @@ function paintToday() {
       ${tile('unassigned', a.unassigned, 'Unassigned', a.unassigned ? 'alert' : 'ok', a.unassigned ? 'need a driver' : 'all assigned')}
       ${tile('in-progress', a.inProgress, 'In Progress', a.inProgress ? 'live' : '', 'hauling now')}
       ${tile('awaiting-approval', a.awaitingApproval, 'Awaiting Approval', a.awaitingApproval ? 'warn' : '', a.awaitingApproval ? 'review now' : 'nothing waiting')}
+      ${a.rejected ? tile('rejected', a.rejected, 'Rejected', 'alert', 'sent back to the driver') : ''}
+      ${d.review ? tile('review', d.review.attention + d.review.blocked, 'End of day', (d.review.attention + d.review.blocked) ? (d.review.blocked ? 'alert' : 'warn') : 'ok', `${d.review.clean} clean · ${d.review.open} open`) : ''}
       ${tile('ready-to-bill', a.readyToBill, 'Ready to Bill', a.readyToBill ? 'bill' : '', a.readyToBill ? money(a.readyToBillAmount) : 'nothing queued')}
       ${tile('missing', a.missingInfo, 'Missing Info', a.missingInfo ? 'alert' : 'ok', a.missingInfo ? 'cannot proceed' : 'nothing missing')}
       ${a.conflicts ? tile('conflicts', a.conflicts, 'Conflicts', 'alert', 'double-booked') : ''}
@@ -4676,7 +4772,7 @@ function paintToday() {
           <span class="db-sec-meta">${stk.inProgress || 0} hauling · ${stk.assigned || 0} assigned · ${stk.available || 0} free${stk.unavailable ? ` · ${stk.unavailable} in shop` : ''}</span></div>
         ${(d.telemetryIssues || []).length ? `<div class="db-flag conflict" id="db-tel-issues" style="margin:0 0 8px">${d.telemetryIssues.map(i => escapeHtml(i.text)).join('<br>')}</div>` : ''}
         <div class="db-trucks">${trucks.map(t => { const x = t.telematics && t.telematics.state !== 'not-linked' ? t.telematics : null; return `<span class="db-truck ${t.state}" title="${escapeAttr((t.driverName ? DB_STATE_LABEL[t.state] + ' · ' + t.driverName : DB_STATE_LABEL[t.state] || t.state) + (x ? ` · Linxup: ${x.label}${x.at ? ' ' + dbTelAge(x.ageSeconds) : ''}` : ''))}">
-            <b>${escapeHtml(t.truckNum)}</b> · ${t.driverName ? escapeHtml(t.driverName) : (DB_STATE_LABEL[t.state] || t.state).toLowerCase()}${x ? ` <i class="db-tel-mini ${x.state}">${escapeHtml(x.label)}</i>` : ''}</span>`; }).join('') || '<span class="db-empty">No trucks free.</span>'}</div>
+            <b>${escapeHtml(t.truckNum)}</b> · ${t.driverName ? escapeHtml(t.driverName) : (DB_STATE_LABEL[t.state] || t.state).toLowerCase()}${x ? ` <i class="db-tel-mini ${x.state}" title="Linxup, the truck's own tracker — not the driver's record">Linxup · ${escapeHtml(x.label)}</i>` : ''}</span>`; }).join('') || '<span class="db-empty">No trucks free.</span>'}</div>
       </section>
       <section class="db-loads" id="db-loads">
         <div class="db-sec"><span>${listTitle}</span>${dbFilter !== 'all' ? `<button type="button" class="db-clear" onclick="dbSetFilter('all')">Show all</button>` : ''}</div>
@@ -4870,6 +4966,10 @@ function qaOpen(loadId) {
 function qaChanges() {
   const out = {};
   for (const k of ['driverId', 'truckUnitId', 'yardId', 'trailerId']) if ((qaPick[k] || null) !== (qaBase ? qaBase[k] || null : undefined)) out[k] = qaPick[k] || null;
+  // What the sheet showed for each field it changes: the server refuses the
+  // change (409 stale_assignment) if another operator changed that field
+  // while the sheet was open, instead of writing this sheet's older choice.
+  if (Object.keys(out).length && qaBase) out.base = Object.fromEntries(Object.keys(out).map(k => [k, qaBase[k] || null]));
   return out;
 }
 // The same sheet from anywhere else (the Board), for a load on any date: the
@@ -4947,8 +5047,23 @@ function qaPaintSheet() {
   </div>`;
 }
 
-function qaSet(field, val) { qaPick[field] = val; qaPaintSheet(); }
-function qaClose() { const el = document.getElementById('qa-sheet-bg'); if (el) el.remove(); qaPick = null; }
+function qaSet(field, val) {
+  qaPick[field] = val;
+  // Picking a driver suggests his usual truck when no truck is chosen yet and
+  // that truck is free today — a suggestion on the sheet, nothing until Confirm.
+  if (field === 'driverId' && val && !qaPick.truckUnitId) {
+    const usualId = poUsualTruckId(val);
+    const t = usualId ? (todayData.trucks || []).find(x => x.id === usualId) : null;
+    if (t && t.status === 'available' && (!t.inUseOnLoadId || t.inUseOnLoadId === qaPick.loadId)) qaPick.truckUnitId = t.id;
+  }
+  qaPaintSheet();
+}
+function qaClose() {
+  const el = document.getElementById('qa-sheet-bg'); if (el) el.remove(); qaPick = null;
+  // A sheet opened for another day's load (from the Calendar or a drop) painted
+  // that day's board into todayData; give the board its own day back.
+  if (currentTab === 'today' && todayData && todayData.date !== (dbDate || todayData.today)) renderToday();
+}
 
 // The server refuses an assignment that collides with work already on the
 // board (driver mid-haul elsewhere, truck on another driver's load) with 409
@@ -5019,6 +5134,16 @@ async function qaConfirm() {
   if (!Object.keys(body).length) { qaClose(); return toast('Nothing changed', ''); }
   btn.disabled = true; btn.textContent = 'Assigning…';
   const r = await postAssignment(`/api/loads/${p.loadId}/assign`, body, 'Reassign');
+  if (!r.ok && r.code === 'stale_assignment') {
+    // Someone else changed this load while the sheet was open: nothing was
+    // written. Reopen the sheet on the current state so the choice is made
+    // against what is true now.
+    btn.disabled = false; btn.textContent = 'Confirm assignment';
+    toast(r.error || 'This load changed while the sheet was open — check it and confirm again', 'error');
+    await loadAll(); if (currentTab === 'today') await renderToday();
+    await qaOpenFor(p.loadId);
+    return;
+  }
   if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; if (!r.cancelled) toast(r.error || 'Assign failed', 'error'); return; }
   const who = r.load.driverName || 'Unassigned';
   const truck = r.truck ? r.truck.truckNum : 'no truck';
@@ -5425,10 +5550,12 @@ async function paintVendorFence(vendorId) {
   const v = (d.vendors || []).find(x => x.id === vendorId) || {};
   const cur = v.linxupGeofenceId != null ? Number(v.linxupGeofenceId) : null;
   const sug = cur == null ? (d.geofences || []).find(g => g.suggestedVendorId === vendorId) : null;
+  // Mapped to a fence Linxup deleted (or VBT no longer knows): said here; the mapping itself is this yard's until a person changes it.
+  const stale = (d.staleMappings || []).find(x => x.vendorId === vendorId) || null;
   el.innerHTML = `<label>Linxup geofence</label>
-    <select id="v-fence-sel"><option value="">— not mapped —</option>${(d.geofences || []).map(g => `<option value="${g.geofenceId}" ${cur === g.geofenceId ? 'selected' : ''} ${g.mappedVendorId && g.mappedVendorId !== vendorId ? 'disabled' : ''}>${escapeHtml(g.name || ('fence ' + g.geofenceId))}${g.fenceGroup ? ' · ' + escapeHtml(g.fenceGroup) : ''}${g.mappedVendorId && g.mappedVendorId !== vendorId ? ` (mapped to ${escapeHtml(g.mappedVendorName)})` : ''}</option>`).join('')}</select>
+    <select id="v-fence-sel"><option value="">— not mapped —</option>${stale ? `<option value="${stale.geofenceId}" selected>geofence ${stale.geofenceId}${stale.geofenceName ? ' "' + escapeHtml(stale.geofenceName) + '"' : ''} — ${stale.deleted ? 'deleted in Linxup' : 'unknown to VBT'}</option>` : ''}${(d.geofences || []).map(g => `<option value="${g.geofenceId}" ${cur === g.geofenceId ? 'selected' : ''} ${g.mappedVendorId && g.mappedVendorId !== vendorId ? 'disabled' : ''}>${escapeHtml(g.name || ('fence ' + g.geofenceId))}${g.fenceGroup ? ' · ' + escapeHtml(g.fenceGroup) : ''}${g.mappedVendorId && g.mappedVendorId !== vendorId ? ` (mapped to ${escapeHtml(g.mappedVendorName)})` : ''}</option>`).join('')}</select>
     <button class="btn ghost" style="padding:6px 12px;font-size:12px" onclick="saveVendorFence('${escapeAttr(vendorId)}')">Save</button>
-    <span class="v-fence-note">${cur != null ? 'Geofence visits count as pickup evidence for this yard.' : sug ? `Suggested by name: <b>${escapeHtml(sug.name)}</b> — pick it and Save to confirm.` : (d.geofences || []).length ? 'Pick the Linxup geofence for this yard, or leave unmapped (GPS near the saved pin is used instead).' : 'No Linxup geofence has reported yet.'}</span>`;
+    <span class="v-fence-note">${stale ? `<b style="color:var(--R)">This yard is mapped to geofence ${stale.geofenceId}, which ${stale.deleted ? 'Linxup deleted' : 'VBT no longer knows'} — its visits no longer count as evidence. Pick a current geofence, or clear it.</b>` : cur != null ? 'Geofence visits count as pickup evidence for this yard.' : sug ? `Suggested by name: <b>${escapeHtml(sug.name)}</b> — pick it and Save to confirm.` : (d.geofences || []).length ? 'Pick the Linxup geofence for this yard, or leave unmapped (GPS near the saved pin is used instead).' : 'No Linxup geofence has reported yet.'}</span>`;
 }
 async function saveVendorFence(vendorId) {
   const sel = document.getElementById('v-fence-sel'); if (!sel) return;
@@ -5509,7 +5636,7 @@ function renderVendors() {
     <div class="vendor-panel-head">
       <div>
         <div class="vendor-panel-title" id="v-title">${v.name} Material Prices</div>
-        <div class="vendor-panel-sub">${v.location || 'No location set'}${geoLabel(v.geo)}</div>
+        <div class="vendor-panel-sub">${escapeHtml([v.address, v.location].filter(Boolean).join(' · ')) || 'No location set'}${geoLabel(v.geo)}</div>
       </div>
       <div class="vendor-panel-actions">
         <button class="btn ghost" onclick="setLocationPrompt('vendor', '${v.id}')">📍 Set Location</button>
@@ -5551,12 +5678,13 @@ function renderVendors() {
 
   // Add a new material row
   h += `<div class="add-price-row">
-    <div><label>Material</label><input type="text" id="new-mat" placeholder="e.g. 3/4 Rock" onkeydown="if(event.key==='Enter')addNewPrice('${v.id}')"></div>
-    <div><label>Unit</label><input type="text" id="new-unit" placeholder="CY"></div>
-    <div><label>Price</label><input type="number" min="0" step="0.01" id="new-price" placeholder="0"></div>
+    <div><label>Material</label><input type="text" id="new-mat" placeholder="e.g. 3/4 Rock" oninput="vendorPriceHint('${v.id}')" onkeydown="if(event.key==='Enter')addNewPrice('${v.id}')"></div>
+    <div><label>Unit</label><input type="text" id="new-unit" placeholder="ton" oninput="vendorPriceHint('${v.id}')"></div>
+    <div><label>Price</label><input type="number" min="0" step="0.01" id="new-price" placeholder="0.00"></div>
     <div><label>Notes</label><input type="text" id="new-notes" placeholder="Optional"></div>
     <button class="btn primary" onclick="addNewPrice('${v.id}')">+ Add Material</button>
-  </div>`;
+  </div>
+  <div class="price-hint" id="new-price-hint"></div>`;
 
   h += '</div>'; // close panel
   h += '</div>'; // close wrap
@@ -5760,15 +5888,15 @@ async function renderCustomerPrices() {
       <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
         <div style="flex:1;min-width:200px">
           <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:4px">Add price for customer</label>
-          <input list="cust-suggestions" id="new-cp-customer" placeholder="Type or pick a customer name" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
+          <input list="cust-suggestions" id="new-cp-customer" placeholder="Type or pick a customer name" oninput="customerPriceHint()" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
           <datalist id="cust-suggestions">
             ${(data.allPoCustomers || []).map(c => `<option value="${c}">`).join('')}
           </datalist>
         </div>
         <div style="width:160px">
           <label style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt2);font-weight:600;display:block;margin-bottom:4px">Material</label>
-          <select id="new-cp-material" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
-            ${materials.map(m => `<option value="${m}">${m}</option>`).join('')}
+          <select id="new-cp-material" onchange="customerPriceHint()" style="width:100%;padding:8px 12px;border:1.5px solid var(--bdr2);border-radius:var(--r);font-family:var(--f);font-size:13px">
+            ${priceFormMaterials().map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('')}
           </select>
         </div>
         <div style="width:80px">
@@ -5784,6 +5912,7 @@ async function renderCustomerPrices() {
         </div>
         <button class="btn primary" onclick="addCustomerPrice()">+ Add</button>
       </div>
+      <div class="price-hint" id="new-cp-hint"></div>
     </div>`;
 
     if (!data.customers.length) {
@@ -5824,6 +5953,25 @@ async function renderCustomerPrices() {
   }
 }
 
+// The materials a price can be set for: the standard list plus every material
+// a yard sells or a load has carried, so a yard's own name for a material
+// ("Sand") can get a customer price instead of billing at the default forever.
+function priceFormMaterials() {
+  const vp = typeof vendorPrices !== 'undefined' && vendorPrices ? Object.values(vendorPrices).flat().map(p => p.material) : [];
+  return [...new Set([...(materials || []), ...vp, ...(loads || []).map(l => l.material)].map(m => String(m || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+let cpHintTimer = null;
+function customerPriceHint() {
+  clearTimeout(cpHintTimer);
+  const el = document.getElementById('new-cp-hint'); if (!el) return;
+  const customer = (document.getElementById('new-cp-customer').value || '').trim(), material = document.getElementById('new-cp-material').value;
+  if (!customer || !material) { el.innerHTML = ''; return; }
+  cpHintTimer = setTimeout(async () => {
+    const d = await api('GET', `/api/price-history?side=customer&customer=${encodeURIComponent(customer)}&material=${encodeURIComponent(material)}`);
+    if ((document.getElementById('new-cp-customer') || {}).value.trim() !== customer) return;
+    el.innerHTML = priceHintHtml(d, 'invoiced', 'new-cp-price');
+  }, 250);
+}
 async function addCustomerPrice() {
   const customer = document.getElementById('new-cp-customer').value.trim();
   const material = document.getElementById('new-cp-material').value;
@@ -5974,7 +6122,7 @@ async function renderMaterialCosts() {
                 <td>${mat}</td>
                 <td>${d.unit || '—'}</td>
                 <td>${d.loads}</td>
-                <td>${money(d.unitPrice)}${d.estimated ? ' <span style="font-size:10px;color:#b45309" title="Default rate — not this vendor\'s price. A vendor bill will not use it.">estimate</span>' : ''}</td>
+                <td>${d.mixedRates ? `${money(d.unitPriceMin)}–${money(d.unitPriceMax)} <span style="font-size:10px;color:var(--txt3)" title="Trips of this material at this yard carried different fixed rates (a price change between hauls). The subtotal is exact.">mixed</span>` : money(d.unitPrice)}${d.estimated ? ' <span style="font-size:10px;color:#b45309" title="Default rate — not this vendor\'s price. A vendor bill will not use it.">estimate</span>' : ''}</td>
                 <td style="text-align:right;font-weight:600">${d.unconfigured ? '<span style="color:#b42318">not priceable</span>' : money(d.cost)}${d.estimated && !d.unconfigured ? ' <span style="font-size:10px;color:#b45309">est.</span>' : ''}</td>
               </tr>`).join('')}
             </tbody>
@@ -5997,8 +6145,16 @@ function money(n) {
 async function addNewVendor() {
   const name = prompt('Vendor name:');
   if (!name || !name.trim()) return;
-  const location = prompt('Location (optional):') || '';
-  const d = await api('POST', '/api/vendors', { name: name.trim(), location });
+  const address = prompt('Street address (optional — used to pin the yard on the map):') || '';
+  const location = prompt('City, state (optional):') || '';
+  let d = await api('POST', '/api/vendors', { name: name.trim(), location, address: address.trim() });
+  // A yard that looks like an existing one is a possible duplicate: the
+  // office says whether it really is another place. Nothing is merged.
+  if (!d.ok && d.code === 'possible_duplicate') {
+    const names = (d.candidates || []).map(c => `${c.name}${c.location ? ' (' + c.location + ')' : ''}${c.active ? '' : ' — inactive'}`).join(', ');
+    if (!confirm(`Possible existing yard: ${names}.\n\nCreate "${name.trim()}" anyway as a separate yard?\nOK = create it · Cancel = use the existing yard`)) { toast('Not created — use the existing yard', 'success'); return; }
+    d = await api('POST', '/api/vendors', { name: name.trim(), location, address: address.trim(), force: true });
+  }
   if (d.ok) {
     toast(`Added ${d.vendor.name}`, 'success');
     currentVendorTab = d.vendor.id;
@@ -6024,9 +6180,16 @@ async function editVendorInfo(vendorId) {
   if (!v) return;
   const name = prompt('Vendor name:', v.name);
   if (name === null) return;
-  const location = prompt('Location:', v.location || '');
+  const address = prompt('Street address:', v.address || '');
+  if (address === null) return;
+  const location = prompt('City, state:', v.location || '');
   if (location === null) return;
-  const d = await api('PUT', '/api/vendors/' + vendorId, { name: name.trim(), location: location.trim() });
+  // Only what this person changed goes to the server (as the customer form and
+  // the fleet rows do): another tab may have edited this yard since the copy
+  // was read — its untouched fields are not sent, so they are not reverted.
+  const body = changedFields({ name: name.trim(), location: location.trim(), address: address.trim() }, { name: v.name, location: v.location || '', address: v.address || '' });
+  if (!Object.keys(body).length) return toast('Nothing changed', '');
+  const d = await api('PUT', '/api/vendors/' + vendorId, body);
   if (d.ok) {
     toast('Updated', 'success');
     await refreshVendorData();
@@ -6058,12 +6221,37 @@ async function deleteVendorConfirm(vendorId) {
   } else toast(d.error || 'Failed', 'error');
 }
 
+// What VBT last paid this yard for the material, from its sent vendor bills:
+// shown beside the form as a suggestion. "Use" fills the field; nothing is
+// saved until + Add. No bill yet → said so, no number invented.
+let priceHintTimer = null;
+function vendorPriceHint(vendorId) {
+  clearTimeout(priceHintTimer);
+  const el = document.getElementById('new-price-hint'); if (!el) return;
+  const material = (document.getElementById('new-mat').value || '').trim(), unit = (document.getElementById('new-unit').value || '').trim();
+  if (!material) { el.innerHTML = ''; return; }
+  priceHintTimer = setTimeout(async () => {
+    const d = await api('GET', `/api/price-history?side=vendor&vendorId=${encodeURIComponent(vendorId)}&material=${encodeURIComponent(material)}${unit ? '&unit=' + encodeURIComponent(unit) : ''}`);
+    if ((document.getElementById('new-mat') || {}).value.trim() !== material) return;   // typed more since
+    el.innerHTML = priceHintHtml(d, 'paid', 'new-price');
+  }, 250);
+}
+function priceHintHtml(d, verb, inputId) {
+  if (!d || !d.ok) return '';
+  if (!d.last) return `<span style="color:var(--txt3)">No ${verb === 'paid' ? 'vendor bill' : 'invoice'} sent for ${escapeHtml(d.material || 'this material')} yet — nothing to suggest.</span>`;
+  const l = d.last;
+  return `Last ${verb}: <b>$${Number(l.rate).toFixed(2)}/${escapeHtml(l.unit)}</b> on ${escapeHtml(l.date)} (${escapeHtml(l.kind)} ${escapeHtml(l.docId)}, ${l.loads} load${l.loads === 1 ? '' : 's'})${d.count > 1 ? ` · ${d.count} prices on record` : ''}
+    · <a href="#" onclick="event.preventDefault();document.getElementById('${inputId}').value='${Number(l.rate).toFixed(2)}';document.getElementById('${inputId}').focus()">Use $${Number(l.rate).toFixed(2)}</a> or enter a different price.`;
+}
 async function addNewPrice(vendorId) {
   const material = document.getElementById('new-mat').value.trim();
   const unit     = document.getElementById('new-unit').value.trim();
-  const price    = Number(document.getElementById('new-price').value) || 0;
+  const rawPrice = document.getElementById('new-price').value.trim();
   const notes    = document.getElementById('new-notes').value.trim();
   if (!material) { toast('Material required', 'error'); return; }
+  // A blank price is not $0: $0 is a price the office types on purpose.
+  if (rawPrice === '' || !isFinite(Number(rawPrice)) || Number(rawPrice) < 0) { toast('Enter the price (0 or more)', 'error'); return; }
+  const price = Number(rawPrice);
   const d = await api('POST', '/api/vendors/' + vendorId + '/prices', { material, unit, price, notes });
   if (d.ok) {
     toast(`Added ${material}`, 'success');
@@ -6271,6 +6459,7 @@ async function renderProfitability() {
               <div style="font-size:11px;opacity:.7;text-transform:uppercase;letter-spacing:.05em;font-weight:600">Margin</div>
               <div style="font-size:26px;font-weight:700;color:${data.grand.margin >= 0 ? '#86efac' : '#fca5a5'}">${money(data.grand.margin)}</div>
               <div style="font-size:12px;opacity:.8;margin-top:2px">${data.grand.marginPct.toFixed(1)}% margin</div>
+              ${(data.grand.estimatedRevenueLoads || data.grand.estimatedCostLoads) ? `<div style="font-size:11px;color:#fcd34d;margin-top:6px">Estimates inside: ${[data.grand.estimatedRevenueLoads ? `${money(data.grand.estimatedRevenue)} of revenue (${data.grand.estimatedRevenueLoads} load${data.grand.estimatedRevenueLoads === 1 ? '' : 's'}) at a default customer rate` : '', data.grand.estimatedCostLoads ? `${money(data.grand.estimatedCost)} of cost (${data.grand.estimatedCostLoads} load${data.grand.estimatedCostLoads === 1 ? '' : 's'}) at a default vendor rate` : ''].filter(Boolean).join('; ')} — not real prices</div>` : ''}
             </div>
           </div>
         </div>

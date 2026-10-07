@@ -141,7 +141,7 @@ async function call(cookie, method, path, body) {
     const qaBody = await sent(/\/assign$/, () => page.evaluate(() => { qaSet('yardId', 'vulcan'); return qaConfirm(); }));
     await page.waitForTimeout(700);
     const after1 = await srvLoad();
-    chk('   tab A picks Vulcan and confirms: the request carries the yard and nothing else', qaBody, 'yardId');
+    chk('   tab A picks Vulcan and confirms: the request carries the yard and what the sheet showed for it (base, OA6) — nothing else', qaBody, 'base,yardId');
     chk('   …the load keeps tab B\'s driver and truck and takes tab A\'s yard — the stale sheet reverted nothing', `${after1.truckId} ${after1.truckUnitId} ${after1.vendorId} ${await page.evaluate(() => !document.getElementById('qa-sheet-bg'))}`, 'matthew truck-4 vulcan true');
     const assignsBefore2 = requests.filter(r => /\/assign$/.test(r)).length;
     await page.evaluate(id => qaOpenFor(id), ttLoad.id); await page.waitForTimeout(400);
@@ -178,7 +178,7 @@ async function call(cookie, method, path, body) {
     const peBody = await sent(/\/api\/pos\//, () => page.evaluate(() => { document.getElementById('pe-notes').value = 'gate code 4411'; return saveEditPO(); }));
     await page.waitForTimeout(600);
     const po2 = (await call(mgr, 'GET', '/api/data')).data.pos.find(p => p.id === ttPo.id);
-    chk('   tab A adds a note and saves: the request carries the note and nothing else', peBody, 'notes');
+    chk('   tab A adds a note and saves: the request carries the note and what the form showed for it (base, OA6) — nothing else', peBody, 'base,notes');
     chk('   …the PO keeps tab B\'s city and takes tab A\'s note', `${po2.city} ${po2.notes}`, 'Clovis gate code 4411');
 
     // 5. Approvals: a card the other tab already dealt with. The stale Approve is refused by the server; the poll repaints the list.
@@ -280,6 +280,26 @@ async function call(cookie, method, path, body) {
   await call(mgr, 'POST', `/api/loads/${nl.id}/assign`, { driverId: 'rigo' });   // back to Rigo for the rest of the run
   await page.waitForTimeout(300);
 
+  console.log('── Office: a stale Quick Assign sheet never overwrites another operator (OA6) ──');
+  // Operator A opens the sheet on Rigo's load; operator B (another tab, the API here) puts Leonardo on it meanwhile; A submits her older choice.
+  expectConflict = true;   // the 409 stale_assignment below is the point of the test
+  await page.evaluate(id => qaOpen(id), nl.id); await page.waitForTimeout(400);
+  const otherOp = await call(mgr, 'POST', `/api/loads/${nl.id}/assign`, { driverId: 'leonardo' });
+  const stale6 = await page.evaluate(async () => {
+    qaSet('driverId', 'matthew');
+    await qaConfirm();
+    await new Promise(r => setTimeout(r, 900));
+    const sheet = document.getElementById('qa-sheet-bg');
+    return { toast: Array.from(document.querySelectorAll('.toast.error')).map(t => t.textContent).join(' | '), sheet: !!sheet, shows: sheet && qaPick ? qaPick.driverId : null, base: qaBase ? qaBase.driverId : null,
+             sel: sheet ? Array.from(sheet.querySelectorAll('.qa-opt.sel .t')).map(e => e.textContent.trim()).join('|') : '' };
+  });
+  const staleAfter = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === nl.id);
+  chk('a sheet opened on Rigo submits Matthew after another operator put Leonardo on: refused, nothing written, the toast says the load changed, the sheet reopens on Leonardo', `${otherOp.status} ${staleAfter.truckId} ${/changed while the sheet was open/.test(stale6.toast)} ${stale6.sheet} ${stale6.shows} ${stale6.base} ${/Leonardo/.test(stale6.sel)}`, '200 leonardo true true leonardo leonardo true');
+  expectConflict = false;
+  await page.evaluate(() => qaClose());
+  await call(mgr, 'POST', `/api/loads/${nl.id}/assign`, { driverId: 'rigo' });   // back to Rigo for the rest of the run
+  await page.waitForTimeout(300);
+
   console.log('── Office: the dispatch board is the command center ──');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(700);
   const board = await page.evaluate(() => {
@@ -300,7 +320,7 @@ async function call(cookie, method, path, body) {
     };
   });
   chk('1. the office lands on Dispatch, and there is no second Board tab', `${board.landed} ${board.noBoardTab}`, 'Dispatch true');
-  chk('2. the attention row names what needs a person', board.tiles.join('|'), 'Unassigned|In Progress|Awaiting Approval|Ready to Bill|Missing Info|Trucks Free|Drivers Free');
+  chk('2. the attention row names what needs a person', board.tiles.join('|'), 'Unassigned|In Progress|Awaiting Approval|End of day|Ready to Bill|Missing Info|Trucks Free|Drivers Free');
   chk('3. Beryle\'s row: in progress on Truck #12, ABC Materials, loaded en route, Vulcan → 500 Main St', /Beryle In progress Truck #12.*ABC Materials · PO 10482 · Loaded \/ en route · 0\/3.*Vulcan → 500 Main St, Merced/i.test(board.beryle), true);
   chk('4. Rigo\'s row: assigned on Truck #14 from the New PO form', /Rigo Assigned Truck #14.*ABC Materials · PO 10483 · Assigned · 0\/1.*VBT Yard → 500 Main St, Merced/i.test(board.rigo), true);
   chk('5. Leonardo\'s row: available, usual truck, invitation to assign', /Leonardo Available Truck #12 \(usual\).*No load today/i.test(board.leonardo), true);
@@ -318,6 +338,49 @@ async function call(cookie, method, path, body) {
   });
   chk('8. the In Progress tile filters the board to in-progress loads', filt.shown, 'In Progress');
   chk('9. the Awaiting Approval tile opens Approvals', filt.tab, 'sec-approvals');
+  // OA4: the End of day tile is the nightly check — one list sorted by the server, each row with its reason and its next step, read-only.
+  const rv = await page.evaluate(async () => {
+    const tile = Array.from(document.querySelectorAll('#db-tiles .db-tile')).find(t => /End of day/i.test(t.innerText));
+    const out = { tile: tile ? tile.innerText.replace(/\s+/g, ' ').trim() : 'no tile' };
+    dbTile('review'); await new Promise(r => setTimeout(r, 1200));
+    const m = document.getElementById('review-modal'); if (!m) { out.modal = 'no modal'; return out; }
+    out.title = m.querySelector('h2').innerText; out.counts = m.querySelector('.rv-counts').innerText.replace(/\s+/g, ' ').trim();
+    out.groups = Array.from(m.querySelectorAll('.rv-head')).map(h => h.innerText.replace(/\s+/g, ' ').trim()).join('|');
+    out.rows = Array.from(m.querySelectorAll('.rv-row')).map(r => r.innerText.replace(/\s+/g, ' ').trim()).join(' || ');
+    out.recon = Array.from(m.querySelectorAll('.rv-recon li')).map(e => e.innerText.trim()).join(' / ');
+    out.clean = (m.querySelector('.rv-clean') || {}).innerText || '';
+    Array.from(m.querySelectorAll('.rv-row')).find(r => /PO 10482/.test(r.innerText)).querySelector('button').click(); await new Promise(r => setTimeout(r, 600));
+    out.after = `${!document.getElementById('review-modal')} ${Array.from(document.querySelectorAll('.modal-bg .modal-head h2')).some(h => /Load Details/.test(h.innerText))}`;
+    const detail = Array.from(document.querySelectorAll('.modal-bg')).filter(b => b.querySelector('.modal-head h2') && /Load Details/.test(b.querySelector('.modal-head h2').innerText));
+    out.detail = detail.map(b => b.innerText.replace(/\s+/g, ' ')).join(' '); detail.forEach(b => b.remove());
+    return out;
+  });
+  chk('10. the End of day tile says nothing needs a person yet: 0, with 0 clean · 2 open', rv.tile, '0 END OF DAY 0 clean · 2 open');
+  chk('   …and opens the review: 2 loads, both still open, the day read back in sentences, nothing asked of the office', `${/^End of day · /.test(rv.title)} | ${rv.counts} | ${rv.groups} | ${rv.recon} | ${rv.clean}`, `true | 2 loads 0 clean 2 still open 0 need attention 0 blocked | STILL OPEN · 2 | No deliveries on ${today}. / 2 loads are still open. | Nothing needs you once the open work is done.`);
+  chk('   each row names the load, the driver and the truck, and says why: Beryle under way, Rigo assigned and not started', /ABC Materials · PO 10482 · \S+ · Beryle · Truck #12 still under way — Loaded \/ en route, 0\/3 delivered Details/.test(rv.rows) && /ABC Materials · PO 10483 · \S+ · Rigo · Truck #14 assigned, not started yet Details/.test(rv.rows), true);
+  chk('   Details on a row closes the review and opens Load Details for that load', `${rv.after} ${/10482/.test(rv.detail)}`, 'true true true');
+
+  console.log('── Office: Quick Assign suggests the usual truck — a suggestion until Confirm ──');
+  // OA4: picking a driver with no truck chosen suggests his usual truck when it is free today; a busy usual truck is not suggested; a chosen truck is kept; nothing is written.
+  const uPo = (await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'OA4-U', customer: 'Usual Co', deliveryDate: today, address: '1 Usual St', city: 'Fresno', plannedVendorId: 'vulcan' }, splits: [{ truckId: '', truckUnitId: '', material: 'Sand', loadsAssigned: 1, vendorId: 'vulcan' }] })).data.po;
+  const uLoad = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.poId === uPo.id);
+  const writesBeforeU = requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length;
+  await page.evaluate(async id => { await loadAll(); await qaOpenFor(id); }, uLoad.id); await page.waitForTimeout(600);   // the sheet from the loads list fetches that day's availability
+  const sug = await page.evaluate(() => {
+    const truckSel = () => Array.from(document.querySelectorAll('#qa-sheet-bg .qa-opt.sel .t')).map(e => e.innerText.trim()).filter(t => /^Truck|^No truck/.test(t)).join('|');
+    const out = { opened: `${!!document.getElementById('qa-sheet-bg')} ${qaPick.driverId} ${qaPick.truckUnitId}` };
+    qaSet('driverId', 'leonardo'); out.leonardo = `${qaPick.truckUnitId} ${truckSel()}`;      // Truck #12 is Beryle's today
+    qaSet('driverId', 'matthew');  out.matthew = `${qaPick.truckUnitId} ${truckSel()}`;       // Truck #4 is free
+    qaSet('truckUnitId', 'truck-14'); qaSet('driverId', 'rigo'); out.kept = `${qaPick.truckUnitId} ${truckSel()}`;
+    out.confirm = document.getElementById('qa-confirm').innerText.trim(); qaClose(); return out;
+  });
+  chk('1. the sheet opens on the unassigned load with no driver and no truck', sug.opened, 'true null null');
+  chk('   a driver whose usual truck is on another load today gets no truck suggested', sug.leonardo, 'null No truck');
+  chk('   a driver whose usual truck is free gets it suggested on the sheet', sug.matthew, 'truck-4 Truck #4');
+  chk('   a truck already chosen is kept when the driver changes; Confirm is still the only way to assign', `${sug.kept} ${sug.confirm}`, 'truck-14 Truck #14 Confirm assignment');
+  chk('   nothing was written while the sheet suggested', requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length - writesBeforeU, 0);
+  chk('   (the unstarted order is deleted again)', (await call(mgr, 'DELETE', `/api/pos/${uPo.id}`)).status, 200);
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(700);
 
   console.log('── Office: approval confirms the record in the app ──');
   // Matthew (Truck #4) and Carlos (Truck #2B) each finish one load from the VBT yard and submit.
@@ -340,7 +403,7 @@ async function call(cookie, method, path, body) {
     const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText)); if (!c) return null;
     return { chips: Array.from(c.querySelectorAll('.am-check .chk')).map(e => e.innerText.replace(/\s+/g, ' ').trim()).join(' | '), warn: c.querySelectorAll('.am-check .chk.warn').length, cards: document.querySelectorAll('.approve-mini').length };
   });
-  chk('1. the approval card shows the checklist: Driver, Truck, Pickup yard, Ticket, Delivery — all ✓', card ? card.chips : 'no card', '✓ Driver Matthew | ✓ Truck Truck #4 | ✓ Pickup yard VBT Yard | ✓ Ticket 1 ticket · 24.5 t | ✓ Delivery 1/1 load · signed by Site Foreman');
+  chk('1. the approval card shows the checklist: Driver, Truck, Pickup yard, Ticket, Delivery, Billing, Vendor cost — all ✓ (OA3: the money is on the card)', card ? card.chips : 'no card', '✓ Driver Matthew | ✓ Truck Truck #4 | ✓ Pickup yard VBT Yard | ✓ Ticket 1 ticket · 24.5 t | ✓ Delivery 1/1 load · signed by Site Foreman | ✓ Billing $625.00 · 25.00 t @ $25/ton | ✓ Vendor cost our own yard — none');
   chk('   two loads wait, nothing flagged', card ? `${card.cards} ${card.warn}` : 'no card', '2 0');
   const dlg2 = await page.evaluate(async () => {
     const c = Array.from(document.querySelectorAll('.approve-mini')).find(x => /Matthew/.test(x.innerText));
@@ -350,7 +413,7 @@ async function call(cookie, method, path, body) {
     return { title: m.querySelector('h2').textContent.trim(), rows: m.querySelectorAll('.ask-check .chk').length, ok: m.querySelectorAll('.ask-check .chk.ok').length,
              hint: m.querySelector('.conflict-hint').innerText.replace(/\s+/g, ' '), buttons: Array.from(m.querySelectorAll('.modal-foot button')).map(b => b.textContent.trim()).join('|'), focus: document.activeElement && document.activeElement.id };
   });
-  chk('2. Approve opens the confirmation with the five items and what approving does', dlg2 ? `${dlg2.title} ${dlg2.rows} ${dlg2.ok} ${dlg2.buttons} ${dlg2.focus}` : 'no dialog', 'Approve this load? 5 5 Cancel|Approve ask-cancel');
+  chk('2. Approve opens the confirmation with the seven items and what approving does', dlg2 ? `${dlg2.title} ${dlg2.rows} ${dlg2.ok} ${dlg2.buttons} ${dlg2.focus}` : 'no dialog', 'Approve this load? 7 7 Cancel|Approve ask-cancel');
   chk('   …in plain words', !!dlg2 && /Everything is on record\. Approving locks the load and moves it to Ready to Bill\./.test(dlg2.hint), true);
   await page.click('#ask-cancel'); await page.waitForTimeout(400);
   let lm = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
@@ -384,9 +447,14 @@ async function call(cookie, method, path, body) {
   });
   chk('1. the approved load\'s chip says Approved — the Calendar\'s word — and its flag says Ready to Bill', oa1.mat, 'Approved | Ready to Bill');
   chk('   the rejected load\'s chip says Rejected and the card carries the office\'s reason', oa1.car, 'Rejected | Rejected: Ticket photo is unreadable');
+  // OA2: the load sent back is counted in the attention row and the tile filters the board to it.
+  const rjt = await page.evaluate(async () => { const tile = Array.from(document.querySelectorAll('#db-tiles .db-tile')).find(t => (t.querySelector('.l') || {}).textContent.trim() === 'Rejected'); const tileTxt = tile ? tile.textContent.replace(/\s+/g, ' ').trim() : 'none'; dbTile('rejected'); await new Promise(r => setTimeout(r, 200));
+    const chips = Array.from(document.querySelectorAll('#db-loads .qa-card .qa-chip')).map(e => e.textContent.trim()); const title = document.querySelector('#db-loads .db-sec span').textContent.replace(/\s+/g, ' ').trim(); dbSetFilter('all'); return { tile: tileTxt, chips: [...new Set(chips)].join('|'), title }; });
+  chk('   a Rejected tile counts the load sent back and filters the board to it', `${/^1 ?Rejected/.test(rjt.tile)} ${/sent back to the driver/.test(rjt.tile)} ${rjt.chips} ${rjt.title}`, 'true true Rejected 1 · Rejected');
   const ldText = async id => page.evaluate(async id => { openLoadDetail(id); await new Promise(r => setTimeout(r, 300)); const m = Array.from(document.querySelectorAll('.modal-bg')).pop(); const t = m ? m.innerText.replace(/\s+/g, ' ') : 'no modal'; if (m) m.remove(); return t; }, id);
   const ldMat = await ldText(lMat.id), ldCar = await ldText(lCar.id);
   chk('2. Load Details names the truck and reads the status in words: Truck #4, Approved · Ready to Bill', `${/Truck Truck #4 /.test(ldMat)} ${/Status Approved · Ready to Bill/.test(ldMat)}`, 'true true');
+  chk('   …and the money (OA3): $625.00 · 25.00 t @ $25/ton, the default-rate word, and no vendor cost from our own yard', `${/Billing \$625\.00 · 25\.00 t @ \$25\/ton default rate — no customer price on file/.test(ldMat)} ${/Vendor cost: our own yard — none/.test(ldMat)}`, 'true true');
   chk('   …and for the rejected load: Truck #2B, Rejected — with the reason', `${/Truck Truck #2B /.test(ldCar)} ${/Status Rejected — Ticket photo is unreadable/.test(ldCar)}`, 'true true');
   // A voided load is reachable from its PO: Edit PO lists it, the link opens Load Details with Restore.
   await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'VOID-2', customer: 'Void Co', deliveryDate: '2027-03-10', address: '2 Void St', city: 'Fresno', plannedVendorId: 'vbt' },
@@ -453,7 +521,7 @@ async function call(cookie, method, path, body) {
     return { steps: steps.join(' → '), amount: row ? row.querySelector('.bill-amt').innerText.replace(/\s+/g, ' ').trim() : 'no row', total: (document.getElementById('bill-shown-total') || {}).innerText, sel: document.getElementById('bill-sel-total').innerText };
   });
   chk('1. the strip reads Submitted → Approved → Ready to Bill → Billed → Archived, with live counts, Ready active', bvis.steps, 'Submitted:0 → Approved:1 → Ready to Bill*:1 → Billed:0 → Archived:⌁');
-  chk('2. the Ready to Bill table prices each load and totals the page', `${bvis.amount} | ${bvis.total} | ${bvis.sel}`, '$625.00 $25/ton | $625.00 | ');
+  chk('2. the Ready to Bill table prices each load and totals the page', `${bvis.amount} | ${bvis.total} | ${bvis.sel}`, '$625.00 $25/ton · default rate | $625.00 | ');   // OA2: Gate Rd Builders has no price on file — the row says so
   await page.click('#bill-list tbody tr input[type=checkbox]'); await page.waitForTimeout(200);
   chk('   selecting shows the selected total next to the actions', await page.evaluate(() => document.getElementById('bill-sel-total').innerText.replace(/\s+/g, ' ')), 'Selected: 1 · $625.00');
   await page.click('#mark-billed-btn'); await page.waitForTimeout(400);
@@ -476,9 +544,15 @@ async function call(cookie, method, path, body) {
   // OA1: a batch made but not yet sent can be voided from the list — a wrong batch never has to reach QuickBooks first.
   const bb1 = ((await call(mgr, 'POST', '/api/billing-batches', { loadIds: [lMat.id] })).data.batches || [])[0];
   await page.evaluate(async () => { await loadAll(); goTab('billing'); setBillSubview('batches'); }); await page.waitForTimeout(900);
-  const bbRow = await page.evaluate(id => { const r = Array.from(document.querySelectorAll('tr')).find(x => x.innerText.includes(id)); return r ? Array.from(r.querySelectorAll('button')).map(b => b.textContent.trim()).join('|') : 'no row'; }, bb1 ? bb1.id : 'none');
+  let bbRow = 'no row';
+  for (let i = 0; i < 20 && bbRow === 'no row'; i++) { bbRow = await page.evaluate(id => { const r = Array.from(document.querySelectorAll('tr')).find(x => x.innerText.includes(id)); return r ? Array.from(r.querySelectorAll('button')).map(b => b.textContent.trim()).join('|') : 'no row'; }, bb1 ? bb1.id : 'none'); if (bbRow === 'no row') await page.waitForTimeout(400); }
   chk('   a batch not yet sent offers Send and Void in the batches list', bbRow, 'Send|Void');
+  const ldBatched = await page.evaluate(async id => { openLoadDetail(id); await new Promise(r => setTimeout(r, 300)); const m = Array.from(document.querySelectorAll('.modal-bg')).pop(); const t = m ? m.innerText.replace(/\s+/g, ' ') : ''; if (m) m.remove(); return t; }, lMat.id);
+  chk('   Load Details agrees with the board for a batched load: Approved · On billing batch <id>, approved by Joshua', `${new RegExp(`Status Approved · On billing batch ${bb1.id}`).test(ldBatched)} ${/Approved by Joshua/.test(ldBatched)}`, 'true true');
   await call(mgr, 'POST', `/api/billing-batches/${bb1.id}/void`, { reason: 'made in error' });
+  const pvg = (await call(mgr, 'POST', '/api/billing-batches/preview', { loadIds: [lMat.id] })).data.groups;
+  const pvTxt = await page.evaluate(groups => { showInvoicePreviewModal(groups, false); const t = (document.getElementById('qb-preview-body') || {}).innerText || ''; const m = document.getElementById('qb-preview-modal'); if (m) m.style.display = 'none'; return t.replace(/\s+/g, ' '); }, pvg);
+  chk('   the invoice preview says the line is priced at the default rate — no customer price on file', /Dirt — 1 load \(25\.00 ton @ \$25\/ton\) default rate — no customer price on file/.test(pvTxt), true);
   lm2 = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === lMat.id);
   chk('   …voided before sending: the load is back in Ready to Bill, nothing went to QuickBooks', `${lm2.billStatus} ${lm2.billingBatchId || ''}`, 'ready ');
   await page.evaluate(() => { setBillSubview('ready'); goTab('history'); }); await page.waitForTimeout(700);   // back where the section was: History, for the archive step
@@ -497,6 +571,8 @@ async function call(cookie, method, path, body) {
   chk('   no browser confirm() or prompt() in any of this', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
 
+  // The row's age check wants the point under a minute old; the board checks above take time, so Beryle's phone posts the same point again here.
+  await call(drv, 'POST', '/api/driver-location', { lat: 36.7420, lng: -119.7650, accuracy: 7 });
   console.log('── Fleet Map ──');
   const navCount = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-item')).filter(b => b.textContent.includes('Fleet Map') && getComputedStyle(b).display !== 'none').length);
   chk('1. manager sees the Fleet Map tab', navCount, 1);
@@ -631,7 +707,7 @@ async function call(cookie, method, path, body) {
   });
   chk('2. Beryle\'s row keeps VBT\'s stage and adds Linxup beside it: Moving · 8 mph S · engine on · odometer · GPS age · address · Linxup driver', `${/Loaded \/ en route/.test(lxb.stage)} ${/^Moving · 8 mph S · engine on · odo 55,959 · Linxup GPS \d+ s ago 7238 Landing Cove St, Bakersfield, CA 93313 Linxup driver: Jesus Guzman \(Rigo\)/.test(lxb.tel)}`, 'true true');
   chk('   …the disagreement is a flag and a tile, not a reassignment', `${lxb.flag} | ${lxb.tiles.includes('Telemetry')}`, 'Linxup reports Jesus Guzman in Truck #12; VBT has Beryle assigned. | true');
-  chk('   the truck chip carries the Linxup state', /Truck #12 · Beryle MOVING/.test(lxb.chip), true);
+  chk('   the truck chip carries the Linxup state, named as Linxup\'s', /Truck #12 · Beryle LINXUP · MOVING/.test(lxb.chip), true);   // OA2: the chip says whose word it is
   const lxAssign = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id);
   chk('   VBT\'s load still belongs to Beryle on Truck #12', `${lxAssign.truckId} ${lxAssign.truckUnitId}`, 'beryle truck-12');
   await page.evaluate(() => goTab('fleet')); await page.waitForTimeout(700);
@@ -666,7 +742,7 @@ async function call(cookie, method, path, body) {
   chk('3. the telemetry timeline is chronological and every line names its source, with the driver\'s taps between Linxup\'s entries', `${l2d.timeline.length >= 7} ${[...new Set(l2d.sources)].sort().join('|')} ${l2d.timeline.some(t => /Driver tapped Arrived at pickup VBT driver app$/.test(t))} ${l2d.timeline.some(t => /Entered Vulcan geofence Linxup geofence$/.test(t))}`, 'true Linxup geofence|Linxup stop|Linxup vehicle trip|VBT driver app true true');
   const l2load = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === load.id);
   chk('   reading the evidence changed nothing on the load: still Beryle, Truck #12, trip 1 loaded and not arrived', `${l2load.truckId} ${l2load.truckUnitId} ${!!l2load.trips[0].timestamps.loadedAt} ${l2load.trips[0].timestamps.arrivedJobsite || 'none'}`, 'beryle truck-12 true none');
-  await page.evaluate(() => document.querySelector('.modal-bg') && document.querySelector('.modal-bg').remove());
+  await page.evaluate(() => { const ms = Array.from(document.querySelectorAll('.modal-bg')); const last = ms[ms.length - 1]; if (last && last.id !== 'po-modal') last.remove(); });   // the Load Details modal it opened — not the page's static New PO modal, which is the first .modal-bg
   const l2a = await page.evaluate(async id => (await approvalTelemetryHtml(id)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(), load.id);
   chk('4. the approval dialog gets a one-line Linxup evidence summary per trip', /^Linxup evidence Trip 1: Vulcan \d{1,2}:\d\d [AP]M–\d{1,2}:\d\d [AP]M \(geofence\) · no activity near the jobsite$/.test(l2a), true);
   chk('   …and it is part of the approval confirmation', await page.evaluate(() => /const tel = await approvalTelemetryHtml\(l\.id\);/.test(confirmApproval.toString())), true);
@@ -677,6 +753,66 @@ async function call(cookie, method, path, body) {
   const l2m = await call(mgr, 'GET', '/api/linxup/geofences');
   chk('   Save maps it (a manager\'s decision, audited); the panel now says visits count as pickup evidence', `${l2m.data.geofences.find(g => g.geofenceId === 21).mappedVendorId} ${await page.evaluate(() => /Geofence visits count as pickup evidence for this yard\./.test(document.getElementById('v-fence').innerText))}`, 'vulcan true');
   chk('   no browser confirm() or prompt()', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
+
+  console.log('── Office: a yard is one record with an address; a price is suggested from what was paid or invoiced, never applied; a saved jobsite is offered back ──');
+  // OA5 fixtures: Vulcan gets a street address; Rigo hauls Sand from Hanson twice at two list prices (billed and sent) and Dirt for Nopr Co (invoiced and sent); Hanson's Linxup geofence is mapped, then deleted in Linxup.
+  const rig = await login('rigo', 'rigo123');
+  await call(mgr, 'POST', '/api/_test/qb-fake', { mode: 'ok', billMode: 'ok' });
+  await call(mgr, 'PUT', '/api/vendors/vulcan', { address: '2 Mine Rd' });
+  await call(mgr, 'POST', '/api/vendors/hanson/prices', { material: 'Sand', unit: 'ton', price: 31 });
+  const o5mk = async (num, cust, splits, vendor) => { await call(mgr, 'POST', '/api/pos', { po: { poNumber: num, customer: cust, deliveryDate: today, address: '1 Hint St', city: 'Fresno', plannedVendorId: vendor }, splits }); const d5 = (await call(mgr, 'GET', '/api/data')).data; return d5.loads.filter(l => l.poId === d5.pos.find(p => p.poNumber === num).id); };
+  const o5trip = async (id, yard, n) => { for (const a of [{ action: 'start-trip' }, { action: 'arrived-pickup', yardId: yard }, { action: 'loaded', ticket: { source: 'supplier', number: `OA5-${n}-${Date.now()}`, netTons: 24, photo: PNG } }, { action: 'arrived-jobsite' }, { action: 'trip-complete' }]) await call(rig, 'POST', `/api/loads/${id}/trip-action`, a); };
+  const o5sub = async id => { await call(rig, 'PUT', `/api/loads/${id}`, { pod: { signedBy: 'F', signature: PNG, signedAt: new Date().toISOString() } }); await call(rig, 'POST', `/api/loads/${id}/trip-action`, { action: 'delivered' }); await call(mgr, 'POST', `/api/loads/${id}/approve`, {}); };
+  const [hv] = await o5mk('OA5-V', 'Hint Co', [{ truckId: 'rigo', truckUnitId: 'truck-14', material: 'Sand', loadsAssigned: 2, vendorId: 'hanson' }], 'hanson');
+  await o5trip(hv.id, 'hanson', 1);
+  const hp = (await call(mgr, 'GET', '/api/vendors')).data.vendorPrices.hanson.find(p => p.material === 'Sand'); await call(mgr, 'PUT', `/api/vendors/hanson/prices/${hp.id}`, { price: 34 });
+  await o5trip(hv.id, 'hanson', 2); await o5sub(hv.id);
+  const vbill = (await call(mgr, 'POST', '/api/vendor-bills', { loadIds: [hv.id] })).data.bills[0]; await call(mgr, 'POST', `/api/vendor-bills/${vbill.id}/send`, {});
+  await call(mgr, 'POST', '/api/customer-prices', { customer: 'Nopr Co', material: 'Dirt', unit: 'ton', price: 50 });
+  const [hc] = await o5mk('OA5-C', 'Nopr Co', [{ truckId: 'rigo', truckUnitId: 'truck-14', material: 'Dirt', loadsAssigned: 1, vendorId: 'vbt' }], 'vbt');
+  await o5trip(hc.id, 'vbt', 3); await o5sub(hc.id);
+  const cbatch = (await call(mgr, 'POST', '/api/billing-batches', { loadIds: [hc.id] })).data.batches[0]; await call(mgr, 'POST', `/api/billing-batches/${cbatch.id}/send`, {});
+  const lx5Post = (path, body) => fetch(B + '/api/linxup/' + path, { method: 'POST', headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await call(mgr, 'PUT', '/api/fleet/trucks/truck-14/linxup', { trackerId: 7014 });
+  await lx5Post('geofence-event', { eventType: 'FENCE_ENTER', enterDateTime: Date.now() - 7200000, tracker: { trackerId: 7014, name: 'VBT #7014' }, geofence: { geofenceId: 9014, name: 'Hanson Bakersfield', fenceGroup: 'Yards' }, company: { companyId: 1 } });
+  await call(mgr, 'PUT', '/api/vendors/hanson/linxup-geofence', { geofenceId: 9014 });
+  await lx5Post('geofence-change', { geofenceId: 9014, action: 'DELETE', name: 'Hanson Bakersfield', company: { companyId: 1 } });
+  await page.evaluate(async () => { await loadAll(); await refreshVendorData(); goTab('vendors'); }); await page.waitForTimeout(600);
+  await page.evaluate(() => { currentVendorTab = 'vulcan'; renderVendors(); }); await page.waitForTimeout(900);
+  chk('1. the Vendors panel shows the yard\'s street address beside its city', await page.evaluate(() => (document.querySelector('.vendor-panel-sub') || {}).innerText), '2 Mine Rd · Fresno, CA');
+  // OA6 closure: two operators on one yard. Tab A opens the edit (its copy says 2 Mine Rd); tab B changes the street meanwhile; A changes only the city.
+  await call(mgr, 'PUT', '/api/vendors/vulcan', { address: '3 Quarry Rd' });
+  const [vReq] = await Promise.all([
+    page.waitForRequest(r => /\/api\/vendors\/vulcan$/.test(r.url()) && r.method() === 'PUT', { timeout: 5000 }),
+    page.evaluate(async () => { const realPrompt = window.prompt; window.prompt = (msg, def) => /City/.test(msg) ? 'Clovis, CA' : def; try { await editVendorInfo('vulcan'); } finally { window.prompt = realPrompt; } }),
+  ]);
+  await page.waitForTimeout(500);
+  const vAfter = (await call(mgr, 'GET', '/api/vendors')).data.vendors.find(v => v.id === 'vulcan');
+  chk('   two operators on one yard: tab A\'s edit sends only the field it changed (the city), so tab B\'s new street is kept beside it — nothing reverted', `${Object.keys(vReq.postDataJSON() || {}).sort().join(',')} ${vAfter.address} ${vAfter.location}`, 'location 3 Quarry Rd Clovis, CA');
+  await call(mgr, 'PUT', '/api/vendors/vulcan', { address: '2 Mine Rd', location: 'Fresno, CA' });
+  await page.evaluate(async () => { await refreshVendorData(); renderVendors(); }); await page.waitForTimeout(400);
+  await page.evaluate(() => { currentVendorTab = 'hanson'; renderVendors(); }); await page.waitForTimeout(1200);
+  const fenceNote = await page.evaluate(() => ({ note: (document.getElementById('v-fence') || {}).innerText.replace(/\s+/g, ' '), opt: (() => { const s = document.getElementById('v-fence-sel'); return s ? s.options[s.selectedIndex].text : 'no select'; })() }));
+  chk('2. a yard mapped to a geofence Linxup deleted says so, keeps the mapping until a person changes it, and names the fix', `${/mapped to geofence 9014, which Linxup deleted/.test(fenceNote.note)} ${/Pick a current geofence, or clear it/.test(fenceNote.note)} ${fenceNote.opt}`, 'true true geofence 9014 "Hanson Bakersfield" — deleted in Linxup');
+  await page.evaluate(() => { document.getElementById('new-mat').value = 'Sand'; vendorPriceHint('hanson'); }); await page.waitForTimeout(900);
+  const hint = await page.evaluate(() => document.getElementById('new-price-hint').innerText.replace(/\s+/g, ' '));
+  chk('3. typing a material on the price form shows what VBT last paid this yard for it, from the sent bill — a suggestion with "Use", never a value', /^Last paid: \$34\.00\/ton on \d{4}-\d\d-\d\d \(vendor bill VB-\S+, 1 load\) · 2 prices on record · Use \$34\.00 or enter a different price\.$/.test(hint) ? 'ok' : hint, 'ok');
+  const used = await page.evaluate(() => { document.querySelector('#new-price-hint a').click(); return document.getElementById('new-price').value; });
+  const beforeP = requests.filter(r => /\/prices$/.test(r)).length;
+  await page.evaluate(() => { document.getElementById('new-price').value = ''; addNewPrice('hanson'); }); await page.waitForTimeout(400);
+  chk('   "Use" fills the field; a blank price is refused on the page, never saved as $0', `${used} ${requests.filter(r => /\/prices$/.test(r)).length - beforeP}`, '34.00 0');
+  await page.evaluate(() => renderCustomerPrices()); await page.waitForTimeout(900);
+  const cp = await page.evaluate(async () => { const opts = Array.from(document.getElementById('new-cp-material').options).map(o => o.value); document.getElementById('new-cp-customer').value = 'Nopr Co'; document.getElementById('new-cp-material').value = 'Dirt'; customerPriceHint(); await new Promise(r => setTimeout(r, 900)); return { sand: opts.includes('Sand'), hint: document.getElementById('new-cp-hint').innerText.replace(/\s+/g, ' ') }; });
+  chk('4. the customer price form offers every material a yard sells ("Sand") and shows what the customer was last invoiced for one, from the sent invoice', `${cp.sand} ${/^Last invoiced: \$50\.00\/ton on \d{4}-\d\d-\d\d \(invoice BB-\S+, 1 load\) · Use \$50\.00 or enter a different price\.$/.test(cp.hint) ? 'ok' : cp.hint}`, 'true ok');
+  await page.evaluate(() => renderMaterialCosts()); await page.waitForTimeout(1200);
+  chk('5. Material Costs says a unit price is mixed, with its range, when the trips carried two fixed rates', await page.evaluate(() => { const r = Array.from(document.querySelectorAll('#sec-vendors tr')).find(tr => /^Sand/.test(tr.innerText.trim()) && /mixed/.test(tr.innerText)); return r ? r.innerText.replace(/\s+/g, ' ') : 'no row'; }), 'Sand ton 2 $31.00–$34.00 mixed $1,625.00');
+  await page.evaluate(() => openNewPO()); await page.waitForTimeout(400);
+  const js = await page.evaluate(async () => { document.getElementById('po-customer').value = 'ABC Materials'; await poLoadJobsites('ABC Materials'); document.getElementById('po-address').value = '500 main st.'; document.getElementById('po-city').value = 'merced'; poJobsiteEdited(); const hint = document.getElementById('po-jobsite-hint').innerText.replace(/\s+/g, ' '); poUseJobsite(0); return { hint, address: document.getElementById('po-address').value, city: document.getElementById('po-city').value, from: !!document.getElementById('po-jobsite-from').value, after: document.getElementById('po-jobsite-hint').innerText }; });
+  chk('6. New PO: an address typed by hand that is one of the customer\'s saved sites is offered back ("Use it"); using it restores the saved spelling and links the site', `${/^Looks like a jobsite this customer has used: 500 Main St, Merced \(\d+ POs?(, pinned)?\) · Use it$/.test(js.hint) ? 'ok' : js.hint} ${js.address} ${js.city} ${js.from} '${js.after}'`, "ok 500 Main St Merced true ''");
+  await page.evaluate(() => closePO());
+  await call(mgr, 'PUT', '/api/vendors/hanson/linxup-geofence', { geofenceId: null });   // the stale mapping is cleared and the tracker unlinked again
+  await call(mgr, 'PUT', '/api/fleet/trucks/truck-14/linxup', { trackerId: null });
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(700);
 
   console.log('── Office: the Calendar — scheduled work by date, beside the Dispatch board ──');
   await page.evaluate(() => goTab('calendar')); await page.waitForTimeout(1200);
@@ -725,6 +861,8 @@ async function call(cookie, method, path, body) {
   }));
   chk('driver view renders', dv.driverTab, true);
   chk('   driver cannot see the Fleet Map tab', dv.mapNav, 0);
+  // OA5: the yard picker shows the yard's street address beside its city, so the driver picks the right place.
+  chk('   the yard picker names the yard with its street address', await d.page.evaluate(id => { openYardPicker(id); const c = Array.from(document.querySelectorAll('#yard-list .yard-card')).find(x => /Vulcan/.test(x.innerText)); const t = c ? c.innerText.replace(/\s+/g, ' ') : 'none'; closeYard(); return t; }, load.id), 'Vulcan 2 Mine Rd · Fresno, CA ✓ Assigned pickup');
   // CRITICAL 1: "Stop early" shows the completed trips on record and offers nothing to adjust; the server refuses any other number.
   const inc = await d.page.evaluate(id => { openIncompleteDialog(id, 3, 1); const m = document.getElementById('incomplete-modal');
     const out = { shown: getComputedStyle(m).display !== 'none', count: document.getElementById('inc-count').textContent, steppers: m.querySelectorAll('.inc-stepper, button[onclick*="adjustIncomplete"]').length, txt: m.innerText.replace(/\s+/g, ' ') }; closeIncomplete(); return out; }, load.id);
@@ -797,6 +935,23 @@ async function call(cookie, method, path, body) {
   chk('End day: 80 daily, 40 billable, 40 non-billable — derived', `${ended.status} ${ended.dailyMiles} ${ended.billableMiles} ${ended.nonBillableMiles}`, 'closed 80 40 40');
   chk('   day card says the day is closed with the miles, not "not started"', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day closed · Truck #2/.test(t) && /80 miles today \(40 on freight\)/.test(t) && !/has not started/.test(t); }), true);
   chk('   Loaded modal closed, card lists all three tickets and the running total', await d.page.evaluate(() => { const t = document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '); return document.getElementById('loaded-modal').style.display === 'none' && /#37432799 supplier 23\.19 t/.test(t) && /#37432862 supplier 24\.45 t/.test(t) && /Confirmed so far 70\.84 t/.test(t); }), true);
+  console.log('── Driver: the planned outside yard is one tap; "picked up somewhere else?" opens the picker ──');
+  // OA4: the PO names Vulcan, so the card's first button is that yard — no picker on every trip. Beryle's day is closed here, so the tap asks no odometer.
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'OA4-Y', customer: 'One Tap Co', deliveryDate: today, address: '1 Tap St', city: 'Fresno', plannedVendorId: 'vulcan' }, splits: [{ truckId: 'beryle', truckUnitId: 'truck-2', material: '3/4 Rock', loadsAssigned: 1, vendorId: 'vulcan' }] });
+  const yData = (await call(mgr, 'GET', '/api/data')).data; const yl = yData.loads.find(l => l.poId === yData.pos.find(p => p.poNumber === 'OA4-Y').id);
+  await call(drv, 'POST', `/api/loads/${yl.id}/trip-action`, { action: 'start-trip' });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  const yCard = () => d.page.evaluate(() => { const c = Array.from(document.querySelectorAll('.trip-card')).find(c => /OA4-Y/.test(c.innerText)); if (!c) return 'no card'; return `${Array.from(c.querySelectorAll('.trip-action')).map(b => b.innerText.replace(/\s+/g, ' ').trim()).join('|')} || ${Array.from(c.querySelectorAll('.action-hint')).map(h => h.innerText.replace(/\s+/g, ' ').trim()).join(' | ')}`; });
+  chk('1. the PO names Vulcan, so the first button is "Arrived at Vulcan", the picker one link away', await yCard(), 'Arrived at Vulcan || Tap when you arrive · picked up somewhere else?');
+  const yPick = await d.page.evaluate(async () => { const c = Array.from(document.querySelectorAll('.trip-card')).find(c => /OA4-Y/.test(c.innerText)); c.querySelector('.action-hint a').click(); await new Promise(r => setTimeout(r, 400)); const m = document.getElementById('yard-modal'); const out = `${m.style.display} ${/Which yard did you arrive at\?/.test(m.innerText)} ${/Vulcan/.test(m.innerText)}`; m.style.display = 'none'; return out; });
+  chk('   the link opens the yard picker (Vulcan suggested) for the trip that went elsewhere', yPick, 'flex true true');
+  await d.page.evaluate(() => { const c = Array.from(document.querySelectorAll('.trip-card')).find(c => /OA4-Y/.test(c.innerText)); c.querySelector('.trip-action').click(); });
+  // The tap acquires GPS first (up to 5 s in a headless phone), then posts: wait for the arrival to land, not for a fixed time.
+  let yAfter = null; for (let i = 0; i < 30; i++) { await d.page.waitForTimeout(500); yAfter = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === yl.id); if (yAfter.trips[0] && yAfter.trips[0].actualYardId) break; }
+  await d.page.waitForTimeout(1200);
+  chk('   one tap: no picker, no odometer; the trip is stamped at Vulcan by the driver; next step Loaded', `${await d.page.evaluate(() => document.getElementById('yard-modal').style.display !== 'flex' && document.getElementById('freightstart-modal').style.display !== 'flex')} ${yAfter.trips[0].actualYardId} ${yAfter.trips[0].actualYardName} ${/^Loaded/.test(await yCard())}`, 'true vulcan Vulcan true');
+  await call(mgr, 'POST', `/api/loads/${yl.id}/void`, { reason: 'test cleanup' });   // a voided load leaves the phone
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   console.log('── Driver: the Start Load button names the actual current load ──');
   // A 3-load PO with no day open (legacy path, no odometer prompts): the
   // button must say 1 of 3, then 2 of 3, then 3 of 3, then disappear, and
@@ -886,6 +1041,22 @@ async function call(cookie, method, path, body) {
     const btns = Array.from(card.querySelectorAll('button')).map(b => b.innerText.replace(/\s+/g, ' ').trim());
     return `${btns.filter(t => /Replace ticket photo|Sign again|^Submit/.test(t)).join('|')} || ${(card.querySelector('.action-hint') || {}).innerText || ''}`; });
   chk('1. a rejected load offers Replace ticket photo and Sign again under Submit, and says what to do', rj, 'Submit (1)|Replace ticket photo|Sign again || Fix what the office named — replace the photo or sign again — then Submit.');
+  console.log('── Driver: Stop early while a trip is under way; redo on a rejected partial load; a trip under way since yesterday ──');
+  // Beryle's day is open on Truck #2, so an outside yard would ask for an odometer here; our own yard asks nothing, and the card states under test are the same.
+  const mkPo = async (num, date, n) => { await call(mgr, 'POST', '/api/pos', { po: { poNumber: num, customer: num + ' Co', deliveryDate: date, address: '1 Audit St', city: 'Fresno', plannedVendorId: 'vbt' }, splits: [{ truckId: 'beryle', truckUnitId: 'truck-12', material: 'Dirt', loadsAssigned: n, vendorId: 'vbt' }] }); const dd = (await call(mgr, 'GET', '/api/data')).data; return dd.loads.find(l => l.poId === dd.pos.find(p => p.poNumber === num).id); };
+  const tripOf = async (id, n) => { for (const a of [{ action: 'start-trip' }, { action: 'arrived-pickup', yardId: 'vbt' }, { action: 'loaded', ticket: { source: 'vbt', number: `OA2-${n}-${Date.now()}`, netTons: 24, photo: PNG } }, { action: 'arrived-jobsite' }, { action: 'trip-complete' }]) await call(drv, 'POST', `/api/loads/${id}/trip-action`, a); };
+  const sign = id => call(drv, 'PUT', `/api/loads/${id}`, { pod: { signedBy: 'F', signature: PNG, signedAt: new Date().toISOString() } });
+  const oa = await mkPo('OA2-A', today, 3); await tripOf(oa.id, 1); await tripOf(oa.id, 2); await call(drv, 'POST', `/api/loads/${oa.id}/trip-action`, { action: 'start-trip' }); await sign(oa.id);
+  const ob = await mkPo('OA2-B', today, 3); await tripOf(ob.id, 1); await sign(ob.id); await call(drv, 'POST', `/api/loads/${ob.id}/trip-action`, { action: 'incomplete' }); await call(mgr, 'POST', `/api/loads/${ob.id}/reject`, { reason: 'Ticket photo is unreadable' });
+  const yday = new Date(Date.parse(today + 'T12:00:00Z') - 86400000).toISOString().slice(0, 10);
+  const oc = await mkPo('OA2-C', yday, 2); for (const a of [{ action: 'start-trip' }, { action: 'arrived-pickup', yardId: 'vbt' }, { action: 'loaded', ticket: { source: 'vbt', number: `OA2-C-${Date.now()}`, netTons: 24, photo: PNG } }]) await call(drv, 'POST', `/api/loads/${oc.id}/trip-action`, a);
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1500);
+  const cardOf = re => d.page.evaluate(re => { const c = Array.from(document.querySelectorAll('.trip-card')).find(c => new RegExp(re).test(c.innerText)); if (!c) return null; return { badge: (c.querySelector('.today-badge') || {}).innerText || '', buttons: Array.from(c.querySelectorAll('button')).map(b => b.innerText.replace(/\s+/g, ' ').trim()).filter(Boolean).join('|'), hint: Array.from(c.querySelectorAll('.action-hint')).map(h => h.innerText.replace(/\s+/g, ' ').trim()).join(' | ') }; }, re);
+  const ca = await cardOf('OA2-A'), cb = await cardOf('OA2-B'), cc = await cardOf('OA2-C');
+  chk('1. two delivered and trip 3 started by mistake: the card still offers Stop early beside the next step', ca ? ca.buttons : 'no card', 'Arrived at VBT Yard|Stop early — submit 2 completed as incomplete');
+  chk('2. a rejected partial load offers Replace ticket photo and Sign again, and Stop early to resubmit', cb ? `${cb.buttons} || ${cb.hint}` : 'no card', 'Start Load 2 of 3|Replace ticket photo|Sign again|Stop early — submit 1 completed as incomplete || Fix what the office named — replace the photo or sign again — then Stop early to resubmit, or keep hauling.');
+  chk('3. a trip under way since yesterday is on the phone, badged with its day, with its next step', cc ? `${cc.badge} ${cc.buttons}` : 'no card', `FROM ${yday} Arrived at Job Site`);
+  chk('   …and the earlier-days banner no longer names it', await d.page.evaluate(() => !/OA2-C/.test(document.getElementById('day-card').innerText)), true);
   await d.ctx.close();
   // Access probes with the driver's own session cookie (outside the page, so
   // the page's console stays clean of expected 403s).
