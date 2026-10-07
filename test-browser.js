@@ -300,7 +300,7 @@ async function call(cookie, method, path, body) {
     };
   });
   chk('1. the office lands on Dispatch, and there is no second Board tab', `${board.landed} ${board.noBoardTab}`, 'Dispatch true');
-  chk('2. the attention row names what needs a person', board.tiles.join('|'), 'Unassigned|In Progress|Awaiting Approval|Ready to Bill|Missing Info|Trucks Free|Drivers Free');
+  chk('2. the attention row names what needs a person', board.tiles.join('|'), 'Unassigned|In Progress|Awaiting Approval|End of day|Ready to Bill|Missing Info|Trucks Free|Drivers Free');
   chk('3. Beryle\'s row: in progress on Truck #12, ABC Materials, loaded en route, Vulcan → 500 Main St', /Beryle In progress Truck #12.*ABC Materials · PO 10482 · Loaded \/ en route · 0\/3.*Vulcan → 500 Main St, Merced/i.test(board.beryle), true);
   chk('4. Rigo\'s row: assigned on Truck #14 from the New PO form', /Rigo Assigned Truck #14.*ABC Materials · PO 10483 · Assigned · 0\/1.*VBT Yard → 500 Main St, Merced/i.test(board.rigo), true);
   chk('5. Leonardo\'s row: available, usual truck, invitation to assign', /Leonardo Available Truck #12 \(usual\).*No load today/i.test(board.leonardo), true);
@@ -318,6 +318,49 @@ async function call(cookie, method, path, body) {
   });
   chk('8. the In Progress tile filters the board to in-progress loads', filt.shown, 'In Progress');
   chk('9. the Awaiting Approval tile opens Approvals', filt.tab, 'sec-approvals');
+  // OA4: the End of day tile is the nightly check — one list sorted by the server, each row with its reason and its next step, read-only.
+  const rv = await page.evaluate(async () => {
+    const tile = Array.from(document.querySelectorAll('#db-tiles .db-tile')).find(t => /End of day/i.test(t.innerText));
+    const out = { tile: tile ? tile.innerText.replace(/\s+/g, ' ').trim() : 'no tile' };
+    dbTile('review'); await new Promise(r => setTimeout(r, 1200));
+    const m = document.getElementById('review-modal'); if (!m) { out.modal = 'no modal'; return out; }
+    out.title = m.querySelector('h2').innerText; out.counts = m.querySelector('.rv-counts').innerText.replace(/\s+/g, ' ').trim();
+    out.groups = Array.from(m.querySelectorAll('.rv-head')).map(h => h.innerText.replace(/\s+/g, ' ').trim()).join('|');
+    out.rows = Array.from(m.querySelectorAll('.rv-row')).map(r => r.innerText.replace(/\s+/g, ' ').trim()).join(' || ');
+    out.recon = Array.from(m.querySelectorAll('.rv-recon li')).map(e => e.innerText.trim()).join(' / ');
+    out.clean = (m.querySelector('.rv-clean') || {}).innerText || '';
+    Array.from(m.querySelectorAll('.rv-row')).find(r => /PO 10482/.test(r.innerText)).querySelector('button').click(); await new Promise(r => setTimeout(r, 600));
+    out.after = `${!document.getElementById('review-modal')} ${Array.from(document.querySelectorAll('.modal-bg .modal-head h2')).some(h => /Load Details/.test(h.innerText))}`;
+    const detail = Array.from(document.querySelectorAll('.modal-bg')).filter(b => b.querySelector('.modal-head h2') && /Load Details/.test(b.querySelector('.modal-head h2').innerText));
+    out.detail = detail.map(b => b.innerText.replace(/\s+/g, ' ')).join(' '); detail.forEach(b => b.remove());
+    return out;
+  });
+  chk('10. the End of day tile says nothing needs a person yet: 0, with 0 clean · 2 open', rv.tile, '0 END OF DAY 0 clean · 2 open');
+  chk('   …and opens the review: 2 loads, both still open, the day read back in sentences, nothing asked of the office', `${/^End of day · /.test(rv.title)} | ${rv.counts} | ${rv.groups} | ${rv.recon} | ${rv.clean}`, `true | 2 loads 0 clean 2 still open 0 need attention 0 blocked | STILL OPEN · 2 | No deliveries on ${today}. / 2 loads are still open. | Nothing needs you once the open work is done.`);
+  chk('   each row names the load, the driver and the truck, and says why: Beryle under way, Rigo assigned and not started', /ABC Materials · PO 10482 · \S+ · Beryle · Truck #12 still under way — Loaded \/ en route, 0\/3 delivered Details/.test(rv.rows) && /ABC Materials · PO 10483 · \S+ · Rigo · Truck #14 assigned, not started yet Details/.test(rv.rows), true);
+  chk('   Details on a row closes the review and opens Load Details for that load', `${rv.after} ${/10482/.test(rv.detail)}`, 'true true true');
+
+  console.log('── Office: Quick Assign suggests the usual truck — a suggestion until Confirm ──');
+  // OA4: picking a driver with no truck chosen suggests his usual truck when it is free today; a busy usual truck is not suggested; a chosen truck is kept; nothing is written.
+  const uPo = (await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'OA4-U', customer: 'Usual Co', deliveryDate: today, address: '1 Usual St', city: 'Fresno', plannedVendorId: 'vulcan' }, splits: [{ truckId: '', truckUnitId: '', material: 'Sand', loadsAssigned: 1, vendorId: 'vulcan' }] })).data.po;
+  const uLoad = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.poId === uPo.id);
+  const writesBeforeU = requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length;
+  await page.evaluate(async id => { await loadAll(); await qaOpenFor(id); }, uLoad.id); await page.waitForTimeout(600);   // the sheet from the loads list fetches that day's availability
+  const sug = await page.evaluate(() => {
+    const truckSel = () => Array.from(document.querySelectorAll('#qa-sheet-bg .qa-opt.sel .t')).map(e => e.innerText.trim()).filter(t => /^Truck|^No truck/.test(t)).join('|');
+    const out = { opened: `${!!document.getElementById('qa-sheet-bg')} ${qaPick.driverId} ${qaPick.truckUnitId}` };
+    qaSet('driverId', 'leonardo'); out.leonardo = `${qaPick.truckUnitId} ${truckSel()}`;      // Truck #12 is Beryle's today
+    qaSet('driverId', 'matthew');  out.matthew = `${qaPick.truckUnitId} ${truckSel()}`;       // Truck #4 is free
+    qaSet('truckUnitId', 'truck-14'); qaSet('driverId', 'rigo'); out.kept = `${qaPick.truckUnitId} ${truckSel()}`;
+    out.confirm = document.getElementById('qa-confirm').innerText.trim(); qaClose(); return out;
+  });
+  chk('1. the sheet opens on the unassigned load with no driver and no truck', sug.opened, 'true null null');
+  chk('   a driver whose usual truck is on another load today gets no truck suggested', sug.leonardo, 'null No truck');
+  chk('   a driver whose usual truck is free gets it suggested on the sheet', sug.matthew, 'truck-4 Truck #4');
+  chk('   a truck already chosen is kept when the driver changes; Confirm is still the only way to assign', `${sug.kept} ${sug.confirm}`, 'truck-14 Truck #14 Confirm assignment');
+  chk('   nothing was written while the sheet suggested', requests.filter(r => /\/assign$|^PUT \/api\/loads\//.test(r)).length - writesBeforeU, 0);
+  chk('   (the unstarted order is deleted again)', (await call(mgr, 'DELETE', `/api/pos/${uPo.id}`)).status, 200);
+  await page.evaluate(() => goTab('today')); await page.waitForTimeout(700);
 
   console.log('── Office: approval confirms the record in the app ──');
   // Matthew (Truck #4) and Carlos (Truck #2B) each finish one load from the VBT yard and submit.
@@ -508,6 +551,8 @@ async function call(cookie, method, path, body) {
   chk('   no browser confirm() or prompt() in any of this', await page.evaluate(() => `${window.__confirmCalls || 0} ${window.__promptCalls || 0}`), '0 0');
   await page.evaluate(() => goTab('today')); await page.waitForTimeout(500);
 
+  // The row's age check wants the point under a minute old; the board checks above take time, so Beryle's phone posts the same point again here.
+  await call(drv, 'POST', '/api/driver-location', { lat: 36.7420, lng: -119.7650, accuracy: 7 });
   console.log('── Fleet Map ──');
   const navCount = await page.evaluate(() => Array.from(document.querySelectorAll('.nav-item')).filter(b => b.textContent.includes('Fleet Map') && getComputedStyle(b).display !== 'none').length);
   chk('1. manager sees the Fleet Map tab', navCount, 1);
@@ -808,6 +853,23 @@ async function call(cookie, method, path, body) {
   chk('End day: 80 daily, 40 billable, 40 non-billable — derived', `${ended.status} ${ended.dailyMiles} ${ended.billableMiles} ${ended.nonBillableMiles}`, 'closed 80 40 40');
   chk('   day card says the day is closed with the miles, not "not started"', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day closed · Truck #2/.test(t) && /80 miles today \(40 on freight\)/.test(t) && !/has not started/.test(t); }), true);
   chk('   Loaded modal closed, card lists all three tickets and the running total', await d.page.evaluate(() => { const t = document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '); return document.getElementById('loaded-modal').style.display === 'none' && /#37432799 supplier 23\.19 t/.test(t) && /#37432862 supplier 24\.45 t/.test(t) && /Confirmed so far 70\.84 t/.test(t); }), true);
+  console.log('── Driver: the planned outside yard is one tap; "picked up somewhere else?" opens the picker ──');
+  // OA4: the PO names Vulcan, so the card's first button is that yard — no picker on every trip. Beryle's day is closed here, so the tap asks no odometer.
+  await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'OA4-Y', customer: 'One Tap Co', deliveryDate: today, address: '1 Tap St', city: 'Fresno', plannedVendorId: 'vulcan' }, splits: [{ truckId: 'beryle', truckUnitId: 'truck-2', material: '3/4 Rock', loadsAssigned: 1, vendorId: 'vulcan' }] });
+  const yData = (await call(mgr, 'GET', '/api/data')).data; const yl = yData.loads.find(l => l.poId === yData.pos.find(p => p.poNumber === 'OA4-Y').id);
+  await call(drv, 'POST', `/api/loads/${yl.id}/trip-action`, { action: 'start-trip' });
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
+  const yCard = () => d.page.evaluate(() => { const c = Array.from(document.querySelectorAll('.trip-card')).find(c => /OA4-Y/.test(c.innerText)); if (!c) return 'no card'; return `${Array.from(c.querySelectorAll('.trip-action')).map(b => b.innerText.replace(/\s+/g, ' ').trim()).join('|')} || ${Array.from(c.querySelectorAll('.action-hint')).map(h => h.innerText.replace(/\s+/g, ' ').trim()).join(' | ')}`; });
+  chk('1. the PO names Vulcan, so the first button is "Arrived at Vulcan", the picker one link away', await yCard(), 'Arrived at Vulcan || Tap when you arrive · picked up somewhere else?');
+  const yPick = await d.page.evaluate(async () => { const c = Array.from(document.querySelectorAll('.trip-card')).find(c => /OA4-Y/.test(c.innerText)); c.querySelector('.action-hint a').click(); await new Promise(r => setTimeout(r, 400)); const m = document.getElementById('yard-modal'); const out = `${m.style.display} ${/Which yard did you arrive at\?/.test(m.innerText)} ${/Vulcan/.test(m.innerText)}`; m.style.display = 'none'; return out; });
+  chk('   the link opens the yard picker (Vulcan suggested) for the trip that went elsewhere', yPick, 'flex true true');
+  await d.page.evaluate(() => { const c = Array.from(document.querySelectorAll('.trip-card')).find(c => /OA4-Y/.test(c.innerText)); c.querySelector('.trip-action').click(); });
+  // The tap acquires GPS first (up to 5 s in a headless phone), then posts: wait for the arrival to land, not for a fixed time.
+  let yAfter = null; for (let i = 0; i < 30; i++) { await d.page.waitForTimeout(500); yAfter = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === yl.id); if (yAfter.trips[0] && yAfter.trips[0].actualYardId) break; }
+  await d.page.waitForTimeout(1200);
+  chk('   one tap: no picker, no odometer; the trip is stamped at Vulcan by the driver; next step Loaded', `${await d.page.evaluate(() => document.getElementById('yard-modal').style.display !== 'flex' && document.getElementById('freightstart-modal').style.display !== 'flex')} ${yAfter.trips[0].actualYardId} ${yAfter.trips[0].actualYardName} ${/^Loaded/.test(await yCard())}`, 'true vulcan Vulcan true');
+  await call(mgr, 'POST', `/api/loads/${yl.id}/void`, { reason: 'test cleanup' });   // a voided load leaves the phone
+  await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   console.log('── Driver: the Start Load button names the actual current load ──');
   // A 3-load PO with no day open (legacy path, no odometer prompts): the
   // button must say 1 of 3, then 2 of 3, then 3 of 3, then disappear, and

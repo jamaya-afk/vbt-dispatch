@@ -7989,9 +7989,12 @@ function officeFingerprint(day) {
   return require('crypto').createHash('sha1').update(dispatchFingerprint(dayLoads) + '#' + extra).digest('hex').slice(0, 16);
 }
 
-app.get('/api/today', reqMgr, async (req, res) => {
+// The board for one day — Dispatch reads it, the Calendar's day view reads
+// it, and the end-of-day review sorts it. One function so nothing is counted
+// two ways.
+async function buildBoard(dayArg) {
   const today = todayStr();
-  const day = req.query.date || today;
+  const day = dayArg || today;
   const now = Date.now();
   const dayLoads = store.loads.filter(l => !l.voided && l.deliveryDate === day);
   // Work begun on another day and still open (a trip left overnight, a load
@@ -8085,7 +8088,7 @@ app.get('/api/today', reqMgr, async (req, res) => {
 
   const count = b => loads.filter(l => l.bucket === b).length;
   const st = (arr, s) => arr.filter(x => x.state === s).length;
-  res.json({
+  const board = ({
     date: day, today, isToday: day === today,
     version: officeFingerprint(day),
     loads, drivers, trucks, trailers,
@@ -8128,6 +8131,115 @@ app.get('/api/today', reqMgr, async (req, res) => {
     telemetryIssues: telIssues,
     linxup: { enabled: linxup.enabled, linkedTrucks: trucks.filter(t => t.telematics && t.telematics.state !== 'not-linked').length },
   });
+  board.review = classifyDay(board).counts;   // the End-of-day tile: how many loads need a person
+  return board;
+}
+app.get('/api/today', reqMgr, async (req, res) => res.json(await buildBoard(req.query.date)));
+
+// ── END-OF-DAY REVIEW ────────────────────────────────────────────────────────
+// The day's work sorted into clean / still open / needs attention / blocked,
+// from the rules the screens already apply: the board rows (missing, conflicts,
+// telemetry), the approval checklist, the one billing engine and the batch
+// state machine. Nothing here decides anything or writes anything — it tells
+// the office which loads need a person tonight, and why, so the nightly check
+// is a short list of exceptions instead of every load on every screen.
+function classifyDay(board) {
+  const day = board.date;
+  const batches = store.billingBatches || [];
+  // Today's review carries the backlog (unfinished work from earlier days);
+  // another day's review judges that day's loads on their own.
+  const rows = [...board.loads, ...(board.isToday ? (board.carriedOver || []) : []).filter(c => !board.loads.some(l => l.id === c.id))];
+  const items = [];
+  for (const r of rows) {
+    const l = store.loads.find(x => x.id === r.id); if (!l) continue;
+    const reasons = []; let state = 'clean'; let next = '';
+    const open  = (why, nxt) => { if (state === 'clean') state = 'open'; reasons.push(why); if (nxt && !next) next = nxt; };
+    const attn  = (why, nxt) => { if (state !== 'blocked') state = 'attention'; reasons.push(why); if (nxt && !next) next = nxt; };
+    const block = (why, nxt) => { state = 'blocked'; reasons.push(why); if (nxt) next = nxt; };
+    const money = billingSummary(l);
+    const carried = !!(r.deliveryDate && r.deliveryDate < day);
+    const batch = l.billingBatchId ? batches.find(b => b.id === l.billingBatchId) : null;
+    // Gaps the approval checklist raised (or the approver acknowledged) are
+    // said once, by the checklist's words; the money checks below skip what
+    // the checklist already covers.
+    let said = [];
+    switch (r.bucket) {
+      case 'unassigned': attn('no driver', 'assign a driver'); break;
+      case 'assigned': if (carried) attn(`assigned since ${r.deliveryDate}, never started`, 'move it to a day or close it'); else open('assigned, not started yet'); break;
+      case 'in-progress': {
+        const where = `${r.stage || 'under way'}, ${r.loadsDelivered}/${r.loadsAssigned} delivered`;
+        if (carried) attn(`unfinished since ${r.deliveryDate} — ${where}`, 'the driver finishes it or stops early'); else open(`still under way — ${where}`);
+        break;
+      }
+      case 'rejected': attn(`sent back to the driver${r.rejectReason ? `: ${r.rejectReason}` : ''}`, 'waiting on the driver to fix and resubmit'); break;
+      case 'awaiting-approval': {
+        const ck = approvalChecklist(l); said = ck.warnings;
+        if (ck.blocking.length) block(ck.blocking.join('; '), 'reject or void it');
+        else if (ck.warnings.length) attn(`waiting for approval with gaps — ${ck.warnings.join('; ')}`, 'approve with the gaps acknowledged, or reject');
+        else { next = 'approve it'; reasons.push('completed — waiting for approval'); }
+        break;
+      }
+      case 'ready-to-bill': {
+        if (batch && batch.syncStatus === 'unknown') block(`QuickBooks result unknown on batch ${batch.id}`, 'reconcile the batch');
+        else if (batch && batch.syncStatus === 'failed') attn(`QuickBooks refused batch ${batch.id}${batch.errorMessage ? `: ${batch.errorMessage}` : ''}`, 'retry or fix the batch');
+        else if (batch) { next = 'send the batch'; reasons.push(`approved · on batch ${batch.id}, not sent`); }
+        else { next = 'bill it'; reasons.push('approved, not yet billed'); }
+        // Acknowledged at approval by a person: said, not raised again.
+        said = l.approvalWarnings || [];
+        if (said.length) reasons.push(`gaps acknowledged at approval: ${said.join('; ')}`);
+        break;
+      }
+      case 'completed': {
+        if (batch && batch.syncStatus === 'unknown') block(`QuickBooks result unknown on batch ${batch.id}`, 'reconcile the batch');
+        else reasons.push(batch ? `billed · ${batch.qbInvoiceNumber ? 'invoice ' + batch.qbInvoiceNumber : 'batch ' + batch.id}` : `billed by hand${l.manualBillRef ? ' · ' + l.manualBillRef : ''}`);
+        break;
+      }
+    }
+    // Money, on anything delivered and not yet billed: what the office would
+    // otherwise find only on Ready to Bill or the approval card.
+    const moneyMatters = (r.bucket === 'awaiting-approval' || r.bucket === 'ready-to-bill');
+    const billingSaid = said.some(w => String(w).startsWith('Billing:'));
+    if (moneyMatters) {
+      if (money.unconfigured) block(`not priceable: ${money.reason}`, 'fix the price or the unit');
+      else if (money.amount === 0 && !billingSaid && !(money.basis === 'segment' && money.reason)) attn('$0 — nothing would be invoiced');
+      if (money.rateIsDefault && !money.unconfigured && !billingSaid) attn('default customer rate — no price on file');
+      if (money.cost && money.cost.estimated) attn('vendor cost at a default rate — an estimate');
+      if (money.cost && money.cost.unconfigured) attn(`vendor cost not priceable: ${money.cost.reason}`);
+    }
+    if (r.bucket !== 'awaiting-approval') for (const m of r.missing || []) if (!(r.bucket === 'unassigned' && m === 'driver')) attn(`missing ${m}`);
+    for (const c of r.conflicts || []) attn(c);
+    for (const t of (board.telemetryIssues || []).filter(t => t.loadId === r.id)) attn(t.text);
+    items.push({ id: r.id, poNumber: r.poNumber, customer: r.customer, driverName: r.driverName, truckNum: r.truckNum, material: r.material, bucket: r.bucket, deliveryDate: r.deliveryDate,
+      loadsDelivered: r.loadsDelivered, loadsAssigned: r.loadsAssigned, amount: (moneyMatters || r.bucket === 'completed') && !money.unconfigured ? money.amount : null, state, reasons, next });
+  }
+  const order = { blocked: 0, attention: 1, open: 2, clean: 3 };
+  items.sort((a, b) => order[a.state] - order[b.state] || String(a.customer).localeCompare(String(b.customer)));
+  const counts = { total: items.length, clean: items.filter(i => i.state === 'clean').length, open: items.filter(i => i.state === 'open').length, attention: items.filter(i => i.state === 'attention').length, blocked: items.filter(i => i.state === 'blocked').length };
+  // Reconciliation, in sentences: the day's deliveries against approval and billing.
+  const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+  const delivered = items.reduce((s, i) => s + (i.loadsDelivered || 0), 0);
+  const withWork = items.filter(i => (i.loadsDelivered || 0) > 0);
+  const by = b => items.filter(i => i.bucket === b).length;
+  const batched = items.filter(i => i.bucket === 'ready-to-bill' && store.loads.find(x => x.id === i.id)?.billingBatchId).length;
+  const reconciliation = [];
+  if (!delivered) reconciliation.push(`No deliveries on ${day}.`);
+  else {
+    reconciliation.push(`${n(delivered, 'delivery', 'deliveries')} on ${n(withWork.length, 'load', 'loads')} — ${by('awaiting-approval')} waiting for approval, ${by('ready-to-bill') - batched} ready to bill, ${batched} on a batch, ${by('completed')} billed.`);
+    const notSubmitted = withWork.filter(i => i.bucket === 'in-progress' || i.bucket === 'rejected' || i.bucket === 'assigned').length;
+    reconciliation.push(notSubmitted ? `${n(notSubmitted, 'load has', 'loads have')} deliveries but ${notSubmitted === 1 ? 'is' : 'are'} not submitted (still open or sent back).` : 'Every delivered load is submitted, approved or billed.');
+  }
+  const defaults = items.filter(i => i.reasons.some(x => x.startsWith('default customer rate'))).length;
+  if (defaults) reconciliation.push(`${n(defaults, 'load is', 'loads are')} priced at a default customer rate.`);
+  const estimates = items.filter(i => i.reasons.some(x => x.startsWith('vendor cost at a default rate'))).length;
+  if (estimates) reconciliation.push(`${n(estimates, 'vendor cost is', 'vendor costs are')} at a default rate (estimates).`);
+  const unknown = new Set(items.flatMap(i => i.reasons.filter(x => x.startsWith('QuickBooks result unknown')))).size;
+  if (unknown) reconciliation.push(`${n(unknown, 'batch needs', 'batches need')} QuickBooks reconciliation.`);
+  if (counts.open) reconciliation.push(`${n(counts.open, 'load is', 'loads are')} still open.`);
+  return { date: day, counts, items, reconciliation };
+}
+app.get('/api/day-review', reqMgr, async (req, res) => {
+  const board = await buildBoard(req.query.date);
+  res.json({ ...classifyDay(board), isToday: board.isToday, version: board.version });
 });
 
 app.post('/api/fleet/trucks', reqMgr, async (req, res) => {

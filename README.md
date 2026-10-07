@@ -54,7 +54,9 @@ carlos / carlos123
 - **Quick Assign** is Driver → Truck → Yard → (Trailer) → Confirm, from a card
   or by dragging a load onto a driver. A conflict (driver mid-haul elsewhere,
   truck or trailer on another driver's load) is shown in the app with Cancel
-  or go ahead; a go-ahead is written to the audit log with its reason.
+  or go ahead; a go-ahead is written to the audit log with its reason. Picking
+  a driver suggests his usual truck when it is free today; nothing is written
+  until Confirm.
 - **Approve** confirms five facts before a load locks: Driver, Truck, Pickup
   yard, Ticket, Delivery. A ⚠ item can be approved anyway, and what was
   missing stays on the load and in the audit log for billing to see.
@@ -164,6 +166,15 @@ carlos / carlos123
   bill is voided through the bill, never around it; the bill fixes the rate it
   pays onto the trips; a yard that hauled anything is not deleted; a price is
   a number of 0 or more; Profitability names its estimates.
+- **The end of the day is one list.** The End of day tile on Dispatch (and
+  `/api/day-review`) sorts every load of the day — plus unfinished work from
+  earlier days — into clean, still open, needs attention or blocked, by the
+  rules the screens already apply, each with its reasons in words and its next
+  step, and reads the day back in sentences (deliveries against approval and
+  billing, default rates, batches to reconcile, open work). It reads and
+  changes nothing; Details opens the load. On the phone the planned outside
+  yard is one tap ("Arrived at Vulcan"), with "picked up somewhere else?" one
+  link away.
 - **Linxup beside VBT.** With `LINXUP_WEBHOOK_TOKEN` set, Linxup's Push API
   posts truck positions to `/api/linxup/position` (and device status/update
   messages to their own paths). A truck is linked to a tracker by id on

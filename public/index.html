@@ -199,6 +199,7 @@ body{font-family:var(--f);color:var(--txt);background:var(--bg3);overflow:hidden
 .db-tel.stale .db-tel-dot,.db-tel.offline .db-tel-dot{background:var(--R)}
 .db-tel-where{width:100%;color:var(--txt3)}
 .db-tel-mini{font-style:normal;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--txt3);margin-left:4px}
+.rv-row{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--bdr);font-size:13px}.rv-why{font-size:12px;color:var(--txt2);margin-top:2px}.rv-group{margin-top:12px}.rv-head{font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:700}.rv-counts{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}.rv-recon{margin:10px 0 0 18px;padding:0;font-size:13px;color:var(--txt2)}.rv-clean{margin-top:12px;color:var(--G);font-weight:600}
 .db-tel-mini.moving{color:var(--G)}.db-tel-mini.idling{color:#b45309}.db-tel-mini.at-place{color:#1d4ed8}.db-tel-mini.stale,.db-tel-mini.offline{color:var(--R)}
 .qa-fact.tel-stale,.qa-fact.tel-offline{border-color:#fca5a5;background:#fef2f2}
 /* Linxup evidence on the load detail and the approval dialog */
@@ -3046,6 +3047,14 @@ function tripCard(l) {
       Arrived at ${escapeHtml(l.pickupLocation || 'VBT Yard')}
     </button>
     <div class="action-hint">Tap when you arrive · <a href="#" onclick="event.preventDefault();openYardPicker('${l.loadId}')">picked up somewhere else?</a></div>${stopEarly}`;
+  } else if (started && !atPickup && l.pickupYardId && (yards || []).some(y => y.id === l.pickupYardId)) {
+    // The load already names the yard: one tap confirms it (the office planned
+    // it, the driver confirms he is there). A different yard is one link away.
+    action = `<button class="trip-action pickup" onclick="arrivedAtPlannedYard('${l.loadId}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
+      Arrived at ${escapeHtml(l.pickupLocation || 'Yard')}
+    </button>
+    <div class="action-hint">Tap when you arrive · <a href="#" onclick="event.preventDefault();openYardPicker('${l.loadId}')">picked up somewhere else?</a></div>${stopEarly}`;
   } else if (started && !atPickup) {
     action = `<button class="trip-action pickup" onclick="openYardPicker('${l.loadId}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-7 9 7v12h-6v-7h-6v7H3z"/></svg>
@@ -3271,6 +3280,15 @@ async function confirmYard(yardId) {
   } catch (e) {}
 
   await arrivedAtYard(yardLoadId, yardId, gps, null);
+}
+// Arrived at the planned pickup yard (outside yard): the load already says
+// where. One tap; the odometer and freight rules apply exactly as from the
+// picker, because arrivedAtYard decides them.
+async function arrivedAtPlannedYard(loadId) {
+  const l = (window._currentDispatch || []).find(x => x.loadId === loadId);
+  if (!l || !l.pickupYardId) return openYardPicker(loadId);
+  yardLoadId = loadId;
+  await confirmYard(l.pickupYardId);
 }
 // Arrived at our own yard: the planned pickup is sent as-is, no picker.
 async function arrivedAtOwnYard(loadId) {
@@ -4616,7 +4634,37 @@ function dbGo(deltaDays) {
 function dbToday() { dbDate = null; dbFilter = 'all'; renderToday(); }
 function dbSetFilter(f) { dbFilter = (dbFilter === f && f !== 'all') ? 'all' : f; paintToday(); }
 // Every tile is an action: it filters the board or opens the workflow it names.
+// End of day: the day's loads sorted by the server into blocked / needs
+// attention / still open / clean, each with its reasons and its next step.
+// Read-only — the list points at Load Details; nothing is decided here.
+async function openDayReview() {
+  const date = todayData ? todayData.date : '';
+  const d = await api('GET', '/api/day-review' + (date ? '?date=' + encodeURIComponent(date) : ''));
+  if (!d.ok) return toast(d.error || 'Could not build the review', 'error');
+  const c = d.counts;
+  const row = i => `<div class="rv-row"><div><div><b>${escapeHtml(i.customer || '(no customer)')}</b> · PO ${escapeHtml(i.poNumber || '—')} · ${escapeHtml(i.id)}${i.driverName ? ' · ' + escapeHtml(i.driverName) : ''}${i.truckNum ? ' · ' + escapeHtml(i.truckNum) : ''}${i.amount != null ? ' · ' + money(i.amount) : ''}</div>
+      <div class="rv-why">${i.reasons.map(escapeHtml).join(' · ')}${i.next ? ` — <i>${escapeHtml(i.next)}</i>` : ''}</div></div>
+    <button class="btn ghost" onclick="this.closest('.modal-bg').remove();openLoadDetail('${i.id}')">Details</button></div>`;
+  const group = (title, list, color) => list.length ? `<div class="rv-group"><div class="rv-head" style="color:${color}">${title} · ${list.length}</div>${list.map(row).join('')}</div>` : '';
+  const bg = document.createElement('div'); bg.className = 'modal-bg'; bg.id = 'review-modal'; bg.style.zIndex = 250;
+  bg.onclick = e => { if (e.target === bg) bg.remove(); };
+  bg.innerHTML = `<div class="modal" style="max-width:760px">
+    <div class="modal-head"><h2>End of day · ${escapeHtml(fmtDate(d.date))}</h2><button class="modal-close" onclick="this.closest('.modal-bg').remove()">×</button></div>
+    <div class="modal-body">
+      <div class="rv-counts"><span><b>${c.total}</b> load${c.total === 1 ? '' : 's'}</span><span style="color:var(--G)"><b>${c.clean}</b> clean</span><span><b>${c.open}</b> still open</span><span style="color:var(--A)"><b>${c.attention}</b> need attention</span><span style="color:var(--R)"><b>${c.blocked}</b> blocked</span></div>
+      <ul class="rv-recon">${(d.reconciliation || []).map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>
+      ${group('Blocked', d.items.filter(i => i.state === 'blocked'), 'var(--R)')}
+      ${group('Needs attention', d.items.filter(i => i.state === 'attention'), 'var(--A)')}
+      ${group('Still open', d.items.filter(i => i.state === 'open'), 'var(--txt2)')}
+      ${(c.attention + c.blocked) === 0 ? `<div class="rv-clean">Nothing needs you${c.open ? ' once the open work is done' : ''}.</div>` : ''}
+      ${group('Clean', d.items.filter(i => i.state === 'clean'), 'var(--G)')}
+    </div>
+    <div class="modal-foot"><button class="btn ghost" onclick="this.closest('.modal-bg').remove()">Close</button></div>
+  </div>`;
+  document.body.appendChild(bg);
+}
 function dbTile(key) {
+  if (key === 'review') return openDayReview();
   if (key === 'awaiting-approval') return goTab('approvals');
   if (key === 'ready-to-bill') return goTab('billing');
   if (key === 'trucks' || key === 'drivers') {
@@ -4680,6 +4728,7 @@ function paintToday() {
       ${tile('in-progress', a.inProgress, 'In Progress', a.inProgress ? 'live' : '', 'hauling now')}
       ${tile('awaiting-approval', a.awaitingApproval, 'Awaiting Approval', a.awaitingApproval ? 'warn' : '', a.awaitingApproval ? 'review now' : 'nothing waiting')}
       ${a.rejected ? tile('rejected', a.rejected, 'Rejected', 'alert', 'sent back to the driver') : ''}
+      ${d.review ? tile('review', d.review.attention + d.review.blocked, 'End of day', (d.review.attention + d.review.blocked) ? (d.review.blocked ? 'alert' : 'warn') : 'ok', `${d.review.clean} clean · ${d.review.open} open`) : ''}
       ${tile('ready-to-bill', a.readyToBill, 'Ready to Bill', a.readyToBill ? 'bill' : '', a.readyToBill ? money(a.readyToBillAmount) : 'nothing queued')}
       ${tile('missing', a.missingInfo, 'Missing Info', a.missingInfo ? 'alert' : 'ok', a.missingInfo ? 'cannot proceed' : 'nothing missing')}
       ${a.conflicts ? tile('conflicts', a.conflicts, 'Conflicts', 'alert', 'double-booked') : ''}
@@ -4969,7 +5018,17 @@ function qaPaintSheet() {
   </div>`;
 }
 
-function qaSet(field, val) { qaPick[field] = val; qaPaintSheet(); }
+function qaSet(field, val) {
+  qaPick[field] = val;
+  // Picking a driver suggests his usual truck when no truck is chosen yet and
+  // that truck is free today — a suggestion on the sheet, nothing until Confirm.
+  if (field === 'driverId' && val && !qaPick.truckUnitId) {
+    const usualId = poUsualTruckId(val);
+    const t = usualId ? (todayData.trucks || []).find(x => x.id === usualId) : null;
+    if (t && t.status === 'available' && (!t.inUseOnLoadId || t.inUseOnLoadId === qaPick.loadId)) qaPick.truckUnitId = t.id;
+  }
+  qaPaintSheet();
+}
 function qaClose() { const el = document.getElementById('qa-sheet-bg'); if (el) el.remove(); qaPick = null; }
 
 // The server refuses an assignment that collides with work already on the

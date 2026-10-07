@@ -124,11 +124,18 @@ dr $CA $LU '{"action":"delivered"}' >/dev/null; mg POST /api/loads/$LU/approve >
 chk "vendor bill: Vulcan, 1 load, \$950 — not a \$0 VBT line" "$(mg POST /api/vendor-bills/preview "{\"loadIds\":[\"$LU\"]}" | jq "[(g['vendorName'], g['totalAmount'], g['lineItems'][0]['description']) for g in d['groups']]")" "[('Vulcan', 950, '3/4 Rock — 1 load (25.00 ton @ \$38/ton)')]"
 chk "customer invoice for the same load is unaffected by the yard: \$625" "$(mg POST /api/billing-batches/preview "{\"loadIds\":[\"$LU\"]}" | jq "d['groups'][0]['totalAmount']")" "625"
 say "   …and the opposite: planned Vulcan, actually loaded at OUR yard (Rigo, 2 loads)"
-for n in 1 2; do dr $RG $LR '{"action":"start-trip"}' >/dev/null; dr $RG $LR '{"action":"arrived-pickup","yardId":"vbt"}' >/dev/null; dr $RG $LR "{\"action\":\"loaded\",\"ticket\":{\"source\":\"vbt\",\"number\":\"VBT-R$n\"}}" >/dev/null; dr $RG $LR '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $LR '{"action":"trip-complete"}' >/dev/null; done
+for n in 1 2; do dr $RG $LR '{"action":"start-trip"}' >/dev/null; dr $RG $LR '{"action":"arrived-pickup","yardId":"vbt"}' >/dev/null; dr $RG $LR "{\"action\":\"loaded\",\"ticket\":{\"source\":\"vbt\",\"number\":\"VBT-R$n\",\"photo\":\"$PNG\"}}" >/dev/null; dr $RG $LR '{"action":"arrived-jobsite"}' >/dev/null; dr $RG $LR '{"action":"trip-complete"}' >/dev/null; done
 curl -s -b $RG -H "$J" -X PUT $B/api/loads/$LR -d "{\"pod\":{\"signedBy\":\"x\",\"signature\":\"$PNG\",\"signedAt\":\"$(date -u +%FT%TZ)\"}}" -o /dev/null
-dr $RG $LR '{"action":"delivered"}' >/dev/null; mg POST /api/loads/$LR/approve >/dev/null
+chk "Rigo submits (2/2, photo and signature on file) and the office approves" "$(dr $RG $LR '{"action":"delivered"}' | jq "d.get('success')")|$(mg POST /api/loads/$LR/approve | jq "d.get('success') or d.get('code')")" "True|True"
 chk "planned Vulcan (\$38 snapshot) but loaded at VBT: no vendor cost, no vendor bill" "$(load $LR "l['vendorRate'], [t['actualYardId'] for t in l['trips']]")|$(mgc POST /api/vendor-bills/preview "{\"loadIds\":[\"$LR\"]}")" "38 ['vbt', 'vbt']|400"
 chk "Profitability and Material Costs agree: Vulcan 6 loads = \$5,700 in material, nothing for the VBT hauls" "$(curl -s -b $M $B/api/profitability | jq "int(d['grand']['cost']), d['grand']['costIncomplete']")|$(curl -s -b $M $B/api/material-costs | jq "int(d['grandTotal']), d['vendors']['vulcan']['totalLoads'], 'vbt' in d['vendors']")" "5700 False|5700 6 False"
+
+say "5b. END OF DAY — one list instead of five screens: what is clean, what is open, what needs a person, what is blocked"
+review() { curl -s -b $M "$B/api/day-review" | python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+chk "the day's 4 loads: 2 billed (clean), 2 approved at the default rate (attention, 'bill it'); nothing open, nothing blocked; the board tile carries the same counts" "$(review "d['counts']")|$(curl -s -b $M $B/api/today | jq "d['review']['attention'], d['review']['blocked']")" "{'total': 4, 'clean': 2, 'open': 0, 'attention': 2, 'blocked': 0}|2 0"
+chk "   each line says why and what is next" "$(review "sorted((i['id'], i['state'], ' · '.join(i['reasons']), i['next']) for i in d['items'])")" "[('$LB', 'clean', 'billed by hand', ''), ('$LM', 'clean', 'billed · invoice HG-101', ''), ('$LR', 'attention', 'approved, not yet billed · default customer rate — no price on file', 'bill it'), ('$LU', 'attention', 'approved, not yet billed · default customer rate — no price on file', 'bill it')]"
+chk "   the reconciliation reads as sentences: 8 deliveries on 4 loads, every delivered load accounted for, 2 at a default rate" "$(review "' / '.join(d['reconciliation'])")" "8 deliveries on 4 loads — 0 waiting for approval, 2 ready to bill, 0 on a batch, 2 billed. / Every delivered load is submitted, approved or billed. / 2 loads are priced at a default customer rate."
+echo "  $(review "' | '.join(f\"{i['state']}: {i['customer']} {i['poNumber']} {i['id']} — {' · '.join(i['reasons'])}\" for i in d['items'])")"
 
 say "6. SAVE FAILURE — what the dispatcher sees when the database refuses the write"
 mg POST /api/_test/save-mode '{"mode":"fail"}' >/dev/null
@@ -152,6 +159,8 @@ chk "archive: Leonardo's (manual) and Matthew's (QuickBooks) billed loads leave 
 chk "the batch still knows its load; the archived load still knows its PO, trips and invoice" "$(curl -s -b $M $B/api/billing-batches/$B3 | jq "[l['id'] for l in d['loads']]")|$(curl -s -b $M $B/api/history | python3 -c "
 import json,sys;d=json.load(sys.stdin);l=[x for b in d['archive'] for x in b['loads'] if x['id']=='$LM'][0];po=[p for b in d['archive'] for p in b['pos'] if p['id']==l['poId']]
 print(len(po), len(l['trips']), l['qbInvoiceId'], l['billingBatchId']=='$B3')")" "['$LM']|0 2 INV-3 True"
+echo "  $(review "' | '.join(f\"{i['state']}: {i['poNumber']} {i['id']} — {' · '.join(i['reasons'])}\" for i in d['items'])")"
+chk "the end-of-day list follows the board: the two billed loads leave it; the two orders saved since (HG-LOST, HG-103 — HG-102 was refused during the outage) are open" "$(review "d['counts'], [i['id'] for i in d['items'] if i['id'] in ('$LB','$LM')]")" "{'total': 4, 'clean': 0, 'open': 2, 'attention': 2, 'blocked': 0} []"
 chk "Material Costs and Reports unchanged by archiving" "$(curl -s -b $M $B/api/material-costs | jq "int(d['grandTotal'])==$BEFORE")|$(curl -s -b $M $B/api/reports | jq "d['totals']['billedThisMonth']")" "True|2"
 chk "Case E: voiding the batch after archive releases the archived copy too" "$(mg POST /api/billing-batches/$B3/void '{"reason":"customer dispute"}' | jq "d['success'], d['qbVoided']")|$(curl -s -b $M $B/api/history | python3 -c "
 import json,sys;d=json.load(sys.stdin);l=[x for b in d['archive'] for x in b['loads'] if x['id']=='$LM'][0];print(l['billStatus'], repr(l['qbInvoiceId']))")" "True True|ready ''"
