@@ -331,6 +331,28 @@ default off, each writing "by telemetry" on the stamp it sets):
   differs from the plan — shown as a suggestion to the dispatcher first, not
   applied silently, because it changes vendor cost.
 
+### Limitation: VBT learns about a fence only from what Linxup sends
+
+The mirror of Linxup's geofences is built from the messages VBT receives:
+Geofence Events, Stops and Trips name a fence (id, name, group), and Geofence
+Change messages (CREATE / UPDATE / DELETE) refresh or retire it. There is no
+polling of Linxup. So:
+
+- A **renamed** fence is learned from the next message that names it.
+- A **deleted** fence is known deleted only if Linxup is configured to send
+  Geofence Change messages. If it is not, the deleted fence simply stops
+  producing events: VBT's mapping stays as it was and never produces evidence
+  again, and nothing in VBT can tell "deleted" from "no truck has been there".
+- VBT therefore never assumes a mapping is current because a geofence id is
+  on the yard. When the mirror knows the fence is gone (or has never heard of
+  it), the mapping is named **stale** on `/api/linxup/geofences`, on the board
+  (attention) and on the yard's Vendors panel; mapping a yard to a deleted
+  fence is refused. When the mirror does not know, the only signals are a yard
+  whose evidence reads "no visit" trip after trip — a person checks the fence
+  in Linxup and remaps.
+- None of this is a synchronization guarantee, and none of it rewrites a VBT
+  yard: the mapping is a person's to change.
+
 ## I. Position storage and retention strategy
 
 Volume, honestly: 5 trucks × ~10 hours × 60 fixes ≈ **3,000 positions a day**,

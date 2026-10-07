@@ -19,6 +19,27 @@ is still *operational* or already *historical*.
 
 "Never touched" is enforced by the server, not by the screen.
 
+## When the order's jobsite and customer freeze (OA5)
+
+Where the work went and for whom is part of the work's record, so those
+fields close earlier than the invoice fields:
+
+| Loads on the order are… | Address, city, customer | PO number, job, job code | Date, notes, planned yard | Jobsite pin |
+|---|---|---|---|---|
+| Assigned, started, or loaded (ticket on the truck, nothing delivered) | change | change | change (date and yard follow operational loads only) | change |
+| At least one trip completed, or any load submitted or sent back | **frozen** (403 `po_work_frozen`, naming the field) | change | change | change |
+| Any load approved or billed | frozen | **frozen** (403, "approved loads") | change | change |
+| A delivered load voided before approval | the freeze lifts if no other load holds it | — | — | change |
+| A load voided after approval | frozen (a voided approved load stays on the record) | frozen | — | change |
+
+The jobsite pin ("Set jobsite location") is never frozen: it is the office's
+reference for telemetry evidence and the map, not the record of where the load
+went, and every change is audited (`set-location`). A wrong address after a
+delivery is a new PO; the delivered order keeps the address its tickets,
+signature and GPS stamps describe. Submission therefore freezes only the two
+things the field record depends on; everything the office may still need to
+correct before approval (number, job, date, notes, yard, pin) stays open.
+
 ## Field by field
 
 | PO field | Editable? | Propagation |

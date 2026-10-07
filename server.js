@@ -2526,6 +2526,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
   // Plant a record the state machine would never produce (older data, a bypass), to prove the guards downstream.
   app.post('/api/_test/set-load', reqMgr, async (req, res) => { const l = findLoadAnywhere(String(req.body?.id || '')); if (!l) return res.status(404).json({ error: 'no load' }); Object.assign(l, req.body?.fields || {}); await saveData(); res.json({ ok: true, load: l }); });
+  app.post('/api/_test/set-po', reqMgr, async (req, res) => { const p = findPoAnywhere(String(req.body?.id || '')); if (!p) return res.status(404).json({ error: 'no po' }); Object.assign(p, req.body?.patch || {}); await saveData(); res.json({ success: true, po: p }); });
   // 'fail' makes every save throw until set back to 'ok'.
   app.post('/api/_test/linxup-prune', reqMgr, async (req, res) => { try { res.json(await linxup.prune(req.body?.now ? Number(req.body.now) : Date.now())); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post('/api/_test/save-mode', reqMgr, (req, res) => { testSaveMode = req.body?.mode === 'fail' ? 'fail' : 'ok'; testSaveSkip = Number(req.body?.after || 0); testSaveFailLeft = req.body?.count ? Number(req.body.count) : null; testSaveDelayMs = Math.max(0, Number(req.body?.delayMs || 0)); res.json({ mode: testSaveMode, after: testSaveSkip, count: testSaveFailLeft, delayMs: testSaveDelayMs }); });
