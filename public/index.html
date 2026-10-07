@@ -4451,10 +4451,18 @@ async function saveEditPO() {
   set('deliveryDate', g('pe-date')); set('plannedVendorId', g('pe-yard')); set('notes', g('pe-notes'));
   const reason = (g('pe-reason') || '').trim();
   if (!Object.keys(body).length) { closeEditPO(); return toast('Nothing changed', ''); }
+  // What the form showed for each field it changes (409 stale_po if another
+  // operator changed that field meanwhile — the form reopens on the current order).
+  body.base = Object.fromEntries(Object.keys(body).map(k => [k, p[k] ?? '']));
   if (reason) body.reason = reason;
   const btn = document.getElementById('pe-save'); btn.disabled = true; btn.textContent = 'Saving…';
   // A date change is an assignment on the new date: the same conflict check, the same Cancel / go-ahead choice.
   const d = await postAssignment(`/api/pos/${p.id}`, body, 'Move', reason, 'PUT');
+  if (!d.ok && d.code === 'stale_po') {
+    toast(d.error || 'This PO changed while the form was open — check it and save again', 'error');
+    await loadAll(); refreshCurrentView(); openEditPO(p.id);
+    return;
+  }
   if (!d.ok) { btn.disabled = false; btn.textContent = 'Save changes'; if (!d.cancelled) toast(d.error || 'Save failed', 'error'); return; }
   closeEditPO();
   toast(propagationSummary(d, p), 'success');
@@ -4958,6 +4966,10 @@ function qaOpen(loadId) {
 function qaChanges() {
   const out = {};
   for (const k of ['driverId', 'truckUnitId', 'yardId', 'trailerId']) if ((qaPick[k] || null) !== (qaBase ? qaBase[k] || null : undefined)) out[k] = qaPick[k] || null;
+  // What the sheet showed for each field it changes: the server refuses the
+  // change (409 stale_assignment) if another operator changed that field
+  // while the sheet was open, instead of writing this sheet's older choice.
+  if (Object.keys(out).length && qaBase) out.base = Object.fromEntries(Object.keys(out).map(k => [k, qaBase[k] || null]));
   return out;
 }
 // The same sheet from anywhere else (the Board), for a load on any date: the
@@ -5046,7 +5058,12 @@ function qaSet(field, val) {
   }
   qaPaintSheet();
 }
-function qaClose() { const el = document.getElementById('qa-sheet-bg'); if (el) el.remove(); qaPick = null; }
+function qaClose() {
+  const el = document.getElementById('qa-sheet-bg'); if (el) el.remove(); qaPick = null;
+  // A sheet opened for another day's load (from the Calendar or a drop) painted
+  // that day's board into todayData; give the board its own day back.
+  if (currentTab === 'today' && todayData && todayData.date !== (dbDate || todayData.today)) renderToday();
+}
 
 // The server refuses an assignment that collides with work already on the
 // board (driver mid-haul elsewhere, truck on another driver's load) with 409
@@ -5117,6 +5134,16 @@ async function qaConfirm() {
   if (!Object.keys(body).length) { qaClose(); return toast('Nothing changed', ''); }
   btn.disabled = true; btn.textContent = 'Assigning…';
   const r = await postAssignment(`/api/loads/${p.loadId}/assign`, body, 'Reassign');
+  if (!r.ok && r.code === 'stale_assignment') {
+    // Someone else changed this load while the sheet was open: nothing was
+    // written. Reopen the sheet on the current state so the choice is made
+    // against what is true now.
+    btn.disabled = false; btn.textContent = 'Confirm assignment';
+    toast(r.error || 'This load changed while the sheet was open — check it and confirm again', 'error');
+    await loadAll(); if (currentTab === 'today') await renderToday();
+    await qaOpenFor(p.loadId);
+    return;
+  }
   if (!r.ok) { btn.disabled = false; btn.textContent = 'Confirm assignment'; if (!r.cancelled) toast(r.error || 'Assign failed', 'error'); return; }
   const who = r.load.driverName || 'Unassigned';
   const truck = r.truck ? r.truck.truckNum : 'no truck';

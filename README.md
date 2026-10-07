@@ -56,7 +56,11 @@ carlos / carlos123
   truck or trailer on another driver's load) is shown in the app with Cancel
   or go ahead; a go-ahead is written to the audit log with its reason. Picking
   a driver suggests his usual truck when it is free today; nothing is written
-  until Confirm.
+  until Confirm. A sheet opened before another dispatcher changed the same
+  field is refused at Confirm ("This load changed while the sheet was open",
+  409) and reopens on the current state — the older choice never overwrites
+  the newer one unseen; fields the sheet did not touch still merge. Edit PO
+  works the same way (409 `stale_po`).
 - **Approve** confirms five facts before a load locks: Driver, Truck, Pickup
   yard, Ticket, Delivery. A ⚠ item can be approved anyway, and what was
   missing stays on the load and in the audit log for billing to see.
@@ -110,7 +114,10 @@ carlos / carlos123
   Bill, History — not only Dispatch. Quick Assign, the customer form, the
   fleet rows and Edit PO send only the fields the person changed, so two
   dispatchers editing the same record from two tabs cannot revert each
-  other; and every action is revalidated on the server against the current
+  other's unrelated fields; Quick Assign and Edit PO also send what the form
+  showed for each field they change (`base`), so the same field changed by
+  both is refused for the later form, never merged over (409
+  `stale_assignment` / `stale_po`); and every action is revalidated on the server against the current
   record (locked, already approved, archived, deleted, truck already on
   another load), so a stale tab can never bypass a rule by acting on old
   information.
@@ -136,6 +143,11 @@ carlos / carlos123
   and left open, or a load half delivered, keeps its driver and truck busy on
   today's board and in the conflict check ("unfinished since <date>"); the
   Carried Over tile shows it and the office moves it to today or closes it.
+  A load whose every trip was delivered after midnight stays on the driver's
+  Today (badged with its day) for the 20-hour workday window so he signs and
+  submits it himself; after that it is the office's, like other leftovers.
+  The live-refresh version carries the operating date, so a screen left open
+  across midnight repaints onto the new day.
   Dispatch uses the Calendar's words (Approved / Billed); a load on a billing
   batch says so; Load Details names the truck and reads the status in words;
   Edit PO lists the PO's voided loads so a void can be undone; Material Costs
@@ -171,7 +183,11 @@ carlos / carlos123
   earlier days — into clean, still open, needs attention or blocked, by the
   rules the screens already apply, each with its reasons in words and its next
   step, and reads the day back in sentences (deliveries against approval and
-  billing, default rates, batches to reconcile, open work). It reads and
+  billing, default rates, batches to reconcile, open work). A load waiting for
+  the office's approval is open work, not clean ("completed — waiting for
+  approval — approve it"); a load whose every trip is delivered but not
+  submitted says so; work carried from earlier days is listed with its day
+  and reconciled apart from the day's own deliveries. It reads and
   changes nothing; Details opens the load. On the phone the planned outside
   yard is one tap ("Arrived at Vulcan"), with "picked up somewhere else?" one
   link away.

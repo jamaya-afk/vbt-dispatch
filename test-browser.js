@@ -141,7 +141,7 @@ async function call(cookie, method, path, body) {
     const qaBody = await sent(/\/assign$/, () => page.evaluate(() => { qaSet('yardId', 'vulcan'); return qaConfirm(); }));
     await page.waitForTimeout(700);
     const after1 = await srvLoad();
-    chk('   tab A picks Vulcan and confirms: the request carries the yard and nothing else', qaBody, 'yardId');
+    chk('   tab A picks Vulcan and confirms: the request carries the yard and what the sheet showed for it (base, OA6) — nothing else', qaBody, 'base,yardId');
     chk('   …the load keeps tab B\'s driver and truck and takes tab A\'s yard — the stale sheet reverted nothing', `${after1.truckId} ${after1.truckUnitId} ${after1.vendorId} ${await page.evaluate(() => !document.getElementById('qa-sheet-bg'))}`, 'matthew truck-4 vulcan true');
     const assignsBefore2 = requests.filter(r => /\/assign$/.test(r)).length;
     await page.evaluate(id => qaOpenFor(id), ttLoad.id); await page.waitForTimeout(400);
@@ -178,7 +178,7 @@ async function call(cookie, method, path, body) {
     const peBody = await sent(/\/api\/pos\//, () => page.evaluate(() => { document.getElementById('pe-notes').value = 'gate code 4411'; return saveEditPO(); }));
     await page.waitForTimeout(600);
     const po2 = (await call(mgr, 'GET', '/api/data')).data.pos.find(p => p.id === ttPo.id);
-    chk('   tab A adds a note and saves: the request carries the note and nothing else', peBody, 'notes');
+    chk('   tab A adds a note and saves: the request carries the note and what the form showed for it (base, OA6) — nothing else', peBody, 'base,notes');
     chk('   …the PO keeps tab B\'s city and takes tab A\'s note', `${po2.city} ${po2.notes}`, 'Clovis gate code 4411');
 
     // 5. Approvals: a card the other tab already dealt with. The stale Approve is refused by the server; the poll repaints the list.
@@ -277,6 +277,26 @@ async function call(cookie, method, path, body) {
     `${cfAfter.truckId} ${await page.evaluate(() => !document.getElementById('qa-sheet-bg') && !document.getElementById('conflict-modal'))} ${cfAudit ? cfAudit.details.conflictsOverridden.types + ' / ' + cfAudit.details.conflictsOverridden.reason : 'no-cfAudit'}`, 'beryle true driver-busy / Rigo went home sick');
   chk('   the browser\'s own confirm() was never called', await page.evaluate(() => window.__confirmCalls || 0), 0);
   expectConflict = false;
+  await call(mgr, 'POST', `/api/loads/${nl.id}/assign`, { driverId: 'rigo' });   // back to Rigo for the rest of the run
+  await page.waitForTimeout(300);
+
+  console.log('── Office: a stale Quick Assign sheet never overwrites another operator (OA6) ──');
+  // Operator A opens the sheet on Rigo's load; operator B (another tab, the API here) puts Leonardo on it meanwhile; A submits her older choice.
+  expectConflict = true;   // the 409 stale_assignment below is the point of the test
+  await page.evaluate(id => qaOpen(id), nl.id); await page.waitForTimeout(400);
+  const otherOp = await call(mgr, 'POST', `/api/loads/${nl.id}/assign`, { driverId: 'leonardo' });
+  const stale6 = await page.evaluate(async () => {
+    qaSet('driverId', 'matthew');
+    await qaConfirm();
+    await new Promise(r => setTimeout(r, 900));
+    const sheet = document.getElementById('qa-sheet-bg');
+    return { toast: Array.from(document.querySelectorAll('.toast.error')).map(t => t.textContent).join(' | '), sheet: !!sheet, shows: sheet && qaPick ? qaPick.driverId : null, base: qaBase ? qaBase.driverId : null,
+             sel: sheet ? Array.from(sheet.querySelectorAll('.qa-opt.sel .t')).map(e => e.textContent.trim()).join('|') : '' };
+  });
+  const staleAfter = (await call(mgr, 'GET', '/api/data')).data.loads.find(l => l.id === nl.id);
+  chk('a sheet opened on Rigo submits Matthew after another operator put Leonardo on: refused, nothing written, the toast says the load changed, the sheet reopens on Leonardo', `${otherOp.status} ${staleAfter.truckId} ${/changed while the sheet was open/.test(stale6.toast)} ${stale6.sheet} ${stale6.shows} ${stale6.base} ${/Leonardo/.test(stale6.sel)}`, '200 leonardo true true leonardo leonardo true');
+  expectConflict = false;
+  await page.evaluate(() => qaClose());
   await call(mgr, 'POST', `/api/loads/${nl.id}/assign`, { driverId: 'rigo' });   // back to Rigo for the rest of the run
   await page.waitForTimeout(300);
 

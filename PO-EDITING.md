@@ -70,6 +70,17 @@ the PO changes.
 Removing work: an operational load is deleted from its own record (Delete
 load). Anything with a field record is voided, never deleted — see SPEC.md.
 
+## Two people on the same order
+
+The Edit PO form sends, with each field it changes, the value it showed when
+it opened (`base`). A field that no longer reads that way was changed by
+someone else while the form was open: the save is refused (409 `stale_po`,
+naming the field and returning the current value) and the form reopens on
+the current order. Fields the form did not change are never compared, so two
+people editing different fields of one PO do not collide. A request without
+`base` (an older client, a script) is not checked, as before; every other
+rule (freeze, unknown field, conflict) still applies.
+
 ## What is written down
 
 Every PO edit is one audit entry (`updated-po`) with each changed field's old

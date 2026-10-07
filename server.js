@@ -1570,7 +1570,7 @@ function driverWorkdayLoads(u) {
       // for the same hours a workday stays active. Older than that it is an
       // abandoned trip, and a load merely assigned on another day, or paused
       // between trips, is the office's to move or close (§39's rule).
-      || tripUnderWay(l))
+      || tripUnderWay(l) || deliveredAwaitingSubmission(l))
   );
 }
 function driverEarlierOpenLoads(u) {
@@ -1578,13 +1578,23 @@ function driverEarlierOpenLoads(u) {
   const act = activeShiftLoadIds(u);
   return store.loads.filter(l =>
     l.truckId === u.truckId && !l.voided && l.status !== 'completed' && l.approvalStatus !== 'approved' &&
-    l.deliveryDate && l.deliveryDate < today && !act.dates.has(l.deliveryDate) && !act.ids.has(l.id) && !tripUnderWay(l)
+    l.deliveryDate && l.deliveryDate < today && !act.dates.has(l.deliveryDate) && !act.ids.has(l.id) && !tripUnderWay(l) && !deliveredAwaitingSubmission(l)
   );
 }
 // A trip started and not completed within the window a workday stays active
 // (SHIFT_STALE_HOURS, 20 h): the driver is in the truck with the material,
 // whatever date the load carries. Needs the trip's own ISO start stamp; a
 // legacy trip without one, or one older than the window, is stale work.
+// Every trip delivered within the same window and not yet submitted: the
+// driver still owes the signature and the submission, so the card stays on
+// his phone (badged with its day) instead of going back to the office.
+function deliveredAwaitingSubmission(l, now = Date.now()) {
+  if (l.approvalStatus === 'submitted' || l.approvalStatus === 'approved' || l.status === 'completed') return false;
+  const done = (l.trips || []).filter(tripIsCompleted);
+  if (!done.length || done.length < (Number(l.loadsAssigned) || 0)) return false;
+  const last = Math.max(...done.map(t => Date.parse((t.isoStamps || {}).completed || '') || NaN).filter(Number.isFinite), -Infinity);
+  return Number.isFinite(last) && now - last < SHIFT_STALE_HOURS * 3600e3;
+}
 function tripUnderWay(l, now = Date.now()) {
   const t = (l.trips || []).find(x => x.timestamps && x.timestamps.start && !x.timestamps.completed);
   const iso = t && t.isoStamps && t.isoStamps.start;
@@ -3272,6 +3282,13 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     if (sp.truckUnitId && !(store.trucks || []).some(t => t.id === sp.truckUnitId)) return res.status(400).json({ error: `Unknown truck "${sp.truckUnitId}"` });
     if (sp.truckId && !driverRoster().some(d => d.id === sp.truckId)) return res.status(400).json({ error: `Unknown or inactive driver "${sp.truckId}"` });
     if (sp.material && sp.loadsAssigned) { const yp = yardProblem(sp.vendorId); if (yp) return res.status(400).json({ error: yp }); }
+    if (sp.material && sp.loadsAssigned && !(Number.isInteger(Number(sp.loadsAssigned)) && Number(sp.loadsAssigned) >= 1)) return res.status(400).json({ error: `Loads for ${sp.material} must be a whole number, 1 or more (got ${sp.loadsAssigned})` });
+    if (sp.trailerId) {   // the same refusals as Quick Assign
+      const tr = (store.trailers || []).find(x => x.id === sp.trailerId);
+      if (!tr) return res.status(400).json({ error: `Unknown trailer "${sp.trailerId}"` });
+      if (tr.active === false) return res.status(400).json({ error: `Trailer ${tr.number} is deactivated` });
+      if (tr.status === 'maintenance' || tr.status === 'out-of-service') return res.status(400).json({ error: `Trailer ${tr.number} is ${tr.status}` });
+    }
   }
   // The same rules as Quick Assign. An off-duty driver or a truck in the shop
   // is refused outright. A conflict with work already on the board that day
@@ -3500,7 +3517,7 @@ function poStatusFromLoads(po) {
 // an approval, an invoice — are HISTORY and keep the facts they were done
 // under. Once any load is approved or billed, the fields that identify the
 // order on an invoice are frozen. Nothing changes until every check passes.
-const PO_EDITABLE = ['poNumber', 'customer', 'customerId', 'job', 'jobCode', 'address', 'city', 'deliveryDate', 'plannedVendorId', 'notes', 'reason', 'force'];
+const PO_EDITABLE = ['base', 'poNumber', 'customer', 'customerId', 'job', 'jobCode', 'address', 'city', 'deliveryDate', 'plannedVendorId', 'notes', 'reason', 'force'];
 const PO_INVOICE_FIELDS = ['poNumber', 'customer', 'jobCode', 'job', 'address', 'city'];
 // Where the work went and for whom: frozen as soon as any load on the order
 // has delivered work or is submitted (the ticket, the signature and the GPS
@@ -3516,6 +3533,13 @@ app.put('/api/pos/:id', reqMgr, async (req, res) => {
   const old = store.pos[idx];
   const body = req.body || {};
   const unknown = Object.keys(body).filter(k => !PO_EDITABLE.includes(k));
+  // Two operators: the form says what it showed (base) for each field it
+  // changes; a field that no longer reads that way was changed by someone
+  // else while the form was open — refused (409 stale_po), never merged over.
+  if (body.base && typeof body.base === 'object') {
+    const stale = Object.keys(body.base).filter(k => PO_EDITABLE.includes(k) && !['base', 'reason', 'force', 'customerId'].includes(k) && body[k] !== undefined && String(body.base[k] ?? '').trim() !== String(old[k] ?? '').trim());
+    if (stale.length) return res.status(409).json({ error: `This PO changed while the form was open (${stale.join(', ')}). The form shows the current order; check it and save again.`, code: 'stale_po', stale, current: Object.fromEntries(stale.map(k => [k, old[k] ?? ''])) });
+  }
   if (unknown.length) return res.status(400).json({ error: `These fields cannot be changed through a PO update: ${unknown.join(', ')}. Status and materials follow the loads; jobsite coordinates and customer updates have their own actions.`, rejectedFields: unknown });
 
   // The customer, resolved as on creation: canonical spelling from the master,
@@ -7774,7 +7798,7 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
     return res.json({ version: officeFingerprint(today), count: dayLoads.length, at: new Date().toISOString() });
   }
   const scope = driverWorkdayLoads(u);
-  res.json({ version: dispatchFingerprint(scope), count: scope.length, at: new Date().toISOString() });
+  res.json({ version: dispatchFingerprint(scope) + '-' + today.slice(5), count: scope.length, at: new Date().toISOString() });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -8133,6 +8157,7 @@ function officeFingerprint(day) {
     'sh:' + (store.shifts || []).filter(s => s.status === 'open').map(s => s.id + ':' + (s.truckId || '')).sort().join(','),
     'lx:' + linxup.version,   // a new truck position or tracker change repaints the board
     'cal:' + calendarFingerprint(),   // any scheduled day changing repaints the calendar
+    'd:' + todayStr(),   // midnight repaints an open screen onto the new day
   ].join('|');
   return require('crypto').createHash('sha1').update(dispatchFingerprint(dayLoads) + '#' + extra).digest('hex').slice(0, 16);
 }
@@ -8300,7 +8325,10 @@ async function buildBoard(dayArg) {
   board.review = classifyDay(board).counts;   // the End-of-day tile: how many loads need a person
   return board;
 }
-app.get('/api/today', reqMgr, async (req, res) => res.json(await buildBoard(req.query.date)));
+app.get('/api/today', reqMgr, async (req, res) => {
+  if (req.query.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date))) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  res.json(await buildBoard(req.query.date));
+});
 
 // ── END-OF-DAY REVIEW ────────────────────────────────────────────────────────
 // The day's work sorted into clean / still open / needs attention / blocked,
@@ -8334,7 +8362,13 @@ function classifyDay(board) {
       case 'assigned': if (carried) attn(`assigned since ${r.deliveryDate}, never started`, 'move it to a day or close it'); else open('assigned, not started yet'); break;
       case 'in-progress': {
         const where = `${r.stage || 'under way'}, ${r.loadsDelivered}/${r.loadsAssigned} delivered`;
-        if (carried) attn(`unfinished since ${r.deliveryDate} — ${where}`, 'the driver finishes it or stops early'); else open(`still under way — ${where}`);
+        // Every trip delivered but not submitted: the hauling is done, the
+        // driver's signature and submission are what is missing.
+        const allDone = (Number(r.loadsAssigned) || 0) > 0 && (Number(r.loadsDelivered) || 0) >= Number(r.loadsAssigned);
+        if (carried && allDone) attn(`all ${r.loadsAssigned} delivered on ${r.deliveryDate}, not yet submitted`, 'the driver signs and submits from the phone, or the office moves it to today');
+        else if (carried) attn(`unfinished since ${r.deliveryDate} — ${where}`, 'the driver finishes it or stops early');
+        else if (allDone) open(`all ${r.loadsAssigned} delivered — waiting for the driver's submission`);
+        else open(`still under way — ${where}`);
         break;
       }
       case 'rejected': attn(`sent back to the driver${r.rejectReason ? `: ${r.rejectReason}` : ''}`, 'waiting on the driver to fix and resubmit'); break;
@@ -8342,14 +8376,14 @@ function classifyDay(board) {
         const ck = approvalChecklist(l); said = ck.warnings;
         if (ck.blocking.length) block(ck.blocking.join('; '), 'reject or void it');
         else if (ck.warnings.length) attn(`waiting for approval with gaps — ${ck.warnings.join('; ')}`, 'approve with the gaps acknowledged, or reject');
-        else { next = 'approve it'; reasons.push('completed — waiting for approval'); }
+        else open('completed — waiting for approval', 'approve it');   // the office's step: open work, not clean
         break;
       }
       case 'ready-to-bill': {
         if (batch && batch.syncStatus === 'unknown') block(`QuickBooks result unknown on batch ${batch.id}`, 'reconcile the batch');
         else if (batch && batch.syncStatus === 'failed') attn(`QuickBooks refused batch ${batch.id}${batch.errorMessage ? `: ${batch.errorMessage}` : ''}`, 'retry or fix the batch');
         else if (batch) { next = 'send the batch'; reasons.push(`approved · on batch ${batch.id}, not sent`); }
-        else { next = 'bill it'; reasons.push('approved, not yet billed'); }
+        else { next = 'bill it'; reasons.push('approved, not yet billed'); }   // the day's work and its approval are done; billing is its own cycle (Ready to Bill)
         // Acknowledged at approval by a person: said, not raised again.
         said = l.approvalWarnings || [];
         if (said.length) reasons.push(`gaps acknowledged at approval: ${said.join('; ')}`);
@@ -8383,8 +8417,11 @@ function classifyDay(board) {
   const counts = { total: items.length, clean: items.filter(i => i.state === 'clean').length, open: items.filter(i => i.state === 'open').length, attention: items.filter(i => i.state === 'attention').length, blocked: items.filter(i => i.state === 'blocked').length };
   // Reconciliation, in sentences: the day's deliveries against approval and billing.
   const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
-  const delivered = items.reduce((s, i) => s + (i.loadsDelivered || 0), 0);
-  const withWork = items.filter(i => (i.loadsDelivered || 0) > 0);
+  const own = items.filter(i => !i.deliveryDate || i.deliveryDate >= day);   // carried rows (dated earlier) are reconciled apart
+  const delivered = own.reduce((s, i) => s + (i.loadsDelivered || 0), 0);
+  const withWork = own.filter(i => (i.loadsDelivered || 0) > 0);
+  const carriedRows = items.filter(i => i.deliveryDate && i.deliveryDate < day);
+  const carriedDelivered = carriedRows.reduce((s, i) => s + (i.loadsDelivered || 0), 0);
   const by = b => items.filter(i => i.bucket === b).length;
   const batched = items.filter(i => i.bucket === 'ready-to-bill' && store.loads.find(x => x.id === i.id)?.billingBatchId).length;
   const reconciliation = [];
@@ -8394,6 +8431,7 @@ function classifyDay(board) {
     const notSubmitted = withWork.filter(i => i.bucket === 'in-progress' || i.bucket === 'rejected' || i.bucket === 'assigned').length;
     reconciliation.push(notSubmitted ? `${n(notSubmitted, 'load has', 'loads have')} deliveries but ${notSubmitted === 1 ? 'is' : 'are'} not submitted (still open or sent back).` : 'Every delivered load is submitted, approved or billed.');
   }
+  if (carriedRows.length) reconciliation.push(`${n(carriedRows.length, 'load', 'loads')} carried from earlier days (${n(carriedDelivered, 'delivery', 'deliveries')} on record there).`);
   const defaults = items.filter(i => i.reasons.some(x => x.startsWith('default customer rate'))).length;
   if (defaults) reconciliation.push(`${n(defaults, 'load is', 'loads are')} priced at a default customer rate.`);
   const estimates = items.filter(i => i.reasons.some(x => x.startsWith('vendor cost at a default rate'))).length;
@@ -8542,6 +8580,7 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
   const l = store.loads.find(x => x.id === req.params.id);
   if (!l) return res.status(404).json({ error: 'Load not found' });
   if (l.locked) return res.status(403).json({ error: 'Load is approved and locked' });
+  if (l.voided) return res.status(409).json({ error: `This load is voided${l.voidReason ? ` (${l.voidReason})` : ''} — restore it first if it should be dispatched.`, code: 'load_voided' });
   const { driverId, truckUnitId, yardId, trailerId, force, reason } = req.body || {};
 
   // Validate every part first; nothing on the load changes until the whole
@@ -8569,6 +8608,20 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
     v = store.vendors.find(x => x.id === yardId);
     if (yardId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });
     if (v && v.active === false) return res.status(400).json({ error: `${v.name} is inactive — mark it active on Vendors or pick another yard` });
+  }
+  // Two operators: the sheet says what it showed (base) for each field it
+  // changes; a field another operator changed meanwhile is refused (409
+  // stale_assignment) and the sheet reopens on the current state. Fields the
+  // sheet did not touch merge as before. Never bypassed by `force` — that is
+  // for conflicts the operator saw, not for ones hidden from him.
+  const base = req.body && req.body.base && typeof req.body.base === 'object' ? req.body.base : null;
+  if (base) {
+    const poOf = store.pos.find(p => p.id === l.poId);
+    const now = { driverId: l.truckId || null, truckUnitId: l.truckUnitId || null, yardId: resolvePickupYard(l, poOf).id || null, trailerId: l.trailerId || null };
+    const word = { driverId: 'driver', truckUnitId: 'truck', yardId: 'yard', trailerId: 'trailer' };
+    const label = (k, v) => k === 'driverId' ? (v ? (driverRoster().find(x => x.id === v) || {}).label || v : 'unassigned') : k === 'truckUnitId' ? (v ? ((store.trucks || []).find(x => x.id === v) || {}).truckNum || v : 'no truck') : k === 'yardId' ? (v ? ((store.vendors || []).find(x => x.id === v) || {}).name || v : 'none') : (v ? ((store.trailers || []).find(x => x.id === v) || {}).number || v : 'none');
+    const stale = Object.keys(word).filter(k => k in base && req.body[k] !== undefined && (base[k] || null) !== now[k]);
+    if (stale.length) return res.status(409).json({ error: `This load changed while the sheet was open — ${stale.map(k => `the ${word[k]} is now ${label(k, now[k])}`).join(', ')}. The sheet shows the current state; check it and confirm again.`, code: 'stale_assignment', stale: stale.map(k => word[k]), current: now });
   }
   const conflicts = assignmentConflicts(l, { driverId, truckUnitId, trailerId });
   if (conflicts.length && force !== true) {

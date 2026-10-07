@@ -61,6 +61,13 @@ chk "driver already mid-haul → 409, load unchanged" "$(echo "$R" | jq "d['code
 R=$(mg POST /api/loads/$LR/assign '{"truckUnitId":"truck-2"}')
 echo "  → $(echo "$R" | jq "d['error']")"
 chk "truck on another driver's open load → 409, load unchanged" "$(echo "$R" | jq "d['conflicts'][0]['type']")|$(load $LR "l['truckUnitId']")" "truck-busy|truck-14"
+say "   Two dispatchers, one sheet: Joshua opens Quick Assign on Rigo's load; Perla puts Carlos on it meanwhile; Joshua submits his older choice"
+PE=$(login perla perla123)
+curl -s -b $PE -H "$J" -X POST $B/api/loads/$LR/assign -d '{"driverId":"carlos","base":{"driverId":"rigo"}}' -o /dev/null
+R=$(mg POST /api/loads/$LR/assign '{"driverId":"matthew","base":{"driverId":"rigo"}}')
+echo "  → $(echo "$R" | jq "d['error']")"
+chk "the older sheet is refused (409 stale_assignment) and Perla's assignment stands; nothing is overwritten unseen" "$(echo "$R" | jq "d['code'], d['stale'], d['current']['driverId']")|$(load $LR "l['driverName']")" "stale_assignment ['driver'] carlos|Carlos"
+chk "   reopened on the current state, Joshua puts Rigo back (200)" "$(mg POST /api/loads/$LR/assign '{"driverId":"rigo","base":{"driverId":"carlos"}}' | jq "d['success'], d['load']['driverName']")" "True Rigo"
 say "   Reassignment mid-haul: Beryle (at the yard on trip 1 of 3) goes home sick → Leonardo takes over on Truck #12"
 R=$(mg POST /api/loads/$LB/assign '{"driverId":"leonardo","truckUnitId":"truck-12"}')
 echo "  → $(echo "$R" | jq "d['error']")"
