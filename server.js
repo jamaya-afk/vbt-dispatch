@@ -2022,7 +2022,7 @@ function revenueDetailAt(load, eff) {
   d.basis = 'planned';
   if (d.unit !== 'ton') return d;
   const po = findPoAnywhere(load.poId) || {};
-  if (customerBillingBasis(po.customer) !== 'actual') return d;
+  if ((load.billingBasisFixed || customerBillingBasis(po.customer)) !== 'actual') return d;
   const tons = loadTons(load);
   d.basis = 'actual';
   d.actualTons = tons.actualTons;
@@ -2515,6 +2515,9 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
       fakeQb.billsDeleted++;
       return { Id: id, status: 'Deleted' };
     };
+    fakeQb.attachments = fakeQb.attachments || [];
+    qb.fetchRemoteAsBuffer = async (url) => ({ buffer: Buffer.from('fake-image:' + url), contentType: 'image/png' });
+    qb.attachToEntity = async (conn, args) => { const id = 'ATT-' + (fakeQb.attachments.length + 1); fakeQb.attachments.push({ Id: id, entityType: args.entityType, entityId: String(args.entityId), fileName: args.fileName, contentType: args.contentType, bytes: args.buffer ? args.buffer.length : 0 }); return { Id: id }; };
     res.json({ ok: true, fakeQb });
   });
   app.get('/api/_test/qb-fake', reqMgr, (req, res) => res.json(fakeQb));
@@ -3809,7 +3812,7 @@ app.put('/api/loads/:id', reqAuth, async (req, res) => {
       return res.status(400).json({ error: `Progress is recorded through the trip steps (Start, Arrived, Loaded, Complete); ${attempted.join(', ')} cannot be set directly.`, protectedFields: attempted });
     }
     const allowed = {};
-    if (req.body.pod)        allowed.pod        = { ...l.pod, ...req.body.pod };
+    if (req.body.pod)        allowed.pod        = { ...l.pod, ...req.body.pod, ...((req.body.pod.signature || req.body.pod.signatureUrl) ? { signedAt: new Date().toISOString() } : {}) };   // signed when the server received it, not when the phone's clock said
     if (req.body.ticketImage){ allowed.ticketImage = req.body.ticketImage; allowed.ticketImageAt = new Date().toISOString(); }
     if (req.body.ticketImageUrl){ allowed.ticketImageUrl = req.body.ticketImageUrl; allowed.ticketImageAt = new Date().toISOString(); allowed.ticketImage = ''; /* clear legacy base64 */ }
     if (req.body.notes !== undefined) allowed.notes = req.body.notes;
@@ -4016,6 +4019,7 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
       : (plannedPickup && isInternalYardId(plannedPickup.id) ? store.vendors.find(y => y.id === plannedPickup.id) : null);
     // Freight segment decision first — nothing is stamped if the driver has
     // to enter an odometer or finish another customer's freight.
+    if (req.body.yardId && (!yard || yard.active === false)) return res.status(400).json({ error: 'Unknown or inactive yard — pick the yard from the list', code: 'yard_unknown' });
     const poForSeg = store.pos.find(p => p.id === l.poId) || {};
     const dec = segmentDecision(u, l, poForSeg, yard, req.body || {});
     if (dec.status) return res.status(dec.status).json({ success: false, error: dec.error, code: dec.code, segment: dec.segment, preview: dec.preview, floor: dec.floor });
@@ -4499,10 +4503,19 @@ app.get('/api/shifts/current', reqAuth, (req, res) => {
   }));
   const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({ id: t.id, number: t.number, type: t.type || '', status: t.status || 'available', defaultTruckId: t.defaultTruckId || null }));
   const usualTruckId = d ? d.defaultTruckId || null : null;
-  const usualTrailer = usualTruckId ? trailers.find(t => t.defaultTruckId === usualTruckId) : null;
+  // Today's dispatched truck comes first: the office put the driver's loads on
+  // it, so his day (and its freight) should be on the same truck. One truck
+  // across today's open loads and free to take → the default; otherwise the
+  // usual truck as before. A suggestion the driver can change, never written.
+  const todayLoads = d ? driverWorkdayLoads({ truckId: driverId }).filter(l => l.truckUnitId && l.approvalStatus !== 'submitted' && l.approvalStatus !== 'approved') : [];
+  const todayTruckIds = [...new Set(todayLoads.map(l => l.truckUnitId))];
+  const assignedTruckId = todayTruckIds.length === 1 && trucks.some(t => t.id === todayTruckIds[0] && t.status === 'available' && !t.inUseBy) ? todayTruckIds[0] : null;
+  const defaultTruckId = assignedTruckId || usualTruckId;
+  const assignedTrailerId = assignedTruckId ? ((todayLoads.find(l => l.truckUnitId === assignedTruckId && l.trailerId) || {}).trailerId || null) : null;
+  const usualTrailer = defaultTruckId ? trailers.find(t => t.defaultTruckId === defaultTruckId) : null;
   res.json({
     shift: shiftPublic(shift), staleShift: shiftPublic(stale), inspectionItems: INSPECTION_ITEMS, trucks, trailers,
-    defaults: { truckId: usualTruckId, trailerId: usualTrailer ? usualTrailer.id : null },
+    defaults: { truckId: defaultTruckId, trailerId: assignedTrailerId || (usualTrailer ? usualTrailer.id : null), assignedTruckId, usualTruckId },
     lastShift: (() => { const prev = (store.shifts || []).filter(s => s.driverId === driverId && s.status === 'closed').sort((a, b) => (b.endAt || '').localeCompare(a.endAt || ''))[0]; if (!prev) return null; const pd = shiftDerived(prev); return { id: prev.id, truckId: prev.truckId, trailerId: prev.trailerId, truckNum: prev.truckNum, trailerNum: prev.trailerNum, date: prev.date, endAt: prev.endAt, endOdometer: prev.endOdometer, dailyMiles: pd.dailyMiles, billableMiles: pd.billableMiles, closedBy: prev.closedBy }; })(),
     today: todayStr(),
   });
@@ -5123,6 +5136,12 @@ app.post('/api/loads/:id/unbill', reqMgr, async (req, res) => {
 
 // genId lives with the id high-water marks (see "ID HIGH-WATER MARKS" above).
 
+// An inline image (data:image/png;base64,…) as a buffer, for an attachment.
+function dataUrlToBuffer(dataUrl) {
+  const m = /^data:([^;,]+);base64,(.*)$/s.exec(String(dataUrl || ''));
+  if (!m) throw new Error('not an inline image');
+  return { buffer: Buffer.from(m[2], 'base64'), contentType: m[1] };
+}
 function logQbSync(entry) {
   try {
     const e = {
@@ -5234,7 +5253,7 @@ function buildBillingGroups(loadIds) {
 
       if (load.ticketImageUrl) ticketImages.push({ loadId: load.id, url: load.ticketImageUrl });
       else if (load.ticketImage) ticketImages.push({ loadId: load.id, dataUrl: true });
-      if (load.pod?.signature) signatureImages.push({ loadId: load.id, dataUrl: true });
+      if (load.pod?.signatureUrl || load.pod?.signature) signatureImages.push({ loadId: load.id, url: load.pod.signatureUrl || '', dataUrl: !load.pod.signatureUrl });
       if (load.approvedAt) approvalStamps.push({ loadId: load.id, at: load.approvedAt, by: load.approvedBy });
     }
 
@@ -5451,6 +5470,11 @@ app.post('/api/billing-batches', reqMgr, async (req, res) => {
       const l = store.loads.find(x => x.id === lid);
       if (!l) continue;
       l.billingBatchId = batchId;
+      // The basis the invoice priced on (planned tons or the scale tickets) is
+      // frozen with the batch: a later change to the customer's billing basis
+      // must not re-price a sent invoice on Load Details, the review or
+      // Profitability.
+      l.billingBasisFixed = customerBillingBasis((findPoAnywhere(l.poId) || {}).customer);
       // A default customer rate was a placeholder until now. The line this
       // batch froze is the load's rate from here on, so Load Details,
       // Profitability and the end-of-day review say what the invoice says.
@@ -5745,13 +5769,15 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
         logQbSync({ actionType: 'attach_file', relatedBatchId: b.id, relatedLoadIds: [ref.loadId], qbEntityType: 'Invoice', qbEntityId: invoice.Id, responseStatus: 'error', errorMessage: e.message, user });
       }
     }
-    // Also attach signatures stored as remote URL on the load (pod.signatureUrl)
+    // The signed POD, from its stored URL or decoded from the inline image
+    // (the two ways the phone stores a signature). Best-effort like the tickets.
     for (const ref of (b.signatureImageRefs || [])) {
-      const l = store.loads.find(x => x.id === ref.loadId);
-      const url = l?.pod?.signatureUrl;
-      if (!url) continue;
+      const l = findLoadAnywhere(ref.loadId) || store.loads.find(x => x.id === ref.loadId);
+      const url = l?.pod?.signatureUrl || ref.url || '';
+      const inline = !url && /^data:image\//.test(String(l?.pod?.signature || '')) ? String(l.pod.signature) : '';
+      if (!url && !inline) continue;
       try {
-        const { buffer, contentType } = await qb.fetchRemoteAsBuffer(url);
+        const { buffer, contentType } = url ? await qb.fetchRemoteAsBuffer(url) : dataUrlToBuffer(inline);
         const ext = (contentType.split('/')[1] || 'png').split(';')[0];
         const att = await qb.attachToEntity(conn, {
           entityType: 'Invoice',
@@ -5871,6 +5897,7 @@ app.post('/api/billing-batches/:id/void', reqMgr, async (req, res) => {
       l.billingBatchId = '';
       // A rate this batch fixed is a placeholder again, resolved live from the list.
       if (l.customerRateFixedBy === b.id) { l.customerRateIsDefault = true; l.customerRateFixedBy = ''; }
+      l.billingBasisFixed = '';   // the basis follows the customer again until the next batch
       l.billStatus = 'ready';     // back to ready-to-bill so a corrected batch can pick it up
       l.qbInvoiceId = '';
       l.qbInvoiceNumber = '';
@@ -7798,7 +7825,9 @@ app.get('/api/dispatch-version', reqAuth, (req, res) => {
     return res.json({ version: officeFingerprint(today), count: dayLoads.length, at: new Date().toISOString() });
   }
   const scope = driverWorkdayLoads(u);
-  res.json({ version: dispatchFingerprint(scope) + '-' + today.slice(5), count: scope.length, at: new Date().toISOString() });
+  const orderBits = scope.map(l => { const p = store.pos.find(x => x.id === l.poId) || {}; return [p.address, p.city, p.notes, p.jobCode, p.job].join('~'); }).join('|');
+  const version = require('crypto').createHash('sha1').update(dispatchFingerprint(scope) + '#' + orderBits).digest('hex').slice(0, 16);
+  res.json({ version: version + '-' + today.slice(5), count: scope.length, at: new Date().toISOString() });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

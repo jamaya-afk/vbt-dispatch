@@ -875,15 +875,16 @@ async function call(cookie, method, path, body) {
   chk('day card offers Start day before anything else', await d.page.evaluate(() => /Your day has not started/.test(document.getElementById('day-card').innerText)), true);
   await d.page.evaluate(() => openStartDay()); await d.page.waitForTimeout(400);
   let sd = await d.page.evaluate(() => ({ open: document.getElementById('startday-modal').style.display === 'flex', truck: document.getElementById('sd-truck').value, trailer: document.getElementById('sd-trailer').options.length, allok: document.getElementById('sd-allok').checked }));
-  chk('Start day form: usual truck prefilled, trailer list, inspection defaults to all satisfactory', `${sd.open} ${sd.truck} ${sd.trailer > 1} ${sd.allok}`, 'true truck-2 true true');
+  chk("Start day form: today's dispatched truck prefilled (#12 — Beryle's load is on it; his usual #2 is only the fallback, OA7), trailer list, inspection defaults to all satisfactory", `${sd.open} ${sd.truck} ${sd.trailer > 1} ${sd.allok}`, 'true truck-12 true true');
+  chk("   the truck option says why it was chosen", await d.page.evaluate(() => document.querySelector('#sd-truck option[value="truck-12"]').textContent), "Truck #12 · today's load");
   await d.page.fill('#sd-odo', '41000');
   await d.page.evaluate(() => submitStartDay()); await d.page.waitForTimeout(400);
   chk('   refused without a signature (no day created)', (await call(mgr, 'GET', '/api/today')).data.shifts.length, 0);
   await d.page.evaluate(() => { const c = document.getElementById('sd-sig'); const ctx = c.getContext('2d'); ctx.beginPath(); ctx.moveTo(20, 80); ctx.lineTo(200, 90); ctx.stroke(); sdSig.markInk(); });
   await d.page.evaluate(() => submitStartDay()); await d.page.waitForTimeout(1500);
   const shifts = (await call(mgr, 'GET', '/api/today')).data.shifts;
-  chk('   day started: Beryle on Truck #12 at 41,000, inspection satisfactory, signed', shifts.length === 1 ? `${shifts[0].driverName} ${shifts[0].truckNum} ${shifts[0].startOdometer} ${shifts[0].inspection.satisfactory} ${shifts[0].inspection.hasSignature}` : 'none', 'Beryle Truck #2 41000 true true');
-  chk('   day card now shows the open day with Break, Change truck, End day', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day open · Truck #2/.test(t) && /Break/.test(t) && /Change truck/.test(t) && /End day/.test(t); }), true);
+  chk('   day started: Beryle on Truck #12 (the truck his load is on) at 41,000, inspection satisfactory, signed', shifts.length === 1 ? `${shifts[0].driverName} ${shifts[0].truckNum} ${shifts[0].startOdometer} ${shifts[0].inspection.satisfactory} ${shifts[0].inspection.hasSignature}` : 'none', 'Beryle Truck #12 41000 true true');
+  chk('   day card now shows the open day with Break, Change truck, End day', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day open · Truck #12/.test(t) && /Break/.test(t) && /Change truck/.test(t) && /End day/.test(t); }), true);
   console.log('── Driver: Loaded captures the ticket once ──');
   chk('card shows truck + trailer and the trip 1 ticket', /Rig Truck #12 \+ trailer 3B/i.test(dv.card) && /Load 1 · #37432733 supplier 23\.20 t/.test(dv.card), true);
   chk('the Loaded button asks for the ticket', dv.loadedBtn, 'Loaded — enter ticket');
@@ -933,7 +934,7 @@ async function call(cookie, method, path, body) {
   await d.page.fill('#ed-odo', '41080'); await d.page.evaluate(() => submitEndDay()); await d.page.waitForTimeout(1500);
   const ended = (await call(mgr, 'GET', '/api/today')).data.shifts.find(x => x.driverId === 'beryle');
   chk('End day: 80 daily, 40 billable, 40 non-billable — derived', `${ended.status} ${ended.dailyMiles} ${ended.billableMiles} ${ended.nonBillableMiles}`, 'closed 80 40 40');
-  chk('   day card says the day is closed with the miles, not "not started"', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day closed · Truck #2/.test(t) && /80 miles today \(40 on freight\)/.test(t) && !/has not started/.test(t); }), true);
+  chk('   day card says the day is closed with the miles, not "not started"', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day closed · Truck #12/.test(t) && /80 miles today \(40 on freight\)/.test(t) && !/has not started/.test(t); }), true);   // the day ran on #12, today's dispatched truck (OA7)
   chk('   Loaded modal closed, card lists all three tickets and the running total', await d.page.evaluate(() => { const t = document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '); return document.getElementById('loaded-modal').style.display === 'none' && /#37432799 supplier 23\.19 t/.test(t) && /#37432862 supplier 24\.45 t/.test(t) && /Confirmed so far 70\.84 t/.test(t); }), true);
   console.log('── Driver: the planned outside yard is one tap; "picked up somewhere else?" opens the picker ──');
   // OA4: the PO names Vulcan, so the card's first button is that yard — no picker on every trip. Beryle's day is closed here, so the tap asks no odometer.

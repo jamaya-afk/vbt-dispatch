@@ -146,6 +146,9 @@ carlos / carlos123
   A load whose every trip was delivered after midnight stays on the driver's
   Today (badged with its day) for the 20-hour workday window so he signs and
   submits it himself; after that it is the office's, like other leftovers.
+  Start day offers the truck the office dispatched the driver's loads on today
+  (marked "today's load"), his usual truck otherwise; an arrival names a yard
+  the office knows; the signature time is the server's.
   The live-refresh version carries the operating date, so a screen left open
   across midnight repaints onto the new day.
   Dispatch uses the Calendar's words (Approved / Billed); a load on a billing
@@ -177,7 +180,10 @@ carlos / carlos123
   and the vendor cost; a $0 amount is a ⚠ to acknowledge. A load on a vendor
   bill is voided through the bill, never around it; the bill fixes the rate it
   pays onto the trips; a yard that hauled anything is not deleted; a price is
-  a number of 0 or more; Profitability names its estimates.
+  a number of 0 or more; Profitability names its estimates. A batch freezes
+  the rate and the billing basis it priced on, so a later change to either
+  never re-prices a sent invoice on screen; the signed POD and the ticket
+  photo travel with the invoice to QuickBooks.
 - **The end of the day is one list.** The End of day tile on Dispatch (and
   `/api/day-review`) sorts every load of the day — plus unfinished work from
   earlier days — into clean, still open, needs attention or blocked, by the

@@ -2820,7 +2820,7 @@ function openStartDay() {
   const tSel = document.getElementById('sd-truck'), trSel = document.getElementById('sd-trailer');
   const last = info.lastShift || {};
   const truckId = info.defaults.truckId || last.truckId || (info.trucks[0] || {}).id || '';
-  tSel.innerHTML = info.trucks.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === truckId ? 'selected' : ''} ${t.inUseBy || t.status !== 'available' ? 'disabled' : ''}>${escapeHtml(t.truckNum)}${t.inUseBy ? ' — ' + escapeHtml(t.inUseBy) : t.status !== 'available' ? ' — ' + t.status : ''}</option>`).join('');
+  tSel.innerHTML = info.trucks.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === truckId ? 'selected' : ''} ${t.inUseBy || t.status !== 'available' ? 'disabled' : ''}>${escapeHtml(t.truckNum)}${t.id === info.defaults.assignedTruckId ? " · today's load" : ''}${t.inUseBy ? ' — ' + escapeHtml(t.inUseBy) : t.status !== 'available' ? ' — ' + t.status : ''}</option>`).join('');
   const trailerId = info.defaults.trailerId || last.trailerId || '';
   trSel.innerHTML = `<option value="">No trailer</option>` + info.trailers.map(t => `<option value="${escapeAttr(t.id)}" ${t.id === trailerId ? 'selected' : ''}>${escapeHtml(t.number)}${t.type ? ' · ' + escapeHtml(t.type) : ''}</option>`).join('');
   document.getElementById('sd-items').innerHTML = info.inspectionItems.map(it => `<label style="display:flex;align-items:center;gap:6px;font-size:12px;text-transform:none;letter-spacing:0;font-weight:500;color:var(--txt)"><input type="checkbox" class="sd-defect" value="${escapeAttr(it)}" style="width:18px;height:18px;margin:0"> ${escapeHtml(it)}</label>`).join('');
@@ -5289,6 +5289,7 @@ async function liveCheck(force) {
       await renderDriver();
       toast('Your assignments were updated', 'success');
     } else if (currentTab === 'today') {
+      await loadAll();          // Load Details, Edit PO and the sheet read the client copy too
       await renderToday();
     } else if (currentTab === 'calendar') {
       await loadAll();          // Load Details reads the client copy of the loads
