@@ -875,15 +875,16 @@ async function call(cookie, method, path, body) {
   chk('day card offers Start day before anything else', await d.page.evaluate(() => /Your day has not started/.test(document.getElementById('day-card').innerText)), true);
   await d.page.evaluate(() => openStartDay()); await d.page.waitForTimeout(400);
   let sd = await d.page.evaluate(() => ({ open: document.getElementById('startday-modal').style.display === 'flex', truck: document.getElementById('sd-truck').value, trailer: document.getElementById('sd-trailer').options.length, allok: document.getElementById('sd-allok').checked }));
-  chk('Start day form: usual truck prefilled, trailer list, inspection defaults to all satisfactory', `${sd.open} ${sd.truck} ${sd.trailer > 1} ${sd.allok}`, 'true truck-2 true true');
+  chk("Start day form: today's dispatched truck prefilled (#12 — Beryle's load is on it; his usual #2 is only the fallback, OA7), trailer list, inspection defaults to all satisfactory", `${sd.open} ${sd.truck} ${sd.trailer > 1} ${sd.allok}`, 'true truck-12 true true');
+  chk("   the truck option says why it was chosen", await d.page.evaluate(() => document.querySelector('#sd-truck option[value="truck-12"]').textContent), "Truck #12 · today's load");
   await d.page.fill('#sd-odo', '41000');
   await d.page.evaluate(() => submitStartDay()); await d.page.waitForTimeout(400);
   chk('   refused without a signature (no day created)', (await call(mgr, 'GET', '/api/today')).data.shifts.length, 0);
   await d.page.evaluate(() => { const c = document.getElementById('sd-sig'); const ctx = c.getContext('2d'); ctx.beginPath(); ctx.moveTo(20, 80); ctx.lineTo(200, 90); ctx.stroke(); sdSig.markInk(); });
   await d.page.evaluate(() => submitStartDay()); await d.page.waitForTimeout(1500);
   const shifts = (await call(mgr, 'GET', '/api/today')).data.shifts;
-  chk('   day started: Beryle on Truck #12 at 41,000, inspection satisfactory, signed', shifts.length === 1 ? `${shifts[0].driverName} ${shifts[0].truckNum} ${shifts[0].startOdometer} ${shifts[0].inspection.satisfactory} ${shifts[0].inspection.hasSignature}` : 'none', 'Beryle Truck #2 41000 true true');
-  chk('   day card now shows the open day with Break, Change truck, End day', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day open · Truck #2/.test(t) && /Break/.test(t) && /Change truck/.test(t) && /End day/.test(t); }), true);
+  chk('   day started: Beryle on Truck #12 (the truck his load is on) at 41,000, inspection satisfactory, signed', shifts.length === 1 ? `${shifts[0].driverName} ${shifts[0].truckNum} ${shifts[0].startOdometer} ${shifts[0].inspection.satisfactory} ${shifts[0].inspection.hasSignature}` : 'none', 'Beryle Truck #12 41000 true true');
+  chk('   day card now shows the open day with Break, Change truck, End day', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day open · Truck #12/.test(t) && /Break/.test(t) && /Change truck/.test(t) && /End day/.test(t); }), true);
   console.log('── Driver: Loaded captures the ticket once ──');
   chk('card shows truck + trailer and the trip 1 ticket', /Rig Truck #12 \+ trailer 3B/i.test(dv.card) && /Load 1 · #37432733 supplier 23\.20 t/.test(dv.card), true);
   chk('the Loaded button asks for the ticket', dv.loadedBtn, 'Loaded — enter ticket');
@@ -933,8 +934,22 @@ async function call(cookie, method, path, body) {
   await d.page.fill('#ed-odo', '41080'); await d.page.evaluate(() => submitEndDay()); await d.page.waitForTimeout(1500);
   const ended = (await call(mgr, 'GET', '/api/today')).data.shifts.find(x => x.driverId === 'beryle');
   chk('End day: 80 daily, 40 billable, 40 non-billable — derived', `${ended.status} ${ended.dailyMiles} ${ended.billableMiles} ${ended.nonBillableMiles}`, 'closed 80 40 40');
-  chk('   day card says the day is closed with the miles, not "not started"', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day closed · Truck #2/.test(t) && /80 miles today \(40 on freight\)/.test(t) && !/has not started/.test(t); }), true);
+  chk('   day card says the day is closed with the miles, not "not started"', await d.page.evaluate(() => { const t = document.getElementById('day-card').innerText.replace(/\s+/g, ' '); return /Day closed · Truck #12/.test(t) && /80 miles today \(40 on freight\)/.test(t) && !/has not started/.test(t); }), true);   // the day ran on #12, today's dispatched truck (OA7)
   chk('   Loaded modal closed, card lists all three tickets and the running total', await d.page.evaluate(() => { const t = document.getElementById('sec-driver').innerText.replace(/\s+/g, ' '); return document.getElementById('loaded-modal').style.display === 'none' && /#37432799 supplier 23\.19 t/.test(t) && /#37432862 supplier 24\.45 t/.test(t) && /Confirmed so far 70\.84 t/.test(t); }), true);
+  console.log('── Driver: the Daily Log Book — review the day, add fuel, sign (paperwork P1) ──');
+  chk('day card offers "Review & sign Daily Log" once the day is closed and unsigned', await d.page.evaluate(() => /Review & sign Daily Log/.test(document.getElementById('day-card').innerText)), true);
+  await d.page.evaluate(() => openDailyLog()); await d.page.waitForTimeout(1500);
+  const dl1 = await d.page.evaluate(() => document.getElementById('dl-body').innerText.replace(/\s+/g, ' '));
+  chk('   the log is filled from the day: Beryle, Truck #12, 80 miles today, the freight row with its loads, the trips with tickets, the inspection, no fuel yet, a signature pad', `${/Day ended/.test(dl1)} ${/DRIVER Beryle/.test(dl1)} ${/TRUCK Truck #12/.test(dl1)} ${/Miles today 80/.test(dl1)} ${/Vulcan → 500 Main St, Merced/.test(dl1)} ${/37432862/.test(dl1)} ${/all 11 items satisfactory/.test(dl1)} ${/No fuel purchase recorded/.test(dl1)} ${await d.page.evaluate(() => !!document.getElementById('dl-sig'))}`, 'true true true true true true true true true');
+  await d.page.evaluate(() => { document.querySelector('#dl-body details').open = true; });
+  await d.page.fill('#dl-gal', '75'); await d.page.selectOption('#dl-yard', 'vbt');
+  await d.page.evaluate(() => dlAddFuel(document.getElementById('dl-fuel-save').getAttribute('onclick').match(/'([^']+)'/)[1])); await d.page.waitForTimeout(1200);
+  chk('   fuel 75 gal at VBT Yard added from the form, shown on the log', await d.page.evaluate(() => /75\.00 gal · VBT Yard/.test(document.getElementById('dl-body').innerText)), true);
+  await d.page.evaluate(() => { dlState.sig.markInk(); return dlSign(); }); await d.page.waitForTimeout(1500);
+  const dlShift = (await call(mgr, 'GET', '/api/today')).data.shifts.find(x => x.driverId === 'beryle');
+  chk('   signed from the phone: the log reads Signed, the server stamped and stored it on the shift, the day card now says signed', `${await d.page.evaluate(() => /Signed ✓/.test(document.getElementById('dl-body').innerText))} ${!!(dlShift.dayLog && dlShift.dayLog.signedAt && dlShift.dayLog.hasSignature)} ${dlShift.dayLog && dlShift.dayLog.signedBy} ${await d.page.evaluate(() => { closeDailyLog(); return /Daily Log ✓ signed/.test(document.getElementById('day-card').innerText); })}`, 'true true beryle true');
+  const dlPrint = await (await d.page.request.get(`${B}/api/daily-log/print?date=${encodeURIComponent(dlShift.date)}`)).text();
+  chk('   printable Daily Log Book: SIGNED, no DRAFT watermark, the fuel row and the signature image', `${dlPrint.includes('SIGNED</span>')} ${dlPrint.split('<div class="draft">').length - 1} ${dlPrint.includes('VBT Yard')} ${dlPrint.includes('alt="driver signature"')}`, 'true 0 true true');
   console.log('── Driver: the planned outside yard is one tap; "picked up somewhere else?" opens the picker ──');
   // OA4: the PO names Vulcan, so the card's first button is that yard — no picker on every trip. Beryle's day is closed here, so the tap asks no odometer.
   await call(mgr, 'POST', '/api/pos', { po: { poNumber: 'OA4-Y', customer: 'One Tap Co', deliveryDate: today, address: '1 Tap St', city: 'Fresno', plannedVendorId: 'vulcan' }, splits: [{ truckId: 'beryle', truckUnitId: 'truck-2', material: '3/4 Rock', loadsAssigned: 1, vendorId: 'vulcan' }] });

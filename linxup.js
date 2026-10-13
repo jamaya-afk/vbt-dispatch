@@ -616,4 +616,144 @@ class Linxup {
   }
 }
 
-module.exports = { Linxup, normalizePosition, classify, TYPES };
+// ── LINXUP API V3 — pull side, read-only ─────────────────────────────────────
+// The webhook above is what Linxup pushes to VBT. This is what VBT asks
+// Linxup for, and only ever reads: the tracker inventory (to link trackers to
+// trucks before any message arrives and to verify the links) and, later,
+// history for a window. Credentials live in environment variables only
+// (LINXUP_API_BASE_URL, LINXUP_API_KEY, LINXUP_API_AUTH); nothing here logs,
+// stores or returns them. Linxup's V3 documentation is account-gated, so the
+// way the key is presented is configuration, not a guess:
+//   bearer            Authorization: Bearer <key>                 (default)
+//   header:<Name>     <Name>: <key>                                e.g. header:X-API-Key
+//   jwt:<path>        POST <path> {"apiKey": <key>} → a JWT, sent as Bearer;
+//                     renewed before its exp claim, once on a 401.
+// Every answer is summarized (status, count, field names) — never the
+// positions themselves — so the office can see what the account returns.
+const API_TIMEOUT_DEFAULT = 15000;
+const TRACKER_KEYS = {
+  trackerId: ['trackerId', 'tracker_id', 'id', 'deviceId', 'device_id'],
+  name: ['name', 'label', 'assetName', 'vehicleName', 'displayName', 'nickname'],
+  deviceNumber: ['deviceNumber', 'imei', 'IMEI', 'device_number', 'esn'],
+  deviceSerialNumber: ['deviceSerialNumber', 'serialNumber', 'serial', 'deviceSerial', 'serial_number'],
+  vin: ['vin', 'VIN'],
+  licensePlate: ['licensePlate', 'plate', 'license_plate'],
+  make: ['make'], model: ['model'], year: ['year'],
+};
+const pickKey = (o, keys) => { for (const k of keys) { if (o && o[k] !== undefined && o[k] !== null && o[k] !== '') return o[k]; } return null; };
+// Linxup nests the asset under tracker/asset/vehicle in its push messages; the
+// pull API may do the same. Look one level down for identity fields.
+function normApiTracker(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const nests = [raw, raw.tracker, raw.asset, raw.vehicle, raw.device].filter(x => x && typeof x === 'object');
+  const get = (keys) => { for (const n of nests) { const v = pickKey(n, keys); if (v != null) return v; } return null; };
+  const trackerId = num(get(TRACKER_KEYS.trackerId));
+  const t = {
+    trackerId, name: str(get(TRACKER_KEYS.name)), deviceNumber: str(get(TRACKER_KEYS.deviceNumber)), deviceSerialNumber: str(get(TRACKER_KEYS.deviceSerialNumber)),
+    vin: str(get(TRACKER_KEYS.vin)), licensePlate: str(get(TRACKER_KEYS.licensePlate)), make: str(get(TRACKER_KEYS.make)), model: str(get(TRACKER_KEYS.model)), year: num(get(TRACKER_KEYS.year)),
+    fields: Object.keys(raw).sort(),
+  };
+  t.identityFields = ['trackerId', 'deviceNumber', 'deviceSerialNumber', 'vin'].filter(k => t[k] != null);
+  return t;
+}
+// Find the list in whatever envelope the answer uses: a bare array, or the
+// first array under a well-known key, or the first array value at all.
+function unwrapList(json) {
+  if (Array.isArray(json)) return { list: json, envelope: '' };
+  if (!json || typeof json !== 'object') return { list: null, envelope: '' };
+  for (const k of ['data', 'items', 'results', 'content', 'trackers', 'devices', 'assets', 'vehicles', 'records']) if (Array.isArray(json[k])) return { list: json[k], envelope: k };
+  for (const k of ['data', 'result', 'response', 'payload']) { if (json[k] && typeof json[k] === 'object') { const inner = unwrapList(json[k]); if (inner.list) return { list: inner.list, envelope: `${k}.${inner.envelope}`.replace(/\.$/, '') }; } }
+  for (const [k, v] of Object.entries(json)) if (Array.isArray(v)) return { list: v, envelope: k };
+  return { list: null, envelope: '' };
+}
+function jwtExp(token) {
+  try { const p = String(token).split('.')[1]; const j = JSON.parse(Buffer.from(p.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); return num(j.exp) ? num(j.exp) * 1000 : null; } catch { return null; }
+}
+class LinxupApi {
+  // opts: { baseUrl, apiKey, auth, timeoutMs, fetchImpl, log }
+  constructor(opts = {}) {
+    this.baseUrl = String(opts.baseUrl || '').trim().replace(/\/+$/, '');
+    this.apiKey = String(opts.apiKey || '');
+    this.auth = String(opts.auth || 'bearer').trim();
+    this.timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : API_TIMEOUT_DEFAULT;
+    this.fetchImpl = opts.fetchImpl || ((url, init) => fetch(url, init));
+    this.logger = opts.log || console;
+    this.jwt = null;   // { token, expiresAt }
+    this.last = null;  // summary of the last probe, never the body
+    this.counters = { requests: 0, ok: 0, unauthorized: 0, failed: 0, timeouts: 0, malformed: 0 };
+  }
+  get configured() { return !!(this.baseUrl && this.apiKey && /^https?:\/\//.test(this.baseUrl)); }
+  get authMode() { return this.auth.startsWith('header:') ? 'header' : this.auth.startsWith('jwt:') ? 'jwt' : 'bearer'; }
+  // Never the key, never a token: what the office and /healthz may see.
+  status() {
+    let host = ''; try { host = this.baseUrl ? new URL(this.baseUrl).host : ''; } catch { host = '(invalid URL)'; }
+    return {
+      configured: this.configured, host, authMode: this.authMode, timeoutMs: this.timeoutMs,
+      jwt: this.authMode === 'jwt' ? { held: !!this.jwt, expiresAt: this.jwt ? new Date(this.jwt.expiresAt).toISOString() : '' } : null,
+      counters: { ...this.counters }, last: this.last,
+    };
+  }
+  async _login() {
+    const path = this.auth.slice(4);
+    const r = await this._raw('POST', path, { 'Content-Type': 'application/json' }, JSON.stringify({ apiKey: this.apiKey }));
+    if (!r.ok) { const e = new Error(r.status === 401 || r.status === 403 ? 'Linxup refused the API key (login)' : `Linxup login failed (${r.status || r.error})`); e.status = r.status; e.timeout = r.timeout; throw e; }
+    const tok = r.json && (r.json.token || r.json.jwt || r.json.accessToken || r.json.access_token || (r.json.data && (r.json.data.token || r.json.data.jwt)));
+    if (!tok) { const e = new Error('Linxup login answered without a token field (token, jwt, accessToken)'); e.malformed = true; throw e; }
+    const exp = jwtExp(tok) || (Date.now() + 10 * 60 * 1000);   // no exp claim: assume ten minutes, renew often
+    this.jwt = { token: String(tok), expiresAt: exp };
+  }
+  async _authHeaders(force) {
+    if (this.authMode === 'header') return { [this.auth.slice(7).trim() || 'X-API-Key']: this.apiKey };
+    if (this.authMode === 'bearer') return { Authorization: `Bearer ${this.apiKey}` };
+    if (force || !this.jwt || this.jwt.expiresAt - Date.now() < 60 * 1000) await this._login();
+    return { Authorization: `Bearer ${this.jwt.token}` };
+  }
+  async _raw(method, path, headers, body) {
+    const url = this.baseUrl + (path.startsWith('/') ? path : '/' + path);
+    const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    this.counters.requests++;
+    try {
+      const res = await this.fetchImpl(url, { method, headers: { Accept: 'application/json', ...headers }, body, signal: ctrl.signal });
+      const text = await res.text();
+      let json = null; try { json = text ? JSON.parse(text) : null; } catch { json = undefined; }
+      return { ok: res.ok, status: res.status, json, textLength: text.length, contentType: res.headers && res.headers.get ? res.headers.get('content-type') || '' : '' };
+    } catch (e) {
+      const timedOut = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+      if (timedOut) this.counters.timeouts++;
+      return { ok: false, status: 0, json: null, error: timedOut ? `no answer within ${this.timeoutMs >= 1000 ? Math.round(this.timeoutMs / 1000) + ' s' : this.timeoutMs + ' ms'}` : (e && e.message || String(e)).replace(this.apiKey, '[key]'), timeout: timedOut };
+    } finally { clearTimeout(timer); }
+  }
+  // GET a read-only path; retry once with a fresh JWT on 401.
+  async get(path) {
+    if (!this.configured) return { ok: false, status: 0, error: 'Linxup API is not configured (LINXUP_API_BASE_URL and LINXUP_API_KEY)' };
+    let headers;
+    try { headers = await this._authHeaders(false); } catch (e) { this.counters[e.status === 401 || e.status === 403 ? 'unauthorized' : e.malformed ? 'malformed' : 'failed']++; return { ok: false, status: e.status || 0, error: e.message, timeout: !!e.timeout }; }
+    let r = await this._raw('GET', path, headers);
+    if ((r.status === 401 || r.status === 403) && this.authMode === 'jwt') {
+      try { headers = await this._authHeaders(true); r = await this._raw('GET', path, headers); } catch (e) { r = { ok: false, status: e.status || 401, error: e.message }; }
+    }
+    if (r.ok) this.counters.ok++;
+    else if (r.status === 401 || r.status === 403) { this.counters.unauthorized++; r.error = r.error || 'Linxup refused the credentials (401/403)'; }
+    else if (!r.timeout) this.counters.failed++;
+    if (r.ok && r.json === undefined) { this.counters.malformed++; r.ok = false; r.error = 'Linxup answered with a body that is not JSON'; }
+    return r;
+  }
+  // The connectivity check: one read-only call, summarized. `path` is the
+  // inventory endpoint from the account's Swagger (LINXUP_API_INVENTORY_PATH).
+  async probe(path) {
+    const at = new Date().toISOString();
+    const r = await this.get(path);
+    const { list, envelope } = r.ok ? unwrapList(r.json) : { list: null, envelope: '' };
+    const trackers = (list || []).map(normApiTracker).filter(Boolean);
+    const summary = {
+      at, path, ok: !!r.ok, status: r.status, error: r.ok ? '' : (r.error || `HTTP ${r.status}`), timeout: !!r.timeout,
+      shape: r.ok ? (list ? (envelope ? `object with "${envelope}" list` : 'array') : (r.json && typeof r.json === 'object' ? `object without a list (keys: ${Object.keys(r.json).slice(0, 12).join(', ')})` : typeof r.json)) : '',
+      items: list ? list.length : null,
+      fields: list && list.length && list[0] && typeof list[0] === 'object' ? Object.keys(list[0]).sort().slice(0, 40) : [],
+      identity: { withTrackerId: trackers.filter(t => t.trackerId != null).length, withVin: trackers.filter(t => t.vin).length, withDeviceNumber: trackers.filter(t => t.deviceNumber).length, withSerial: trackers.filter(t => t.deviceSerialNumber).length },
+    };
+    this.last = summary;
+    return { summary, trackers: r.ok ? trackers : [] };
+  }
+}
+module.exports = { Linxup, LinxupApi, normApiTracker, unwrapList, normalizePosition, classify, TYPES };

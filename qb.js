@@ -288,8 +288,13 @@ async function createCustomer(conn, customer) {
 }
 
 async function findOrCreateCustomer(conn, customer) {
-  const existing = await findCustomerByName(conn, customer.name);
-  if (existing) return { customer: existing, created: false };
+  // By the name on the invoice first, then by any other name VBT knows the
+  // customer under (its master was renamed after the batch was made), before
+  // creating a new QuickBooks customer.
+  for (const name of [customer.name, ...(customer.altNames || [])].filter(Boolean)) {
+    const existing = await findCustomerByName(conn, name);
+    if (existing) return { customer: existing, created: false };
+  }
   const created = await createCustomer(conn, customer);
   return { customer: created, created: true };
 }

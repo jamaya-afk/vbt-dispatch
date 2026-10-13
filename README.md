@@ -146,6 +146,9 @@ carlos / carlos123
   A load whose every trip was delivered after midnight stays on the driver's
   Today (badged with its day) for the 20-hour workday window so he signs and
   submits it himself; after that it is the office's, like other leftovers.
+  Start day offers the truck the office dispatched the driver's loads on today
+  (marked "today's load"), his usual truck otherwise; an arrival names a yard
+  the office knows; the signature time is the server's.
   The live-refresh version carries the operating date, so a screen left open
   across midnight repaints onto the new day.
   Dispatch uses the Calendar's words (Approved / Billed); a load on a billing
@@ -177,7 +180,12 @@ carlos / carlos123
   and the vendor cost; a $0 amount is a ⚠ to acknowledge. A load on a vendor
   bill is voided through the bill, never around it; the bill fixes the rate it
   pays onto the trips; a yard that hauled anything is not deleted; a price is
-  a number of 0 or more; Profitability names its estimates.
+  a number of 0 or more; Profitability names its estimates. A batch freezes
+  the rate and the billing basis it priced on, so a later change to either
+  never re-prices a sent invoice on screen; the signed POD and every
+  completed trip's ticket image travel with the invoice to QuickBooks. A
+  batch remembers which customer master it was made for, so a rename before
+  the send still reaches the QuickBooks customer VBT already resolved.
 - **The end of the day is one list.** The End of day tile on Dispatch (and
   `/api/day-review`) sorts every load of the day — plus unfinished work from
   earlier days — into clean, still open, needs attention or blocked, by the
@@ -222,6 +230,37 @@ carlos / carlos123
   Vendors (a name match is only suggested). Disagreements — driver, pickup,
   jobsite, location — are attention items. Telemetry never completes, arrives,
   approves, assigns or bills anything.
+
+## The Daily Log Book (paperwork P1)
+
+The paper Daily Log Book is generated, one per driver per operating day, from
+what the app already recorded; nobody retypes the day.
+
+| Paper field | Comes from |
+|---|---|
+| Driver, Truck, Trailer, Date (with weekday) | the driver's Start day (the shift) |
+| Time start / Time end / Total time | Start day and End day stamps, minus the breaks the driver tapped |
+| Rows: Invoice # / PO, Material, Start location, Destination, OD start, OD end, Miles, Loads | the day's odometer legs and freight segments: start of day → first yard, each freight (origin yard → jobsite, loads = its completed trips, PO and material from its loads), the gaps between, last reading → end of day; a truck change ends one leg and starts the next |
+| Miles today | the legs' start → end readings, each reading counted once; billable and non-billable shown beside |
+| Trips table (one row per load hauled) | each trip: PO, customer, material, actual yard (or the planned yard marked *planned*), destination, ticket number and net tons, start / loaded / delivered times, status |
+| Condition checklist | the pre-trip inspection recorded at Start day: satisfactory → every item X; not satisfactory → the named defects marked, the rest left blank; no record → all blank and flagged |
+| Comments / Repairs | inspection defects and remarks, truck changes, odometer-below-last confirmations, office closures |
+| Fuel purchase location and gallons | **new input**: the driver adds fuel purchases on the phone (gallons, yard or typed place, optional receipt photo); the office can add or remove one with a reason |
+| Signature and date | **new input**: the driver signs the finished log on the phone; the time is the server's |
+
+Rules the generator keeps:
+
+- **Only completed trips are loads.** A started or loaded trip is listed, flagged, and not counted; its ticket tons are not added.
+- **Miles only from valid readings.** A missing reading prints as missing; a reading lower than the one before is kept, shown and flagged, and the day's total is withheld rather than guessed. Nothing is inferred from maps or planned routes.
+- **Nothing fabricated.** No day started → the log says so, lists the trips that ran with no day open as exceptions, and cannot be signed. No inspection → blank checklist. No fuel → "No fuel purchase recorded".
+- **Midnight.** A day keeps its trips until it is ended: a trip run after midnight inside a day started yesterday is on yesterday's log.
+- **Signing.** Driver only, own log, once the day is ended and its freight closed. The server stamps the time and stores exactly what was signed with a hash. Any later change to a source (a trip, a ticket, fuel, a PO address, a customer name) makes the live log read **changed since signed**, names the changed sections, and asks the driver to sign again; the signed version stays available (`?signed=1`) and the earlier signatures are kept in history. Master-data edits never silently rewrite a signed record.
+
+Where it is:
+
+- **Phone**: the day card offers *Daily Log* while the day is open, *Review & sign Daily Log* once it is ended, and *Daily Logs* (earlier days) before a day starts. The review screen shows the log, flags what needs attention, takes fuel purchases and the signature, and links *Print / save as PDF*.
+- **Office**: Today → Drivers' day → *Daily Log Book* (signed / unsigned shown on the button) opens the printable page by driver and date; *Add fuel for driver…* records fuel with a reason; *Shift detail* is the older per-shift page.
+- **API**: `GET /api/daily-log?driverId&date`, `GET /api/daily-log/recent`, `GET /api/daily-log/print?driverId&date[&signed=1]`, `POST /api/shifts/:id/fuel`, `DELETE /api/shifts/:id/fuel/:fuelId` (reason), `POST /api/daily-log/sign` (driver). The log is derived on every read; only the fuel entries and the sign-off (with its snapshot) are stored, on the shift.
 
 ## Files
 
@@ -356,10 +395,30 @@ Developer dashboard for the chosen environment. Test in sandbox first; flip
 ### Linxup environment variables
 
 ```
-LINXUP_WEBHOOK_TOKEN        # bearer token Linxup presents on every webhook; unset = integration off
+LINXUP_WEBHOOK_TOKEN        # bearer token Linxup presents on every webhook; unset = push integration off
 LINXUP_WEBHOOK_TOKEN_NEXT   # optional second token accepted during a rotation
 LINXUP_COMPANY_ID           # the account's companyId; messages for any other company are refused
+
+LINXUP_API_BASE_URL         # the account's "host link" from Linxup Setup → API/Developers → API documentation page (e.g. https://<host>/…); unset = pull client off
+LINXUP_API_KEY              # a V3 ("Experimental") API key generated on that page — never the webhook token, never a browser value
+LINXUP_API_AUTH             # how the key is presented, as the account's Swagger shows it:
+                            #   bearer (default)        → Authorization: Bearer <key>
+                            #   header:<Name>           → <Name>: <key>            e.g. header:X-API-Key
+                            #   jwt:<login path>        → POST <login path> {"apiKey": <key>} answers a JWT, sent as Bearer and
+                            #                             renewed 60 s before its exp claim (once more on a 401)
+LINXUP_API_INVENTORY_PATH   # the tracker/device list endpoint from the Swagger (a path starting with /); used by the connectivity check
+LINXUP_API_TIMEOUT_MS       # optional, default 15000
 ```
+
+All of these are server-side environment variables (Railway → the service →
+Variables). None is ever written to the store, sent to the browser, logged, or
+echoed by any route; `/healthz` and `/api/linxup-api/status` report only
+"configured: yes/no", the host name, the auth mode and the summary of the last
+check. The office runs the check from Drivers & Trucks → **Linxup API → Check
+connection**: one read-only GET of the inventory path, summarized (HTTP status,
+how many trackers, which fields, how many carry an id / VIN / IMEI / serial);
+the trackers it names join the picker so they can be linked to trucks before
+any webhook message arrives.
 
 Register one URL per message type in Linxup: `https://<host>/api/linxup/position`,
 `/device-status`, `/device-update`, `/geofence-event`, `/trip`, `/stop`,
