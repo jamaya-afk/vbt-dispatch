@@ -404,11 +404,25 @@ LINXUP_API_KEY              # a V3 ("Experimental") API key generated on that pa
 LINXUP_API_AUTH             # how the key is presented, as the account's Swagger shows it:
                             #   bearer (default)        → Authorization: Bearer <key>
                             #   header:<Name>           → <Name>: <key>            e.g. header:X-API-Key
-                            #   jwt:<login path>        → POST <login path> {"apiKey": <key>} answers a JWT, sent as Bearer and
-                            #                             renewed 60 s before its exp claim (once more on a 401)
+                            #   jwt:<login path>        → POST <login path> with X-API-Key: <key>, Accept: text/plain and an
+                            #                             empty body answers the JWT as plain text; sent as Bearer and renewed
+                            #                             60 s before its exp claim (once more on a 401)
 LINXUP_API_INVENTORY_PATH   # the tracker/device list endpoint from the Swagger (a path starting with /); used by the connectivity check
 LINXUP_API_TIMEOUT_MS       # optional, default 15000
 ```
+
+The values confirmed against the account's Swagger (October 2026):
+
+```
+LINXUP_API_BASE_URL=https://api.linxup.com/pullapi
+LINXUP_API_AUTH=jwt:/api/v3/jwts
+LINXUP_API_INVENTORY_PATH=/api/v3/trackers
+```
+
+The login is `POST https://api.linxup.com/pullapi/api/v3/jwts` with `X-API-Key`
+and `Accept: text/plain`, no body; the answer is the JWT itself. The server
+joins the base URL and each path without repeating segments, so a base that
+already ends in `/api/v3` works too.
 
 All of these are server-side environment variables (Railway → the service →
 Variables). None is ever written to the store, sent to the browser, logged, or
