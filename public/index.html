@@ -1220,6 +1220,14 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
   </div>
 </div>
 
+<!-- DAILY LOG BOOK (driver): review the day, add fuel, sign -->
+<div class="modal-bg" id="daylog-modal" style="display:none">
+  <div class="modal" style="max-width:720px">
+    <div class="modal-head"><h2 id="dl-title">Daily Log Book</h2><button class="modal-close" onclick="closeDailyLog()">&#215;</button></div>
+    <div class="modal-body" id="dl-body" style="gap:10px"></div>
+  </div>
+</div>
+
 <!-- TRUCK CHANGE (driver) -->
 <div class="modal-bg" id="truckchange-modal" style="display:none">
   <div class="modal" style="max-width:440px">
@@ -2770,11 +2778,14 @@ function dayBar() {
       return `<div class="trip-card" id="day-card"><div class="trip-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div><div style="font-weight:700">Day closed · ${escapeHtml(last.truckNum)}${last.trailerNum ? ' + trailer ' + escapeHtml(last.trailerNum) : ''}</div>
           <div style="font-size:12px;color:var(--txt2)">Ended ${new Date(last.endAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} at OD ${Number(last.endOdometer).toLocaleString()} · ${Number(last.dailyMiles || 0).toLocaleString()} miles today${last.billableMiles ? ` (${Number(last.billableMiles).toLocaleString()} on freight)` : ''}</div></div>
-        <button class="btn ghost" style="min-height:44px" onclick="openStartDay()">Start another day</button></div>${earlierNote}</div>`;
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn ${last.dayLog ? 'ghost' : 'primary'}" style="min-height:44px" onclick="openDailyLog('${escapeAttr(last.date)}')">${last.dayLog ? 'Daily Log ✓ signed' : 'Review & sign Daily Log'}</button>
+          <button class="btn ghost" style="min-height:44px" onclick="openStartDay()">Start another day</button></div></div>${earlierNote}</div>`;
     }
     return `<div class="trip-card" id="day-card"><div class="trip-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <div><div style="font-weight:700">Your day has not started</div><div style="font-size:12px;color:var(--txt2)">Truck, trailer, odometer and pre-trip inspection — under a minute.</div></div>
-      <button class="btn primary" style="min-height:44px" onclick="openStartDay()">Start day</button></div>${earlierNote}</div>`;
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" style="min-height:44px" onclick="openDailyLog()">Daily Logs</button>
+      <button class="btn primary" style="min-height:44px" onclick="openStartDay()">Start day</button></div></div>${earlierNote}</div>`;
   }
   const seg = s.openSegment;
   // A day that started on an earlier date is still THIS day while it is
@@ -2796,6 +2807,7 @@ function dayBar() {
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
       ${s.openBreak ? btn('Back from break', `shiftBreak('${s.id}','end')`, 'primary') : btn('Break', `shiftBreak('${s.id}','start')`)}
       ${btn('Change truck', `openTruckChange()`)}
+      ${btn('Daily Log', `openDailyLog('${escapeAttr(s.date)}')`)}
       ${btn('End day', `openEndDay()`)}
     </div>
   </div></div>`;
@@ -2892,6 +2904,108 @@ async function submitEndDay() {
   if (r.ok) { closeEndDay(); toast(`Day closed — ${r.shift.dailyMiles.toLocaleString()} miles today`, 'success'); return renderDriver(); }
   if (r.code === 'segment_open') return openEndDay(r.segment);
   toast(r.error || 'Could not end the day', 'error');
+}
+// ── DAILY LOG BOOK (driver) ──────────────────────────────────────────────────
+// The paper Daily Log Book, filled from the day the app already recorded:
+// shift, odometers, freight, trips, tickets, inspection. The driver reviews
+// it, adds fuel purchases (the one thing nothing else captured) and signs it
+// once the day is ended. The server keeps what was signed; anything that
+// changes afterwards shows here as "changed — sign again".
+let dlState = { date: '', log: null, sig: null, receipt: '', recent: null };
+const dlClock = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
+const dlNum = (v) => v == null ? '—' : Number(v).toLocaleString();
+async function openDailyLog(date) {
+  dlState = { date: date || (window._shiftInfo && window._shiftInfo.today) || window._serverToday || new Date().toISOString().slice(0, 10), log: null, sig: null, receipt: '', recent: dlState.recent };
+  document.getElementById('daylog-modal').style.display = 'flex';
+  document.getElementById('dl-body').innerHTML = '<div class="empty-state"><p>Loading your Daily Log…</p></div>';
+  if (!dlState.recent) { const r = await api('GET', '/api/daily-log/recent'); dlState.recent = r.ok ? r.days : []; }
+  await refreshDailyLog();
+}
+function closeDailyLog() { document.getElementById('daylog-modal').style.display = 'none'; dlState.sig = null; }
+async function dlPick(date) { dlState.date = date; dlState.sig = null; await refreshDailyLog(); }
+async function refreshDailyLog() {
+  const r = await api('GET', `/api/daily-log?date=${encodeURIComponent(dlState.date)}`);
+  if (!r.ok) { document.getElementById('dl-body').innerHTML = `<div class="banner" style="background:var(--Rb);color:var(--R)">${escapeHtml(r.error || 'Could not load the Daily Log')}</div>`; return; }
+  dlState.log = r.log; dlState.yards = r.yards || dlState.yards || []; renderDailyLog(r.log);
+}
+function renderDailyLog(log) {
+  const h = log.header, so = log.signoff;
+  const statusLine = {
+    'no-day': ['var(--bg2)', 'var(--txt2)', 'No day was started on this date.' + (log.trips.length ? ' The trips below ran with no day open — no odometers, hours or inspection exist for them.' : '')],
+    open: ['var(--Ab)', 'var(--A)', 'Your day is still open. End your day, then review and sign this log.'],
+    unsigned: ['var(--Ab)', 'var(--A)', 'Day ended. Check the log, add any fuel you bought, then sign at the bottom.'],
+    signed: ['var(--Gb)', 'var(--G)', `Signed ${so ? new Date(so.signedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : ''}.`],
+    changed: ['var(--Rb)', 'var(--R)', `This log changed after you signed it (${so ? so.changes.join(', ') : ''}). Review it and sign again — your earlier signature is kept.`],
+  }[log.status];
+  const recent = (dlState.recent || []).length ? `<select onchange="dlPick(this.value)" style="width:100%;min-height:40px">${(dlState.recent.some(d => d.date === log.header.date) ? dlState.recent : [{ date: log.header.date, dateLabel: h.dateLabel, status: log.status }, ...dlState.recent]).map(d => `<option value="${escapeAttr(d.date)}" ${d.date === log.header.date ? 'selected' : ''}>${escapeHtml(d.dateLabel || d.date)} — ${d.status === 'signed' ? 'signed' : d.status === 'changed' ? 'changed since signed' : d.status === 'open' ? 'day open' : d.status === 'no-day' ? 'no day started' : 'not signed'}</option>`).join('')}</select>` : '';
+  const exceptions = log.exceptions.filter(e => e.code !== 'fuel_none' && e.code !== 'changed_since_signed');
+  const kv = (k, v) => `<div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--txt3)">${k}</div><div style="font-weight:700">${v}</div></div>`;
+  const rows = log.miles.rows.map(r => `<tr style="${r.flags.length ? 'color:var(--R)' : ''}${r.kind === 'freight' ? ';font-weight:600' : ''}"><td style="padding:4px 2px">${escapeHtml(r.from)} → ${escapeHtml(r.to)}${r.kind === 'freight' ? `<div style="font-size:11px;color:var(--txt2);font-weight:400">${escapeHtml(r.customer)}${r.poNumbers.length ? ' · PO ' + escapeHtml(r.poNumbers.join(', ')) : ''}${r.material ? ' · ' + escapeHtml(r.material) : ''}</div>` : ''}</td><td style="text-align:right;padding:4px 2px;white-space:nowrap">${dlNum(r.odStart)} → ${dlNum(r.odEnd)}</td><td style="text-align:right;padding:4px 2px">${r.miles == null ? (r.flags.includes('decreasing') ? 'lower!' : '—') : dlNum(r.miles)}</td><td style="text-align:right;padding:4px 2px">${r.kind === 'freight' ? r.loads : ''}</td></tr>`).join('');
+  const trips = log.trips.map(r => `<div style="padding:6px 0;border-bottom:1px solid var(--bdr);font-size:12px;${r.counted ? '' : 'color:var(--R)'}"><b>#${r.tripNum}</b> PO ${escapeHtml(r.poNumber || '—')} · ${escapeHtml(r.customer)} · ${escapeHtml(r.material)}<br>${escapeHtml(r.startLocation)} → ${escapeHtml(r.destination)}${r.ticketNumber ? ` · ticket ${escapeHtml(r.ticketNumber)}` : ''}${r.netTons != null ? ` · ${r.netTons.toFixed(2)} t` : ''} · ${r.status === 'completed' ? `delivered ${dlClock(r.completedAt)}` : r.status === 'in-progress' ? 'in progress — not counted' : 'not completed — not counted'}${r.association === 'clock' ? ' · no day open' : ''}</div>`).join('');
+  const insp = log.inspections.map(i => `<div style="font-size:12px">${i.recorded ? `${escapeHtml(i.truckNum)}: ${i.satisfactory ? `all ${i.items.length} items satisfactory` : `<span style="color:var(--R)">not satisfactory — ${escapeHtml(i.defects.join(', '))}</span>`} · ${dlClock(i.at)}${i.hasSignature ? '' : ' · <span style="color:var(--R)">not signed</span>'}${i.remarks ? `<br>Remarks: ${escapeHtml(i.remarks)}` : ''}` : `<span style="color:var(--R)">${escapeHtml(i.truckNum)}: no pre-trip inspection recorded</span>`}</div>`).join('') || (log.status === 'no-day' ? '<div style="font-size:12px;color:var(--txt2)">No inspection — no day was started.</div>' : '');
+  const fuelShiftId = h.shiftIds[h.shiftIds.length - 1] || '';
+  const me = myUsername || '';
+  const fuel = log.fuel.map(f => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bdr)"><div><b>${f.gallons.toFixed(2)} gal</b> · ${escapeHtml(f.location)} · ${dlClock(f.at)}${f.byRole !== 'driver' ? ` · <span style="color:var(--txt2)">office: ${escapeHtml(f.reason)}</span>` : ''}${f.hasReceipt ? ' · receipt' : ''}</div>${f.byRole === 'driver' && (!me || f.by === me) ? `<button class="btn ghost" style="font-size:11px;min-height:32px" onclick="dlRemoveFuel('${escapeAttr(f.shiftId)}','${escapeAttr(f.id)}')">Remove</button>` : ''}</div>`).join('') || '<div style="font-size:12px;color:var(--txt2)">No fuel purchase recorded.</div>';
+  const yardOpts = (dlState.yards || []).filter(y => y.id !== 'other').map(y => `<option value="${escapeAttr(y.id)}">${escapeHtml(y.name)}</option>`).join('');
+  const fuelForm = fuelShiftId ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-weight:600;font-size:13px;min-height:32px;display:flex;align-items:center">+ Add fuel purchase</summary>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        <div class="field"><label>Gallons</label><input id="dl-gal" type="number" inputmode="decimal" min="0" step="0.01" placeholder="e.g. 75"></div>
+        <div class="field"><label>Where</label><select id="dl-yard" onchange="document.getElementById('dl-loc').style.display=this.value?'none':''"><option value="">Type a place…</option>${yardOpts}</select></div>
+        <div class="field" style="grid-column:1/-1"><input id="dl-loc" type="text" placeholder="Station or yard name" maxlength="120"></div>
+        <div class="field" style="grid-column:1/-1"><label>Receipt photo (optional)</label><input type="file" accept="image/*" capture="environment" id="dl-receipt" style="padding:10px;border:2px dashed var(--bdr2);border-radius:var(--r);width:100%;background:var(--bg2)" onchange="dlReceiptPicked(this)"></div>
+      </div>
+      <button class="btn primary" id="dl-fuel-save" style="width:100%;min-height:44px;margin-top:8px" onclick="dlAddFuel('${escapeAttr(fuelShiftId)}')">Add fuel</button></details>` : '';
+  const sign = log.status === 'no-day' ? '' : log.canSign && log.status !== 'signed'
+    ? `<div style="font-size:12px;color:var(--txt2);margin-bottom:6px">By signing you confirm this log shows your day as it was. The time is recorded by the office server.</div>
+       <canvas class="sig-canvas" id="dl-sig" width="500" height="160"></canvas>
+       <div style="display:flex;gap:8px;margin-top:8px"><button class="btn ghost" style="min-height:44px" onclick="dlState.sig && dlState.sig.clear()">Clear</button><button class="btn primary" id="dl-sign-btn" style="flex:1;min-height:44px" onclick="dlSign()">${log.status === 'changed' ? 'Sign again' : 'Sign Daily Log'}</button></div>`
+    : log.status === 'signed' ? `<div style="font-size:12px;color:var(--G);font-weight:600">Signed ✓ ${new Date(so.signedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</div>`
+    : `<div style="font-size:12px;color:var(--txt2)">${log.header.shiftStatus !== 'closed' ? 'End your day to sign this log.' : 'Finish the open freight to sign this log.'}</div>`;
+  const printQ = `date=${encodeURIComponent(h.date)}`;
+  document.getElementById('dl-title').textContent = `Daily Log Book · ${h.dateLabel}`;
+  document.getElementById('dl-body').innerHTML = `
+    ${recent}
+    <div class="banner" style="background:${statusLine[0]};color:${statusLine[1]};border:1px solid ${statusLine[1]};margin:0">${statusLine[2]}</div>
+    ${exceptions.length ? `<div style="background:var(--Rb);border:1px solid var(--Rd);border-radius:10px;padding:8px 12px;font-size:12px"><b>Needs attention</b><ul style="margin:4px 0 0 16px;padding:0">${exceptions.map(e => `<li>${escapeHtml(e.text)}</li>`).join('')}</ul></div>` : ''}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 12px;font-size:13px">${kv('Driver', escapeHtml(h.driverName))}${kv('Truck', escapeHtml(h.truckNum || '—'))}${kv('Trailer', escapeHtml(h.trailerNum || '—'))}${kv('Time start', escapeHtml(log.hours.timeStartLabel || '—'))}${kv('Time end', escapeHtml(log.hours.timeEndLabel || '—'))}${kv('Total time', log.hours.totalHours == null ? '—' : `${log.hours.totalHours} hr${log.hours.breakMinutes ? ` (breaks ${log.hours.breakMinutes} min)` : ''}`)}</div>
+    <div><div style="font-weight:700;font-size:13px;margin-bottom:4px">Odometer and loads</div>
+      ${rows ? `<table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="font-size:10px;text-transform:uppercase;color:var(--txt3)"><th style="text-align:left">Where</th><th style="text-align:right">OD</th><th style="text-align:right">Miles</th><th style="text-align:right">Loads</th></tr>${rows}
+      <tr style="font-weight:700;border-top:2px solid var(--txt)"><td style="padding:4px 2px">Miles today</td><td></td><td style="text-align:right">${log.totals.milesToday == null ? '—' : dlNum(log.totals.milesToday)}</td><td style="text-align:right">${log.totals.loadsDelivered}</td></tr></table>` : '<div style="font-size:12px;color:var(--txt2)">No odometer readings.</div>'}</div>
+    <div><div style="font-weight:700;font-size:13px;margin-bottom:4px">Trips · ${log.totals.loadsDelivered} delivered of ${log.totals.tripsListed} listed${log.totals.ticketTons ? ` · ${log.totals.ticketTons.toFixed(2)} t on tickets` : ''}</div>${trips || '<div style="font-size:12px;color:var(--txt2)">No trips on this date.</div>'}</div>
+    <div><div style="font-weight:700;font-size:13px;margin-bottom:4px">Pre-trip inspection</div>${insp}</div>
+    ${log.comments.length ? `<div><div style="font-weight:700;font-size:13px;margin-bottom:4px">Comments / repairs</div>${log.comments.map(c => `<div style="font-size:12px">${escapeHtml(c.text)}</div>`).join('')}</div>` : ''}
+    <div><div style="font-weight:700;font-size:13px;margin-bottom:4px">Fuel purchase</div>${fuel}${fuelForm}</div>
+    <div><div style="font-weight:700;font-size:13px;margin-bottom:4px">Signature</div>${sign}</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:13px"><a href="/api/daily-log/print?${printQ}" target="_blank">Print / save as PDF</a>${so && so.changed ? `<a href="/api/daily-log/print?${printQ}&signed=1" target="_blank">Signed version</a>` : ''}</div>`;
+  if (log.canSign && log.status !== 'signed') setTimeout(() => { dlState.sig = sigPadInit('dl-sig'); }, 60);
+}
+function dlReceiptPicked(input) {
+  const f = input.files && input.files[0]; if (!f) { dlState.receipt = ''; return; }
+  compressImageFile(f, (dataUrl) => { dlState.receipt = dataUrl; });
+}
+async function dlAddFuel(shiftId) {
+  const btn = document.getElementById('dl-fuel-save'); if (btn.disabled) return; btn.disabled = true;
+  const yardId = document.getElementById('dl-yard').value;
+  const body = { gallons: document.getElementById('dl-gal').value, location: document.getElementById('dl-loc').value, yardId: yardId || undefined, receipt: dlState.receipt || undefined };
+  const r = await api('POST', `/api/shifts/${encodeURIComponent(shiftId)}/fuel`, body);
+  btn.disabled = false;
+  if (!r.ok) return toast(r.error || 'Could not add the fuel purchase', 'error');
+  dlState.receipt = ''; dlState.recent = null; toast('Fuel purchase added', 'success'); dlState.log = r.log; renderDailyLog(r.log);
+}
+async function dlRemoveFuel(shiftId, fuelId) {
+  const reason = prompt('Why remove this fuel entry?'); if (!reason) return;
+  const r = await api('DELETE', `/api/shifts/${encodeURIComponent(shiftId)}/fuel/${encodeURIComponent(fuelId)}`, { reason });
+  if (!r.ok) return toast(r.error || 'Could not remove it', 'error');
+  dlState.recent = null; dlState.log = r.log; renderDailyLog(r.log);
+}
+async function dlSign() {
+  if (!dlState.sig || !dlState.sig.hasInk()) return toast('Sign in the box first', 'error');
+  const btn = document.getElementById('dl-sign-btn'); if (btn.disabled) return; btn.disabled = true;
+  const r = await api('POST', '/api/daily-log/sign', { date: dlState.date, signature: dlState.sig.dataUrl() });
+  btn.disabled = false;
+  if (!r.ok) return toast(r.error || 'Could not sign', 'error');
+  dlState.recent = null; toast('Daily Log signed', 'success'); dlState.log = r.log; renderDailyLog(r.log);
+  if (window._shiftInfo) renderDriver();
 }
 function openTruckChange() {
   const info = window._shiftInfo; const s = info && info.shift; if (!s) return;
@@ -4918,7 +5032,7 @@ function shiftsPanel(shifts) {
         <div class="qa-fact">Start <b>${t(s.startAt)}</b> · OD <b>${Number(s.startOdometer).toLocaleString()}</b></div>
         <div class="qa-fact">End <b>${t(s.endAt)}</b> · OD <b>${s.endOdometer == null ? '—' : Number(s.endOdometer).toLocaleString()}</b></div>
         <div class="qa-fact">Daily <b>${s.dailyMiles == null ? '—' : s.dailyMiles.toLocaleString() + ' mi'}</b> · Billable <b>${(s.billableMiles || 0).toLocaleString()} mi</b> · Non-billable <b>${s.nonBillableMiles == null ? '—' : s.nonBillableMiles.toLocaleString() + ' mi'}</b></div>
-        <div class="qa-fact">Breaks <b>${s.breakMinutes || 0} min</b>${s.workMinutes != null ? ` · Work <b>${Math.floor(s.workMinutes / 60)}h ${String(s.workMinutes % 60).padStart(2, '0')}m</b>` : ''}</div>
+        <div class="qa-fact">Breaks <b>${s.breakMinutes || 0} min</b>${s.workMinutes != null ? ` · Work <b>${Math.floor(s.workMinutes / 60)}h ${String(s.workMinutes % 60).padStart(2, '0')}m</b>` : ''}${(s.fuel || []).length ? ` · Fuel <b>${s.fuel.reduce((n, f) => n + f.gallons, 0).toFixed(1)} gal</b> (${s.fuel.map(f => escapeHtml(f.location)).join(', ')})` : ''}</div>
         ${seg ? `<div class="qa-fact" style="grid-column:1/-1;border-color:var(--A)">Freight open: <b>${escapeHtml(seg.customer)}</b> · ${escapeHtml(seg.originName)} → ${escapeHtml(seg.destinationLabel)} · since ${t(seg.timeStart)} · OD ${Number(seg.odStart).toLocaleString()} · PO ${(seg.poNumbers || []).join(', ') || '—'} · ${seg.loadIds.length} load record${seg.loadIds.length === 1 ? '' : 's'} · ${seg.tripCount} trip${seg.tripCount === 1 ? '' : 's'}${seg.actualTons ? ` · ${seg.actualTons.toFixed(2)} t` : ''}</div>` : ''}
         ${(s.segments || []).filter(x => x.status === 'closed').map(x => `<div class="qa-fact" style="grid-column:1/-1">Freight: <b>${escapeHtml(x.customer)}</b> · ${escapeHtml(x.originName)} → ${escapeHtml(x.destinationLabel)} · ${t(x.timeStart)}–${t(x.timeEnd)} · <b>${x.billableMiles.toLocaleString()} mi</b> · <b>${(x.billableMinutes / 60).toFixed(2)} h</b> · PO ${(x.poNumbers || []).join(', ') || '—'} · ${x.loadIds.length} load record${x.loadIds.length === 1 ? '' : 's'} · ${x.tripCount} trip${x.tripCount === 1 ? '' : 's'}${x.actualTons ? ` · ${x.actualTons.toFixed(2)} t` : ''}
           · <span style="font-weight:700;color:${x.locked ? 'var(--G)' : 'var(--A)'}">${x.locked ? 'locked — all loads approved' : `${x.approvedLoads} of ${x.loadIds.length} approved`}</span>
@@ -4926,7 +5040,9 @@ function shiftsPanel(shifts) {
           <a href="/api/freight-segments/${encodeURIComponent(x.id)}/freight-bill" target="_blank">Freight Bill${x.locked ? '' : ' (draft)'}</a>${x.needsReview ? ` · <a href="#" style="color:var(--A);font-weight:700" onclick="event.preventDefault();confirmSegmentEnding('${x.id}', ${x.odEnd == null ? 'null' : x.odEnd})">Closed by the office — confirm ending</a>` : ''}</div>`).join('')}
       </div>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-        <a class="btn ghost" style="font-size:12px" href="/api/shifts/${encodeURIComponent(s.id)}/daily-log" target="_blank">Daily Log${s.status === 'open' ? ' (draft)' : ''}</a>
+        <a class="btn ghost" style="font-size:12px" href="/api/daily-log/print?driverId=${encodeURIComponent(s.driverId)}&date=${encodeURIComponent(s.date)}" target="_blank">Daily Log Book${s.status === 'open' ? ' (day open)' : s.dayLog ? ' ✓ signed' : ' (unsigned)'}</a>
+        <a class="btn ghost" style="font-size:12px" href="/api/shifts/${encodeURIComponent(s.id)}/daily-log" target="_blank">Shift detail</a>
+        <button class="btn ghost" style="font-size:12px" onclick="mgrAddFuel('${escapeAttr(s.id)}')">Add fuel for driver…</button>
         ${seg ? `<button class="btn ghost" style="font-size:12px" onclick="mgrCloseSegment('${escapeAttr(seg.id)}')">Close freight for driver…</button>` : ''}
         ${s.status === 'open' ? `<button class="btn ghost" style="font-size:12px;color:#b42318" onclick="mgrCloseShift('${escapeAttr(s.id)}')">Close day for driver…</button>` : ''}
       </div>
@@ -4940,6 +5056,14 @@ async function mgrCloseShift(id) {
   const r = await api('POST', `/api/shifts/${id}/close`, { odometer, reason });
   if (!r.ok) return toast(r.error || 'Failed', 'error');
   toast('Day closed', 'success'); renderToday();
+}
+async function mgrAddFuel(shiftId) {
+  const gallons = prompt('Gallons bought:'); if (gallons == null || !gallons.trim()) return;
+  const location = prompt('Where (station or yard):'); if (!location) return;
+  const reason = prompt('Reason for recording this on the driver\'s behalf (e.g. receipt turned in):'); if (!reason) return;
+  const r = await api('POST', `/api/shifts/${encodeURIComponent(shiftId)}/fuel`, { gallons, location, reason });
+  if (!r.ok) return toast(r.error || 'Failed', 'error');
+  toast('Fuel recorded on the driver\'s Daily Log', 'success'); renderToday();
 }
 async function mgrCloseSegment(id) {
   const odometer = prompt('Ending odometer for this freight segment:'); if (odometer == null) return;

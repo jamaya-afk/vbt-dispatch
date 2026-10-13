@@ -231,6 +231,37 @@ carlos / carlos123
   jobsite, location — are attention items. Telemetry never completes, arrives,
   approves, assigns or bills anything.
 
+## The Daily Log Book (paperwork P1)
+
+The paper Daily Log Book is generated, one per driver per operating day, from
+what the app already recorded; nobody retypes the day.
+
+| Paper field | Comes from |
+|---|---|
+| Driver, Truck, Trailer, Date (with weekday) | the driver's Start day (the shift) |
+| Time start / Time end / Total time | Start day and End day stamps, minus the breaks the driver tapped |
+| Rows: Invoice # / PO, Material, Start location, Destination, OD start, OD end, Miles, Loads | the day's odometer legs and freight segments: start of day → first yard, each freight (origin yard → jobsite, loads = its completed trips, PO and material from its loads), the gaps between, last reading → end of day; a truck change ends one leg and starts the next |
+| Miles today | the legs' start → end readings, each reading counted once; billable and non-billable shown beside |
+| Trips table (one row per load hauled) | each trip: PO, customer, material, actual yard (or the planned yard marked *planned*), destination, ticket number and net tons, start / loaded / delivered times, status |
+| Condition checklist | the pre-trip inspection recorded at Start day: satisfactory → every item X; not satisfactory → the named defects marked, the rest left blank; no record → all blank and flagged |
+| Comments / Repairs | inspection defects and remarks, truck changes, odometer-below-last confirmations, office closures |
+| Fuel purchase location and gallons | **new input**: the driver adds fuel purchases on the phone (gallons, yard or typed place, optional receipt photo); the office can add or remove one with a reason |
+| Signature and date | **new input**: the driver signs the finished log on the phone; the time is the server's |
+
+Rules the generator keeps:
+
+- **Only completed trips are loads.** A started or loaded trip is listed, flagged, and not counted; its ticket tons are not added.
+- **Miles only from valid readings.** A missing reading prints as missing; a reading lower than the one before is kept, shown and flagged, and the day's total is withheld rather than guessed. Nothing is inferred from maps or planned routes.
+- **Nothing fabricated.** No day started → the log says so, lists the trips that ran with no day open as exceptions, and cannot be signed. No inspection → blank checklist. No fuel → "No fuel purchase recorded".
+- **Midnight.** A day keeps its trips until it is ended: a trip run after midnight inside a day started yesterday is on yesterday's log.
+- **Signing.** Driver only, own log, once the day is ended and its freight closed. The server stamps the time and stores exactly what was signed with a hash. Any later change to a source (a trip, a ticket, fuel, a PO address, a customer name) makes the live log read **changed since signed**, names the changed sections, and asks the driver to sign again; the signed version stays available (`?signed=1`) and the earlier signatures are kept in history. Master-data edits never silently rewrite a signed record.
+
+Where it is:
+
+- **Phone**: the day card offers *Daily Log* while the day is open, *Review & sign Daily Log* once it is ended, and *Daily Logs* (earlier days) before a day starts. The review screen shows the log, flags what needs attention, takes fuel purchases and the signature, and links *Print / save as PDF*.
+- **Office**: Today → Drivers' day → *Daily Log Book* (signed / unsigned shown on the button) opens the printable page by driver and date; *Add fuel for driver…* records fuel with a reason; *Shift detail* is the older per-shift page.
+- **API**: `GET /api/daily-log?driverId&date`, `GET /api/daily-log/recent`, `GET /api/daily-log/print?driverId&date[&signed=1]`, `POST /api/shifts/:id/fuel`, `DELETE /api/shifts/:id/fuel/:fuelId` (reason), `POST /api/daily-log/sign` (driver). The log is derived on every read; only the fuel entries and the sign-off (with its snapshot) are stored, on the shift.
+
 ## Files
 
 - `server.js` — backend (Express, one in-memory store persisted as one Postgres row)

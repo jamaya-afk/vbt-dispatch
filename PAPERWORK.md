@@ -36,9 +36,13 @@ What already exists in VBT and is reused by every form below:
 
 ## 1. Daily Log Book
 
-One per driver per day. Generated from the shift and the day's segments and
-trips. The office reviews and prints; the driver signs on the phone at End day
-(the existing End-day signature) or on paper.
+One per driver per day. **Implemented (P1).** Generated on every read from the
+shift and the day's segments, trips, tickets and inspection; the driver
+reviews it on the phone, adds fuel purchases and signs it once the day is
+ended; the office prints it from Today → Drivers' day. See README, "The Daily
+Log Book". Only two inputs were new: fuel entries and the end-of-day signature
+(server-stamped, with a snapshot and hash of what was signed; later changes
+read "changed since signed" and ask for a new signature).
 
 | Paper field | Authoritative source in VBT | How | Still provided by | Validation / exception | Output |
 |---|---|---|---|---|---|
@@ -58,8 +62,8 @@ trips. The office reviews and prints; the driver signs on the phone at End day
 | Loads count per row ("4 loads") | completed trips in the leg | CALC | — | never counts a started or loaded trip | Daily Log |
 | Condition checklist (12 items) | shift.inspection (11 items today; see §5 for the item list change) | CARRY from the DVIR confirmation | driver confirms each item at Start day | not confirmed → printed blank, flagged | Daily Log + DVIR |
 | Comments / Repairs | shift.inspection.remarks + shift.notes | CARRY | driver / office types | — | Daily Log |
-| Fuel purchase location (and gallons) | **not recorded today** | DRIVER (new: a Fuel tap on the day card: gallons, location, optional receipt photo) | driver | gallons must be a number; location from the yard/vendor list or typed | Daily Log + Freight Bill |
-| Signature, date | End-day signature (new, see §6) or the paper signature | DRIVER | driver signs at End day | unsigned → DRAFT | Daily Log |
+| Fuel purchase location (and gallons) | **shift.fuel (P1)** — was not recorded before | DRIVER (new: a Fuel tap on the day card: gallons, location, optional receipt photo) | driver | gallons must be a number; location from the yard/vendor list or typed | Daily Log + Freight Bill |
+| Signature, date | **shift.dayLog (P1)**: the driver signs the finished log on the phone; server time; snapshot + hash kept | DRIVER | driver signs after End day | unsigned → DRAFT; changed after signing → DRAFT "changed since signed", sign again | Daily Log |
 
 Time saved: the office never retypes the day; the driver's taps are the day.
 The only new input is fuel.
@@ -154,9 +158,9 @@ for the driver. Everything else is prefilled.
 
 ## 6. What is missing in VBT today (the gaps the forms expose)
 
-1. **Fuel purchases** — not recorded anywhere; needed on the Daily Log and the Freight Bill. Smallest: a Fuel entry on the day card (gallons, location, optional receipt photo) stored on the shift.
-2. **Day-end signature** — the Daily Log and Freight Bill are signed on paper; the phone collects a signature at Start day only. Smallest: a signature at End day, stored on the shift and printed on both forms.
-3. **Daily Log legs by destination** — the page prints odometer legs per vehicle and segments; the paper lists each leg with its start location, destination, PO and material. Smallest: derive legs from the shift's odometer points and the trips' yard/jobsite facts (no new data).
+1. **Fuel purchases** — *closed by P1 (shift.fuel)*. Was: not recorded anywhere; needed on the Daily Log and the Freight Bill. Smallest: a Fuel entry on the day card (gallons, location, optional receipt photo) stored on the shift.
+2. **Day-end signature** — *closed for the Daily Log by P1 (shift.dayLog, signed on the phone after End day)*; the Freight Bill still signs on paper until P2. Was: the Daily Log and Freight Bill are signed on paper; the phone collects a signature at Start day only. Smallest: a signature at End day, stored on the shift and printed on both forms.
+3. **Daily Log legs by destination** — *closed by P1 (rows derived from the legs and segments)*. Was: the page prints odometer legs per vehicle and segments; the paper lists each leg with its start location, destination, PO and material. Smallest: derive legs from the shift's odometer points and the trips' yard/jobsite facts (no new data).
 4. **Freight Bill layout** — the page prints loads and step times; the paper's columns (tons, tag, start, end, odometers, totals, lunch, fuel) are a different arrangement of data VBT already has.
 5. **Internal ticket** — no equivalent exists; generated from load, PO, price and signature; needs a ticket-number series, a pickup/delivery flag and customer terms.
 6. **DVIR** — the inspection list is 11 generic items with "all satisfactory" pre-ticked; the DOT form lists ~60 items by vehicle part and a trailer section, and has the defect-correction follow-up. Smallest: replace the item list with the form's, remove the pre-tick, add the follow-up on the shift.
@@ -166,7 +170,7 @@ for the driver. Everything else is prefilled.
 
 | Step | Delivers | Touches | New data |
 |---|---|---|---|
-| P1 Daily Log Book | the paper form generated per shift: header, legs with PO/material/locations/odometers/miles, checklist, remarks, fuel, signature; DRAFT while the day is open | the existing Daily Log page (layout), shift record | fuel entries, End-day signature |
+| P1 Daily Log Book — **DONE** | the paper form generated per shift: header, legs with PO/material/locations/odometers/miles, checklist, remarks, fuel, signature; DRAFT while the day is open | the existing Daily Log page (layout), shift record | fuel entries, End-day signature |
 | P2 Freight Bill/Log | the paper form generated per segment: trip rows (tons, tag, locations, odometers), totals, hours with lunch, fuel, signature | the existing Freight Bill page (layout) | none beyond P1 |
 | P3 Internal ticket | generated per load/trip from PO, material, completed count or tons, price rules, received-by signature; printable and shown on the phone | load/PO, a ticket-number series, customer terms, pickup/delivery flag | three small fields |
 | P4 DVIR | the DOT item list by part and trailer, no pre-tick, defect follow-up; the Daily Log checklist reads from it | Start-day form, shift.inspection, Daily Log page, End of day review (open defects) | item list change, follow-up record |

@@ -442,3 +442,9 @@ A full-system integration audit: a realistic five-truck Valley Best day run on a
 13. **Then** decide F1/F2 with the owner, and only after 1–9 are green: Linxup L3 design.
 
 Items 1–5 are the ones I would not deploy a new billing cycle without.
+
+---
+
+## Paperwork P1 — Daily Log Book (implemented)
+
+The Daily Log Book is a derived document, not a new data model. `buildDailyLog(driverId, date)` reads the day's shifts (`shift.date`), their odometer legs and freight segments, every trip of that driver's loads owned by that day (by its segment's shift, else by the shift window it started in, else by its clock date — flagged "no day open"), the tickets, and the recorded inspection. Two things are stored because nothing held them: `shift.fuel[]` (server-stamped entries, soft-removed with a reason) and `shift.dayLog` (the driver's end-of-day sign-off: server `signedAt`, signature, a snapshot of the signed content and its SHA-256; up to five earlier sign-offs in `history`). On every read the current content is hashed and compared; a difference makes the log read "changed since signed" and lists the changed sections — a signed record is never rewritten, and `?signed=1` prints the snapshot. Totals obey the standing rules: loads = completed trips, tons = tickets on completed trips, miles = odometer legs start → end counted once, with a missing or decreasing reading flagged and the total withheld. The test hook `_test/set-shift` exists only under `VBT_TEST_HOOKS` to inject contradictory readings and a missing inspection for the regression tests (e2e §67).
