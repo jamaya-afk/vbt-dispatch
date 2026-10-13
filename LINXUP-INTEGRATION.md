@@ -634,7 +634,12 @@ enabled per account by Linxup Support). The client therefore does not assume
 how the key is presented: `LINXUP_API_AUTH` selects Bearer key, a named header,
 or a login that exchanges the key for a JWT; a JWT is renewed 60 s before its
 `exp` claim and once more on a 401. A Swagger session's JWT is never reused by
-the server: the server logs in with the key itself.
+the server: the server logs in with the key itself. **Confirmed flow** (from
+the account's Swagger): `POST https://api.linxup.com/pullapi/api/v3/jwts` with
+`X-API-Key: <key>`, `Accept: text/plain`, empty body → HTTP 200 with the JWT as
+plain text; then `GET /api/v3/trackers` with `Authorization: Bearer <JWT>`.
+Configuration: `LINXUP_API_BASE_URL=https://api.linxup.com/pullapi`,
+`LINXUP_API_AUTH=jwt:/api/v3/jwts`, `LINXUP_API_INVENTORY_PATH=/api/v3/trackers`.
 
 **Webhook hardening.** The webhook's token and size are now checked before
 any body is parsed (a route-level gate ahead of the JSON parser, with the

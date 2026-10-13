@@ -626,8 +626,10 @@ class Linxup {
 // way the key is presented is configuration, not a guess:
 //   bearer            Authorization: Bearer <key>                 (default)
 //   header:<Name>     <Name>: <key>                                e.g. header:X-API-Key
-//   jwt:<path>        POST <path> {"apiKey": <key>} → a JWT, sent as Bearer;
-//                     renewed before its exp claim, once on a 401.
+//   jwt:<path>        POST <path> with X-API-Key: <key>, Accept: text/plain and
+//                     an empty body → the JWT as plain text (the account's
+//                     Swagger flow: jwt:/api/v3/jwts); sent as Bearer, renewed
+//                     before its exp claim, once more on a 401.
 // Every answer is summarized (status, count, field names) — never the
 // positions themselves — so the office can see what the account returns.
 const API_TIMEOUT_DEFAULT = 15000;
@@ -666,6 +668,18 @@ function unwrapList(json) {
   for (const [k, v] of Object.entries(json)) if (Array.isArray(v)) return { list: v, envelope: k };
   return { list: null, envelope: '' };
 }
+// Join the configured host to an endpoint path without repeating segments:
+// base ".../pullapi" + "/api/v3/trackers" → ".../pullapi/api/v3/trackers";
+// base ".../pullapi/api/v3" + "/api/v3/trackers" → the same URL, not ".../api/v3/api/v3/...".
+function joinApiUrl(base, path) {
+  const b = String(base || '').replace(/\/+$/, ''); const p = '/' + String(path || '').replace(/^\/+/, '');
+  let origin = b, basePath = '';
+  try { const u = new URL(b); origin = u.origin; basePath = u.pathname.replace(/\/+$/, ''); } catch { /* keep as given */ }
+  const bs = basePath.split('/').filter(Boolean), ps = p.split('/').filter(Boolean);
+  let overlap = 0;
+  for (let k = Math.min(bs.length, ps.length); k > 0; k--) { if (bs.slice(-k).join('/') === ps.slice(0, k).join('/')) { overlap = k; break; } }
+  return origin + (bs.length ? '/' + bs.join('/') : '') + '/' + ps.slice(overlap).join('/');
+}
 function jwtExp(token) {
   try { const p = String(token).split('.')[1]; const j = JSON.parse(Buffer.from(p.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); return num(j.exp) ? num(j.exp) * 1000 : null; } catch { return null; }
 }
@@ -683,6 +697,7 @@ class LinxupApi {
     this.counters = { requests: 0, ok: 0, unauthorized: 0, failed: 0, timeouts: 0, malformed: 0 };
   }
   get configured() { return !!(this.baseUrl && this.apiKey && /^https?:\/\//.test(this.baseUrl)); }
+  _scrub(msg) { let m = String(msg || ''); if (this.apiKey) m = m.split(this.apiKey).join('[key]'); if (this.jwt && this.jwt.token) m = m.split(this.jwt.token).join('[token]'); return m; }
   get authMode() { return this.auth.startsWith('header:') ? 'header' : this.auth.startsWith('jwt:') ? 'jwt' : 'bearer'; }
   // Never the key, never a token: what the office and /healthz may see.
   status() {
@@ -693,14 +708,21 @@ class LinxupApi {
       counters: { ...this.counters }, last: this.last,
     };
   }
+  // Login as the account's Swagger does it: POST <login path> with the key in
+  // X-API-Key, Accept: text/plain, an empty body; the answer is the JWT as
+  // plain text (a JSON {token} answer is tolerated, never assumed).
   async _login() {
     const path = this.auth.slice(4);
-    const r = await this._raw('POST', path, { 'Content-Type': 'application/json' }, JSON.stringify({ apiKey: this.apiKey }));
-    if (!r.ok) { const e = new Error(r.status === 401 || r.status === 403 ? 'Linxup refused the API key (login)' : `Linxup login failed (${r.status || r.error})`); e.status = r.status; e.timeout = r.timeout; throw e; }
-    const tok = r.json && (r.json.token || r.json.jwt || r.json.accessToken || r.json.access_token || (r.json.data && (r.json.data.token || r.json.data.jwt)));
-    if (!tok) { const e = new Error('Linxup login answered without a token field (token, jwt, accessToken)'); e.malformed = true; throw e; }
+    const r = await this._raw('POST', path, { Accept: 'text/plain', 'X-API-Key': this.apiKey });
+    if (!r.ok) { const e = new Error(r.status === 401 || r.status === 403 ? `Linxup refused the API key (login ${r.status})` : `Linxup login failed (${r.status || r.error})`); e.status = r.status; e.timeout = r.timeout; throw e; }
+    const text = String(r.text || '').trim();
+    const looksJwt = v => /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/.test(String(v || '').trim());
+    let tok = looksJwt(text) ? text : null;
+    if (!tok && r.json && typeof r.json === 'object') { const c = r.json.token || r.json.jwt || r.json.accessToken || r.json.access_token || (r.json.data && (r.json.data.token || r.json.data.jwt)); if (looksJwt(c)) tok = String(c).trim(); }
+    if (!tok && r.json && typeof r.json === 'string' && looksJwt(r.json)) tok = r.json.trim();
+    if (!tok) { const e = new Error(`Linxup login answered ${r.status} without a JWT (${text.length} characters, ${r.contentType || 'no content type'})`); e.malformed = true; throw e; }
     const exp = jwtExp(tok) || (Date.now() + 10 * 60 * 1000);   // no exp claim: assume ten minutes, renew often
-    this.jwt = { token: String(tok), expiresAt: exp };
+    this.jwt = { token: tok, expiresAt: exp };
   }
   async _authHeaders(force) {
     if (this.authMode === 'header') return { [this.auth.slice(7).trim() || 'X-API-Key']: this.apiKey };
@@ -709,18 +731,18 @@ class LinxupApi {
     return { Authorization: `Bearer ${this.jwt.token}` };
   }
   async _raw(method, path, headers, body) {
-    const url = this.baseUrl + (path.startsWith('/') ? path : '/' + path);
+    const url = joinApiUrl(this.baseUrl, path);
     const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     this.counters.requests++;
     try {
       const res = await this.fetchImpl(url, { method, headers: { Accept: 'application/json', ...headers }, body, signal: ctrl.signal });
       const text = await res.text();
       let json = null; try { json = text ? JSON.parse(text) : null; } catch { json = undefined; }
-      return { ok: res.ok, status: res.status, json, textLength: text.length, contentType: res.headers && res.headers.get ? res.headers.get('content-type') || '' : '' };
+      return { ok: res.ok, status: res.status, json, text, textLength: text.length, contentType: res.headers && res.headers.get ? res.headers.get('content-type') || '' : '' };
     } catch (e) {
       const timedOut = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
       if (timedOut) this.counters.timeouts++;
-      return { ok: false, status: 0, json: null, error: timedOut ? `no answer within ${this.timeoutMs >= 1000 ? Math.round(this.timeoutMs / 1000) + ' s' : this.timeoutMs + ' ms'}` : (e && e.message || String(e)).replace(this.apiKey, '[key]'), timeout: timedOut };
+      return { ok: false, status: 0, json: null, error: timedOut ? `no answer within ${this.timeoutMs >= 1000 ? Math.round(this.timeoutMs / 1000) + ' s' : this.timeoutMs + ' ms'}` : this._scrub(e && e.message || String(e)), timeout: timedOut };
     } finally { clearTimeout(timer); }
   }
   // GET a read-only path; retry once with a fresh JWT on 401.
@@ -756,4 +778,4 @@ class LinxupApi {
     return { summary, trackers: r.ok ? trackers : [] };
   }
 }
-module.exports = { Linxup, LinxupApi, normApiTracker, unwrapList, normalizePosition, classify, TYPES };
+module.exports = { Linxup, LinxupApi, normApiTracker, unwrapList, joinApiUrl, normalizePosition, classify, TYPES };

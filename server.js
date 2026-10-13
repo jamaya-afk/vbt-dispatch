@@ -2668,22 +2668,31 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     const mode = String(req.body?.mode || 'ok'); fakeLinxupApi.mode = mode; fakeLinxupApi.calls = []; fakeLinxupApi.logins = 0;
     const items = Array.isArray(req.body?.items) ? req.body.items : [{ trackerId: 7001, name: 'VBT 140', deviceNumber: 'IMEI-7001', deviceSerialNumber: 'SN-7001', vin: 'VIN7001' }, { trackerId: 7002, name: 'VBT 141', deviceNumber: 'IMEI-7002', deviceSerialNumber: 'SN-7002', vin: 'VIN7002' }];
     const fetchImpl = async (url, init) => {
-      fakeLinxupApi.calls.push({ url: String(url).replace(/key-[a-z0-9]+/gi, '[redacted]'), method: init.method, hasAuth: !!(init.headers.Authorization || init.headers['X-API-Key']), auth: String(init.headers.Authorization || init.headers['X-API-Key'] || '') });
+      const h = init.headers || {};
+      fakeLinxupApi.calls.push({ url: String(url).replace(/key-[a-z0-9]+/gi, '[redacted]'), method: init.method, hasAuth: !!(h.Authorization || h['X-API-Key']), auth: String(h.Authorization || h['X-API-Key'] || ''),
+        xApiKey: h['X-API-Key'] === 'key-secret-123', accept: h.Accept || '', bodyEmpty: init.body === undefined || init.body === null || init.body === '', bearerJwt: /^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/.test(String(h.Authorization || '')) });
       const reply = (status, body, ct = 'application/json') => ({ ok: status >= 200 && status < 300, status, headers: { get: () => ct }, text: async () => typeof body === 'string' ? body : JSON.stringify(body) });
       if (mode === 'down') { const e = new Error('connect ECONNREFUSED 127.0.0.1:1'); throw e; }
       if (mode === 'timeout') return new Promise((_, rej) => { init.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e); }); });
       if (mode === 'unauthorized') return reply(401, { message: 'Unauthorized' });
       if (mode === 'malformed') return reply(200, '<html>login page</html>', 'text/html');
-      if (mode === 'jwt') {
-        if (init.method === 'POST') { fakeLinxupApi.logins++; const exp = Math.floor(Date.now() / 1000) + (fakeLinxupApi.logins === 1 ? 30 : 3600); const tok = 'h.' + Buffer.from(JSON.stringify({ exp })).toString('base64url') + '.s'; return reply(200, { token: tok }); }
-        if (!/^Bearer h\./.test(String(init.headers.Authorization || ''))) return reply(401, { message: 'bad token' });
+      if (mode === 'jwt' || mode === 'jwt-403') {
+        // The login exactly as the account's Swagger does it; anything else is refused like Linxup does (403).
+        if (init.method === 'POST') {
+          const okLogin = /\/api\/v3\/jwts$/.test(String(url)) && h['X-API-Key'] === 'key-secret-123' && h.Accept === 'text/plain' && (init.body === undefined || init.body === null || init.body === '');
+          if (mode === 'jwt-403' || !okLogin) return reply(403, '', 'text/plain');
+          fakeLinxupApi.logins++; const exp = Math.floor(Date.now() / 1000) + (fakeLinxupApi.logins === 1 ? 30 : 3600);
+          return reply(200, 'eyJhbGciOiJIUzI1NiJ9.' + Buffer.from(JSON.stringify({ exp, sub: 'fake' })).toString('base64url') + '.c2ln', 'text/plain');
+        }
+        if (!/^Bearer eyJhbGciOiJIUzI1NiJ9\./.test(String(h.Authorization || ''))) return reply(401, { message: 'bad token' });
         return reply(200, items);
       }
       if (mode === 'envelope') return reply(200, { data: items, page: 1 });
       return reply(200, items);
     };
-    linxupApi = mode === 'off' ? new LinxupApi({}) : new LinxupApi({ baseUrl: 'https://fake.linxup.test', apiKey: 'key-secret-123', auth: mode === 'jwt' ? 'jwt:/auth/login' : (req.body?.auth || 'bearer'), timeoutMs: 300, fetchImpl });
-    linxupInventoryPath = req.body?.inventoryPath !== undefined ? String(req.body.inventoryPath) : '/trackers';
+    const jwtMode = mode === 'jwt' || mode === 'jwt-403';
+    linxupApi = mode === 'off' ? new LinxupApi({}) : new LinxupApi({ baseUrl: req.body?.baseUrl || (jwtMode ? 'https://fake.linxup.test/pullapi' : 'https://fake.linxup.test'), apiKey: 'key-secret-123', auth: jwtMode ? 'jwt:/api/v3/jwts' : (req.body?.auth || 'bearer'), timeoutMs: 300, fetchImpl });
+    linxupInventoryPath = req.body?.inventoryPath !== undefined ? String(req.body.inventoryPath) : (jwtMode ? '/api/v3/trackers' : '/trackers');
     res.json({ ok: true, mode });
   });
   app.get('/api/_test/linxup-api-fake', reqMgr, (req, res) => {
