@@ -1,0 +1,106 @@
+{
+  "source": "Tracker_Setup.xlsx, sheet \"Trackers\" (Valley Best, October 2026)",
+  "note": "Equipment reference supplied by the owner: Linxup tracker name, device serial, VIN and dash-cam id per truck. Reference data only: a truck is linked to a tracker only when the live Linxup inventory confirms the same identity uniquely. The Driver column is what the workbook says, never VBT's assigned or usual driver.",
+  "trackers": [
+    {
+      "tracker": "VBT #1",
+      "serial": "88X151490103",
+      "vin": "1NPCL49X0TD795813",
+      "dashCam": "00D205AA15",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": null,
+      "notes": null
+    },
+    {
+      "tracker": "VBT #2",
+      "serial": "250404590",
+      "vin": null,
+      "dashCam": "00D205B047",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": "Jesus Guzman",
+      "notes": null
+    },
+    {
+      "tracker": "VBT #3",
+      "serial": "88X151490039",
+      "vin": "1NPCL49X9TD795812",
+      "dashCam": "00D205A737",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": null,
+      "notes": null
+    },
+    {
+      "tracker": "VBT #4",
+      "serial": "88X151490025",
+      "vin": "1NPVLP9X0ED252913",
+      "dashCam": "00D205B04B",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": null,
+      "notes": null
+    },
+    {
+      "tracker": "VBT #6",
+      "serial": "88X153150468",
+      "vin": "1NPCL49X7VD841334",
+      "dashCam": "00D208189E",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": null,
+      "notes": null
+    },
+    {
+      "tracker": "VBT #8",
+      "serial": "88X161812561",
+      "vin": "1FT8W3BT8FEA96952",
+      "dashCam": "00D20909E5",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": null,
+      "notes": null
+    },
+    {
+      "tracker": "VBT #14",
+      "serial": "88X151490016",
+      "vin": "3ALHGNDV5EDFP4553",
+      "dashCam": "00D205AE66",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": null,
+      "notes": null
+    },
+    {
+      "tracker": "VBT #15",
+      "serial": "88X152021399",
+      "vin": "1FD0X5GT4HEE05619",
+      "dashCam": "00D2083C72",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": null,
+      "notes": null
+    },
+    {
+      "tracker": "VBT #16",
+      "serial": "88X152021437",
+      "vin": "1FDUF4GT2GEC76728",
+      "dashCam": "00D2089591",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": null,
+      "notes": null
+    },
+    {
+      "tracker": "VBT #26",
+      "serial": "88X161812582",
+      "vin": "1FD0W5GT9GEB80163",
+      "dashCam": "00D209097F",
+      "status": "Online",
+      "group": "No Group",
+      "driverField": null,
+      "notes": null
+    }
+  ]
+}

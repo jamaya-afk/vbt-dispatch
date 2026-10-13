@@ -431,8 +431,28 @@ echoed by any route; `/healthz` and `/api/linxup-api/status` report only
 check. The office runs the check from Drivers & Trucks → **Linxup API → Check
 connection**: one read-only GET of the inventory path, summarized (HTTP status,
 how many trackers, which fields, how many carry an id / VIN / IMEI / serial);
-the trackers it names join the picker so they can be linked to trucks before
-any webhook message arrives.
+the trackers it names join the tracker mirror as "seen in the API inventory"
+— with or without the webhook token — so the picker and the mapping review can
+use them before any webhook message arrives. The card reports four counts that
+are never one number: trackers known, from the API inventory (with the time of
+the last listing), heard by webhook, linked to trucks. Each tracker in the
+picker says where VBT knows it from (inventory, heard, or both) and how fresh.
+
+**Apply tracker workbook** (same card) uses the owner's equipment reference
+`linxup-tracker-setup.json` (from `Tracker_Setup.xlsx`: tracker name, device
+serial, VIN, dash-cam id per truck). It refreshes the inventory, copies the
+workbook's VIN and tracker serial onto the truck with the same number when the
+truck has none (a different existing value is kept and flagged), and links the
+truck to the one live tracker the identifiers prove — exact, unique VIN first;
+exact, unique serial second; the exact name only when a VIN or serial confirms
+it. It never replaces an existing link, never links a truck the workbook does
+not name (an exact VIN or serial match there is reported as a proposal), and
+refuses ambiguous (two live trackers) or conflicting (VIN or serial disagree)
+matches with the reason. Trucks the workbook does not name and workbook rows
+with no truck are listed; no truck is created. The workbook's driver column is
+reported as what it says; VBT's usual and assigned drivers never change. The
+action is idempotent and logged; the link records its match source
+(`workbook+api:vin`, `workbook+api:serial`).
 
 Register one URL per message type in Linxup: `https://<host>/api/linxup/position`,
 `/device-status`, `/device-update`, `/geofence-event`, `/trip`, `/stop`,

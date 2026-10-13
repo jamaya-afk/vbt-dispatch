@@ -1045,7 +1045,7 @@ let testSaveFailLeft = null;   // test hook: fail this many saves, then behave a
 // ── LINXUP TELEMETRY ─────────────────────────────────────────────────────────
 // Truck positions and tracker facts from Linxup's Push API (linxup.js). Off
 // unless LINXUP_WEBHOOK_TOKEN is set. Its data never enters the JSON store.
-const { Linxup, LinxupApi } = require('./linxup');
+const { Linxup, LinxupApi, trackerSource } = require('./linxup');
 const linxup = new Linxup({
   token: process.env.LINXUP_WEBHOOK_TOKEN || '', tokenNext: process.env.LINXUP_WEBHOOK_TOKEN_NEXT || '',
   companyId: process.env.LINXUP_COMPANY_ID || null,
@@ -2397,7 +2397,37 @@ let linxupApi = new LinxupApi({
 });
 let linxupInventoryPath = process.env.LINXUP_API_INVENTORY_PATH || '';
 // What the office may see: configuration state and the last probe's summary.
-app.get('/api/linxup-api/status', reqMgr, (req, res) => res.json({ ...linxupApi.status(), inventoryPath: linxupInventoryPath, webhook: { enabled: linxup.enabled, trackersKnown: linxup.trackers.size } }));
+// Four different things, never one number: trackers VBT knows (the mirror),
+// how many the API inventory listed, how many have sent a webhook message,
+// how many are linked to a truck.
+function linxupInventoryCounts() {
+  const all = linxup.listTrackers();
+  const linked = new Set((store.trucks || []).filter(t => t.linxup && t.linxup.trackerId != null).map(t => Number(t.linxup.trackerId)));
+  return { trackers: all.length, fromApi: all.filter(t => t.apiSeenAt).length, heardByWebhook: all.filter(t => t.lastMessageAt).length, linked: all.filter(t => linked.has(t.trackerId)).length,
+    lastInventoryAt: all.reduce((m, t) => t.apiSeenAt && t.apiSeenAt > m ? t.apiSeenAt : m, '') || null };
+}
+// The picker and the mapping review work from the mirror, whichever side filled it.
+function linxupMirrorUsable() { return linxup.enabled || linxupApi.configured || linxup.trackers.size > 0; }
+// Merge what the inventory listed into the mirror as "seen in the API" —
+// with or without the webhook token, since the inventory is the API's own.
+// Idempotent: the same tracker again refreshes its row, never duplicates it.
+async function mergeLinxupInventory(trackers, summary) {
+  let merged = 0; const at = new Date();
+  for (const t of trackers) {
+    if (t.trackerId == null) continue;
+    try { await linxup.upsertTracker({ trackerId: t.trackerId, name: t.name, deviceNumber: t.deviceNumber, deviceSerialNumber: t.deviceSerialNumber, vin: t.vin, make: t.make, model: t.model, year: t.year, licensePlate: t.licensePlate, lastHeardFrom: t.lastHeardFrom, statusCode: t.statusCode }, at, { source: 'api' }); merged++; }
+    catch (e) { summary.mergeError = e.message; break; }
+  }
+  return merged;
+}
+async function refreshLinxupInventory() {
+  if (!linxupApi.configured) return { skipped: 'not-configured', merged: 0, summary: null, trackers: [] };
+  if (!linxupInventoryPath || !linxupInventoryPath.startsWith('/')) return { skipped: 'no-inventory-path', merged: 0, summary: null, trackers: [] };
+  const { summary, trackers } = await linxupApi.probe(linxupInventoryPath);
+  const merged = summary.ok ? await mergeLinxupInventory(trackers, summary) : 0;
+  return { skipped: null, merged, summary, trackers };
+}
+app.get('/api/linxup-api/status', reqMgr, (req, res) => res.json({ ...linxupApi.status(), inventoryPath: linxupInventoryPath, webhook: { enabled: linxup.enabled }, inventory: linxupInventoryCounts(), workbookRows: trackerWorkbook().length }));
 // The read-only connectivity check. One GET of the inventory path; the answer
 // is summarized (status, count, field names, how many carry an id / VIN /
 // IMEI / serial) and the trackers it names are merged into the mirror so the
@@ -2407,13 +2437,96 @@ app.post('/api/linxup-api/probe', reqMgr, async (req, res) => {
   const path = String(req.body?.path || linxupInventoryPath || '').trim();
   if (!path || !path.startsWith('/')) return res.status(400).json({ error: 'Set LINXUP_API_INVENTORY_PATH to the tracker list endpoint shown in the account\'s Swagger (a path starting with /), or pass {"path"} here for a one-off check.' });
   const { summary, trackers } = await linxupApi.probe(path);
-  let merged = 0;
-  if (summary.ok && linxup.enabled) {
-    const at = new Date();
-    for (const t of trackers) { if (t.trackerId == null) continue; try { await linxup.upsertTracker({ trackerId: t.trackerId, name: t.name, deviceNumber: t.deviceNumber, deviceSerialNumber: t.deviceSerialNumber, vin: t.vin, make: t.make, model: t.model, year: t.year, licensePlate: t.licensePlate }, at); merged++; } catch (e) { summary.mergeError = e.message; break; } }
-  }
+  const merged = summary.ok ? await mergeLinxupInventory(trackers, summary) : 0;
   logAction(req.session.user, 'linxup-api-probe', 'linxup', { path, ok: summary.ok, status: summary.status, items: summary.items, merged });
-  res.status(summary.ok ? 200 : 502).json({ ...summary, merged, trackers: trackers.map(t => ({ trackerId: t.trackerId, name: t.name, deviceNumber: t.deviceNumber, deviceSerialNumber: t.deviceSerialNumber, vin: t.vin, licensePlate: t.licensePlate, identityFields: t.identityFields })) });
+  res.status(summary.ok ? 200 : 502).json({ ...summary, merged, inventory: linxupInventoryCounts(), trackers: trackers.map(t => ({ trackerId: t.trackerId, name: t.name, deviceNumber: t.deviceNumber, deviceSerialNumber: t.deviceSerialNumber, vin: t.vin, licensePlate: t.licensePlate, lastHeardFrom: t.lastHeardFrom, statusCode: t.statusCode, identityFields: t.identityFields })) });
+});
+// ── Tracker workbook: the owner's equipment reference (linxup-tracker-setup.json) ──
+// One row per Linxup tracker name ("VBT #4"), its device serial, VIN and dash
+// cam id. It is reference data, not proof: a truck is linked only when the
+// live inventory (or a webhook message) confirms the same identity uniquely.
+const TRACKER_SETUP_FILE = path.join(__dirname, 'linxup-tracker-setup.json');
+function trackerWorkbook() { try { const j = JSON.parse(fs.readFileSync(TRACKER_SETUP_FILE, 'utf8')); return Array.isArray(j.trackers) ? j.trackers : []; } catch { return []; } }
+function vbtNameForTruck(truckNum) { const n = String(truckNum || '').trim().replace(/^truck\s*#?\s*/i, '').trim(); return n ? `VBT #${n}` : ''; }
+const normIdent = v => String(v || '').trim().toUpperCase();
+// Strongest identifier first — exact, unique VIN; exact, unique serial; the
+// exact name corroborated by VIN or serial — among live trackers not linked
+// elsewhere, and only when nothing known about the two contradicts. Anything
+// else is reported, never linked. Case and surrounding whitespace are the only
+// differences forgiven.
+function matchTrackerForTruck(truck, trackers, linkedBy) {
+  const free = trackers.filter(x => x.trackerId != null && (x.apiSeenAt || x.lastMessageAt) && (!linkedBy.has(x.trackerId) || linkedBy.get(x.trackerId).id === truck.id));
+  const serialEq = (x, v) => normIdent(x.deviceSerialNumber) === normIdent(v) || normIdent(x.deviceNumber) === normIdent(v);
+  const conflicts = (x) => {
+    const c = [];
+    if (truck.vin && x.vin && normIdent(truck.vin) !== normIdent(x.vin)) c.push(`truck VIN ${truck.vin} ≠ tracker VIN ${x.vin}`);
+    if (truck.trackerSerial && (x.deviceSerialNumber || x.deviceNumber) && !serialEq(x, truck.trackerSerial)) c.push(`truck tracker serial ${truck.trackerSerial} ≠ tracker's ${x.deviceSerialNumber || x.deviceNumber}`);
+    return c;
+  };
+  const rule = (by, pred, corroborate) => {
+    const c = free.filter(pred); if (!c.length) return null;
+    if (c.length > 1) return { status: 'ambiguous', by, candidates: c.map(x => x.trackerId), note: `${c.length} live trackers match by ${by} — decide by hand` };
+    const x = c[0]; const bad = conflicts(x); if (bad.length) return { status: 'conflict', by, candidate: x.trackerId, note: `${bad.join('; ')} — not linked, review` };
+    if (corroborate && !corroborate(x)) return { status: 'uncorroborated', by, candidate: x.trackerId, note: 'the name matches but no VIN or serial confirms it — not linked' };
+    return { status: 'match', by, tracker: x };
+  };
+  if (truck.vin) { const r = rule('vin', x => x.vin && normIdent(x.vin) === normIdent(truck.vin)); if (r) return r; }
+  if (truck.trackerSerial) { const r = rule('serial', x => serialEq(x, truck.trackerSerial)); if (r) return r; }
+  const want = vbtNameForTruck(truck.truckNum);
+  if (want) { const r = rule('name', x => normIdent(x.name) === normIdent(want), x => (truck.vin && x.vin && normIdent(x.vin) === normIdent(truck.vin)) || (truck.trackerSerial && serialEq(x, truck.trackerSerial))); if (r) return r; }
+  return { status: 'none', note: truck.vin || truck.trackerSerial ? 'no live tracker reports this VIN or serial' : 'no VIN or tracker serial on the truck to match by' };
+}
+// Apply the workbook: refresh the inventory (when the API is configured), copy
+// the workbook's VIN and serial onto the truck with the same number when the
+// truck has none (an existing different value is kept and flagged), then link
+// the one live tracker the identifiers prove — for trucks the workbook names.
+// A truck the workbook does not name is never linked here: an exact VIN or
+// serial match is reported as a proposal for a person. Existing links are
+// never replaced. Drivers, assignments and every operational record are
+// untouched; the workbook's driver column is reported as what it says.
+app.post('/api/linxup-api/apply-workbook', reqMgr, async (req, res) => {
+  const rows = trackerWorkbook();
+  if (!rows.length) return res.status(400).json({ error: 'No tracker workbook on file (linxup-tracker-setup.json)' });
+  const refreshed = await refreshLinxupInventory();
+  const trucks = (store.trucks || []).filter(t => t.active !== false);
+  const trackers = linxup.listTrackers();
+  const linkedBy = new Map(); for (const t of trucks) if (t.linxup && t.linxup.trackerId != null) linkedBy.set(Number(t.linxup.trackerId), t);
+  const results = []; let changed = false; const usedRows = new Set();
+  for (const t of trucks) {
+    const row = rows.find(r => normIdent(r.tracker) === normIdent(vbtNameForTruck(t.truckNum))) || null;
+    const out = { truckId: t.id, truckNum: t.truckNum, workbookRow: row ? row.tracker : null, workbookDriver: row ? (row.driverField || '') : '', usualDriverId: t.defaultDriverId || null, vin: t.vin || '', trackerSerial: t.trackerSerial || '', set: [], linked: null, status: '', notes: [] };
+    if (row) {
+      usedRows.add(row.tracker);
+      if (row.vin) { if (!t.vin) { t.vin = row.vin; out.vin = row.vin; out.set.push('vin'); changed = true; } else if (normIdent(t.vin) !== normIdent(row.vin)) out.notes.push(`truck VIN ${t.vin} differs from the workbook's ${row.vin} — kept, review`); }
+      else out.notes.push('the workbook has no VIN for this tracker — none recorded');
+      if (row.serial) { if (!t.trackerSerial) { t.trackerSerial = row.serial; out.trackerSerial = row.serial; out.set.push('trackerSerial'); changed = true; } else if (normIdent(t.trackerSerial) !== normIdent(row.serial)) out.notes.push(`truck tracker serial ${t.trackerSerial} differs from the workbook's ${row.serial} — kept, review`); }
+      if (row.driverField) out.notes.push(`the workbook's driver column says "${row.driverField}" — VBT's usual driver is unchanged`);
+    }
+    const m = (row || t.vin || t.trackerSerial) ? matchTrackerForTruck(t, trackers, linkedBy) : { status: 'none', note: 'no workbook record with this truck number and no VIN or tracker serial on the truck' };
+    if (t.linxup && t.linxup.trackerId != null) {
+      out.status = 'already-linked'; out.linked = { trackerId: Number(t.linxup.trackerId), by: t.linxup.matchSource || 'existing', trackerName: t.linxup.name || '' };
+      if (m.status === 'match' && m.tracker.trackerId !== Number(t.linxup.trackerId)) out.notes.push(`a different live tracker (${m.tracker.trackerId}) matches by ${m.by} — the existing link was kept, review`);
+      else if (m.status !== 'match' && m.status !== 'none') out.notes.push(m.note);
+    } else if (m.status === 'match' && row) {
+      const x = m.tracker;
+      t.linxup = { trackerId: x.trackerId, name: x.name ?? null, deviceNumber: x.deviceNumber ?? null, deviceSerialNumber: x.deviceSerialNumber ?? null, vin: x.vin ?? null,
+        linkedAt: new Date().toISOString(), linkedBy: req.session.user.username, seen: true, matchSource: `workbook+${x.apiSeenAt ? 'api' : 'webhook'}:${m.by}` };
+      linkedBy.set(x.trackerId, t); changed = true; out.status = 'linked'; out.linked = { trackerId: x.trackerId, by: m.by, trackerName: x.name || '' };
+      logAction(req.session.user, 'linked-tracker', t.id, { truckNum: t.truckNum, before: null, after: t.linxup, source: t.linxup.matchSource });
+    } else if (m.status === 'match') {
+      out.status = 'proposed'; out.proposal = { trackerId: m.tracker.trackerId, by: m.by, trackerName: m.tracker.name || '' }; out.notes.push(`tracker ${m.tracker.trackerId} (${m.tracker.name || 'unnamed'}) matches by ${m.by}, but the workbook does not name this truck — confirm on Drivers & Trucks`);
+    } else {
+      out.status = m.status === 'none' ? (row ? 'unmatched' : 'no-record') : m.status; out.notes.push(m.note);
+      if (m.candidates) out.candidates = m.candidates; if (m.candidate) out.candidate = m.candidate;
+    }
+    results.push(out);
+  }
+  const workbookWithoutTruck = rows.filter(r => !usedRows.has(r.tracker)).map(r => ({ tracker: r.tracker, serial: r.serial, vin: r.vin || null, driverField: r.driverField || null, note: 'no VBT truck with this number — nothing created' }));
+  if (changed) await saveData();
+  logAction(req.session.user, 'applied-tracker-workbook', 'linxup', { linked: results.filter(r => r.status === 'linked').map(r => `${r.truckNum}→${r.linked.trackerId}`), updated: results.filter(r => r.set.length).map(r => `${r.truckNum}:${r.set.join('+')}`),
+    flagged: results.filter(r => !['linked', 'already-linked'].includes(r.status)).map(r => `${r.truckNum}:${r.status}`), inventoryMerged: refreshed.merged, inventorySkipped: refreshed.skipped });
+  res.json({ ok: true, changed, inventory: { refreshed: !refreshed.skipped, skipped: refreshed.skipped, merged: refreshed.merged, summary: refreshed.summary ? { ok: refreshed.summary.ok, status: refreshed.summary.status, items: refreshed.summary.items, error: refreshed.summary.error || '' } : null, ...linxupInventoryCounts() },
+    trucks: results, workbookWithoutTruck, note: 'Links were made only where the workbook names the truck and exactly one live tracker proves the identity. Drivers and assignments were not touched; the workbook\'s driver column is reported, not applied.' });
 });
 // Tracker ↔ truck mapping review. Links are made by a person on Drivers &
 // Trucks; this only compares what VBT holds (truck.linxup, and the VIN /
@@ -2433,7 +2546,7 @@ app.get('/api/linxup-api/mapping', reqMgr, (req, res) => {
     const link = t.linxup && t.linxup.trackerId != null ? t.linxup : null;
     const tr = link ? linxup.tracker(link.trackerId) : null;
     const row = { truckId: t.id, truckNum: t.truckNum, vin: t.vin || '', trackerSerial: t.trackerSerial || '', linked: !!link, trackerId: link ? Number(link.trackerId) : null,
-      tracker: tr ? { name: tr.name, deviceNumber: tr.deviceNumber, deviceSerialNumber: tr.deviceSerialNumber, vin: tr.vin, active: tr.active !== false, lastMessageAt: tr.lastMessageAt || null, linxupReports: tr.personName || '' } : null,
+      tracker: tr ? { name: tr.name, deviceNumber: tr.deviceNumber, deviceSerialNumber: tr.deviceSerialNumber, vin: tr.vin, active: tr.active !== false, lastMessageAt: tr.lastMessageAt || null, apiSeenAt: tr.apiSeenAt || null, apiLastHeardFrom: tr.apiLastHeardFrom || null, source: trackerSource(tr), linxupReports: tr.personName || '' } : null, matchSource: link ? link.matchSource || '' : '',
       status: 'ok', notes: [] };
     if (!link) {
       row.status = 'unlinked';
@@ -2444,7 +2557,7 @@ app.get('/api/linxup-api/mapping', reqMgr, (req, res) => {
       else row.notes.push(t.vin || t.trackerSerial ? 'no tracker reports this VIN/serial yet' : 'no tracker linked; no VIN or tracker serial on the truck to match by');
     } else {
       if ((byTracker.get(Number(link.trackerId)) || []).length > 1) { row.status = 'duplicate'; row.notes.push(`tracker ${link.trackerId} is linked to ${byTracker.get(Number(link.trackerId)).map(x => x.truckNum).join(' and ')}`); }
-      if (!tr) { if (row.status === 'ok') row.status = 'unverified'; row.notes.push('linked tracker has not been heard from (no message, no inventory)'); }
+      if (!tr) { if (row.status === 'ok') row.status = 'unverified'; row.notes.push('linked tracker is not in the mirror yet (no webhook message, not in the API inventory)'); }
       else {
         if (t.vin && tr.vin && norm(t.vin) !== norm(tr.vin)) { row.status = 'mismatch'; row.notes.push(`truck VIN ${t.vin} ≠ tracker VIN ${tr.vin}`); }
         if (t.trackerSerial && tr.deviceSerialNumber && norm(t.trackerSerial) !== norm(tr.deviceSerialNumber) && norm(t.trackerSerial) !== norm(tr.deviceNumber || '')) { row.status = 'mismatch'; row.notes.push(`truck's tracker serial ${t.trackerSerial} ≠ tracker's ${tr.deviceSerialNumber}`); }
@@ -2456,9 +2569,9 @@ app.get('/api/linxup-api/mapping', reqMgr, (req, res) => {
     if (row.status !== 'ok') flags.push({ kind: row.status, truckNum: t.truckNum, text: row.notes.join('; ') });
     return row;
   });
-  const orphans = trackers.filter(x => !byTracker.has(x.trackerId)).map(x => ({ trackerId: x.trackerId, name: x.name, deviceNumber: x.deviceNumber, deviceSerialNumber: x.deviceSerialNumber, vin: x.vin, active: x.active !== false, lastMessageAt: x.lastMessageAt || null, linxupReports: x.personName || '' }));
+  const orphans = trackers.filter(x => !byTracker.has(x.trackerId)).map(x => ({ trackerId: x.trackerId, name: x.name, deviceNumber: x.deviceNumber, deviceSerialNumber: x.deviceSerialNumber, vin: x.vin, active: x.active !== false, lastMessageAt: x.lastMessageAt || null, apiSeenAt: x.apiSeenAt || null, apiLastHeardFrom: x.apiLastHeardFrom || null, source: x.source, linxupReports: x.personName || '' }));
   orphans.forEach(o => flags.push({ kind: 'tracker-unlinked', trackerId: o.trackerId, text: `tracker ${o.name || o.trackerId} is not linked to any truck` }));
-  res.json({ enabled: linxup.enabled, api: linxupApi.status(), trucks: rows, unlinkedTrackers: orphans, flags,
+  res.json({ enabled: linxupMirrorUsable(), webhookEnabled: linxup.enabled, api: linxupApi.status(), inventory: linxupInventoryCounts(), trucks: rows, unlinkedTrackers: orphans, flags,
     note: 'Links are made by a person on Drivers & Trucks. A tracker\'s "linxupReports" person is what Linxup says, never VBT\'s assigned or usual driver.' });
 });
 
@@ -2660,12 +2773,18 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   // Plant a record the state machine would never produce (older data, a bypass), to prove the guards downstream.
   app.post('/api/_test/set-load', reqMgr, async (req, res) => { const l = findLoadAnywhere(String(req.body?.id || '')); if (!l) return res.status(404).json({ error: 'no load' }); Object.assign(l, req.body?.fields || {}); await saveData(); res.json({ ok: true, load: l }); });
   const fakeLinxupApi = { mode: 'off', calls: [], logins: 0 };
+  // Ten trackers shaped like the real /api/v3/trackers answer (asset.vin, deviceSerialNumber, lastHeardFrom, statusCode), with the workbook's identities; VBT #2 has no VIN.
+  const FAKE_LINXUP_INVENTORY = () => {
+    const rows = trackerWorkbook(); const now = Date.now();
+    const list = rows.map((r, i) => ({ trackerId: 9001 + i, name: r.tracker, deviceNumber: 'DN-' + r.serial, deviceSerialNumber: r.serial, deviceType: 'OBD', fleetId: 1, hasCamera: true, lastHeardFrom: now - (i + 1) * 60000, statusCode: 'ONLINE', asset: r.vin ? { vin: r.vin, make: 'Peterbilt' } : {} }));
+    return fakeLinxupApi.inventoryOverride || list;
+  };
   // Linxup API fake: replaces the pull client with one whose fetch is a stub.
   // modes: ok (array of trackers) · envelope (object with data[]) · unauthorized ·
   // timeout · malformed (non-JSON) · down (connection refused) · jwt (login then
   // list; a second call with an expired token must re-login) · off (unconfigured)
   app.post('/api/_test/linxup-api-fake', reqMgr, (req, res) => {
-    const mode = String(req.body?.mode || 'ok'); fakeLinxupApi.mode = mode; fakeLinxupApi.calls = []; fakeLinxupApi.logins = 0;
+    const mode = String(req.body?.mode || 'ok'); fakeLinxupApi.mode = mode; fakeLinxupApi.calls = []; fakeLinxupApi.logins = 0; fakeLinxupApi.inventoryOverride = Array.isArray(req.body?.inventory) ? req.body.inventory : null;
     const items = Array.isArray(req.body?.items) ? req.body.items : [{ trackerId: 7001, name: 'VBT 140', deviceNumber: 'IMEI-7001', deviceSerialNumber: 'SN-7001', vin: 'VIN7001' }, { trackerId: 7002, name: 'VBT 141', deviceNumber: 'IMEI-7002', deviceSerialNumber: 'SN-7002', vin: 'VIN7002' }];
     const fetchImpl = async (url, init) => {
       const h = init.headers || {};
@@ -2688,6 +2807,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
         return reply(200, items);
       }
       if (mode === 'envelope') return reply(200, { data: items, page: 1 });
+      if (mode === 'inventory') return reply(200, FAKE_LINXUP_INVENTORY());
       return reply(200, items);
     };
     const jwtMode = mode === 'jwt' || mode === 'jwt-403';
@@ -7233,7 +7353,7 @@ app.get('/api/audit-log', reqMgr, (req, res) => {
 // GET /api/fleet — office only. Vehicles + the driver roster with login state.
 app.get('/api/fleet', reqMgr, async (req, res) => {
   res.json({ trucks: store.trucks || [], trailers: store.trailers || [], drivers: await fleetDrivers(), truckStatuses: TRUCK_STATUSES, trailerStatuses: TRAILER_STATUSES, driverStatuses: DRIVER_STATUSES,
-    linxup: { enabled: linxup.enabled, trackers: linxup.listTrackers(), persons: linxup.listPersons() } });
+    linxup: { enabled: linxupMirrorUsable(), webhookEnabled: linxup.enabled, apiConfigured: linxupApi.configured, inventory: linxupInventoryCounts(), trackers: linxup.listTrackers(), persons: linxup.listPersons() } });
 });
 
 // Link a VBT truck to a Linxup tracker by id. The tracker's IMEI and VIN are
@@ -7252,7 +7372,7 @@ app.put('/api/fleet/trucks/:id/linxup', reqMgr, async (req, res) => {
     if (other) return res.status(409).json({ error: `That tracker is already linked to ${other.truckNum}. Unlink it there first.` });
     const tr = linxup.tracker(trackerId);
     t.linxup = { trackerId, name: tr ? tr.name : null, deviceNumber: tr ? tr.deviceNumber : null, deviceSerialNumber: tr ? tr.deviceSerialNumber : null, vin: tr ? tr.vin : null,
-      linkedAt: new Date().toISOString(), linkedBy: req.session.user.username, seen: !!tr };
+      linkedAt: new Date().toISOString(), linkedBy: req.session.user.username, seen: !!tr, matchSource: 'manual' };
   }
   logAction(req.session.user, trackerId == null ? 'unlinked-tracker' : 'linked-tracker', t.id, { truckNum: t.truckNum, before, after: t.linxup || null });
   await saveData();

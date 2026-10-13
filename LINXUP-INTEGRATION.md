@@ -654,3 +654,34 @@ mirror and the evidence views only.
 **Not done here, by design.** No positions or history are pulled yet (the
 account's Swagger decides the endpoints; the inventory check comes first), no
 automatic linking (suggestions only), no driver identification from a tracker.
+
+## Q. Tracker inventory and the workbook mapping (this commit)
+
+**Why the office saw "0 tracker(s) known" after a successful check.** The
+inventory merge was gated on the webhook token: without `LINXUP_WEBHOOK_TOKEN`
+the ten trackers were fetched, summarized and dropped, the mirror stayed empty,
+`/api/fleet` reported Linxup off, and the picker and mapping review had nothing
+to offer. Now the merge runs whenever the inventory call succeeds; the mirror
+records where each tracker is known from — `apiSeenAt` (listed by the API; new
+columns `api_seen_at`, `api_last_heard_from`, `api_status_code`) separately from
+`lastMessageAt` (a webhook message) — and the screens report four counts:
+known, from the API inventory, heard by webhook, linked. A listing is never a
+message, and neither is a position.
+
+**Workbook.** `linxup-tracker-setup.json` holds the ten rows of
+`Tracker_Setup.xlsx` (sheet "Trackers"). `POST /api/linxup-api/apply-workbook`
+(office) refreshes the inventory, sets VIN and tracker serial on the truck with
+the same number when empty, and links only a unique, verified live tracker:
+exact VIN, else exact serial, else the exact name corroborated by VIN or
+serial; conflicts and ambiguity are refused with the reason; existing links are
+never replaced; trucks the workbook does not name get proposals, never links;
+nothing is created; drivers and every operational record are untouched. With
+the current fleet this links Truck #2 (by serial — the workbook has no VIN for
+VBT #2 and none is invented), Truck #4 and Truck #14 (by VIN), and leaves
+Truck #12 and Truck #2B unlinked with "no record". Links record their source.
+
+**Still not live positions.** The pull client reads the inventory only. GPS
+positions, trips, stops and geofence visits still arrive solely through the
+webhook (push side), which needs `LINXUP_WEBHOOK_TOKEN` and the message URLs
+registered in Linxup; until then a linked tracker reads "No position yet" and
+the Fleet Map has no Linxup positions. That is a separate step.

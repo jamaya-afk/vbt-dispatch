@@ -7289,7 +7289,7 @@ function paintFleet() {
   // tracker: links stay a person's action in the table below.
   const lxApiBlock = `<div class="qa-card" id="lx-api-card" style="margin:0 0 14px">
     <div class="qa-top"><div><div class="qa-cust">Linxup API (read-only)</div><div class="qa-sub" id="lx-api-sub">Loading…</div></div>
-      <div style="display:flex;gap:8px"><button class="btn ghost" style="font-size:12px" onclick="lxApiProbe()">Check connection</button><button class="btn ghost" style="font-size:12px" onclick="lxMappingReview()">Mapping review</button></div></div>
+      <div style="display:flex;gap:8px"><button class="btn ghost" style="font-size:12px" onclick="lxApiProbe()">Check connection</button><button class="btn ghost" style="font-size:12px" onclick="lxApplyWorkbook()">Apply tracker workbook</button><button class="btn ghost" style="font-size:12px" onclick="lxMappingReview()">Mapping review</button></div></div>
     <div id="lx-api-detail" style="font-size:12px;color:var(--txt2);margin-top:6px"></div></div>`;
   const linkedBy = new Map(trucks.filter(t => t.linxup && t.linxup.trackerId != null).map(t => [Number(t.linxup.trackerId), t]));
   const trackerOpts = (t) => {
@@ -7298,16 +7298,18 @@ function paintFleet() {
     const opts = [`<option value="">— not linked —</option>`];
     (lx.trackers || []).forEach(x => {
       const other = linkedBy.get(Number(x.trackerId)); const taken = other && other.id !== t.id;
-      opts.push(`<option value="${x.trackerId}" ${cur === Number(x.trackerId) ? 'selected' : ''} ${taken ? 'disabled' : ''}>${escapeHtml(x.name || 'tracker ' + x.trackerId)}${x.vin ? ' · VIN ' + escapeHtml(x.vin) : ''}${x.deviceNumber ? ' · IMEI ' + escapeHtml(x.deviceNumber) : ''}${taken ? ` (on ${escapeHtml(other.truckNum)})` : ''}${x.active === false ? ' (inactive)' : ''}</option>`);
+      opts.push(`<option value="${x.trackerId}" ${cur === Number(x.trackerId) ? 'selected' : ''} ${taken ? 'disabled' : ''}>${escapeHtml(x.name || 'tracker ' + x.trackerId)}${x.vin ? ' · VIN ' + escapeHtml(x.vin) : ''}${x.deviceNumber ? ' · IMEI ' + escapeHtml(x.deviceNumber) : ''}${taken ? ` (on ${escapeHtml(other.truckNum)})` : ''}${x.active === false ? ' (inactive)' : ''}${lxFresh(x)}</option>`);
     });
     if (cur != null && !seen.has(cur)) opts.push(`<option value="${cur}" selected>tracker ${cur} (not heard from yet)</option>`);
     return opts.join('');
   };
+  // Where VBT knows the tracker from, and how fresh: the API inventory, a webhook message, or both.
+  const lxFresh = (x) => { const d = (iso) => iso ? new Date(iso).toLocaleDateString([], { month: 'numeric', day: 'numeric' }) : ''; if (x.source === 'webhook+api') return ` · heard ${d(x.lastMessageAt)}, inventory ${d(x.apiSeenAt)}`; if (x.source === 'api') return ` · inventory ${d(x.apiSeenAt)}, no message yet`; if (x.source === 'webhook') return ` · heard ${d(x.lastMessageAt)}`; return ''; };
   const linkNote = (t) => {
     if (!t.linxup) return '';
     const tr = (lx.trackers || []).find(x => Number(x.trackerId) === Number(t.linxup.trackerId));
     const bad = tr && ((t.linxup.vin && tr.vin && t.linxup.vin !== tr.vin) || (t.linxup.deviceNumber && tr.deviceNumber && t.linxup.deviceNumber !== tr.deviceNumber));
-    return `<div style="font-size:10.5px;color:${bad ? 'var(--A)' : 'var(--txt3)'};margin-top:3px">${bad ? '⚠ tracker now reports a different VIN/IMEI — moved? ' : ''}linked ${t.linxup.linkedAt ? new Date(t.linxup.linkedAt).toLocaleDateString() : ''}${tr && tr.latestAt ? ' · last position ' + new Date(tr.latestAt).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ' · no position yet'}${tr && tr.personName ? ' · Linxup driver ' + escapeHtml(tr.personName) : ''}</div>`;
+    return `<div style="font-size:10.5px;color:${bad ? 'var(--A)' : 'var(--txt3)'};margin-top:3px">${bad ? '⚠ tracker now reports a different VIN/IMEI — moved? ' : ''}linked ${t.linxup.linkedAt ? new Date(t.linxup.linkedAt).toLocaleDateString() : ''}${t.linxup.matchSource ? ' · ' + escapeHtml(t.linxup.matchSource) : ''}${tr && tr.latestAt ? ' · last position ' + new Date(tr.latestAt).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ' · no position yet'}${tr && tr.personName ? ' · Linxup driver ' + escapeHtml(tr.personName) : ''}</div>`;
   };
   const personOpts = (sel) => `<option value="">— none —</option>` + (lx.persons || []).map(p => `<option value="${p.personId}" ${Number(sel) === Number(p.personId) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')
     + (sel != null && sel !== '' && !(lx.persons || []).some(p => Number(p.personId) === Number(sel)) ? `<option value="${sel}" selected>person ${sel} (not seen yet)</option>` : '');
@@ -7650,11 +7652,14 @@ function fmLoadLeaflet() {
 }
 
 // ── LINXUP API (pull side) — office ──────────────────────────────────────────
-async function lxApiStatus() {
+async function lxApiStatus(keepDetail) {
   const d = await api('GET', '/api/linxup-api/status'); const sub = document.getElementById('lx-api-sub'); const det = document.getElementById('lx-api-detail'); if (!sub || !det) return;
   if (!d.ok) { sub.textContent = d.error || 'Could not read the status'; return; }
-  sub.textContent = d.configured ? `Configured · ${d.host} · ${d.authMode === 'jwt' ? 'key → JWT' : d.authMode === 'header' ? 'key header' : 'Bearer key'} · webhook ${d.webhook.enabled ? 'on' : 'off'} · ${d.webhook.trackersKnown} tracker(s) known` : 'Not configured — set LINXUP_API_BASE_URL, LINXUP_API_KEY (and LINXUP_API_INVENTORY_PATH) in the server environment; see README.';
+  const inv = d.inventory || { trackers: 0, fromApi: 0, heardByWebhook: 0, linked: 0 };
+  const counts = `${inv.trackers} tracker(s) known — ${inv.fromApi} from the API inventory${inv.lastInventoryAt ? ` (${new Date(inv.lastInventoryAt).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })})` : ''}, ${inv.heardByWebhook} heard by webhook, ${inv.linked} linked to trucks`;
+  sub.textContent = d.configured ? `Configured · ${d.host} · ${d.authMode === 'jwt' ? 'key → JWT' : d.authMode === 'header' ? 'key header' : 'Bearer key'} · webhook ${d.webhook.enabled ? 'on' : 'off'} · ${counts}` : `Not configured — set LINXUP_API_BASE_URL, LINXUP_API_KEY (and LINXUP_API_INVENTORY_PATH) in the server environment; see README. ${counts}`;
   const l = d.last;
+  if (keepDetail) return;   // the caller is showing its own result below the card's summary line
   det.innerHTML = l ? `Last check ${new Date(l.at).toLocaleString()}: <b style="color:${l.ok ? 'var(--G)' : 'var(--R)'}">${l.ok ? 'OK' : 'failed'}</b> · HTTP ${l.status || '—'} · ${escapeHtml(l.path)}${l.ok ? ` · ${l.items == null ? 'no list found' : l.items + ' item(s)'} (${escapeHtml(l.shape)}) · with id ${l.identity.withTrackerId}, VIN ${l.identity.withVin}, IMEI ${l.identity.withDeviceNumber}, serial ${l.identity.withSerial}${l.fields.length ? `<br>Fields: ${escapeHtml(l.fields.join(', '))}` : ''}` : ` · ${escapeHtml(l.error)}`}` : (d.configured ? 'Not checked yet.' : '');
 }
 async function lxApiProbe() {
@@ -7663,12 +7668,26 @@ async function lxApiProbe() {
   if (!d.ok) toast(d.error || 'The check failed', 'error'); else toast(`Linxup answered: ${d.items == null ? 'no list found' : d.items + ' tracker(s)'}${d.merged ? `, ${d.merged} added to the picker` : ''}`, 'success');
   await loadFleet(); paintFleet(); lxApiStatus();
 }
+async function lxApplyWorkbook() {
+  const det = document.getElementById('lx-api-detail'); if (det) det.textContent = 'Applying the tracker workbook…';
+  const d = await api('POST', '/api/linxup-api/apply-workbook', {});
+  if (!d.ok) { toast(d.error || 'Could not apply the workbook', 'error'); if (det) det.textContent = d.error || ''; return; }
+  const linked = d.trucks.filter(t => t.status === 'linked').length, updated = d.trucks.filter(t => t.set.length).length;
+  toast(`${linked} truck(s) linked, ${updated} updated from the workbook${d.inventory.refreshed ? `, inventory refreshed (${d.inventory.merged})` : d.inventory.skipped ? ` — inventory not refreshed (${d.inventory.skipped})` : ''}`, linked || updated ? 'success' : '');
+  const color = (s) => s === 'linked' || s === 'already-linked' ? 'var(--G)' : s === 'no-record' || s === 'unmatched' ? 'var(--txt2)' : 'var(--A)';
+  const html = `<div style="font-size:12px;color:var(--txt2);margin-bottom:8px">${escapeHtml(d.note)}${d.inventory.summary ? ` Inventory: HTTP ${d.inventory.summary.status}, ${d.inventory.summary.items == null ? 'no list' : d.inventory.summary.items + ' tracker(s)'}${d.inventory.summary.error ? ' — ' + escapeHtml(d.inventory.summary.error) : ''}.` : d.inventory.skipped ? ` Inventory not refreshed: ${escapeHtml(d.inventory.skipped)}.` : ''} ${d.inventory.trackers} known, ${d.inventory.fromApi} from the API, ${d.inventory.heardByWebhook} heard, ${d.inventory.linked} linked.</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px"><tr><th style="text-align:left">Truck</th><th style="text-align:left">Workbook row</th><th style="text-align:left">VIN</th><th style="text-align:left">Tracker SN</th><th style="text-align:left">Result</th><th style="text-align:left">Notes</th></tr>
+    ${d.trucks.map(t => `<tr><td>${escapeHtml(t.truckNum)}</td><td>${escapeHtml(t.workbookRow || '—')}</td><td>${escapeHtml(t.vin || '—')}${t.set.includes('vin') ? ' <span style="color:var(--G)">set</span>' : ''}</td><td>${escapeHtml(t.trackerSerial || '—')}${t.set.includes('trackerSerial') ? ' <span style="color:var(--G)">set</span>' : ''}</td><td><b style="color:${color(t.status)}">${escapeHtml(t.status)}</b>${t.linked ? ` → tracker ${t.linked.trackerId}${t.linked.trackerName ? ' ' + escapeHtml(t.linked.trackerName) : ''} (${escapeHtml(t.linked.by)})` : ''}${t.proposal ? ` → proposal: tracker ${t.proposal.trackerId} (${escapeHtml(t.proposal.by)})` : ''}</td><td>${escapeHtml(t.notes.join('; '))}</td></tr>`).join('')}</table>
+    ${d.workbookWithoutTruck.length ? `<div style="margin-top:10px;font-weight:700;font-size:13px">Workbook rows with no VBT truck (nothing created)</div><ul style="font-size:12px">${d.workbookWithoutTruck.map(r => `<li>${escapeHtml(r.tracker)} · SN ${escapeHtml(r.serial)}${r.vin ? ' · VIN ' + escapeHtml(r.vin) : ' · no VIN'}${r.driverField ? ' · workbook driver column: ' + escapeHtml(r.driverField) : ''}</li>`).join('')}</ul>` : ''}`;
+  await loadFleet(); paintFleet(); await lxApiStatus(true); const det2 = document.getElementById('lx-api-detail'); if (det2) det2.innerHTML = html;
+}
 async function lxMappingReview() {
   const d = await api('GET', '/api/linxup-api/mapping'); if (!d.ok) return toast(d.error || 'Could not load the mapping', 'error');
-  const row = (r) => `<tr><td>${escapeHtml(r.truckNum)}</td><td>${r.trackerId == null ? '—' : r.trackerId}${r.tracker ? ` · ${escapeHtml(r.tracker.name || '')}` : ''}</td><td>${escapeHtml(r.vin || '')}${r.tracker && r.tracker.vin ? ` / Linxup ${escapeHtml(r.tracker.vin)}` : ''}</td><td><b style="color:${r.status === 'ok' ? 'var(--G)' : r.status === 'unlinked' ? 'var(--txt2)' : 'var(--A)'}">${escapeHtml(r.status)}</b></td><td>${escapeHtml(r.notes.join('; '))}${r.tracker && r.tracker.linxupReports ? ` · Linxup reports ${escapeHtml(r.tracker.linxupReports)} (not VBT's driver)` : ''}</td></tr>`;
+  const fresh = (x) => !x ? '' : x.source === 'api' ? ` · inventory ${x.apiSeenAt ? new Date(x.apiSeenAt).toLocaleDateString() : ''}, no message yet` : x.source === 'webhook' ? ` · heard ${x.lastMessageAt ? new Date(x.lastMessageAt).toLocaleDateString() : ''}` : x.source === 'webhook+api' ? ' · inventory + heard' : '';
+  const row = (r) => `<tr><td>${escapeHtml(r.truckNum)}</td><td>${r.trackerId == null ? '—' : r.trackerId}${r.tracker ? ` · ${escapeHtml(r.tracker.name || '')}${fresh(r.tracker)}` : ''}${r.matchSource ? `<div style="font-size:10.5px;color:var(--txt3)">${escapeHtml(r.matchSource)}</div>` : ''}</td><td>${escapeHtml(r.vin || '')}${r.tracker && r.tracker.vin ? ` / Linxup ${escapeHtml(r.tracker.vin)}` : ''}</td><td><b style="color:${r.status === 'ok' ? 'var(--G)' : r.status === 'unlinked' ? 'var(--txt2)' : 'var(--A)'}">${escapeHtml(r.status)}</b></td><td>${escapeHtml(r.notes.join('; '))}${r.tracker && r.tracker.linxupReports ? ` · Linxup reports ${escapeHtml(r.tracker.linxupReports)} (not VBT's driver)` : ''}</td></tr>`;
   const html = `<div style="font-size:12px;color:var(--txt2);margin-bottom:8px">${escapeHtml(d.note)}</div>
     <table style="width:100%;border-collapse:collapse;font-size:12px"><tr><th style="text-align:left">Truck</th><th style="text-align:left">Tracker</th><th style="text-align:left">VIN (truck / Linxup)</th><th style="text-align:left">Status</th><th style="text-align:left">What to look at</th></tr>${d.trucks.map(row).join('')}</table>
-    ${d.unlinkedTrackers.length ? `<div style="margin-top:10px;font-weight:700;font-size:13px">Trackers not linked to any truck</div><ul style="font-size:12px">${d.unlinkedTrackers.map(t => `<li>${t.trackerId} · ${escapeHtml(t.name || '')}${t.vin ? ' · VIN ' + escapeHtml(t.vin) : ''}${t.deviceNumber ? ' · IMEI ' + escapeHtml(t.deviceNumber) : ''}${t.deviceSerialNumber ? ' · SN ' + escapeHtml(t.deviceSerialNumber) : ''}${t.linxupReports ? ' · Linxup reports ' + escapeHtml(t.linxupReports) : ''}</li>`).join('')}</ul>` : ''}`;
+    ${d.unlinkedTrackers.length ? `<div style="margin-top:10px;font-weight:700;font-size:13px">Trackers not linked to any truck</div><ul style="font-size:12px">${d.unlinkedTrackers.map(t => `<li>${t.trackerId} · ${escapeHtml(t.name || '')}${fresh(t)}${t.vin ? ' · VIN ' + escapeHtml(t.vin) : ''}${t.deviceNumber ? ' · IMEI ' + escapeHtml(t.deviceNumber) : ''}${t.deviceSerialNumber ? ' · SN ' + escapeHtml(t.deviceSerialNumber) : ''}${t.linxupReports ? ' · Linxup reports ' + escapeHtml(t.linxupReports) : ''}</li>`).join('')}</ul>` : ''}`;
   const det = document.getElementById('lx-api-detail'); if (det) det.innerHTML = html;
 }
 
