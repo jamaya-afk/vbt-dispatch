@@ -2460,7 +2460,18 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
     // The fake connection lives on the store like the real one, so a rollback
     // after a simulated failed save does not silently disconnect the tests.
     try { await saveData({ rotatePrev: false }); } catch {}
-    qb.findOrCreateCustomer = async (conn, c) => ({ customer: { Id: 'CUST-' + (c.name || 'x').replace(/\W/g, ''), DisplayName: c.name }, created: false });
+    // Customers live in a registry keyed by every name they were ever found or
+    // created under, as QuickBooks does: a lookup by a name it does not know
+    // creates a new (duplicate) customer. Ids keep the 'CUST-<Name>' form.
+    fakeQb.customers = fakeQb.customers || {};
+    qb.findOrCreateCustomer = async (conn, c) => {
+      const key = n => String(n || '').toLowerCase().trim();
+      for (const n of [c.name, ...(c.altNames || [])].filter(Boolean)) { const hit = fakeQb.customers[key(n)]; if (hit) return { customer: hit, created: false }; }
+      const made = { Id: 'CUST-' + (c.name || 'x').replace(/\W/g, ''), DisplayName: c.name };
+      fakeQb.customers[key(c.name)] = made; fakeQb.customersCreated = (fakeQb.customersCreated || 0) + 1;
+      return { customer: made, created: false };   // answered as a match, as the fake always did; `customersCreated` counts the new ones
+    };
+    for (const n of (req.body?.customers || [])) { const k = String(n).toLowerCase().trim(); if (!fakeQb.customers[k]) fakeQb.customers[k] = { Id: 'CUST-' + String(n).replace(/\W/g, ''), DisplayName: n }; }   // names QuickBooks already knows
     qb.findOrCreateVendor = async (conn, v) => ({ vendor: { Id: 'VEND-' + (v.name || 'x').replace(/\W/g, ''), DisplayName: v.name }, created: false });
     qb.createInvoice = async (conn, args) => {
       const m = fakeQb.mode;
@@ -5251,7 +5262,13 @@ function buildBillingGroups(loadIds) {
       ln.loadIds.push(load.id);
       if (revD.unconfigured) { ln.unconfigured = true; if (!ln.reasons.includes(revD.reason)) ln.reasons.push(revD.reason); unconfiguredLoadIds.push(load.id); }
 
-      if (load.ticketImageUrl) ticketImages.push({ loadId: load.id, url: load.ticketImageUrl });
+      // One ticket image per completed trip (the proof behind each invoiced
+      // load and its tons): stored URL or inline image. A load with no
+      // per-trip photos keeps its load-level copy, as before.
+      const tripImages = (load.trips || []).filter(tripIsCompleted).filter(t => t.ticket && (t.ticket.photoUrl || t.ticket.photo))
+        .map(t => ({ loadId: load.id, tripNum: t.tripNum, ticketNumber: t.ticket.number || '', url: t.ticket.photoUrl || '', dataUrl: !t.ticket.photoUrl }));
+      if (tripImages.length) ticketImages.push(...tripImages);
+      else if (load.ticketImageUrl) ticketImages.push({ loadId: load.id, url: load.ticketImageUrl });
       else if (load.ticketImage) ticketImages.push({ loadId: load.id, dataUrl: true });
       if (load.pod?.signatureUrl || load.pod?.signature) signatureImages.push({ loadId: load.id, url: load.pod.signatureUrl || '', dataUrl: !load.pod.signatureUrl });
       if (load.approvedAt) approvalStamps.push({ loadId: load.id, at: load.approvedAt, by: load.approvedBy });
@@ -5436,6 +5453,9 @@ app.post('/api/billing-batches', reqMgr, async (req, res) => {
     const batch = {
       id: batchId,
       customer: g.customer,
+      // The customer master's own id, so a rename between now and the send
+      // still finds the master and the QuickBooks customer it already holds.
+      customerId: ((store.customers || []).find(c => String(c.name || '').toLowerCase().trim() === String(g.customer || '').toLowerCase().trim()) || {}).id || '',
       poNumber: g.poNumber,
       poId: g.poId,
       jobCode: g.jobCode,
@@ -5679,11 +5699,18 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
   const user = req.session.user.username;
   try {
     // 1. Find or create customer in QB and remember the mapping
-    const localCust = store.customers.find(c => (c.name || '').toLowerCase().trim() === (b.customer || '').toLowerCase().trim());
+    // The master by the id frozen on the batch first (a rename since the batch
+    // was made must not lose the QuickBooks customer VBT already resolved),
+    // then by the batch's name for batches made before the id was kept.
+    const localCust = (b.customerId && store.customers.find(c => c.id === b.customerId))
+      || store.customers.find(c => (c.name || '').toLowerCase().trim() === (b.customer || '').toLowerCase().trim());
     let qbCustomerId = localCust?.qbCustomerId || '';
     if (!qbCustomerId) {
       const lookup = await qb.findOrCreateCustomer(conn, {
         name: b.customer,
+        // The master's current name as a second lookup when it differs from the
+        // name frozen on the batch: QuickBooks may know the customer by either.
+        altNames: localCust && localCust.name && localCust.name.toLowerCase().trim() !== String(b.customer || '').toLowerCase().trim() ? [localCust.name] : [],
         address: b.address,
         city: b.city,
         phone: localCust?.phone || '',
@@ -5751,14 +5778,23 @@ app.post('/api/billing-batches/:id/send', reqMgr, async (req, res) => {
     // 5. Attach supporting documents (best-effort; failures are logged but don't fail the send)
     const attachmentIds = [];
     for (const ref of (b.ticketImageRefs || [])) {
-      if (!ref.url) continue;  // skip base64-only legacy
+      // The image by its stored URL, else the inline image kept on the trip's
+      // ticket (or the load, for a load-level reference).
+      let inline = '';
+      if (!ref.url) {
+        const l = findLoadAnywhere(ref.loadId) || store.loads.find(x => x.id === ref.loadId);
+        const t = ref.tripNum != null ? ((l && l.trips) || []).find(x => x.tripNum === ref.tripNum) : null;
+        const img = t ? (t.ticket || {}).photo : (l || {}).ticketImage;
+        inline = /^data:image\//.test(String(img || '')) ? String(img) : '';
+        if (!inline) continue;
+      }
       try {
-        const { buffer, contentType } = await qb.fetchRemoteAsBuffer(ref.url);
+        const { buffer, contentType } = ref.url ? await qb.fetchRemoteAsBuffer(ref.url) : dataUrlToBuffer(inline);
         const ext = (contentType.split('/')[1] || 'jpg').split(';')[0];
         const att = await qb.attachToEntity(conn, {
           entityType: 'Invoice',
           entityId: invoice.Id,
-          fileName: `ticket-${ref.loadId}.${ext}`,
+          fileName: `ticket-${ref.loadId}${ref.tripNum != null ? '-trip' + ref.tripNum : ''}.${ext}`,
           contentType,
           buffer,
           includeOnSend: true,

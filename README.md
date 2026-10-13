@@ -182,8 +182,10 @@ carlos / carlos123
   pays onto the trips; a yard that hauled anything is not deleted; a price is
   a number of 0 or more; Profitability names its estimates. A batch freezes
   the rate and the billing basis it priced on, so a later change to either
-  never re-prices a sent invoice on screen; the signed POD and the ticket
-  photo travel with the invoice to QuickBooks.
+  never re-prices a sent invoice on screen; the signed POD and every
+  completed trip's ticket image travel with the invoice to QuickBooks. A
+  batch remembers which customer master it was made for, so a rename before
+  the send still reaches the QuickBooks customer VBT already resolved.
 - **The end of the day is one list.** The End of day tile on Dispatch (and
   `/api/day-review`) sorts every load of the day — plus unfinished work from
   earlier days — into clean, still open, needs attention or blocked, by the
