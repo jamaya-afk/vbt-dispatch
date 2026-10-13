@@ -395,10 +395,30 @@ Developer dashboard for the chosen environment. Test in sandbox first; flip
 ### Linxup environment variables
 
 ```
-LINXUP_WEBHOOK_TOKEN        # bearer token Linxup presents on every webhook; unset = integration off
+LINXUP_WEBHOOK_TOKEN        # bearer token Linxup presents on every webhook; unset = push integration off
 LINXUP_WEBHOOK_TOKEN_NEXT   # optional second token accepted during a rotation
 LINXUP_COMPANY_ID           # the account's companyId; messages for any other company are refused
+
+LINXUP_API_BASE_URL         # the account's "host link" from Linxup Setup → API/Developers → API documentation page (e.g. https://<host>/…); unset = pull client off
+LINXUP_API_KEY              # a V3 ("Experimental") API key generated on that page — never the webhook token, never a browser value
+LINXUP_API_AUTH             # how the key is presented, as the account's Swagger shows it:
+                            #   bearer (default)        → Authorization: Bearer <key>
+                            #   header:<Name>           → <Name>: <key>            e.g. header:X-API-Key
+                            #   jwt:<login path>        → POST <login path> {"apiKey": <key>} answers a JWT, sent as Bearer and
+                            #                             renewed 60 s before its exp claim (once more on a 401)
+LINXUP_API_INVENTORY_PATH   # the tracker/device list endpoint from the Swagger (a path starting with /); used by the connectivity check
+LINXUP_API_TIMEOUT_MS       # optional, default 15000
 ```
+
+All of these are server-side environment variables (Railway → the service →
+Variables). None is ever written to the store, sent to the browser, logged, or
+echoed by any route; `/healthz` and `/api/linxup-api/status` report only
+"configured: yes/no", the host name, the auth mode and the summary of the last
+check. The office runs the check from Drivers & Trucks → **Linxup API → Check
+connection**: one read-only GET of the inventory path, summarized (HTTP status,
+how many trackers, which fields, how many carry an id / VIN / IMEI / serial);
+the trackers it names join the picker so they can be linked to trucks before
+any webhook message arrives.
 
 Register one URL per message type in Linxup: `https://<host>/api/linxup/position`,
 `/device-status`, `/device-update`, `/geofence-event`, `/trip`, `/stop`,

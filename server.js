@@ -70,6 +70,35 @@ for (const verb of ['get', 'post', 'put', 'delete', 'patch', 'all']) {
   };
 }
 
+// ── LINXUP WEBHOOK GATE — before any body is parsed ─────────────────────────
+// The OA7 audit found the webhook's JSON body was parsed by the global parser
+// before its token was checked: an unauthenticated 20 MB body cost a full
+// parse (measured: ~130–330 ms and ~30 MB of heap per request). The gate runs
+// first: token, then size, then content type; only then does a parser with
+// the webhook's own 2 MB cap read the body. `linxup` is constructed further
+// down; the gate only touches it when a request arrives.
+function linxupWebhookGate(req, res, next) {
+  const auth = linxup.authorize(req.headers);
+  if (!auth.ok) {
+    if (auth.status === 401) linxup.counters.unauthorized++;
+    res.set('Connection', 'close');   // stop reading a body we will never use
+    return res.status(auth.status).json(auth.status === 404 ? { error: 'Not found' } : { error: 'Unauthorized' });
+  }
+  const len = Number(req.headers['content-length'] || 0);
+  if (len > LINXUP_WEBHOOK_MAX_BYTES) { linxup.counters.rejected++; res.set('Connection', 'close'); return res.status(413).json({ error: 'Payload too large' }); }
+  if (!/^application\/(.+\+)?json\b/i.test(String(req.headers['content-type'] || ''))) { linxup.counters.rejected++; return res.status(415).json({ error: 'Send JSON (Content-Type: application/json)' }); }
+  next();
+}
+const LINXUP_WEBHOOK_MAX_BYTES = 2 * 1024 * 1024;
+app.post('/api/linxup/:type', linxupWebhookGate, express.json({ limit: LINXUP_WEBHOOK_MAX_BYTES, type: () => true }), (err, req, res, next) => {
+  // A body the webhook parser refused (too large without a length header,
+  // or not JSON) answers here, counted, before the global parser ever runs.
+  if (!err) return next();
+  linxup.counters.rejected++;
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Payload too large' });
+  return res.status(400).json({ error: 'Invalid JSON' });
+});
+
 app.use(express.json({
   limit: '25mb',
 }));
@@ -1016,7 +1045,7 @@ let testSaveFailLeft = null;   // test hook: fail this many saves, then behave a
 // ── LINXUP TELEMETRY ─────────────────────────────────────────────────────────
 // Truck positions and tracker facts from Linxup's Push API (linxup.js). Off
 // unless LINXUP_WEBHOOK_TOKEN is set. Its data never enters the JSON store.
-const { Linxup } = require('./linxup');
+const { Linxup, LinxupApi } = require('./linxup');
 const linxup = new Linxup({
   token: process.env.LINXUP_WEBHOOK_TOKEN || '', tokenNext: process.env.LINXUP_WEBHOOK_TOKEN_NEXT || '',
   companyId: process.env.LINXUP_COMPANY_ID || null,
@@ -2234,6 +2263,7 @@ app.get('/healthz', async (req, res) => {
   },
   fileStorage: supabaseEnabled ? 'supabase' : 'base64-in-database',
   linxup: linxup.health(),
+  linxupApi: linxupApi.status(),
   // merged in from the second /healthz the branch merge left behind — Express
   // only ever ran the first registration, so those fields were being dropped
   pgConnected: !!pg,
@@ -2353,6 +2383,85 @@ app.post('/api/linxup/:type', async (req, res) => {
 });
 // The office's view of the integration (never the token).
 app.get('/api/linxup/health', reqMgr, (req, res) => res.json({ ...linxup.health(), recent: linxup.recent }));
+// ── LINXUP API V3 (pull, read-only) — wiring ─────────────────────────────────
+// Configured only by environment: LINXUP_API_BASE_URL (the account's host
+// link from Setup → API/Developers), LINXUP_API_KEY (an "Experimental"/V3
+// key), LINXUP_API_AUTH (bearer | header:<Name> | jwt:<login path>; default
+// bearer), LINXUP_API_INVENTORY_PATH (the trackers/devices list endpoint from
+// the account's Swagger), LINXUP_API_TIMEOUT_MS. Nothing it reads can change
+// dispatch: it fills the tracker mirror (so trackers can be linked to trucks
+// before any webhook message) and reports what the account returns.
+let linxupApi = new LinxupApi({
+  baseUrl: process.env.LINXUP_API_BASE_URL || '', apiKey: process.env.LINXUP_API_KEY || '',
+  auth: process.env.LINXUP_API_AUTH || 'bearer', timeoutMs: process.env.LINXUP_API_TIMEOUT_MS,
+});
+let linxupInventoryPath = process.env.LINXUP_API_INVENTORY_PATH || '';
+// What the office may see: configuration state and the last probe's summary.
+app.get('/api/linxup-api/status', reqMgr, (req, res) => res.json({ ...linxupApi.status(), inventoryPath: linxupInventoryPath, webhook: { enabled: linxup.enabled, trackersKnown: linxup.trackers.size } }));
+// The read-only connectivity check. One GET of the inventory path; the answer
+// is summarized (status, count, field names, how many carry an id / VIN /
+// IMEI / serial) and the trackers it names are merged into the mirror so the
+// Drivers & Trucks picker can link them. No position is read or stored here.
+app.post('/api/linxup-api/probe', reqMgr, async (req, res) => {
+  if (!linxupApi.configured) return res.status(400).json({ error: 'Linxup API is not configured. Set LINXUP_API_BASE_URL and LINXUP_API_KEY in the server environment (Railway → Variables); see README.', ...linxupApi.status() });
+  const path = String(req.body?.path || linxupInventoryPath || '').trim();
+  if (!path || !path.startsWith('/')) return res.status(400).json({ error: 'Set LINXUP_API_INVENTORY_PATH to the tracker list endpoint shown in the account\'s Swagger (a path starting with /), or pass {"path"} here for a one-off check.' });
+  const { summary, trackers } = await linxupApi.probe(path);
+  let merged = 0;
+  if (summary.ok && linxup.enabled) {
+    const at = new Date();
+    for (const t of trackers) { if (t.trackerId == null) continue; try { await linxup.upsertTracker({ trackerId: t.trackerId, name: t.name, deviceNumber: t.deviceNumber, deviceSerialNumber: t.deviceSerialNumber, vin: t.vin, make: t.make, model: t.model, year: t.year, licensePlate: t.licensePlate }, at); merged++; } catch (e) { summary.mergeError = e.message; break; } }
+  }
+  logAction(req.session.user, 'linxup-api-probe', 'linxup', { path, ok: summary.ok, status: summary.status, items: summary.items, merged });
+  res.status(summary.ok ? 200 : 502).json({ ...summary, merged, trackers: trackers.map(t => ({ trackerId: t.trackerId, name: t.name, deviceNumber: t.deviceNumber, deviceSerialNumber: t.deviceSerialNumber, vin: t.vin, licensePlate: t.licensePlate, identityFields: t.identityFields })) });
+});
+// Tracker ↔ truck mapping review. Links are made by a person on Drivers &
+// Trucks; this only compares what VBT holds (truck.linxup, and the VIN /
+// tracker serial the office may type on the truck from the tracker
+// inventory sheet) with what Linxup reports, and flags what a person must
+// look at: duplicates, trucks with no tracker, trackers with no truck,
+// identity mismatches, and matches that are only suggestions. A tracker's
+// current person is shown as what Linxup reports — never as the driver.
+app.get('/api/linxup-api/mapping', reqMgr, (req, res) => {
+  const trucks = (store.trucks || []).filter(t => t.active !== false);
+  const trackers = linxup.listTrackers();
+  const norm = v => String(v || '').trim().toUpperCase();
+  const byTracker = new Map();
+  for (const t of trucks) if (t.linxup && t.linxup.trackerId != null) { const k = Number(t.linxup.trackerId); byTracker.set(k, [...(byTracker.get(k) || []), t]); }
+  const flags = [];
+  const rows = trucks.map(t => {
+    const link = t.linxup && t.linxup.trackerId != null ? t.linxup : null;
+    const tr = link ? linxup.tracker(link.trackerId) : null;
+    const row = { truckId: t.id, truckNum: t.truckNum, vin: t.vin || '', trackerSerial: t.trackerSerial || '', linked: !!link, trackerId: link ? Number(link.trackerId) : null,
+      tracker: tr ? { name: tr.name, deviceNumber: tr.deviceNumber, deviceSerialNumber: tr.deviceSerialNumber, vin: tr.vin, active: tr.active !== false, lastMessageAt: tr.lastMessageAt || null, linxupReports: tr.personName || '' } : null,
+      status: 'ok', notes: [] };
+    if (!link) {
+      row.status = 'unlinked';
+      // Suggestions only: a VIN or serial typed on the truck that equals exactly one unlinked tracker's.
+      const cands = trackers.filter(x => !byTracker.has(x.trackerId) && ((t.vin && norm(x.vin) === norm(t.vin)) || (t.trackerSerial && (norm(x.deviceSerialNumber) === norm(t.trackerSerial) || norm(x.deviceNumber) === norm(t.trackerSerial)))));
+      if (cands.length === 1) { row.suggestion = { trackerId: cands[0].trackerId, name: cands[0].name, by: norm(cands[0].vin) === norm(t.vin) && t.vin ? 'vin' : 'serial' }; row.notes.push(`matches tracker ${cands[0].trackerId} by ${row.suggestion.by} — confirm on Drivers & Trucks`); }
+      else if (cands.length > 1) { row.status = 'ambiguous'; row.notes.push(`${cands.length} trackers match this truck's VIN/serial — decide by hand`); }
+      else row.notes.push(t.vin || t.trackerSerial ? 'no tracker reports this VIN/serial yet' : 'no tracker linked; no VIN or tracker serial on the truck to match by');
+    } else {
+      if ((byTracker.get(Number(link.trackerId)) || []).length > 1) { row.status = 'duplicate'; row.notes.push(`tracker ${link.trackerId} is linked to ${byTracker.get(Number(link.trackerId)).map(x => x.truckNum).join(' and ')}`); }
+      if (!tr) { if (row.status === 'ok') row.status = 'unverified'; row.notes.push('linked tracker has not been heard from (no message, no inventory)'); }
+      else {
+        if (t.vin && tr.vin && norm(t.vin) !== norm(tr.vin)) { row.status = 'mismatch'; row.notes.push(`truck VIN ${t.vin} ≠ tracker VIN ${tr.vin}`); }
+        if (t.trackerSerial && tr.deviceSerialNumber && norm(t.trackerSerial) !== norm(tr.deviceSerialNumber) && norm(t.trackerSerial) !== norm(tr.deviceNumber || '')) { row.status = 'mismatch'; row.notes.push(`truck's tracker serial ${t.trackerSerial} ≠ tracker's ${tr.deviceSerialNumber}`); }
+        if (link.vin && tr.vin && norm(link.vin) !== norm(tr.vin)) { row.status = 'mismatch'; row.notes.push(`tracker now reports VIN ${tr.vin}; it reported ${link.vin} when linked — moved?`); }
+        if (link.deviceNumber && tr.deviceNumber && norm(link.deviceNumber) !== norm(tr.deviceNumber)) { row.status = 'mismatch'; row.notes.push(`tracker now reports IMEI ${tr.deviceNumber}; it reported ${link.deviceNumber} when linked`); }
+        if (tr.active === false) row.notes.push('Linxup reports this tracker inactive');
+      }
+    }
+    if (row.status !== 'ok') flags.push({ kind: row.status, truckNum: t.truckNum, text: row.notes.join('; ') });
+    return row;
+  });
+  const orphans = trackers.filter(x => !byTracker.has(x.trackerId)).map(x => ({ trackerId: x.trackerId, name: x.name, deviceNumber: x.deviceNumber, deviceSerialNumber: x.deviceSerialNumber, vin: x.vin, active: x.active !== false, lastMessageAt: x.lastMessageAt || null, linxupReports: x.personName || '' }));
+  orphans.forEach(o => flags.push({ kind: 'tracker-unlinked', trackerId: o.trackerId, text: `tracker ${o.name || o.trackerId} is not linked to any truck` }));
+  res.json({ enabled: linxup.enabled, api: linxupApi.status(), trucks: rows, unlinkedTrackers: orphans, flags,
+    note: 'Links are made by a person on Drivers & Trucks. A tracker\'s "linxupReports" person is what Linxup says, never VBT\'s assigned or usual driver.' });
+});
+
 app.get('/api/linxup/trackers', reqMgr, (req, res) => {
   const linked = new Map((store.trucks || []).filter(t => t.linxup && t.linxup.trackerId != null).map(t => [Number(t.linxup.trackerId), t]));
   res.json({ enabled: linxup.enabled, trackers: linxup.listTrackers().map(t => ({ ...t, latest: linxup.latestFor(t.trackerId), linkedTruckId: linked.has(t.trackerId) ? linked.get(t.trackerId).id : null, linkedTruckNum: linked.has(t.trackerId) ? linked.get(t.trackerId).truckNum : '' })),
@@ -2550,6 +2659,36 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   app.post('/api/_test/reset-login-limits', (req, res) => { loginFailures.clear(); res.json({ ok: true }); });
   // Plant a record the state machine would never produce (older data, a bypass), to prove the guards downstream.
   app.post('/api/_test/set-load', reqMgr, async (req, res) => { const l = findLoadAnywhere(String(req.body?.id || '')); if (!l) return res.status(404).json({ error: 'no load' }); Object.assign(l, req.body?.fields || {}); await saveData(); res.json({ ok: true, load: l }); });
+  const fakeLinxupApi = { mode: 'off', calls: [], logins: 0 };
+  // Linxup API fake: replaces the pull client with one whose fetch is a stub.
+  // modes: ok (array of trackers) · envelope (object with data[]) · unauthorized ·
+  // timeout · malformed (non-JSON) · down (connection refused) · jwt (login then
+  // list; a second call with an expired token must re-login) · off (unconfigured)
+  app.post('/api/_test/linxup-api-fake', reqMgr, (req, res) => {
+    const mode = String(req.body?.mode || 'ok'); fakeLinxupApi.mode = mode; fakeLinxupApi.calls = []; fakeLinxupApi.logins = 0;
+    const items = Array.isArray(req.body?.items) ? req.body.items : [{ trackerId: 7001, name: 'VBT 140', deviceNumber: 'IMEI-7001', deviceSerialNumber: 'SN-7001', vin: 'VIN7001' }, { trackerId: 7002, name: 'VBT 141', deviceNumber: 'IMEI-7002', deviceSerialNumber: 'SN-7002', vin: 'VIN7002' }];
+    const fetchImpl = async (url, init) => {
+      fakeLinxupApi.calls.push({ url: String(url).replace(/key-[a-z0-9]+/gi, '[redacted]'), method: init.method, hasAuth: !!(init.headers.Authorization || init.headers['X-API-Key']), auth: String(init.headers.Authorization || init.headers['X-API-Key'] || '') });
+      const reply = (status, body, ct = 'application/json') => ({ ok: status >= 200 && status < 300, status, headers: { get: () => ct }, text: async () => typeof body === 'string' ? body : JSON.stringify(body) });
+      if (mode === 'down') { const e = new Error('connect ECONNREFUSED 127.0.0.1:1'); throw e; }
+      if (mode === 'timeout') return new Promise((_, rej) => { init.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e); }); });
+      if (mode === 'unauthorized') return reply(401, { message: 'Unauthorized' });
+      if (mode === 'malformed') return reply(200, '<html>login page</html>', 'text/html');
+      if (mode === 'jwt') {
+        if (init.method === 'POST') { fakeLinxupApi.logins++; const exp = Math.floor(Date.now() / 1000) + (fakeLinxupApi.logins === 1 ? 30 : 3600); const tok = 'h.' + Buffer.from(JSON.stringify({ exp })).toString('base64url') + '.s'; return reply(200, { token: tok }); }
+        if (!/^Bearer h\./.test(String(init.headers.Authorization || ''))) return reply(401, { message: 'bad token' });
+        return reply(200, items);
+      }
+      if (mode === 'envelope') return reply(200, { data: items, page: 1 });
+      return reply(200, items);
+    };
+    linxupApi = mode === 'off' ? new LinxupApi({}) : new LinxupApi({ baseUrl: 'https://fake.linxup.test', apiKey: 'key-secret-123', auth: mode === 'jwt' ? 'jwt:/auth/login' : (req.body?.auth || 'bearer'), timeoutMs: 300, fetchImpl });
+    linxupInventoryPath = req.body?.inventoryPath !== undefined ? String(req.body.inventoryPath) : '/trackers';
+    res.json({ ok: true, mode });
+  });
+  app.get('/api/_test/linxup-api-fake', reqMgr, (req, res) => {
+    res.json(fakeLinxupApi);   // a read: reports the fake's call log, saves nothing
+  });
   app.post('/api/_test/set-shift', reqMgr, async (req, res) => { const s = (store.shifts || []).find(x => x.id === String(req.body?.id || '')); if (!s) return res.status(404).json({ error: 'no shift' }); Object.assign(s, req.body?.patch || {}); await saveData(); res.json({ ok: true, shift: shiftPublic(s) }); });
   app.post('/api/_test/set-po', reqMgr, async (req, res) => { const p = findPoAnywhere(String(req.body?.id || '')); if (!p) return res.status(404).json({ error: 'no po' }); Object.assign(p, req.body?.patch || {}); await saveData(); res.json({ success: true, po: p }); });
   // 'fail' makes every save throw until set back to 'ok'.
@@ -8975,6 +9114,9 @@ app.put('/api/fleet/trucks/:id', reqMgr, async (req, res) => {
   if (b.maintenanceNotes !== undefined) t.maintenanceNotes = b.maintenanceNotes;
   if (b.defaultDriverId !== undefined) t.defaultDriverId = b.defaultDriverId || null;
   if (b.active !== undefined) t.active = !!b.active;
+  // Identity the office may type from the tracker inventory sheet; compared with what Linxup reports, never used to link by itself.
+  if (b.vin !== undefined) t.vin = String(b.vin || '').trim().slice(0, 40);
+  if (b.trackerSerial !== undefined) t.trackerSerial = String(b.trackerSerial || '').trim().slice(0, 40);
   logAction(req.session.user, 'updated-truck', t.id, { truckNum: t.truckNum, before, after: { ...t } });
   await saveData();
   res.json({ success: true, truck: t });

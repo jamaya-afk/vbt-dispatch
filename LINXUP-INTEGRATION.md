@@ -607,3 +607,45 @@ on a heartbeat when it is off, with cellular backhaul, so "no position" means
 "no signal or tracker problem", not "driver's phone". Reliability moves from
 "most of the time, if drivers cooperate" to "whenever the truck is running",
 and the office gets engine on/off and odometer, which a phone can never give.
+---
+
+## P. Status after the V3 connection step (this commit)
+
+**What exists.** Push side (L1/L2): the webhook receiver, the telemetry store,
+the mirror of trackers/geofences, the evidence beside loads. Pull side (new):
+a read-only client for the account's V3 REST API, configured only by
+environment variables (README, "Linxup environment variables"), a
+connectivity check (`POST /api/linxup-api/probe`, office only) that performs
+one GET of the configured inventory endpoint and reports HTTP status, count,
+field names and how many trackers carry an id / VIN / IMEI / serial, merging
+the trackers it names into the mirror, and a mapping review
+(`GET /api/linxup-api/mapping`) that compares each truck's link (and the VIN /
+tracker serial the office may type on the truck from the tracker inventory
+sheet) with what Linxup reports, flagging duplicates, unlinked trucks,
+unlinked trackers, identity mismatches, suggestions (exactly one unlinked
+tracker with the same VIN/serial — a person confirms on Drivers & Trucks) and
+ambiguous matches (several). A tracker's current person is shown as "Linxup
+reports …", never as the assigned or usual driver.
+
+**Authentication.** Linxup's V3 documentation is behind the account's own
+portal (Setup → API/Developers → "Experimental" API version → Create New API
+Key; the host link is on that page's API documentation link; V3 is in beta and
+enabled per account by Linxup Support). The client therefore does not assume
+how the key is presented: `LINXUP_API_AUTH` selects Bearer key, a named header,
+or a login that exchanges the key for a JWT; a JWT is renewed 60 s before its
+`exp` claim and once more on a 401. A Swagger session's JWT is never reused by
+the server: the server logs in with the key itself.
+
+**Webhook hardening.** The webhook's token and size are now checked before
+any body is parsed (a route-level gate ahead of the JSON parser, with the
+webhook's own 2 MB cap and a 415 for non-JSON content); previously the global
+25 MB parser ran first. Duplicates are still answered 200 and counted, never
+stored twice; a storage failure is still 503 so Linxup retries.
+
+**Operational rules unchanged.** Nothing read from Linxup assigns, loads,
+completes, approves, bills, prices or rewrites anything; it fills the tracker
+mirror and the evidence views only.
+
+**Not done here, by design.** No positions or history are pulled yet (the
+account's Swagger decides the endpoints; the inventory check comes first), no
+automatic linking (suggestions only), no driver identification from a tracker.
