@@ -2582,6 +2582,9 @@ function summarizeReport(report, r) {
   }
   return {
     report, path: LINXUP_REPORTS[report], at: new Date().toISOString(), ok: !!r.ok, status: r.status, error: r.ok ? '' : (r.error || `HTTP ${r.status}`), timeout: !!r.timeout,
+    // Where it failed and what Linxup actually said — the key, the token and any JWT-looking string are scrubbed; the body is a 300-character preview, never a payload.
+    vbtStatus: r.ok ? 200 : (r.stage === 'config' ? 400 : 502),
+    upstream: { status: r.status || null, stage: r.stage || (r.ok ? 'ok' : 'upstream'), contentType: r.contentType || '', requestId: r.requestId || null, bodyPreview: r.bodyPreview || '', loginPerformed: !!r.loginPerformed, authMode: r.authMode || linxupApi.authMode, timeout: !!r.timeout },
     shape: r.ok ? (list ? (envelope ? `object with "${envelope}" list` : 'array') : (r.json && typeof r.json === 'object' ? `object without a list (keys: ${Object.keys(r.json).slice(0, 12).join(', ')})` : typeof r.json)) : '',
     items: list ? list.length : null, fieldTypes, envelopeKeys, pagination,
     timeRange: minAt ? { from: minAt.toISOString(), to: maxAt.toISOString(), newestAgeMinutes: Math.max(0, Math.round((Date.now() - maxAt) / 60000)) } : null,
@@ -2597,7 +2600,7 @@ app.post('/api/linxup-api/report-probe', reqMgr, async (req, res) => {
   if (query.length > 400 || /[^A-Za-z0-9_.:+\-%=&,TZ|]/.test(query)) return res.status(400).json({ error: 'The query may only contain Swagger-style parameters (letters, digits, = & , : . + - % _ |), at most 400 characters' });
   if (!linxupApi.configured) return res.status(400).json({ error: 'Linxup API is not configured (LINXUP_API_BASE_URL and LINXUP_API_KEY).' });
   const r = await linxupApi.get(LINXUP_REPORTS[report] + (query ? '?' + query : ''));
-  const summary = summarizeReport(report, r);
+  const summary = summarizeReport(report, r); summary.query = query; summary.requestPath = LINXUP_REPORTS[report] + (query ? '?' + query : '');
   logAction(req.session.user, 'linxup-report-probe', 'linxup', { report, ok: summary.ok, status: summary.status, items: summary.items, query: query.length ? query.slice(0, 120) : '', newestAgeMinutes: summary.timeRange ? summary.timeRange.newestAgeMinutes : null });
   res.status(summary.ok ? 200 : 502).json(summary);
 });
@@ -2863,14 +2866,15 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
       const h = init.headers || {};
       fakeLinxupApi.calls.push({ url: String(url).replace(/key-[a-z0-9]+/gi, '[redacted]'), method: init.method, hasAuth: !!(h.Authorization || h['X-API-Key']), auth: String(h.Authorization || h['X-API-Key'] || ''),
         xApiKey: h['X-API-Key'] === 'key-secret-123', accept: h.Accept || '', bodyEmpty: init.body === undefined || init.body === null || init.body === '', bearerJwt: /^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/.test(String(h.Authorization || '')) });
-      const reply = (status, body, ct = 'application/json') => ({ ok: status >= 200 && status < 300, status, headers: { get: () => ct }, text: async () => typeof body === 'string' ? body : JSON.stringify(body) });
+      const reply = (status, body, ct = 'application/json', extra = {}) => ({ ok: status >= 200 && status < 300, status, headers: { get: (n) => String(n).toLowerCase() === 'content-type' ? ct : (extra[String(n).toLowerCase()] || null) }, text: async () => typeof body === 'string' ? body : JSON.stringify(body) });
       if (mode === 'down') { const e = new Error('connect ECONNREFUSED 127.0.0.1:1'); throw e; }
       if (mode === 'timeout') return new Promise((_, rej) => { init.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e); }); });
       if (mode === 'unauthorized') return reply(401, { message: 'Unauthorized' });
       if (mode === 'malformed') return reply(200, '<html>login page</html>', 'text/html');
-      if (mode === 'jwt' || mode === 'jwt-403' || mode === 'reports') {
+      if (mode === 'jwt' || mode === 'jwt-403' || mode === 'reports' || mode === 'reports-auth-fail') {
         // The login exactly as the account's Swagger does it; anything else is refused like Linxup does (403).
         if (init.method === 'POST') {
+          if (mode === 'reports-auth-fail') return reply(500, 'upstream auth error', 'text/plain', { 'x-request-id': 'req-auth-500' });
           const okLogin = /\/api\/v3\/jwts$/.test(String(url)) && h['X-API-Key'] === 'key-secret-123' && h.Accept === 'text/plain' && (init.body === undefined || init.body === null || init.body === '');
           if (mode === 'jwt-403' || !okLogin) return reply(403, '', 'text/plain');
           fakeLinxupApi.logins++; const exp = Math.floor(Date.now() / 1000) + (fakeLinxupApi.logins === 1 ? 30 : 3600);
@@ -2887,14 +2891,16 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
           { tracker: trk, asset: { vin: '1NPVLP9X0ED252913' }, startDateTime: now - 3 * 3600e3, endDateTime: now - 2 * 3600e3, startLatitude: 36.74, startLongitude: -119.77, endLatitude: 37.0, endLongitude: -119.5, startAddress: { street: '1 Yard Rd', city: 'Fresno' }, endAddress: { street: '9 Fork Rd', city: 'North Fork' }, distanceMiles: 41.2, durationMinutes: 60, authorized: true, startGeofence: { geofenceId: 77, name: 'Vulcan Fresno' } },
           { tracker: trk, asset: { vin: '1NPVLP9X0ED252913' }, startDateTime: now - 90 * 60e3, endDateTime: now - 40 * 60e3, startLatitude: 37.0, startLongitude: -119.5, endLatitude: 36.74, endLongitude: -119.77, distanceMiles: 40.9, durationMinutes: 50, authorized: true }]);
         if (/\/api\/v3\/stops\/in-progress/.test(u)) return reply(200, { data: [{ tracker: trk, startDateTime: now - 20 * 60e3, latitude: 36.74, longitude: -119.77, stopType: 'STOP', address: { street: '1 Yard Rd' }, geofence: { geofenceId: 77, name: 'Vulcan Fresno' } }], page: 1, totalPages: 1, totalElements: 1 });
+        if (/\/api\/v3\/geofence-visits\/in-progress/.test(u)) return reply(400, { timestamp: now, status: 400, error: 'Bad Request', message: 'startDate is required', path: '/api/v3/geofence-visits/in-progress' }, 'application/json', { 'x-request-id': 'req-400' });
         if (/\/api\/v3\/geofence-visits$/.test(u) || /\/api\/v3\/geofence-visits\?/.test(u)) return reply(200, [{ tracker: trk, geofence: { geofenceId: 77, name: 'Vulcan Fresno' }, eventType: 'FENCE_EXIT', enterDateTime: now - 4 * 3600e3, exitDateTime: now - 3 * 3600e3, durationMinutes: 60 }]);
-        if (/\/api\/v3\/usage-hours/.test(u)) return reply(500, { message: 'internal error' });
+        if (/\/api\/v3\/stops$/.test(u) || /\/api\/v3\/stops\?/.test(u)) return reply(200, '<html><body>Service temporarily unavailable</body></html>', 'text/html');
+        if (/\/api\/v3\/usage-hours/.test(u)) return reply(500, { timestamp: now, status: 500, error: 'Internal Server Error', message: "Required request parameter 'startDate' for method parameter type String is not present; key key-secret-123; token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln", path: '/api/v3/usage-hours' }, 'application/json', { 'x-request-id': 'req-500' });
         if (/\/api\/v3\/trackers/.test(u)) return reply(200, FAKE_LINXUP_INVENTORY());
         return reply(404, { message: 'no such report' });
       }
       return reply(200, items);
     };
-    const jwtMode = mode === 'jwt' || mode === 'jwt-403' || mode === 'reports';
+    const jwtMode = mode === 'jwt' || mode === 'jwt-403' || mode === 'reports' || mode === 'reports-auth-fail';
     linxupApi = mode === 'off' ? new LinxupApi({}) : new LinxupApi({ baseUrl: req.body?.baseUrl || (jwtMode ? 'https://fake.linxup.test/pullapi' : 'https://fake.linxup.test'), apiKey: 'key-secret-123', auth: jwtMode ? 'jwt:/api/v3/jwts' : (req.body?.auth || 'bearer'), timeoutMs: 300, fetchImpl });
     linxupInventoryPath = req.body?.inventoryPath !== undefined ? String(req.body.inventoryPath) : (jwtMode ? '/api/v3/trackers' : '/trackers');
     res.json({ ok: true, mode });

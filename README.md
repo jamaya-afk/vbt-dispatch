@@ -461,8 +461,12 @@ reports status, shape, row count, field names and types, the rows' time range
 and the age of the newest, whether rows carry a tracker id and coordinates,
 pagination hints, and whether the existing evidence rules accept the rows.
 The sample row is redacted of coordinates and addresses; nothing is stored.
-Reports are historical evidence; live positions come only from the webhook
-(see LINXUP-INTEGRATION.md §R for the configuration steps).
+When a report fails, the probe says where (JWT login, network, Linxup's answer,
+or a non-JSON body), shows Linxup's HTTP status beside VBT's, the content type,
+a request id when one is sent, the exact path and query, and the first 300
+characters of Linxup's message with every secret scrubbed (LINXUP-INTEGRATION.md
+§S). Reports are historical evidence; live positions come only from the
+webhook (§R for the configuration steps).
 
 Register one URL per message type in Linxup: `https://<host>/api/linxup/position`,
 `/device-status`, `/device-update`, `/geofence-event`, `/trip`, `/stop`,

@@ -710,7 +710,9 @@ class LinxupApi {
     this.counters = { requests: 0, ok: 0, unauthorized: 0, failed: 0, timeouts: 0, malformed: 0 };
   }
   get configured() { return !!(this.baseUrl && this.apiKey && /^https?:\/\//.test(this.baseUrl)); }
-  _scrub(msg) { let m = String(msg || ''); if (this.apiKey) m = m.split(this.apiKey).join('[key]'); if (this.jwt && this.jwt.token) m = m.split(this.jwt.token).join('[token]'); return m; }
+  _scrub(msg) { let m = String(msg || ''); if (this.apiKey) m = m.split(this.apiKey).join('[key]'); if (this.jwt && this.jwt.token) m = m.split(this.jwt.token).join('[token]'); return m.replace(/eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, '[token]'); }
+  // A short, scrubbed look at an upstream body: enough to read Linxup's own error message, never a payload.
+  _preview(text) { return this._scrub(String(text || '').replace(/\s+/g, ' ').trim().slice(0, 300)); }
   get authMode() { return this.auth.startsWith('header:') ? 'header' : this.auth.startsWith('jwt:') ? 'jwt' : 'bearer'; }
   // Never the key, never a token: what the office and /healthz may see.
   status() {
@@ -735,7 +737,7 @@ class LinxupApi {
     if (!tok && r.json && typeof r.json === 'string' && looksJwt(r.json)) tok = r.json.trim();
     if (!tok) { const e = new Error(`Linxup login answered ${r.status} without a JWT (${text.length} characters, ${r.contentType || 'no content type'})`); e.malformed = true; throw e; }
     const exp = jwtExp(tok) || (Date.now() + 10 * 60 * 1000);   // no exp claim: assume ten minutes, renew often
-    this.jwt = { token: tok, expiresAt: exp };
+    this.jwt = { token: tok, expiresAt: exp }; this.logins = (this.logins || 0) + 1;
   }
   async _authHeaders(force) {
     if (this.authMode === 'header') return { [this.auth.slice(7).trim() || 'X-API-Key']: this.apiKey };
@@ -751,7 +753,9 @@ class LinxupApi {
       const res = await this.fetchImpl(url, { method, headers: { Accept: 'application/json', ...headers }, body, signal: ctrl.signal });
       const text = await res.text();
       let json = null; try { json = text ? JSON.parse(text) : null; } catch { json = undefined; }
-      return { ok: res.ok, status: res.status, json, text, textLength: text.length, contentType: res.headers && res.headers.get ? res.headers.get('content-type') || '' : '' };
+      const hdr = (n) => (res.headers && res.headers.get ? res.headers.get(n) : null) || null;
+      const requestId = hdr('x-request-id') || hdr('x-correlation-id') || hdr('x-amzn-requestid') || hdr('x-trace-id') || hdr('cf-ray') || null;
+      return { ok: res.ok, status: res.status, json, text, textLength: text.length, contentType: hdr('content-type') || '', requestId, bodyPreview: (!res.ok || json === undefined) ? this._preview(text) : '' };
     } catch (e) {
       const timedOut = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
       if (timedOut) this.counters.timeouts++;
@@ -760,17 +764,22 @@ class LinxupApi {
   }
   // GET a read-only path; retry once with a fresh JWT on 401.
   async get(path) {
-    if (!this.configured) return { ok: false, status: 0, error: 'Linxup API is not configured (LINXUP_API_BASE_URL and LINXUP_API_KEY)' };
+    if (!this.configured) return { ok: false, status: 0, stage: 'config', error: 'Linxup API is not configured (LINXUP_API_BASE_URL and LINXUP_API_KEY)' };
+    const loginsBefore = this.logins || 0;
     let headers;
-    try { headers = await this._authHeaders(false); } catch (e) { this.counters[e.status === 401 || e.status === 403 ? 'unauthorized' : e.malformed ? 'malformed' : 'failed']++; return { ok: false, status: e.status || 0, error: e.message, timeout: !!e.timeout }; }
+    try { headers = await this._authHeaders(false); }
+    catch (e) { this.counters[e.status === 401 || e.status === 403 ? 'unauthorized' : e.malformed ? 'malformed' : 'failed']++; return { ok: false, status: e.status || 0, stage: 'auth', error: this._scrub(e.message), timeout: !!e.timeout, loginPerformed: (this.logins || 0) > loginsBefore, authMode: this.authMode }; }
     let r = await this._raw('GET', path, headers);
     if ((r.status === 401 || r.status === 403) && this.authMode === 'jwt') {
-      try { headers = await this._authHeaders(true); r = await this._raw('GET', path, headers); } catch (e) { r = { ok: false, status: e.status || 401, error: e.message }; }
+      try { headers = await this._authHeaders(true); r = await this._raw('GET', path, headers); } catch (e) { r = { ok: false, status: e.status || 401, stage: 'auth', error: this._scrub(e.message) }; }
     }
+    r.loginPerformed = (this.logins || 0) > loginsBefore; r.authMode = this.authMode;
     if (r.ok) this.counters.ok++;
-    else if (r.status === 401 || r.status === 403) { this.counters.unauthorized++; r.error = r.error || 'Linxup refused the credentials (401/403)'; }
-    else if (!r.timeout) this.counters.failed++;
-    if (r.ok && r.json === undefined) { this.counters.malformed++; r.ok = false; r.error = 'Linxup answered with a body that is not JSON'; }
+    else if (r.status === 401 || r.status === 403) { this.counters.unauthorized++; r.stage = r.stage || 'upstream'; r.error = r.error || 'Linxup refused the credentials (401/403)'; }
+    else if (r.status === 0) { r.stage = r.stage || 'network'; if (!r.timeout) this.counters.failed++; }
+    else { this.counters.failed++; r.stage = r.stage || 'upstream'; r.error = r.error || `Linxup answered HTTP ${r.status}${r.bodyPreview ? ': ' + r.bodyPreview.slice(0, 160) : ''}`; }
+    if (r.ok && r.json === undefined) { this.counters.malformed++; r.ok = false; r.stage = 'parse'; r.error = `Linxup answered ${r.status} with a body that is not JSON (${r.contentType || 'no content type'})`; }
+    if (r.ok) r.stage = 'ok';
     return r;
   }
   // The connectivity check: one read-only call, summarized. `path` is the
