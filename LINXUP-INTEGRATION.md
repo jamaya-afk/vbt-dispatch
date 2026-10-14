@@ -744,3 +744,28 @@ Arrived taps (already done for the approval checklist by the webhook
 evidence). For the Freight Bill/Log: the segment's odometer window beside the
 trips inside it. Never: an odometer reading, a fuel quantity, a ticket number,
 tons, a signature or an inspection result taken from telemetry.
+
+## S. Diagnosing a failing report probe
+
+The probe reports two statuses, never one: **Linxup's HTTP status** (what the
+report endpoint answered) and **VBT's route status** (502 whenever the upstream
+call did not succeed, 400 when the client is not configured). It also names
+the stage the failure happened in — `auth` (getting the JWT with the API key),
+`network` (no answer or no connection), `upstream` (Linxup answered the request
+with a non-2xx status), `parse` (Linxup answered 2xx but the body is not JSON)
+— and shows the response content type, a request id when Linxup sends one
+(`x-request-id`, `x-correlation-id`, `x-amzn-requestid`, `x-trace-id`,
+`cf-ray`), whether the call logged in or reused the held token, the exact path
+and query sent, and the first 300 characters of Linxup's own answer with the
+API key, the held token and any JWT-looking string replaced by `[key]` /
+`[token]`. Nothing is stored; the probe stays office-only.
+
+How to read the four 500s seen on the real account: the status shown is
+Linxup's (our route answered 502); the JWT flow is the same one the tracker
+inventory uses successfully, so unless the stage reads `auth` the credentials
+are not the cause; the probe sends exactly `GET <base>/api/v3/<report>` plus
+the query the office typed — an empty query when none was typed. The preview
+of Linxup's answer is what decides the next step: a message naming a required
+parameter means the report needs the parameters its Swagger lists (dates,
+tracker or fleet, paging), typed into the query field; anything else is
+Linxup's own fault to read from the message and request id.

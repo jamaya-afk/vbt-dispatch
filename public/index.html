@@ -7698,13 +7698,18 @@ async function lxReportProbe() {
   const rd = d.readiness;
   const html = `<div style="font-size:12px;color:var(--txt2);margin-bottom:6px">${escapeHtml(d.note || '')}</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:4px 14px;font-size:12px">
-      ${kv('Report', `${escapeHtml(d.report)} · ${escapeHtml(d.path || '')}`)}${kv('Result', d.ok ? `<span style="color:var(--G)">OK</span> · HTTP ${d.status}` : `<span style="color:var(--R)">failed</span> · ${escapeHtml(d.error || '')}`)}
+      ${kv('Report', `${escapeHtml(d.report)} · ${escapeHtml(d.requestPath || d.path || '')}`)}${kv('Result', d.ok ? `<span style="color:var(--G)">OK</span> · Linxup HTTP ${d.status}` : `<span style="color:var(--R)">failed</span> · ${escapeHtml(d.error || '')}`)}
+      ${!d.ok && d.upstream ? kv('Where it failed', `${escapeHtml(d.upstream.stage)}${d.upstream.stage === 'upstream' ? ' (Linxup answered the request)' : d.upstream.stage === 'auth' ? ' (getting the JWT with the API key)' : d.upstream.stage === 'parse' ? ' (Linxup answered 2xx but not JSON)' : d.upstream.stage === 'network' ? ' (no answer / connection)' : ''}`) : ''}
+      ${!d.ok && d.upstream ? kv('Linxup HTTP / VBT route', `${d.upstream.status || '—'} / ${d.vbtStatus || 502}`) : ''}
+      ${!d.ok && d.upstream ? kv('Content type · request id', `${escapeHtml(d.upstream.contentType || '—')} · ${escapeHtml(d.upstream.requestId || 'none')}`) : ''}
+      ${!d.ok && d.upstream ? kv('JWT', `${d.upstream.authMode === 'jwt' ? (d.upstream.loginPerformed ? 'logged in during this call' : 'reused the held token') : d.upstream.authMode}`) : ''}
       ${kv('Shape', escapeHtml(d.shape || '—'))}${kv('Rows', d.items == null ? '—' : d.items)}
       ${kv('Time range', d.timeRange ? `${new Date(d.timeRange.from).toLocaleString()} → ${new Date(d.timeRange.to).toLocaleString()} · newest ${d.timeRange.newestAgeMinutes} min old` : '—')}
       ${kv('Rows with tracker id / coordinates', `${d.identity ? d.identity.withTrackerId : '—'} / ${d.identity ? d.identity.withCoordinates : '—'}`)}
       ${kv('Pagination hints', d.pagination && d.pagination.length ? escapeHtml(d.pagination.join(', ')) : 'none seen')}
       ${kv('Accepted by the existing evidence rules', rd ? `${rd.acceptedByExistingNormalizer} of ${rd.tested}${rd.reasons.length ? ' · rejected: ' + escapeHtml(rd.reasons.map(r => `${r.text} (${r.count})`).join('; ')) : ''}` : '—')}
     </div>
+    ${!d.ok && d.upstream && d.upstream.bodyPreview ? `<div style="margin-top:6px;font-size:12px"><span style="color:var(--txt3)">Linxup said (scrubbed, first 300 chars):</span> <code style="word-break:break-all">${escapeHtml(d.upstream.bodyPreview)}</code></div>` : ''}
     ${d.fieldTypes && Object.keys(d.fieldTypes).length ? `<div style="margin-top:6px;font-size:12px"><span style="color:var(--txt3)">Fields:</span> ${escapeHtml(Object.entries(d.fieldTypes).map(([k, t]) => `${k}: ${t}`).join(' · '))}</div>` : ''}
     ${d.sample ? `<pre style="margin-top:6px;font-size:11px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:8px;white-space:pre-wrap">${escapeHtml(JSON.stringify(d.sample, null, 1))}</pre>` : ''}`;
   if (det) det.innerHTML = html;
