@@ -712,9 +712,11 @@ async function call(cookie, method, path, body) {
   chk('   VBT\'s load still belongs to Beryle on Truck #12', `${lxAssign.truckId} ${lxAssign.truckUnitId}`, 'beryle truck-12');
   await page.evaluate(() => goTab('fleet')); await page.waitForTimeout(700);
   const lxf = await page.evaluate(() => ({ sel: (document.querySelector('[data-truck-id="truck-12"][data-field="linxupTrackerId"]') || {}).value,
-    opts: Array.from(document.querySelectorAll('[data-truck-id="truck-12"][data-field="linxupTrackerId"] option')).map(o => o.textContent.trim()).join('|'),
+    // Each tracker option now ends with where VBT knows it from and how fresh (" · heard M/D" for a webhook message, " · inventory M/D, no message yet" for the API list); the identity part is compared as before.
+    opts: Array.from(document.querySelectorAll('[data-truck-id="truck-12"][data-field="linxupTrackerId"] option')).map(o => o.textContent.trim().replace(/ · (heard|inventory) .*$/, '')).join('|'),
+    fresh: Array.from(document.querySelectorAll('[data-truck-id="truck-12"][data-field="linxupTrackerId"] option')).filter(o => o.value).every(o => / · heard \d+\/\d+$/.test(o.textContent.trim())),
     person: (document.querySelector('[data-driver="rigo"][data-field="linxupPersonId"]') || {}).value }));
-  chk('3. Drivers & Trucks: Truck #12 is linked to tracker 602 by id; the picker names trackers by name · VIN · IMEI; Rigo is mapped to the Linxup person', `${lxf.sel} | ${lxf.person} | ${lxf.opts}`, '602 | 91 | — not linked —|VBT #601 · VIN VIN601 · IMEI IMEI-601|VBT #602 · VIN VIN602 · IMEI IMEI-602');
+  chk('3. Drivers & Trucks: Truck #12 is linked to tracker 602 by id; the picker names trackers by name · VIN · IMEI and says each was heard by webhook (with the date); Rigo is mapped to the Linxup person', `${lxf.sel} | ${lxf.person} | ${lxf.opts} | ${lxf.fresh}`, '602 | 91 | — not linked —|VBT #601 · VIN VIN601 · IMEI IMEI-601|VBT #602 · VIN VIN602 · IMEI IMEI-602 | true');
   await page.evaluate(() => goTab('map')); await page.waitForTimeout(1200);
   const lxm = await page.evaluate(async () => { fmSelect('beryle', true); await new Promise(r => setTimeout(r, 400));
     return { card: document.getElementById('fm-card').innerText.replace(/\s+/g, ' '), rows: Array.from(document.querySelectorAll('#fm-list .fm-row')).map(r => r.innerText.replace(/\s+/g, ' ').trim()).join(' || ') }; });

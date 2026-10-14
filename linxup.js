@@ -193,8 +193,11 @@ function rowToMemTracker(r) {
   return { trackerId: Number(r.tracker_id), name: r.name, deviceNumber: r.device_number, deviceSerialNumber: r.device_serial, vin: r.vin, make: r.make, model: r.model, year: r.year,
     licensePlate: r.license_plate, companyId: r.company_id == null ? null : Number(r.company_id), fleetId: r.fleet_id == null ? null : Number(r.fleet_id), fleetName: r.fleet_name,
     personId: r.person_id == null ? null : Number(r.person_id), personName: r.person_name, active: r.active !== false, statusChangedAt: r.status_changed_at ? new Date(r.status_changed_at).toISOString() : null,
-    firstSeenAt: r.first_seen_at ? new Date(r.first_seen_at).toISOString() : null, lastMessageAt: r.last_message_at ? new Date(r.last_message_at).toISOString() : null };
+    firstSeenAt: r.first_seen_at ? new Date(r.first_seen_at).toISOString() : null, lastMessageAt: r.last_message_at ? new Date(r.last_message_at).toISOString() : null,
+    apiSeenAt: r.api_seen_at ? new Date(r.api_seen_at).toISOString() : null, apiLastHeardFrom: r.api_last_heard_from ? new Date(r.api_last_heard_from).toISOString() : null, apiStatusCode: r.api_status_code || null };
 }
+// Where VBT knows a tracker from: a webhook message, the API inventory, both, or neither yet.
+function trackerSource(t) { const w = !!t.lastMessageAt, a = !!t.apiSeenAt; return w && a ? 'webhook+api' : w ? 'webhook' : a ? 'api' : 'unknown'; }
 
 class Linxup {
   // opts: { token, tokenNext, companyId, getPg, filePath, failWrites, log }
@@ -226,6 +229,10 @@ class Linxup {
         tracker_id BIGINT PRIMARY KEY, name TEXT, device_number TEXT, device_serial TEXT, vin TEXT, make TEXT, model TEXT, year INTEGER, license_plate TEXT,
         company_id BIGINT, fleet_id BIGINT, fleet_name TEXT, person_id BIGINT, person_name TEXT, active BOOLEAN NOT NULL DEFAULT true, status_changed_at TIMESTAMPTZ,
         first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_message_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+      // Inventory freshness (pull side): when the API last listed the tracker, and what it said about it.
+      await this.pg.query(`ALTER TABLE linxup_trackers ADD COLUMN IF NOT EXISTS api_seen_at TIMESTAMPTZ`);
+      await this.pg.query(`ALTER TABLE linxup_trackers ADD COLUMN IF NOT EXISTS api_last_heard_from TIMESTAMPTZ`);
+      await this.pg.query(`ALTER TABLE linxup_trackers ADD COLUMN IF NOT EXISTS api_status_code TEXT`);
       await this.pg.query(`CREATE TABLE IF NOT EXISTS linxup_positions (${POS_COLDEFS}, PRIMARY KEY (tracker_id, at))`);
       await this.pg.query(`CREATE INDEX IF NOT EXISTS linxup_positions_at ON linxup_positions (at)`);
       await this.pg.query(`CREATE TABLE IF NOT EXISTS linxup_latest_positions (${POS_COLDEFS}, PRIMARY KEY (tracker_id))`);
@@ -292,25 +299,28 @@ class Linxup {
 
   // Merge what a message says about a tracker into the mirror. `patch` may carry
   // person: null to clear (Device Update), active (Device Status).
-  async upsertTracker(patch, at) {
+  // opts.source: 'webhook' (default) stamps lastMessageAt; 'api' stamps apiSeenAt and keeps what the inventory said — the two are never confused.
+  async upsertTracker(patch, at, opts = {}) {
     this._guard();
+    const fromApi = opts.source === 'api';
     const id = num(patch.trackerId); if (id == null) return null;
-    const cur = this.trackers.get(id) || { trackerId: id, active: true, firstSeenAt: at.toISOString() };
+    const cur = this.trackers.get(id) || { trackerId: id, active: true, firstSeenAt: at.toISOString(), lastMessageAt: null, apiSeenAt: null };
     const next = { ...cur };
     for (const k of ['name', 'deviceNumber', 'deviceSerialNumber', 'vin', 'make', 'model', 'year', 'licensePlate', 'companyId', 'fleetId', 'fleetName']) if (patch[k] !== undefined && patch[k] !== null) next[k] = patch[k];
     if (patch.personGiven) { next.personId = patch.personId ?? null; next.personName = patch.personName ?? null; }
     if (patch.active !== undefined) { next.active = !!patch.active; next.statusChangedAt = at.toISOString(); }
-    next.lastMessageAt = at.toISOString();
-    const changed = JSON.stringify({ ...cur, lastMessageAt: 0 }) !== JSON.stringify({ ...next, lastMessageAt: 0 });
+    if (fromApi) { next.apiSeenAt = at.toISOString(); if (patch.lastHeardFrom !== undefined) next.apiLastHeardFrom = patch.lastHeardFrom; if (patch.statusCode !== undefined) next.apiStatusCode = patch.statusCode; }
+    else next.lastMessageAt = at.toISOString();
+    const changed = JSON.stringify({ ...cur, lastMessageAt: 0, apiSeenAt: 0 }) !== JSON.stringify({ ...next, lastMessageAt: 0, apiSeenAt: 0 });
     if (this.pg) {
       await this.pg.query(`INSERT INTO linxup_trackers (tracker_id, name, device_number, device_serial, vin, make, model, year, license_plate, company_id, fleet_id, fleet_name,
-          person_id, person_name, active, status_changed_at, first_seen_at, last_message_at, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,now())
+          person_id, person_name, active, status_changed_at, first_seen_at, last_message_at, api_seen_at, api_last_heard_from, api_status_code, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,now())
         ON CONFLICT (tracker_id) DO UPDATE SET name=$2, device_number=$3, device_serial=$4, vin=$5, make=$6, model=$7, year=$8, license_plate=$9, company_id=$10, fleet_id=$11,
-          fleet_name=$12, person_id=$13, person_name=$14, active=$15, status_changed_at=$16, last_message_at=$18, updated_at=now()`,
+          fleet_name=$12, person_id=$13, person_name=$14, active=$15, status_changed_at=$16, last_message_at=$18, api_seen_at=$19, api_last_heard_from=$20, api_status_code=$21, updated_at=now()`,
         [id, next.name ?? null, next.deviceNumber ?? null, next.deviceSerialNumber ?? null, next.vin ?? null, next.make ?? null, next.model ?? null, next.year ?? null, next.licensePlate ?? null,
          next.companyId ?? null, next.fleetId ?? null, next.fleetName ?? null, next.personId ?? null, next.personName ?? null, next.active !== false, next.statusChangedAt ?? null,
-         next.firstSeenAt ?? at.toISOString(), next.lastMessageAt]);
+         next.firstSeenAt ?? at.toISOString(), next.lastMessageAt ?? null, next.apiSeenAt ?? null, next.apiLastHeardFrom ?? null, next.apiStatusCode ?? null]);
     } else { this.file.trackers[id] = next; this._flushFile(); }
     this.trackers.set(id, next);
     if (changed) this.version++;
@@ -603,7 +613,7 @@ class Linxup {
   // ── reads ──
   tracker(id) { return this.trackers.get(num(id)) || null; }
   latestFor(id) { return this.latest.get(num(id)) || null; }
-  listTrackers() { return [...this.trackers.values()].map(t => ({ ...t, latestAt: (this.latest.get(t.trackerId) || {}).at || null })).sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))); }
+  listTrackers() { return [...this.trackers.values()].map(t => ({ ...t, lastMessageAt: t.lastMessageAt ?? null, apiSeenAt: t.apiSeenAt ?? null, latestAt: (this.latest.get(t.trackerId) || {}).at || null, source: trackerSource(t) })).sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))); }
   listPersons() {
     const seen = new Map();
     for (const t of this.trackers.values()) if (t.personId != null) seen.set(t.personId, { personId: t.personId, name: t.personName || String(t.personId), trackerName: t.name });
@@ -641,7 +651,9 @@ const TRACKER_KEYS = {
   vin: ['vin', 'VIN'],
   licensePlate: ['licensePlate', 'plate', 'license_plate'],
   make: ['make'], model: ['model'], year: ['year'],
+  lastHeardFrom: ['lastHeardFrom', 'last_heard_from', 'lastHeard', 'lastReportedAt', 'lastReportDate'], statusCode: ['statusCode', 'status'], deviceType: ['deviceType', 'device_type'], hasCamera: ['hasCamera'],
 };
+const apiDate = v => { if (v == null || v === '') return null; const n = Number(v); const d = Number.isFinite(n) ? epochToDate(n) : new Date(String(v)); return d && !Number.isNaN(d.getTime()) ? d.toISOString() : null; };
 const pickKey = (o, keys) => { for (const k of keys) { if (o && o[k] !== undefined && o[k] !== null && o[k] !== '') return o[k]; } return null; };
 // Linxup nests the asset under tracker/asset/vehicle in its push messages; the
 // pull API may do the same. Look one level down for identity fields.
@@ -653,6 +665,7 @@ function normApiTracker(raw) {
   const t = {
     trackerId, name: str(get(TRACKER_KEYS.name)), deviceNumber: str(get(TRACKER_KEYS.deviceNumber)), deviceSerialNumber: str(get(TRACKER_KEYS.deviceSerialNumber)),
     vin: str(get(TRACKER_KEYS.vin)), licensePlate: str(get(TRACKER_KEYS.licensePlate)), make: str(get(TRACKER_KEYS.make)), model: str(get(TRACKER_KEYS.model)), year: num(get(TRACKER_KEYS.year)),
+    lastHeardFrom: apiDate(pickKey(raw, TRACKER_KEYS.lastHeardFrom)), statusCode: str(pickKey(raw, TRACKER_KEYS.statusCode)), deviceType: str(pickKey(raw, TRACKER_KEYS.deviceType)), hasCamera: raw.hasCamera === undefined ? null : !!raw.hasCamera,
     fields: Object.keys(raw).sort(),
   };
   t.identityFields = ['trackerId', 'deviceNumber', 'deviceSerialNumber', 'vin'].filter(k => t[k] != null);
@@ -778,4 +791,4 @@ class LinxupApi {
     return { summary, trackers: r.ok ? trackers : [] };
   }
 }
-module.exports = { Linxup, LinxupApi, normApiTracker, unwrapList, joinApiUrl, normalizePosition, classify, TYPES };
+module.exports = { Linxup, LinxupApi, normApiTracker, unwrapList, joinApiUrl, trackerSource, normalizePosition, normStop, normVehicleTrip, normFenceEvent, normUsage, classify, TYPES };
