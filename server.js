@@ -1045,7 +1045,7 @@ let testSaveFailLeft = null;   // test hook: fail this many saves, then behave a
 // ── LINXUP TELEMETRY ─────────────────────────────────────────────────────────
 // Truck positions and tracker facts from Linxup's Push API (linxup.js). Off
 // unless LINXUP_WEBHOOK_TOKEN is set. Its data never enters the JSON store.
-const { Linxup, LinxupApi, trackerSource } = require('./linxup');
+const { Linxup, LinxupApi, trackerSource, unwrapList, normStop, normVehicleTrip, normFenceEvent, normUsage } = require('./linxup');
 const linxup = new Linxup({
   token: process.env.LINXUP_WEBHOOK_TOKEN || '', tokenNext: process.env.LINXUP_WEBHOOK_TOKEN_NEXT || '',
   companyId: process.env.LINXUP_COMPANY_ID || null,
@@ -2528,6 +2528,79 @@ app.post('/api/linxup-api/apply-workbook', reqMgr, async (req, res) => {
   res.json({ ok: true, changed, inventory: { refreshed: !refreshed.skipped, skipped: refreshed.skipped, merged: refreshed.merged, summary: refreshed.summary ? { ok: refreshed.summary.ok, status: refreshed.summary.status, items: refreshed.summary.items, error: refreshed.summary.error || '' } : null, ...linxupInventoryCounts() },
     trucks: results, workbookWithoutTruck, note: 'Links were made only where the workbook names the truck and exactly one live tracker proves the identity. Drivers and assignments were not touched; the workbook\'s driver column is reported, not applied.' });
 });
+// ── Report probe: one read-only call to a documented V3 report, summarized ──
+// The account's Swagger lists trips, stops, geofence visits and usage hours
+// (each with an in-progress variant) and the tracker list. Before any of them
+// is persisted or displayed, the office runs it once from here and sees what
+// it really returns: status, shape, count, field names and types, the time
+// range of the rows and how old the newest one is, whether rows carry
+// coordinates, pagination hints, and whether the existing evidence
+// normalizers (the webhook message shapes) accept the rows as they are. Only
+// these eight paths can be called; the query string is the office's own (from
+// Swagger), passed through after a character check. Coordinates and addresses
+// are redacted in the sample; nothing is stored; the key never appears.
+const LINXUP_REPORTS = {
+  trackers: '/api/v3/trackers',
+  trips: '/api/v3/trips', 'trips-in-progress': '/api/v3/trips/in-progress',
+  stops: '/api/v3/stops', 'stops-in-progress': '/api/v3/stops/in-progress',
+  'geofence-visits': '/api/v3/geofence-visits', 'geofence-visits-in-progress': '/api/v3/geofence-visits/in-progress',
+  'usage-hours': '/api/v3/usage-hours',
+};
+const REPORT_NORMALIZER = { trips: normVehicleTrip, 'trips-in-progress': normVehicleTrip, stops: normStop, 'stops-in-progress': normStop, 'geofence-visits': normFenceEvent, 'geofence-visits-in-progress': normFenceEvent, 'usage-hours': normUsage };
+const REPORT_TIME_KEYS = ['startDateTime', 'endDateTime', 'enterDateTime', 'exitDateTime', 'startDate', 'endDate', 'date', 'timestamp', 'eventDateTime', 'lastHeardFrom', 'createdAt', 'updatedAt'];
+const REDACT_KEY = /lat|lng|long|address|street|city|zip|postal|coordinates|location|geometry|points/i;
+const KEEP_KEY = /id$|Id$|name|type|status|code|date|time|minutes|miles|hours|engine|authorized|vin|serial|device|fleet|group|count|page|total|next|cursor|hasMore|size/i;
+function reportTimeValue(v) { if (v == null || v === '') return null; const n = Number(v); const d = Number.isFinite(n) ? new Date(n < 1e11 ? n * 1000 : n) : new Date(String(v)); return Number.isNaN(d.getTime()) ? null : d; }
+function redactSample(o, depth = 0) {
+  if (o == null || typeof o !== 'object') return o;
+  if (Array.isArray(o)) return `[array of ${o.length}]`;
+  const out = {};
+  for (const [k, val] of Object.entries(o)) {
+    if (REDACT_KEY.test(k) && !/id$/i.test(k)) { out[k] = `[redacted ${Array.isArray(val) ? 'array' : typeof val}]`; continue; }
+    if (val && typeof val === 'object') { out[k] = depth < 1 ? redactSample(val, depth + 1) : `[${Array.isArray(val) ? 'array' : 'object'}]`; continue; }
+    out[k] = KEEP_KEY.test(k) || typeof val === 'boolean' ? val : `[${typeof val}]`;
+  }
+  return out;
+}
+function summarizeReport(report, r) {
+  const { list, envelope } = r.ok ? unwrapList(r.json) : { list: null, envelope: '' };
+  const items = list || [];
+  const first = items.find(x => x && typeof x === 'object') || null;
+  const fieldTypes = first ? Object.fromEntries(Object.entries(first).map(([k, val]) => [k, val === null ? 'null' : Array.isArray(val) ? 'array' : typeof val === 'object' ? `object{${Object.keys(val).slice(0, 12).join(',')}}` : typeof val])) : {};
+  let minAt = null, maxAt = null;
+  for (const it of items) { if (!it || typeof it !== 'object') continue; for (const k of REPORT_TIME_KEYS) { const d = reportTimeValue(it[k]); if (!d) continue; if (!minAt || d < minAt) minAt = d; if (!maxAt || d > maxAt) maxAt = d; } }
+  const withTracker = items.filter(it => it && typeof it === 'object' && ((it.tracker && (it.tracker.trackerId != null || it.tracker.id != null)) || it.trackerId != null)).length;
+  const withCoords = items.filter(it => it && typeof it === 'object' && Object.keys(it).some(k => /lat|lng|longitude/i.test(k))).length;
+  const envelopeKeys = r.ok && r.json && typeof r.json === 'object' && !Array.isArray(r.json) ? Object.keys(r.json).filter(k => k !== envelope) : [];
+  const pagination = envelopeKeys.filter(k => /page|size|total|next|cursor|hasMore|links|offset|limit/i.test(k));
+  const norm = REPORT_NORMALIZER[report];
+  let readiness = null;
+  if (norm && items.length) {
+    const errs = new Map(); let ok = 0;
+    for (const it of items.slice(0, 50)) { const n = norm(it || {}); if (n.ok) ok++; else (n.errors || []).forEach(e => errs.set(e, (errs.get(e) || 0) + 1)); }
+    readiness = { tested: Math.min(items.length, 50), acceptedByExistingNormalizer: ok, rejected: Math.min(items.length, 50) - ok, reasons: [...errs.entries()].map(([text, count]) => ({ text, count })) };
+  }
+  return {
+    report, path: LINXUP_REPORTS[report], at: new Date().toISOString(), ok: !!r.ok, status: r.status, error: r.ok ? '' : (r.error || `HTTP ${r.status}`), timeout: !!r.timeout,
+    shape: r.ok ? (list ? (envelope ? `object with "${envelope}" list` : 'array') : (r.json && typeof r.json === 'object' ? `object without a list (keys: ${Object.keys(r.json).slice(0, 12).join(', ')})` : typeof r.json)) : '',
+    items: list ? list.length : null, fieldTypes, envelopeKeys, pagination,
+    timeRange: minAt ? { from: minAt.toISOString(), to: maxAt.toISOString(), newestAgeMinutes: Math.max(0, Math.round((Date.now() - maxAt) / 60000)) } : null,
+    identity: { withTrackerId: withTracker, withCoordinates: withCoords },
+    readiness, sample: first ? redactSample(first) : null,
+    note: 'Read-only. Nothing was stored. Coordinates and addresses are redacted in the sample. A report row is historical evidence, never a live position and never a delivered load.',
+  };
+}
+app.post('/api/linxup-api/report-probe', reqMgr, async (req, res) => {
+  const report = String(req.body?.report || '').trim();
+  if (!LINXUP_REPORTS[report]) return res.status(400).json({ error: `Unknown report. One of: ${Object.keys(LINXUP_REPORTS).join(', ')}` });
+  const query = String(req.body?.query || '').trim().replace(/^\?/, '');
+  if (query.length > 400 || /[^A-Za-z0-9_.:+\-%=&,TZ|]/.test(query)) return res.status(400).json({ error: 'The query may only contain Swagger-style parameters (letters, digits, = & , : . + - % _ |), at most 400 characters' });
+  if (!linxupApi.configured) return res.status(400).json({ error: 'Linxup API is not configured (LINXUP_API_BASE_URL and LINXUP_API_KEY).' });
+  const r = await linxupApi.get(LINXUP_REPORTS[report] + (query ? '?' + query : ''));
+  const summary = summarizeReport(report, r);
+  logAction(req.session.user, 'linxup-report-probe', 'linxup', { report, ok: summary.ok, status: summary.status, items: summary.items, query: query.length ? query.slice(0, 120) : '', newestAgeMinutes: summary.timeRange ? summary.timeRange.newestAgeMinutes : null });
+  res.status(summary.ok ? 200 : 502).json(summary);
+});
 // Tracker ↔ truck mapping review. Links are made by a person on Drivers &
 // Trucks; this only compares what VBT holds (truck.linxup, and the VIN /
 // tracker serial the office may type on the truck from the tracker
@@ -2795,7 +2868,7 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
       if (mode === 'timeout') return new Promise((_, rej) => { init.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e); }); });
       if (mode === 'unauthorized') return reply(401, { message: 'Unauthorized' });
       if (mode === 'malformed') return reply(200, '<html>login page</html>', 'text/html');
-      if (mode === 'jwt' || mode === 'jwt-403') {
+      if (mode === 'jwt' || mode === 'jwt-403' || mode === 'reports') {
         // The login exactly as the account's Swagger does it; anything else is refused like Linxup does (403).
         if (init.method === 'POST') {
           const okLogin = /\/api\/v3\/jwts$/.test(String(url)) && h['X-API-Key'] === 'key-secret-123' && h.Accept === 'text/plain' && (init.body === undefined || init.body === null || init.body === '');
@@ -2804,13 +2877,24 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
           return reply(200, 'eyJhbGciOiJIUzI1NiJ9.' + Buffer.from(JSON.stringify({ exp, sub: 'fake' })).toString('base64url') + '.c2ln', 'text/plain');
         }
         if (!/^Bearer eyJhbGciOiJIUzI1NiJ9\./.test(String(h.Authorization || ''))) return reply(401, { message: 'bad token' });
-        return reply(200, items);
+        if (mode !== 'reports') return reply(200, items);
       }
       if (mode === 'envelope') return reply(200, { data: items, page: 1 });
       if (mode === 'inventory') return reply(200, FAKE_LINXUP_INVENTORY());
+      if (mode === 'reports') {
+        const u = String(url); const now = Date.now(); const trk = { trackerId: 9004, name: 'VBT #4', deviceNumber: 'DN-88X151490025', deviceSerialNumber: '88X151490025' };
+        if (/\/api\/v3\/trips\?/.test(u) || /\/api\/v3\/trips$/.test(u)) return reply(200, [
+          { tracker: trk, asset: { vin: '1NPVLP9X0ED252913' }, startDateTime: now - 3 * 3600e3, endDateTime: now - 2 * 3600e3, startLatitude: 36.74, startLongitude: -119.77, endLatitude: 37.0, endLongitude: -119.5, startAddress: { street: '1 Yard Rd', city: 'Fresno' }, endAddress: { street: '9 Fork Rd', city: 'North Fork' }, distanceMiles: 41.2, durationMinutes: 60, authorized: true, startGeofence: { geofenceId: 77, name: 'Vulcan Fresno' } },
+          { tracker: trk, asset: { vin: '1NPVLP9X0ED252913' }, startDateTime: now - 90 * 60e3, endDateTime: now - 40 * 60e3, startLatitude: 37.0, startLongitude: -119.5, endLatitude: 36.74, endLongitude: -119.77, distanceMiles: 40.9, durationMinutes: 50, authorized: true }]);
+        if (/\/api\/v3\/stops\/in-progress/.test(u)) return reply(200, { data: [{ tracker: trk, startDateTime: now - 20 * 60e3, latitude: 36.74, longitude: -119.77, stopType: 'STOP', address: { street: '1 Yard Rd' }, geofence: { geofenceId: 77, name: 'Vulcan Fresno' } }], page: 1, totalPages: 1, totalElements: 1 });
+        if (/\/api\/v3\/geofence-visits$/.test(u) || /\/api\/v3\/geofence-visits\?/.test(u)) return reply(200, [{ tracker: trk, geofence: { geofenceId: 77, name: 'Vulcan Fresno' }, eventType: 'FENCE_EXIT', enterDateTime: now - 4 * 3600e3, exitDateTime: now - 3 * 3600e3, durationMinutes: 60 }]);
+        if (/\/api\/v3\/usage-hours/.test(u)) return reply(500, { message: 'internal error' });
+        if (/\/api\/v3\/trackers/.test(u)) return reply(200, FAKE_LINXUP_INVENTORY());
+        return reply(404, { message: 'no such report' });
+      }
       return reply(200, items);
     };
-    const jwtMode = mode === 'jwt' || mode === 'jwt-403';
+    const jwtMode = mode === 'jwt' || mode === 'jwt-403' || mode === 'reports';
     linxupApi = mode === 'off' ? new LinxupApi({}) : new LinxupApi({ baseUrl: req.body?.baseUrl || (jwtMode ? 'https://fake.linxup.test/pullapi' : 'https://fake.linxup.test'), apiKey: 'key-secret-123', auth: jwtMode ? 'jwt:/api/v3/jwts' : (req.body?.auth || 'bearer'), timeoutMs: 300, fetchImpl });
     linxupInventoryPath = req.body?.inventoryPath !== undefined ? String(req.body.inventoryPath) : (jwtMode ? '/api/v3/trackers' : '/trackers');
     res.json({ ok: true, mode });

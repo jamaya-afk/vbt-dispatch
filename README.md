@@ -454,6 +454,16 @@ reported as what it says; VBT's usual and assigned drivers never change. The
 action is idempotent and logged; the link records its match source
 (`workbook+api:vin`, `workbook+api:serial`).
 
+**Report probe** (same card): one read-only call to a documented V3 report
+(trips, stops, geofence visits, usage hours, each with its in-progress
+variant, or the tracker list) with a query string copied from Swagger. It
+reports status, shape, row count, field names and types, the rows' time range
+and the age of the newest, whether rows carry a tracker id and coordinates,
+pagination hints, and whether the existing evidence rules accept the rows.
+The sample row is redacted of coordinates and addresses; nothing is stored.
+Reports are historical evidence; live positions come only from the webhook
+(see LINXUP-INTEGRATION.md §R for the configuration steps).
+
 Register one URL per message type in Linxup: `https://<host>/api/linxup/position`,
 `/device-status`, `/device-update`, `/geofence-event`, `/trip`, `/stop`,
 `/usage-hours`, `/alert`, `/geofence-change`, `/media`. The first seven are

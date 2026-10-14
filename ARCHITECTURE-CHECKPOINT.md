@@ -459,3 +459,9 @@ Two sides, both evidence-only. **Push** (unchanged in substance): Linxup POSTs m
 ## Linxup tracker inventory and workbook mapping
 
 The tracker mirror has two independent freshness stamps: `lastMessageAt` (a webhook message) and `apiSeenAt` (listed by the V3 inventory; Postgres columns added with `ALTER TABLE … ADD COLUMN IF NOT EXISTS`). `upsertTracker(patch, at, { source })` sets one or the other; `listTrackers()` derives `source` (webhook, api, webhook+api). The inventory merge no longer depends on the webhook token, so the picker, the mapping review and the counts work from whatever filled the mirror. `linxup-tracker-setup.json` is the owner's equipment reference; `POST /api/linxup-api/apply-workbook` applies it with the matcher `matchTrackerForTruck` (exact unique VIN → exact unique serial → exact name corroborated; live tracker required; no identity conflict; nothing linked elsewhere) and records `truck.linxup.matchSource`. The action is idempotent and never touches drivers, assignments, trips, approvals, billing or history.
+
+---
+
+## Linxup reports: probe before persistence
+
+`POST /api/linxup-api/report-probe` calls one of eight allow-listed V3 report paths with a character-checked query and returns `summarizeReport()`: status, shape, count, field types, time range and newest age, identity and coordinate coverage, pagination hints, and acceptance by the existing webhook-shape normalizers (now exported from `linxup.js`), with a coordinate- and address-redacted sample. No storage, no scheduler. Ingestion into the existing evidence tables is a later step, taken only once the real account's answers are known; live positions remain the webhook's alone.

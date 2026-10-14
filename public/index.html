@@ -7290,6 +7290,11 @@ function paintFleet() {
   const lxApiBlock = `<div class="qa-card" id="lx-api-card" style="margin:0 0 14px">
     <div class="qa-top"><div><div class="qa-cust">Linxup API (read-only)</div><div class="qa-sub" id="lx-api-sub">Loading…</div></div>
       <div style="display:flex;gap:8px"><button class="btn ghost" style="font-size:12px" onclick="lxApiProbe()">Check connection</button><button class="btn ghost" style="font-size:12px" onclick="lxApplyWorkbook()">Apply tracker workbook</button><button class="btn ghost" style="font-size:12px" onclick="lxMappingReview()">Mapping review</button></div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;font-size:12px">
+      <span style="color:var(--txt3)">Report probe (read-only):</span>
+      <select id="lx-report" style="font-size:12px;padding:4px 6px"><option value="trips">trips</option><option value="trips-in-progress">trips/in-progress</option><option value="stops">stops</option><option value="stops-in-progress">stops/in-progress</option><option value="geofence-visits">geofence-visits</option><option value="geofence-visits-in-progress">geofence-visits/in-progress</option><option value="usage-hours">usage-hours</option><option value="trackers">trackers</option></select>
+      <input id="lx-report-query" type="text" placeholder="query from Swagger, e.g. startDate=2026-10-13&endDate=2026-10-14" style="flex:1;min-width:220px;font-size:12px;padding:4px 6px;border:1px solid var(--bdr);border-radius:6px">
+      <button class="btn ghost" style="font-size:12px" onclick="lxReportProbe()">Run report probe</button></div>
     <div id="lx-api-detail" style="font-size:12px;color:var(--txt2);margin-top:6px"></div></div>`;
   const linkedBy = new Map(trucks.filter(t => t.linxup && t.linxup.trackerId != null).map(t => [Number(t.linxup.trackerId), t]));
   const trackerOpts = (t) => {
@@ -7680,6 +7685,29 @@ async function lxApplyWorkbook() {
     ${d.trucks.map(t => `<tr><td>${escapeHtml(t.truckNum)}</td><td>${escapeHtml(t.workbookRow || '—')}</td><td>${escapeHtml(t.vin || '—')}${t.set.includes('vin') ? ' <span style="color:var(--G)">set</span>' : ''}</td><td>${escapeHtml(t.trackerSerial || '—')}${t.set.includes('trackerSerial') ? ' <span style="color:var(--G)">set</span>' : ''}</td><td><b style="color:${color(t.status)}">${escapeHtml(t.status)}</b>${t.linked ? ` → tracker ${t.linked.trackerId}${t.linked.trackerName ? ' ' + escapeHtml(t.linked.trackerName) : ''} (${escapeHtml(t.linked.by)})` : ''}${t.proposal ? ` → proposal: tracker ${t.proposal.trackerId} (${escapeHtml(t.proposal.by)})` : ''}</td><td>${escapeHtml(t.notes.join('; '))}</td></tr>`).join('')}</table>
     ${d.workbookWithoutTruck.length ? `<div style="margin-top:10px;font-weight:700;font-size:13px">Workbook rows with no VBT truck (nothing created)</div><ul style="font-size:12px">${d.workbookWithoutTruck.map(r => `<li>${escapeHtml(r.tracker)} · SN ${escapeHtml(r.serial)}${r.vin ? ' · VIN ' + escapeHtml(r.vin) : ' · no VIN'}${r.driverField ? ' · workbook driver column: ' + escapeHtml(r.driverField) : ''}</li>`).join('')}</ul>` : ''}`;
   await loadFleet(); paintFleet(); await lxApiStatus(true); const det2 = document.getElementById('lx-api-detail'); if (det2) det2.innerHTML = html;
+}
+// One read-only call to a documented V3 report, summarized: what it returns, how
+// fresh, whether rows carry coordinates, whether the existing evidence
+// normalizers accept them. Nothing is stored; coordinates stay redacted.
+async function lxReportProbe() {
+  const det = document.getElementById('lx-api-detail'); const report = (document.getElementById('lx-report') || {}).value || 'trips'; const query = (document.getElementById('lx-report-query') || {}).value || '';
+  if (det) det.textContent = `Calling ${report}…`;
+  const d = await api('POST', '/api/linxup-api/report-probe', { report, query });
+  if (!d.ok && !d.report) { toast(d.error || 'The probe failed', 'error'); if (det) det.textContent = d.error || ''; return; }
+  const kv = (k, v) => `<div><span style="color:var(--txt3)">${k}</span> <b>${v}</b></div>`;
+  const rd = d.readiness;
+  const html = `<div style="font-size:12px;color:var(--txt2);margin-bottom:6px">${escapeHtml(d.note || '')}</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:4px 14px;font-size:12px">
+      ${kv('Report', `${escapeHtml(d.report)} · ${escapeHtml(d.path || '')}`)}${kv('Result', d.ok ? `<span style="color:var(--G)">OK</span> · HTTP ${d.status}` : `<span style="color:var(--R)">failed</span> · ${escapeHtml(d.error || '')}`)}
+      ${kv('Shape', escapeHtml(d.shape || '—'))}${kv('Rows', d.items == null ? '—' : d.items)}
+      ${kv('Time range', d.timeRange ? `${new Date(d.timeRange.from).toLocaleString()} → ${new Date(d.timeRange.to).toLocaleString()} · newest ${d.timeRange.newestAgeMinutes} min old` : '—')}
+      ${kv('Rows with tracker id / coordinates', `${d.identity ? d.identity.withTrackerId : '—'} / ${d.identity ? d.identity.withCoordinates : '—'}`)}
+      ${kv('Pagination hints', d.pagination && d.pagination.length ? escapeHtml(d.pagination.join(', ')) : 'none seen')}
+      ${kv('Accepted by the existing evidence rules', rd ? `${rd.acceptedByExistingNormalizer} of ${rd.tested}${rd.reasons.length ? ' · rejected: ' + escapeHtml(rd.reasons.map(r => `${r.text} (${r.count})`).join('; ')) : ''}` : '—')}
+    </div>
+    ${d.fieldTypes && Object.keys(d.fieldTypes).length ? `<div style="margin-top:6px;font-size:12px"><span style="color:var(--txt3)">Fields:</span> ${escapeHtml(Object.entries(d.fieldTypes).map(([k, t]) => `${k}: ${t}`).join(' · '))}</div>` : ''}
+    ${d.sample ? `<pre style="margin-top:6px;font-size:11px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:8px;white-space:pre-wrap">${escapeHtml(JSON.stringify(d.sample, null, 1))}</pre>` : ''}`;
+  if (det) det.innerHTML = html;
 }
 async function lxMappingReview() {
   const d = await api('GET', '/api/linxup-api/mapping'); if (!d.ok) return toast(d.error || 'Could not load the mapping', 'error');

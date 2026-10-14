@@ -791,4 +791,4 @@ class LinxupApi {
     return { summary, trackers: r.ok ? trackers : [] };
   }
 }
-module.exports = { Linxup, LinxupApi, normApiTracker, unwrapList, joinApiUrl, trackerSource, normalizePosition, classify, TYPES };
+module.exports = { Linxup, LinxupApi, normApiTracker, unwrapList, joinApiUrl, trackerSource, normalizePosition, normStop, normVehicleTrip, normFenceEvent, normUsage, classify, TYPES };

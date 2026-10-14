@@ -685,3 +685,62 @@ positions, trips, stops and geofence visits still arrive solely through the
 webhook (push side), which needs `LINXUP_WEBHOOK_TOKEN` and the message URLs
 registered in Linxup; until then a linked tracker reads "No position yet" and
 the Fleet Map has no Linxup positions. That is a separate step.
+
+## R. Live tracking and paperwork evidence — the design, and what each source is for
+
+**Two sources, two purposes.** The webhook (push side, L1/L2) is the only
+source of live positions and of events as they happen: Position, Device
+Status, Device Update, Geofence Event, Stop, Trip, Usage Hours. The V3 pull
+reports the account's Swagger lists — `/api/v3/trips`, `/trips/in-progress`,
+`/stops`, `/stops/in-progress`, `/geofence-visits`, `/geofence-visits/in-progress`,
+`/usage-hours` — are historical evidence: finished (or in-progress) trips,
+stops and visits with their times, and never a live coordinate stream. The
+inventory (`/api/v3/trackers`) is identity. Nothing in any of them is
+operational authority: no report assigns, loads, completes, approves, bills
+or rewrites.
+
+**Probe first, persist later.** `POST /api/linxup-api/report-probe` (office;
+Drivers & Trucks → Linxup API → Report probe) makes one read-only GET of one
+of those eight paths with the office's own query string (copied from Swagger,
+character-checked) and returns a summary: HTTP status, shape, row count,
+field names and types, the time range of the rows and the age of the newest,
+how many rows carry a tracker id and coordinates, pagination hints, and
+whether the rows are accepted as they are by the existing evidence rules
+(`normVehicleTrip`, `normStop`, `normFenceEvent`, `normUsage` — the webhook
+message shapes). The sample row has coordinates and addresses redacted.
+Nothing is stored. Only after the real account's answers are seen does
+ingestion of a report into the existing `linxup_vehicle_trips`,
+`linxup_stops`, `linxup_geofence_events` and `linxup_usage` tables make sense;
+those tables already de-duplicate by the event's own time, so a pulled row
+and the same row by webhook land once.
+
+**No scheduler yet.** Pulling reports on a timer is not needed until a report
+is proven useful and the webhook is confirmed as the live source. If polling
+is adopted later: at most every 15 minutes per report, one request per fleet
+(not per truck) where the API allows a fleet-wide window, a window that
+overlaps the previous one by the stale margin, de-duplication by the event
+keys the tables already use, failures counted and surfaced on the card (no
+retries inside a tick), and a daily request budget stated in the README.
+
+**Webhook configuration the owner completes in Linxup (push side).** Set
+`LINXUP_WEBHOOK_TOKEN` (a long random secret) and `LINXUP_COMPANY_ID` in
+Railway. In Linxup's Push API settings register one URL per message type,
+each with the header `Authorization: Bearer <that token>`:
+`https://<host>/api/linxup/position`, `/device-status`, `/device-update`,
+`/geofence-event`, `/trip`, `/stop`, `/usage-hours`, `/alert`,
+`/geofence-change`, `/media`. The receiver checks the token and the 2 MB
+size before parsing, refuses other companies' messages, de-duplicates by
+content, answers 503 so Linxup retries when storage fails, and keeps raw
+alerts/media for later. The office sees arrivals on the Linxup API card
+("heard by webhook") and in `/api/linxup/health`.
+
+**Paperwork cross-checks this enables (evidence, never substitution).** For
+the Daily Log Book: a day's odometer legs (driver-typed readings) beside the
+sum of Linxup trip distances for the linked tracker in the shift window —
+shown as a comparison with the difference, flagged with a reason when they
+disagree beyond a margin; trip start/end times beside Start day / End day;
+stops and geofence visits at the planned yard and jobsite beside the driver's
+Arrived taps (already done for the approval checklist by the webhook
+evidence). For the Freight Bill/Log: the segment's odometer window beside the
+trips inside it. Never: an odometer reading, a fuel quantity, a ticket number,
+tons, a signature or an inspection result taken from telemetry.
