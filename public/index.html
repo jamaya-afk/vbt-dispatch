@@ -7293,7 +7293,8 @@ function paintFleet() {
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;font-size:12px">
       <span style="color:var(--txt3)">Report probe (read-only):</span>
       <select id="lx-report" style="font-size:12px;padding:4px 6px"><option value="trips">trips</option><option value="trips-in-progress">trips/in-progress</option><option value="stops">stops</option><option value="stops-in-progress">stops/in-progress</option><option value="geofence-visits">geofence-visits</option><option value="geofence-visits-in-progress">geofence-visits/in-progress</option><option value="usage-hours">usage-hours</option><option value="trackers">trackers</option></select>
-      <input id="lx-report-query" type="text" placeholder="query from Swagger, e.g. startDate=2026-10-13&endDate=2026-10-14" style="flex:1;min-width:220px;font-size:12px;padding:4px 6px;border:1px solid var(--bdr);border-radius:6px">
+      <select id="lx-report-hours" title="Used when the query is empty: VBT sends startDate/endDate (epoch ms) for this many hours ending now" style="font-size:12px;padding:4px 6px"><option value="6">last 6 h</option><option value="24" selected>last 24 h</option><option value="72">last 72 h</option><option value="168">last 7 days</option></select>
+      <input id="lx-report-query" type="text" placeholder="empty = VBT sends the window; or type it, e.g. startDate=1792134000000&endDate=1792825199000" style="flex:1;min-width:220px;font-size:12px;padding:4px 6px;border:1px solid var(--bdr);border-radius:6px">
       <button class="btn ghost" style="font-size:12px" onclick="lxReportProbe()">Run report probe</button></div>
     <div id="lx-api-detail" style="font-size:12px;color:var(--txt2);margin-top:6px"></div></div>`;
   const linkedBy = new Map(trucks.filter(t => t.linxup && t.linxup.trackerId != null).map(t => [Number(t.linxup.trackerId), t]));
@@ -7692,7 +7693,8 @@ async function lxApplyWorkbook() {
 async function lxReportProbe() {
   const det = document.getElementById('lx-api-detail'); const report = (document.getElementById('lx-report') || {}).value || 'trips'; const query = (document.getElementById('lx-report-query') || {}).value || '';
   if (det) det.textContent = `Calling ${report}…`;
-  const d = await api('POST', '/api/linxup-api/report-probe', { report, query });
+  const hours = Number((document.getElementById('lx-report-hours') || {}).value || 24);
+  const d = await api('POST', '/api/linxup-api/report-probe', { report, query, hours });
   if (!d.ok && !d.report) { toast(d.error || 'The probe failed', 'error'); if (det) det.textContent = d.error || ''; return; }
   const kv = (k, v) => `<div><span style="color:var(--txt3)">${k}</span> <b>${v}</b></div>`;
   const rd = d.readiness;
@@ -7703,12 +7705,17 @@ async function lxReportProbe() {
       ${!d.ok && d.upstream ? kv('Linxup HTTP / VBT route', `${d.upstream.status || '—'} / ${d.vbtStatus || 502}`) : ''}
       ${!d.ok && d.upstream ? kv('Content type · request id', `${escapeHtml(d.upstream.contentType || '—')} · ${escapeHtml(d.upstream.requestId || 'none')}`) : ''}
       ${!d.ok && d.upstream ? kv('JWT', `${d.upstream.authMode === 'jwt' ? (d.upstream.loginPerformed ? 'logged in during this call' : 'reused the held token') : d.upstream.authMode}`) : ''}
+      ${d.window ? kv('Window', `${d.window.defaulted ? `last ${d.window.hours} h, supplied by VBT` : 'as typed'}${d.window.from ? ` · ${new Date(d.window.from).toLocaleString()} → ${new Date(d.window.to).toLocaleString()}` : ''}`) : ''}
       ${kv('Shape', escapeHtml(d.shape || '—'))}${kv('Rows', d.items == null ? '—' : d.items)}
       ${kv('Time range', d.timeRange ? `${new Date(d.timeRange.from).toLocaleString()} → ${new Date(d.timeRange.to).toLocaleString()} · newest ${d.timeRange.newestAgeMinutes} min old` : '—')}
       ${kv('Rows with tracker id / coordinates', `${d.identity ? d.identity.withTrackerId : '—'} / ${d.identity ? d.identity.withCoordinates : '—'}`)}
-      ${kv('Pagination hints', d.pagination && d.pagination.length ? escapeHtml(d.pagination.join(', ')) : 'none seen')}
+      ${kv('Pagination hints', (d.pagination && d.pagination.length) || (d.upstream && Object.keys(d.upstream.pagingHeaders || {}).length) ? escapeHtml([...(d.pagination || []), ...Object.entries((d.upstream && d.upstream.pagingHeaders) || {}).map(([k, v]) => `${k}: ${v}`)].join(', ')) : 'none seen (body or headers)')}
+      ${d.timeKeys ? kv('Time fields', `${d.timeKeys.recognized.length ? escapeHtml(d.timeKeys.recognized.join(', ')) : 'none recognized'}${d.timeKeys.other.length ? ` · <span style="color:var(--A)">not read yet: ${escapeHtml(d.timeKeys.other.join(', '))}</span>` : ''}`) : ''}
+      ${d.coverage ? kv('Window covered', `${d.coverage.rowsHours} h of ${d.coverage.requestedHours} h${d.coverage.truncationSuspected ? ' · <span style="color:var(--A)">cap suspected</span>' : ''}`) : ''}
       ${kv('Accepted by the existing evidence rules', rd ? `${rd.acceptedByExistingNormalizer} of ${rd.tested}${rd.reasons.length ? ' · rejected: ' + escapeHtml(rd.reasons.map(r => `${r.text} (${r.count})`).join('; ')) : ''}` : '—')}
     </div>
+    ${d.queryNote ? `<div style="margin-top:6px;font-size:12px;color:var(--A)">${escapeHtml(d.queryNote)}</div>` : ''}
+    ${d.coverage && d.coverage.note ? `<div style="margin-top:6px;font-size:12px;color:var(--A)">${escapeHtml(d.coverage.note)}</div>` : ''}
     ${!d.ok && d.upstream && d.upstream.bodyPreview ? `<div style="margin-top:6px;font-size:12px"><span style="color:var(--txt3)">Linxup said (scrubbed, first 300 chars):</span> <code style="word-break:break-all">${escapeHtml(d.upstream.bodyPreview)}</code></div>` : ''}
     ${d.fieldTypes && Object.keys(d.fieldTypes).length ? `<div style="margin-top:6px;font-size:12px"><span style="color:var(--txt3)">Fields:</span> ${escapeHtml(Object.entries(d.fieldTypes).map(([k, t]) => `${k}: ${t}`).join(' · '))}</div>` : ''}
     ${d.sample ? `<pre style="margin-top:6px;font-size:11px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:8px;white-space:pre-wrap">${escapeHtml(JSON.stringify(d.sample, null, 1))}</pre>` : ''}`;

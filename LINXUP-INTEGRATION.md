@@ -769,3 +769,43 @@ of Linxup's answer is what decides the next step: a message naming a required
 parameter means the report needs the parameters its Swagger lists (dates,
 tracker or fleet, paging), typed into the query field; anything else is
 Linxup's own fault to read from the message and request id.
+
+## T. The V3 report contract, as the real account answered it (Oct 23, 2026)
+
+**Window (confirmed on trips and stops/in-progress).** Report endpoints need
+`startDate` and `endDate` as epoch-millisecond numbers (Java `Long`). Without
+`startDate` Linxup answers HTTP 500
+`{"status":500,"type":"OTHER","description":"Required request parameter 'startDate' for method parameter type Long is not present"}`.
+The tracker list needs neither. Every report call in VBT goes through
+`linxupReportRequest()`: an empty query gets the last 24 h ending now (the
+probe's selector offers 6 h, 24 h, 72 h, 7 days; held to 1–168 h); a typed
+query is sent exactly as typed, and the probe warns when it lacks
+`startDate`/`endDate` or when they are not plain numbers. Still to confirm
+with the probe: trips/in-progress, geofence-visits, geofence-visits/in-progress
+and usage-hours (they get the same window).
+
+**Stops say `beginDate`.** The stops report rows are `stopId, stopType
+(e.g. "OFF"), beginDate, latitude, longitude, tracker{…}, asset{…},
+geofence{geofenceId,name}, fleet{…}, address{…}`; the webhook Stop message
+says `startDateTime`. The stop rule now reads either (and `endDateTime` or
+`endDate` for the end; epoch or ISO-8601), and the probe reads `beginDate` for
+its time range. The probe's "Time fields" line lists the time-like fields a
+report carries and marks any VBT does not read yet, so the same mismatch on
+another report shows at once.
+
+**Trips** carry `tripId, startDateTime, startLatitude, startLongitude,
+endDateTime, endLatitude, endLongitude, durationMinutes, distanceMiles,
+authorized, tracker{trackerId,name,deviceNumber,deviceSerialNumber},
+asset{vin,make,model,year}, fleet{fleetId,name}, startAddress{…},
+endAddress{…}`; the vehicle-trip rule accepted all rows tested (50 of 50).
+
+**100 rows for an 8-day window.** The answer was a bare JSON array with no
+paging fields; its rows began on 10/21 for a window starting 10/16, which
+looks like a silent cap of 100 returning the newest rows. That is not
+confirmed and the paging parameter (if any) is not known to VBT, so VBT does
+not page. The probe now reports, for any window, how many hours the rows
+cover against the hours asked, flags "cap suspected" when a round row count
+(a multiple of 50) starts more than an hour after the window's start, and
+lists any paging headers Linxup sends (`Link`, `X-Total-Count`,
+`X-Total-Pages`, `X-Page`, `X-Page-Size`, `X-Next-Page`, `X-Has-More` and
+similar). Paging is implemented only once Swagger documents its parameter.

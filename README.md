@@ -456,7 +456,10 @@ action is idempotent and logged; the link records its match source
 
 **Report probe** (same card): one read-only call to a documented V3 report
 (trips, stops, geofence visits, usage hours, each with its in-progress
-variant, or the tracker list) with a query string copied from Swagger. It
+variant, or the tracker list). Leave the query empty and VBT sends the
+required `startDate`/`endDate` as epoch milliseconds for the window chosen
+beside it (last 6 h, 24 h, 72 h or 7 days); a typed query is sent exactly as
+typed (LINXUP-INTEGRATION.md §T). It
 reports status, shape, row count, field names and types, the rows' time range
 and the age of the newest, whether rows carry a tracker id and coordinates,
 pagination hints, and whether the existing evidence rules accept the rows.
