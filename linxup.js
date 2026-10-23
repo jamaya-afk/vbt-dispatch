@@ -88,11 +88,18 @@ function normFenceEvent(raw) {
     durationMin: leftAt ? (num(raw.durationMinutes) ?? Math.round((leftAt - enteredAt) / 60000)) : null,
     personId: person ? person.personId : null, personName: person ? person.name : null, vin: asset ? asset.vin : null, fleetId: fleet ? fleet.fleetId : null } };
 }
+// An epoch (s or ms) or an ISO-8601 date-time string; anything else is no time.
+function timeOf(v) {
+  const d = epochToDate(v); if (d) return d;
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v)) { const t = new Date(v); return isNaN(t) ? null : t; }
+  return null;
+}
 function normStop(raw) {
   const errors = [];
   const tracker = normTracker(raw.tracker); if (!tracker || tracker.trackerId == null) errors.push('tracker.trackerId missing');
-  const startAt = epochToDate(raw.startDateTime); if (!startAt) errors.push('startDateTime missing');
-  const endAt = epochToDate(raw.endDateTime);
+  // The webhook Stop message says startDateTime/endDateTime; the V3 stops report says beginDate (seen live, Oct 2026).
+  const startAt = timeOf(raw.startDateTime ?? raw.beginDate ?? raw.beginDateTime); if (!startAt) errors.push('start time missing (startDateTime or beginDate)');
+  const endAt = timeOf(raw.endDateTime ?? raw.endDate);
   const lat = num(raw.latitude), lng = num(raw.longitude);
   if (lat == null || lat < -90 || lat > 90 || lng == null || lng < -180 || lng > 180) errors.push('latitude/longitude out of range');
   if (errors.length) return { ok: false, errors };
@@ -755,7 +762,9 @@ class LinxupApi {
       let json = null; try { json = text ? JSON.parse(text) : null; } catch { json = undefined; }
       const hdr = (n) => (res.headers && res.headers.get ? res.headers.get(n) : null) || null;
       const requestId = hdr('x-request-id') || hdr('x-correlation-id') || hdr('x-amzn-requestid') || hdr('x-trace-id') || hdr('cf-ray') || null;
-      return { ok: res.ok, status: res.status, json, text, textLength: text.length, contentType: hdr('content-type') || '', requestId, bodyPreview: (!res.ok || json === undefined) ? this._preview(text) : '' };
+      const pagingHeaders = {};
+      for (const n of ['link', 'x-total-count', 'x-total-pages', 'x-total-elements', 'x-page', 'x-page-number', 'x-page-size', 'x-per-page', 'x-next-page', 'x-has-more', 'x-result-count', 'x-limit', 'x-offset']) { const val = hdr(n); if (val != null) pagingHeaders[n] = String(val).slice(0, 200); }
+      return { ok: res.ok, status: res.status, json, text, textLength: text.length, contentType: hdr('content-type') || '', requestId, pagingHeaders, bodyPreview: (!res.ok || json === undefined) ? this._preview(text) : '' };
     } catch (e) {
       const timedOut = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
       if (timedOut) this.counters.timeouts++;
