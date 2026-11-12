@@ -20,7 +20,7 @@ as() { local c=$1 m=$2 u=$3; shift 3; if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; th
 mg() { as $M "$@"; }
 ITEMS=$(curl -s -b $R $B/api/shifts/current | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin)['inspectionItems']))")
 ans() { python3 -c "import json,sys;print(json.dumps({i:('defect' if i in sys.argv[2:] else 'ok') for i in json.loads(sys.argv[1])}))" "$ITEMS" "$@"; }
-OKA=$(ans); TODAY=$(TZ=America/Los_Angeles date +%F)
+OKA=$(ans); TODAY=$(TZ=America/Los_Angeles date +%F); TOMORROW=$(TZ=America/Los_Angeles date -d tomorrow +%F)
 TR=$(curl -s -b $R $B/api/shifts/current | python3 -c "import json,sys;print(' '.join(t['id'] for t in json.load(sys.stdin)['trucks'][:3]))"); set -- $TR; T1=$1; T2=$2; T3=$3
 start() { as $1 POST /api/shifts/start "{\"truckId\":\"$2\",\"odometer\":$3,\"inspection\":$4,\"signature\":\"$PNG\"${5:+,$5}}"; }
 
@@ -53,6 +53,12 @@ chk "  adding a load on the held truck to an existing PO: refused" "$(mg POST /a
 chk "  the load already planned on it cannot start a trip (Carlos, his day on another truck)" "$(start $C $T2 2000 "{\"answers\":$OKA}" | jq "d['shift']['status']") $(as $C POST /api/loads/$HL1/trip-action '{"action":"start-trip"}' | jq "d['code']") $(mg GET /api/data | jq "[len(l['trips']) for l in d['loads'] if l['id']=='$HL1']")" "open vehicle_held [0]"
 CS=$(as $C GET /api/shifts/current | jq "d['shift']['id']")
 chk "  a truck change onto the held truck: refused" "$(as $C POST /api/shifts/$CS/truck-change "{\"toTruckId\":\"$T1\",\"fromOdometer\":2001,\"toOdometer\":1000}" | jq "d['code']")" "vehicle_held"
+chk "  putting another driver on the load that sits on the held truck: refused (the truck would be dispatched by its other handle); taking the driver off is allowed and putting him back is refused" "$(mg POST /api/loads/$HL1/assign '{"driverId":"matthew"}' | jq "d['code']") $(mg POST /api/loads/$HL1/assign '{"driverId":null}' | jq "d.get('success', d.get('ok'))") $(mg POST /api/loads/$HL1/assign '{"driverId":"carlos"}' | jq "d['code']")" "vehicle_held True vehicle_held"
+chk "  the generic load update cannot carry a truck at all (refused by name, nothing written)" "$(mg PUT /api/loads/$HL2 "{\"truckUnitId\":\"$T1\"}" -o /dev/null -w '%{http_code}') $(mg GET /api/data | jq "[l['truckUnitId'] for l in d['loads'] if l['id']=='$HL2']==['$T3']")" "400 True"
+chk "  moving the load's date does not release it: on the new day it is still on the held truck, still flagged, and its trip still cannot start" "$(mg POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$HL1\",\"newDate\":\"$TOMORROW\",\"reason\":\"test\"}" | jq "d.get('success')") $(mg GET "/api/today?date=$TOMORROW" | jq "['held out of service' in ' '.join(l['conflicts']) for l in d['loads'] if l['id']=='$HL1']") $(mg POST /api/loads/move "{\"scope\":\"single\",\"loadId\":\"$HL1\",\"newDate\":\"$TODAY\",\"reason\":\"test\"}" -o /dev/null -w '%{http_code}')" "True [True] 200"
+chk "  a voided and restored load comes back on the held truck flagged, not dispatched" "$(mg POST /api/loads/$HL1/void '{"reason":"test"}' -o /dev/null -w '%{http_code}') $(mg POST /api/loads/$HL1/unvoid '{"reason":"test"}' -o /dev/null -w '%{http_code}') $(mg GET /api/today | jq "['held out of service' in ' '.join(l['conflicts']) for l in d['loads'] if l['id']=='$HL1']")" "200 200 [True]"
+chk "  nobody signed out can read or clear a report" "$(curl -s -o /dev/null -w '%{http_code}' $B/api/defect-reports -H 'Accept: application/json') $(curl -s -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/defect-reports/$DR1/resolve -d '{"decision":"corrected","by":"x y","note":"abc"}')" "401 401"
+mg POST /api/loads/$HL1/assign "{\"driverId\":\"carlos\",\"truckUnitId\":\"$T2\"}" >/dev/null
 chk "  the office moves the load to a free truck: accepted, and its trip starts" "$(mg POST /api/loads/$HL1/assign "{\"truckUnitId\":\"$T2\"}" | jq "d.get('success', d.get('ok'))") $(as $C POST /api/loads/$HL1/trip-action '{"action":"start-trip"}' | jq "d.get('success')")" "True True"
 echo "── Clearance is an authorized, recorded act ──"
 chk "  a driver cannot clear it" "$(as $C POST /api/defect-reports/$DR1/resolve '{"decision":"corrected","by":"me","note":"fine"}' | jq "d['error']")" "Office access required"
@@ -70,6 +76,8 @@ chk "minor defect + driver says not safe: held (409 vehicle_not_safe), severity 
 DR3=$(echo "$RSH" | jq "d['report']['id']")
 chk "  an admin may clear a minor hold either way, with the reason on record" "$(mg POST /api/defect-reports/$DR3/resolve '{"decision":"corrected","by":"Hector (shop)","note":"new wiper motor"}' | jq "d['report']['status'], d['truckStillHeld']")" "cleared False"
 chk "  the reporting driver then starts his day on it" "$(start $R $T1 1000 "{\"answers\":$OKA}" | jq "d['shift']['status'], d['shift']['inspection']['satisfactory'], len(d['shift']['inspection']['answers'])")" "open True 11"
+po HOLD-4 rigo $T1 >/dev/null; HL4=$(loadOf HOLD-4)
+chk "  a hold that returns mid-day (the report is reopened while Rigo's day is open on the truck): his next trip cannot start; the admin's clearance lets it" "$(mg POST /api/defect-reports/$DR3/reopen '{"reason":"wipers failed again at the yard"}' | jq "d['truckHeld']") $(as $R POST /api/loads/$HL4/trip-action '{"action":"start-trip"}' | jq "d['code']") $(mg POST /api/defect-reports/$DR3/resolve '{"decision":"corrected","by":"Hector (shop)","note":"replaced wiper relay"}' | jq "d['truckStillHeld']") $(mg POST /api/loads/$HL4/void '{"reason":"test load"}' -o /dev/null -w '%{http_code}')" "True vehicle_held False 200"
 
 echo "── Safe to drive with a defect: the day starts, the report stays open ──"
 LS=$(start $L $T3 3000 "{\"answers\":$(ans Mirrors 'Trailer and tarp'),\"remarks\":\"left mirror cracked, tarp torn\",\"safeToOperate\":true}")
@@ -127,6 +135,22 @@ chk "  an approved load cannot be edited through its record: the ticket and the 
 BID=$(mg POST /api/billing-batches "{\"loadIds\":[\"$HL1\"]}" | jq "d['batches'][0]['id']")
 chk "the invoice packet: the batch's frozen lines and total, then the load's delivery ticket with its POD — marked NOT SENT until QuickBooks has it (the DRAFT watermark is for supporting records that are not final; these are); office only" "$(doc $M /api/billing-batches/$BID/packet | has "'Invoice packet' in h, '$BID' in h, 'NOT SENT' in h, 'as frozen on the batch' in h, 'DT-$HL1' in h, 'Site Foreman' in h, h.count('class=\"draft\"')") $(curl -s -o /dev/null -w '%{http_code}' -b $C $B/api/billing-batches/$BID/packet)" "True True True True True True 0 403"
 chk "  an unknown batch or load is a 404, never an empty document" "$(curl -s -o /dev/null -w '%{http_code}' -b $M $B/api/billing-batches/NOPE/packet) $(curl -s -o /dev/null -w '%{http_code}' -b $M $B/api/loads/NOPE/delivery-ticket)" "404 404"
+
+echo "── QuickBooks: the batch is frozen, sent once, and the packet shows exactly what was billed ──"
+bat() { mg GET /api/billing-batches | jq "(lambda b: $1)([x for x in d['items'] if x['id']=='$BID'][0])"; }
+pk() { doc $M /api/billing-batches/$BID/packet; }
+chk "the load is on one batch only: a second batch for it is refused and creates nothing" "$(mg POST /api/billing-batches "{\"loadIds\":[\"$HL1\"]}" -o /dev/null -w '%{http_code}' | sed 's/^4[0-9][0-9]$/refused/') $(mg GET /api/billing-batches | jq "len([x for x in d['items'] if '$HL1' in x['loadIds'] and x['syncStatus']!='voided'])")" "refused 1"
+chk "the packet's line is the batch's own frozen line, and it says what it was billed on: 25 planned tons against 24.50 on the scale ticket" "$(bat "(b['totalAmount'], [(li['unit'], li['basis'], li['tons'], li['amount']) for li in b['lineItems']])") $(pk | has "'planned tons (per-load rule)' in h, 'Billed 25.00 tons; the scale tickets total 24.50 tons' in h, 'Ticket photo on the load' in h")" "(625, [('ton', 'planned', 25, 625)]) True True False"
+V2=$(doc $M /api/loads/$HL1/delivery-ticket | python3 -c "import sys,re;print(re.search(r'record version (\w+)', sys.stdin.read()).group(1))")
+mg POST /api/customer-prices '{"customer":"Hold Test Co","material":"Dirt","unit":"ton","price":99}' >/dev/null
+chk "a price added after the batch was made changes nothing on it: same lines, same total, same packet" "$(bat "(b['totalAmount'], b['lineItems'][0]['rate'], b['lineItems'][0]['amount'])") $(pk | has "'\$625.00' in h, '\$2,475.00' in h")" "(625, 25, 625) True False"
+mg POST /api/_test/qb-fake '{"mode":"ok"}' >/dev/null
+N0=$(mg GET /api/_test/qb-fake | jq "d['invoicesCreated']")
+SEND=$(mg POST /api/billing-batches/$BID/send '{}')
+chk "Send to QuickBooks: one invoice, whose lines are the frozen lines — same quantity, same amount; the batch records the invoice id; the load is billed" "$(mg GET /api/_test/qb-fake | jq "d['invoicesCreated'] - $N0, [(ln['quantity'], ln['amount']) for ln in d['invoices'][-1]['lines']]") $(bat "(b['syncStatus'], bool(b['qbInvoiceId']))") $(mg GET /api/data | jq "[(l['billStatus'], l['billingBatchId']=='$BID') for l in d['loads'] if l['id']=='$HL1']")" "1 [(25, 625)] ('sent_to_quickbooks', True) [('billed', True)]"
+chk "  sending the same batch again is refused and creates no second invoice; a retry is refused too" "$(mg POST /api/billing-batches/$BID/send '{}' -o /dev/null -w '%{http_code}' | sed 's/^4[0-9][0-9]$/refused/') $(mg POST /api/billing-batches/$BID/retry '{}' -o /dev/null -w '%{http_code}' | sed 's/^4[0-9][0-9]$/refused/') $(mg GET /api/_test/qb-fake | jq "d['invoicesCreated'] - $N0")" "refused refused 1"
+chk "  the packet now says SENT with the QuickBooks invoice, the same frozen amount, and the same delivery ticket (its record version did not move: billing changed nothing operational)" "$(pk | has "'SENT — QuickBooks invoice' in h, '\$625.00' in h, 'NOT SENT' in h, 'record version $V2' in h, h.count('class=\"draft\"')")" "True True False True 0"
+chk "  the billed load cannot be voided around its batch, edited, re-approved or put on another batch" "$(mg POST /api/loads/$HL1/void '{"reason":"x"}' -o /dev/null -w '%{http_code}' | sed 's/^4[0-9][0-9]$/refused/') $(mg PUT /api/loads/$HL1 '{"notes":"x"}' -o /dev/null -w '%{http_code}' | sed 's/^4[0-9][0-9]$/refused/') $(mg POST /api/loads/$HL1/approve '{}' -o /dev/null -w '%{http_code}' | sed 's/^4[0-9][0-9]$/refused/') $(mg POST /api/billing-batches "{\"loadIds\":[\"$HL1\"]}" -o /dev/null -w '%{http_code}' | sed 's/^4[0-9][0-9]$/refused/')" "refused refused refused refused"
 
 echo; echo "paperwork: $PASS passed, $FAIL failed"
 [ -n "${KEEP:-}" ] && { echo "KEEP: server left running on $PORT, batch $BID, load $HL1"; exit 0; }

@@ -25,29 +25,39 @@ No password is written here. A fresh install seeds each login with the
 password in `<NAME>_PASS` (e.g. `OSCAR_PASS`) or, when that is unset, a
 built-in default that is in the source and therefore **public**.
 
-- **A published default cannot be used to work.** In production, a login that
-  still opens with one lands on *Choose a new password* and reaches nothing
-  else — no board, no API — until it has set one (8+ characters, not a
-  default, not containing the username). Sessions already open on such an
-  account are held the same way. The office sees which logins are left (a bar
-  in the app, `security.accountsOnDefaultPassword` on `/healthz`), and the boot
-  log lists them.
-- **A first production start never plants a published default.** On an empty
-  database, a login with no `<NAME>_PASS` gets a random set-up password that is
-  printed once in the boot log. For a login that is still on a published
-  default, setting `<NAME>_PASS` (8+ characters) in the service variables and
-  redeploying moves it to that value and ends its sessions; a password someone
-  chose is never replaced from the environment.
+- **A login on a published default is NOT SET UP and cannot sign in** (in
+  production). The default opens nothing — no session, not even the
+  change-password page — so nobody can claim an account by being the first to
+  sign in with a password that is in the source. A session opened with a
+  default before this rule ends at the next deploy.
+- **Every login gets its first password from the owner or an admin, never from
+  the source.** Two ways, both tested:
+  1. *Service variables.* Set `<NAME>_PASS` (8+ characters, private) for a
+     login that is not set up — e.g. `JOSHUA_PASS` — and redeploy. That value
+     opens the login once.
+  2. *Admin reset.* Drivers & Trucks → Logins (admin only) lists every login as
+     not set up / temporary / set, and **Reset sign-in** issues a random
+     temporary password, shown once, and ends that person's sessions.
+- **A password someone else set is temporary.** A set-up value, an admin reset
+  and an office-set driver password all open only the change-password page;
+  the person chooses their own (8+ characters, not a default, not containing
+  the username) before anything else works. The flag is stored, so it survives
+  a restart.
+- **A first production start on an empty database** gives each login without
+  `<NAME>_PASS` a random set-up password printed once in the boot log.
+- If every admin is not set up, the boot log says so and names the variables
+  to set; it never opens a door.
 - **Admin and manager are different.** Both run the day (POs, assignment,
   approval, billing). Only an admin restores a backup, connects or disconnects
-  QuickBooks, or sets the default rates. All three seed office logins are
-  admins; `manager` is for a dispatcher login added later.
+  QuickBooks, sets the default rates, clears a held truck, or lists and resets
+  logins. All three seed office logins are admins.
 - **Anyone can change their own password**: *Change password* beside *Sign out*
   (`/change-password`). The change is in the audit log.
 - **A revoked login stops on its next request**, not when its seven-day cookie
   runs out: a new password (the user's own or one the office set) signs out the
   user's other devices; disabling or removing a driver signs out the phone.
   The stored session rows are deleted, so a restart does not bring them back.
+- **A signed-out call is 401, not 403** — on office routes too, so an office screen whose session ended returns to the login form instead of saying "Office access required".
 - **A signed-out API call is told so** (`401 session_expired`, JSON) and the
   screen says "You were signed out" and returns to the login form, instead of
   a tap that does nothing. Pages still redirect to the login form.
@@ -296,6 +306,15 @@ reprint is the same document, with a record-version stamp.
 - **Packets**: per freight (Freight Bill + delivery tickets) and per billing
   batch (the frozen invoice lines + delivery tickets) — Billing Batches →
   Packet.
+
+### Sample documents
+
+`bash sample-documents.sh [dir]` enters a realistic day through the same API
+the phone and the office use (the Cornelio packet of 14 Sep 2026: Truck #3,
+trailer 3B, four Vulcan loads to North Fork, a pea-gravel pre-load, 75 gal of
+fuel, 85,558 → 85,868) and saves the Daily Log, Freight Bill, delivery tickets
+and both packets as PDF and PNG for a person to inspect. `TICKET_DIR` may point
+at real scale-ticket photos (`ticket-1.jpg` …).
 
 ## End of day, including paperwork
 

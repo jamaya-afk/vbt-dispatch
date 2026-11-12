@@ -1096,7 +1096,7 @@ async function call(cookie, method, path, body) {
   const expected403 = /^$/;
 
   console.log('── Anonymous ──');
-  chk('3. anonymous gets 403 from /api/fleet/live', (await fetch(B + '/api/fleet/live')).status, 403);
+  chk('3. anonymous gets 401 (signed out) from /api/fleet/live', (await fetch(B + '/api/fleet/live')).status, 401);
 
   await browser.close();
   const real = [...new Set(problems)].filter(p => !expected403.test(p));

@@ -4443,6 +4443,34 @@ async function voidBatch(id) {
   renderBillBatches();
 }
 
+// ── LOGINS (admin) ───────────────────────────────────────────────────────────
+// How each login stands, and the one way a password is issued for someone
+// else: Reset gives a random temporary password, shown once here, which the
+// person replaces at their next sign-in. No password is ever listed.
+const LOGIN_STATE_WORDS = { 'not-set-up': 'NOT SET UP — cannot sign in', temporary: 'temporary password — must choose their own', set: 'set', disabled: 'disabled' };
+async function loadLogins() {
+  const body = document.getElementById('logins-body'); if (!body) return;
+  const d = await api('GET', '/api/admin/logins');
+  if (!d.ok) { document.getElementById('logins-sub').textContent = d.error || 'Could not load'; return; }
+  document.getElementById('logins-sub').textContent = d.notSetUp.length ? `${d.notSetUp.length} not set up${d.enforced ? ' (locked until you reset them)' : ''}` : 'Every login is set up';
+  body.innerHTML = d.logins.map(l => `<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid var(--bdr);font-size:13px">
+      <b style="min-width:92px">${escapeHtml(l.username)}</b><span style="min-width:64px;color:var(--txt2)">${escapeHtml(l.role)}</span>
+      <span style="flex:1;color:${l.state === 'not-set-up' ? 'var(--R)' : l.state === 'temporary' ? 'var(--A)' : 'var(--txt2)'}">${LOGIN_STATE_WORDS[l.state] || l.state}</span>
+      <span id="login-temp-${escapeAttr(l.username)}" style="font-family:monospace;font-weight:700"></span>
+      ${l.active ? `<button class="btn ghost" style="font-size:11px;padding:5px 10px" onclick="resetLogin('${escapeAttr(l.username)}', this)">Reset sign-in</button>` : ''}</div>`).join('');
+}
+async function resetLogin(username, btn) {
+  if (btn.dataset.armed !== '1') { btn.dataset.armed = '1'; btn.textContent = `Confirm: sign ${username} out and issue a temporary password`; return; }
+  btn.disabled = true;
+  const r = await api('POST', `/api/admin/logins/${encodeURIComponent(username)}/reset`, {});
+  btn.disabled = false; btn.dataset.armed = ''; btn.textContent = 'Reset sign-in';
+  if (!r.ok) return toast(r.error || 'Could not reset', 'error');
+  await loadLogins();
+  const slot = document.getElementById('login-temp-' + username);
+  if (slot) slot.textContent = `temporary password (shown once): ${r.temporaryPassword}`;
+  showDefaultPasswordNotice((await api('GET', '/api/me')).accountsOnDefaultPassword);
+}
+
 // ── DEFAULT-PASSWORD NOTICE (office) ─────────────────────────────────────────
 // Logins that still open with the password they were set up with. Each one is
 // asked for a new password at its next sign-in; until then the office can see
@@ -4455,7 +4483,7 @@ function showDefaultPasswordNotice(names) {
   bar.style.cssText = 'position:sticky;top:0;z-index:240;background:#8a5a00;color:#fff;padding:10px 16px;'
     + 'font-size:13px;font-weight:600;line-height:1.45;display:flex;gap:10px;align-items:center';
   bar.innerHTML = `<span style="font-size:16px">&#9888;</span>
-    <span style="flex:1">${names.length === 1 ? 'One login still uses' : names.length + ' logins still use'} a set-up password that is not private: ${escapeHtml(names.join(', '))}. Each will be asked for a new one at its next sign-in.</span>
+    <span style="flex:1">${names.length === 1 ? 'One login is' : names.length + ' logins are'} not set up and cannot sign in: ${escapeHtml(names.join(', '))}. An admin issues each a temporary password on Drivers &amp; Trucks → Logins.</span>
     <button style="background:transparent;border:1px solid rgba(255,255,255,.6);color:#fff;border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit" onclick="this.parentNode.remove()">Dismiss</button>`;
   document.body.prepend(bar);
 }
@@ -7574,6 +7602,7 @@ function paintFleet() {
   const th = (label, extra = '') => `<th style="text-align:left;padding:10px 14px;font-weight:600;${extra}">${label}</th>`;
   document.getElementById('fleet-content').innerHTML = `
     <div style="display:grid;gap:18px">
+      ${role === 'admin' ? `<div class="qa-card" id="logins-card" style="margin:0"><div class="qa-top"><div><div class="qa-cust">Logins (admin)</div><div class="qa-sub" id="logins-sub">Loading…</div></div></div><div id="logins-body"></div></div>` : ''}
       ${lxApiBlock}
       <div style="background:var(--bg);border:1px solid var(--bdr);border-radius:14px;box-shadow:var(--shadow);overflow:hidden" id="fleet-trailers">
         <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
@@ -7624,7 +7653,7 @@ function paintFleet() {
         </div>
       </div>
     </div>`;
-  lxApiStatus();
+  lxApiStatus(); if (role === 'admin') loadLogins();
 }
 
 function escapeAttr(s) { return escapeHtml(s == null ? '' : s); }

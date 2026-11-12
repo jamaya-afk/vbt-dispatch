@@ -236,10 +236,14 @@ app.use((req, res, next) => {
     // A fresh, anonymous session: the request goes on as a signed-out visitor.
     return req.session.regenerate(() => next());
   }
-  // Held: it signed in with a published default, or it is a session from
-  // before this rule whose account is known to still open with one.
-  const held = u.mustChangePassword || (FORCE_PASSWORD_CHANGE && accountsOnDefaultPassword.has(String(u.username || '').toLowerCase()));
-  if (held && !u.mustChangePassword) u.mustChangePassword = true;
+  // An account that still opens with a published default is NOT SET UP: it has
+  // no session at all (a session from before this rule ends here). Holding it
+  // on the change-password page would let whoever signed in first — anyone who
+  // has read the source — choose the account's password.
+  if (FORCE_PASSWORD_CHANGE && accountsOnDefaultPassword.has(String(u.username || '').toLowerCase())) return req.session.regenerate(() => next());
+  // Held: signed in with a temporary password someone else set (the owner's
+  // set-up value, an admin reset, an office-set driver password).
+  const held = !!u.mustChangePassword;
   if (held && !PASSWORD_CHANGE_OPEN.has(req.path)) {
     if (req.path.startsWith('/api/')) return res.set('X-VBT-Auth', 'password-change').status(403).json({ error: 'password_change_required', message: 'Choose a new password first.', changeAt: '/change-password' });
     return res.redirect('/change-password');
@@ -815,6 +819,9 @@ async function initPg() {
         UNIQUE (company_id, username)
       )
     `);
+    // A password someone else set for the user (set-up value, admin reset,
+    // office-set driver login) is temporary: replaced at the first sign-in.
+    await pg.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change BOOLEAN NOT NULL DEFAULT false');
     persistence.mode = 'postgres';
     persistence.durable = true;
     console.log('✓ Postgres connected — Valley Best data is durable');
@@ -860,10 +867,10 @@ async function seedDefaultCompanyAndUsers() {
     for (const [uname, u] of Object.entries(USERS)) {
       const userId = `user-${DEFAULT_COMPANY_ID}-${uname}`;
       await pg.query(`
-        INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+        INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active, must_change)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)
         ON CONFLICT (company_id, username) DO NOTHING
-      `, [userId, DEFAULT_COMPANY_ID, uname, hashPassword(seedPw[uname]), u.role, u.truckId || null, u.displayName || uname]);
+      `, [userId, DEFAULT_COMPANY_ID, uname, hashPassword(seedPw[uname]), u.role, u.truckId || null, u.displayName || uname, !isPublishedPassword(seedPw[uname])]);
     }
     if (oneTime.length) {
       console.warn('⚠ First start with no <NAME>_PASS set for: ' + oneTime.join(', ') + '. Each was given a random set-up password, shown ONCE here:');
@@ -887,26 +894,34 @@ async function auditDefaultPasswords() {
       for (const row of r.rows) {
         const candidates = new Set([SEED_DEFAULT_PASSWORDS[row.username], 'vbt2025!'].filter(Boolean));
         if (![...candidates].some(c => verifyPassword(c, row.password).ok)) continue;
-        // The owner's remote fix: with <NAME>_PASS set in the service
-        // variables to a private value, a login still on a published default
-        // is moved to it at boot and its sessions end. Nothing else is ever
-        // changed from the environment — a password someone chose stays.
+        // Provisioning from the service variables: <NAME>_PASS (8+, private)
+        // becomes the login's TEMPORARY password — the person replaces it at
+        // the first sign-in — and its sessions end. Nothing else is ever
+        // changed from the environment: a password someone chose stays.
         const envPw = String(process.env[row.username.toUpperCase() + '_PASS'] || '');
         if (envPw.length >= PASSWORD_MIN && !isPublishedPassword(envPw)) {
-          await pg.query('UPDATE users SET password = $1 WHERE company_id = $2 AND username = $3', [hashPassword(envPw), DEFAULT_COMPANY_ID, row.username]);
+          await pg.query('UPDATE users SET password = $1, must_change = true WHERE company_id = $2 AND username = $3', [hashPassword(envPw), DEFAULT_COMPANY_ID, row.username]);
           await revokeUserSessions(row.username);
-          console.warn(`[security] "${row.username}" was still on a published default password; it now opens with ${row.username.toUpperCase()}_PASS and its sessions were ended.`);
+          console.warn(`[security] "${row.username}" was not set up (published default). It now opens once with ${row.username.toUpperCase()}_PASS and must choose its own password at that sign-in.`);
           continue;
         }
         accountsOnDefaultPassword.add(row.username);
+        // Not set up: any session it still has ends now.
+        if (FORCE_PASSWORD_CHANGE) await revokeUserSessions(row.username);
       }
     } else {
       for (const [uname, u] of Object.entries(USERS)) if (isPublishedPassword(u.password) && !(store.fileLogins || {})[uname]?.selfChanged) accountsOnDefaultPassword.add(uname);
     }
   } catch (e) { console.error('[security] default-password check failed:', e.message); return; }
   if (accountsOnDefaultPassword.size) {
-    console.warn(`⚠ ${accountsOnDefaultPassword.size} login(s) still open with a published default password: ${[...accountsOnDefaultPassword].sort().join(', ')}.` +
-      (FORCE_PASSWORD_CHANGE ? ' Each is asked for a new password at its next sign-in.' : ' (Not enforced outside production.)'));
+    const names = [...accountsOnDefaultPassword].sort();
+    console.warn(FORCE_PASSWORD_CHANGE
+      ? `⚠ ${names.length} login(s) are NOT SET UP and cannot sign in (published default password): ${names.join(', ')}. Set ${names.map(n => n.toUpperCase() + '_PASS').join(', ')} to a private temporary value (8+ characters) in the service variables and redeploy, or have an admin reset them (Admin → reset sign-in).`
+      : `⚠ ${names.length} login(s) still open with a published default password: ${names.join(', ')}. (Allowed outside production only.)`);
+    if (FORCE_PASSWORD_CHANGE && pg) {
+      const admins = await pg.query("SELECT username FROM users WHERE company_id = $1 AND active = true AND role = 'admin'", [DEFAULT_COMPANY_ID]).catch(() => ({ rows: [] }));
+      if (admins.rows.length && admins.rows.every(a => accountsOnDefaultPassword.has(a.username))) console.error(`✗ NO ADMIN CAN SIGN IN: every admin login is not set up. Set ${admins.rows.map(a => a.username.toUpperCase() + '_PASS').join(' or ')} in the service variables and redeploy.`);
+    }
   }
 }
 
@@ -2339,11 +2354,20 @@ function reqAuth(req, res, next) {
   if (req.originalUrl.startsWith('/api/') && !navigation) return res.set('X-VBT-Auth', 'signed-out').status(401).json({ error: 'session_expired', message: 'You are signed out. Sign in again.' });
   res.redirect('/login');
 }
-function reqMgr(req, res, next)   { const r = req.session?.user?.role; if (r === 'admin' || r === 'manager') return next(); res.status(403).json({ error: 'Office access required' }); }
+// Signed out is not "forbidden": an office screen whose session ended must be
+// told so (401, like reqAuth), or it shows "Office access required" to the
+// office and never returns to the login form.
+function signedOut(req, res) {
+  if (req.session?.user) return false;
+  res.set('X-VBT-Auth', 'signed-out').status(401).json({ error: 'session_expired', message: 'You are signed out. Sign in again.' });
+  return true;
+}
+function reqMgr(req, res, next)   { if (signedOut(req, res)) return; const r = req.session.user.role; if (r === 'admin' || r === 'manager') return next(); res.status(403).json({ error: 'Office access required' }); }
 // Admin only. A manager (a dispatcher login, when the office adds one) runs
 // the day — POs, assignment, approval, billing — but does not restore a
 // backup, connect or disconnect QuickBooks, or set the default rates.
 function reqAdmin(req, res, next) {
+  if (signedOut(req, res)) return;
   const r = req.session?.user?.role;
   if (r === 'admin') return next();
   res.status(403).json({ error: 'Admin access required', adminOnly: true });
@@ -3181,16 +3205,23 @@ const accountsOnDefaultPassword = new Set();
 // One way into a session, for every login path: a new session id (a cookie
 // planted before sign-in is worthless after it), the moment of sign-in (what
 // revocation compares against), and the default-password hold.
-function signIn(req, res, user, passwordUsed) {
+function signIn(req, res, user, passwordUsed, opts = {}) {
   const onDefault = isPublishedPassword(passwordUsed);
   if (onDefault) accountsOnDefaultPassword.add(user.username); else accountsOnDefaultPassword.delete(user.username);
-  const hold = onDefault && FORCE_PASSWORD_CHANGE;
+  // A published default opens nothing in production — not even the
+  // change-password page. The account waits for its set-up password.
+  if (onDefault && FORCE_PASSWORD_CHANGE) {
+    console.warn(`[LOGIN] REFUSED: "${user.username}" used a published default password — the login is not set up`);
+    loginFailed(req.ip || req.socket?.remoteAddress || '', user.username);
+    return res.redirect('/login?error=setup');
+  }
+  const hold = !!opts.mustChange && FORCE_PASSWORD_CHANGE;
   req.session.regenerate((err) => {
     if (err) { noteDbFailure(err); console.error('[LOGIN] session could not be created:', err.message); return res.redirect('/login?error=db'); }
     req.session.user = { ...user, loginAt: Date.now(), ...(hold ? { mustChangePassword: true } : {}) };
     req.session.save((err2) => {
       if (err2) { noteDbFailure(err2); console.error('[LOGIN] session could not be saved:', err2.message); return res.redirect('/login?error=db'); }
-      if (hold) console.warn(`[LOGIN] "${user.username}" signed in with a published default password — held on /change-password`);
+      if (hold) console.warn(`[LOGIN] "${user.username}" signed in with a temporary password — held on /change-password`);
       res.redirect(hold ? '/change-password' : '/app/');
     });
   });
@@ -3198,7 +3229,9 @@ function signIn(req, res, user, passwordUsed) {
 
 app.get('/login', (req, res) => {
   const ref = String(req.query.ref || '').replace(/[^A-Z0-9]/g, '').slice(0, 12);
-  const err = req.query.error === 'locked'
+  const err = req.query.error === 'setup'
+    ? '<p class="err">This login has not been set up yet. Ask the Valley Best administrator for your set-up password.</p>'
+    : req.query.error === 'locked'
     ? '<p class="err">Too many sign-in attempts. Wait 15 minutes and try again.</p>'
     : req.query.error === 'db'
     ? `<p class="err">Database unreachable — reference ${ref || 'n/a'}. Your password was not checked; nothing is wrong with it. Try again in a minute.</p>`
@@ -3247,7 +3280,7 @@ app.post('/login', async (req, res) => {
   if (pg) {
     try {
       const r = await pg.query(
-        'SELECT id, company_id, username, password, role, truck_id, display_name, active FROM users WHERE username = $1',
+        'SELECT id, company_id, username, password, role, truck_id, display_name, active, must_change FROM users WHERE username = $1',
         [cleanName]
       );
       let dbUser = null;
@@ -3277,7 +3310,7 @@ app.post('/login', async (req, res) => {
           role:        dbUser.role,
           truckId:     sessTruckId,
           displayName: dbUser.display_name || dbUser.username,
-        }, password);
+        }, password, { mustChange: !!dbUser.must_change });
       }
       // The users table answered and did not accept this login. That is the
       // final word: it must NOT fall through to the hardcoded legacy map,
@@ -3315,12 +3348,12 @@ app.post('/login', async (req, res) => {
     }
     loginSucceeded(cleanName);
     console.log(`[LOGIN] SUCCESS (file mode): username="${cleanName}", role="${seedUser.role}"`);
-    return signIn(req, res, { username: cleanName, role: seedUser.role, truckId: seedUser.truckId, displayName: seedUser.displayName || cleanName }, password);
+    return signIn(req, res, { username: cleanName, role: seedUser.role, truckId: seedUser.truckId, displayName: seedUser.displayName || cleanName }, password, { mustChange: !!fl.mustChange });
   }
   if (fl && rosterDriver(cleanName)?.active !== false && verifyPassword(password, fl.password).ok) {
     loginSucceeded(cleanName);
     console.log(`[LOGIN] SUCCESS (file mode): username="${cleanName}", role="driver"`);
-    return signIn(req, res, { username: cleanName, role: 'driver', truckId: cleanName, displayName: rosterDriver(cleanName)?.name || cleanName }, password);
+    return signIn(req, res, { username: cleanName, role: 'driver', truckId: cleanName, displayName: rosterDriver(cleanName)?.name || cleanName }, password, { mustChange: !!fl.mustChange });
   }
 
   // 3) Legacy fallback: hardcoded VBT users (dev / no-database mode only).
@@ -3337,7 +3370,7 @@ app.post('/login', async (req, res) => {
     role:        u.role,
     truckId:     u.truckId,
     displayName: u.displayName || (cleanName.charAt(0).toUpperCase() + cleanName.slice(1)),
-  }, password);
+  }, password, { mustChange: true });   // file mode: a seed login's <NAME>_PASS is a set-up password until the person changes it
 });
 
 // ── PASSWORD CHANGE ──────────────────────────────────────────────────────────
@@ -3361,7 +3394,7 @@ async function passwordRecord(username) {
     const r = await pg.query('SELECT id, password, active FROM users WHERE company_id = $1 AND username = $2', [DEFAULT_COMPANY_ID, username]);
     const row = r.rows[0];
     if (!row || !row.active) return null;
-    return { hash: row.password, write: (h) => pg.query('UPDATE users SET password = $1 WHERE id = $2', [h, row.id]).then(() => false) };
+    return { hash: row.password, write: (h) => pg.query('UPDATE users SET password = $1, must_change = false WHERE id = $2', [h, row.id]).then(() => false) };
   }
   // File mode (dev only). A seed login opens with its seed password until it
   // has been changed here; an office-set driver login is in fileLogins.
@@ -3372,7 +3405,7 @@ async function passwordRecord(username) {
   if (!hash) return null;
   return { hash, alsoAccept: !own && fl ? fl.password : null, write: async (h) => {
     if (!store.fileLogins) store.fileLogins = {};
-    store.fileLogins[username] = { ...(store.fileLogins[username] || {}), password: h, selfChanged: !!seed, changedAt: new Date().toISOString() };
+    store.fileLogins[username] = { ...(store.fileLogins[username] || {}), password: h, selfChanged: !!seed, mustChange: false, changedAt: new Date().toISOString() };
     return true;   // the store changed: the caller saves
   } };
 }
@@ -3466,6 +3499,51 @@ app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login')
 app.use('/app', reqAuth, express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
 app.get(['/app', '/app/'], reqAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.get('/', (req, res) => res.redirect(req.session?.user ? '/app/' : '/login'));
+
+// ── ACCOUNT PROVISIONING (admin) ─────────────────────────────────────────────
+// Who can sign in, and how each login stands: not set up (published default —
+// locked in production), temporary (a password someone else set; replaced at
+// the next sign-in), or set (a password the person chose). Never a password.
+async function loginStates() {
+  const out = [];
+  if (pg) {
+    const r = await pg.query('SELECT username, role, display_name, active, must_change FROM users WHERE company_id = $1 ORDER BY role, username', [DEFAULT_COMPANY_ID]);
+    for (const row of r.rows) out.push({ username: row.username, role: row.role, displayName: row.display_name || row.username, active: !!row.active,
+      state: !row.active ? 'disabled' : accountsOnDefaultPassword.has(row.username) ? 'not-set-up' : row.must_change ? 'temporary' : 'set' });
+  } else {
+    const names = new Set([...Object.keys(USERS), ...Object.keys(store.fileLogins || {})]);
+    for (const uname of [...names].sort()) { const fl = (store.fileLogins || {})[uname] || null, seed = USERS[uname];
+      out.push({ username: uname, role: seed ? seed.role : 'driver', displayName: seed ? seed.displayName : (rosterDriver(uname)?.name || uname), active: !(rosterDriver(uname) && rosterDriver(uname).active === false),
+        state: accountsOnDefaultPassword.has(uname) ? 'not-set-up' : (fl ? fl.mustChange : !!seed) ? 'temporary' : 'set' }); }
+  }
+  return out;
+}
+app.get('/api/admin/logins', reqAdmin, async (req, res) => {
+  const logins = await loginStates();
+  res.json({ enforced: FORCE_PASSWORD_CHANGE, logins, notSetUp: logins.filter(l => l.state === 'not-set-up').map(l => l.username), temporary: logins.filter(l => l.state === 'temporary').map(l => l.username) });
+});
+// Reset a login: a random temporary password, shown ONCE to the admin to hand
+// to the person. Their sessions end; they choose their own at the next
+// sign-in. This is the only way a password is issued for someone else.
+app.post('/api/admin/logins/:username/reset', reqAdmin, async (req, res) => {
+  const uname = String(req.params.username || '').toLowerCase().trim();
+  const temp = crypto.randomBytes(9).toString('base64url');
+  let found = false;
+  if (pg) {
+    const r = await pg.query('UPDATE users SET password = $1, must_change = true WHERE company_id = $2 AND username = $3 AND active = true', [hashPassword(temp), DEFAULT_COMPANY_ID, uname]);
+    found = r.rowCount > 0;
+  } else if (USERS[uname] || (store.fileLogins || {})[uname]) {
+    if (!store.fileLogins) store.fileLogins = {};
+    store.fileLogins[uname] = { ...(store.fileLogins[uname] || {}), password: hashPassword(temp), mustChange: true, selfChanged: !!USERS[uname], resetAt: new Date().toISOString() };
+    found = true;
+  }
+  if (!found) return res.status(404).json({ error: 'No active login with that username' });
+  accountsOnDefaultPassword.delete(uname);
+  logAction(req.session.user, 'reset-login', uname, { by: req.session.user.username });   // never the password
+  await saveData();
+  await revokeUserSessions(uname);
+  res.json({ success: true, username: uname, temporaryPassword: temp, note: 'Shown once. The person must choose their own password at the next sign-in; all their sessions were ended.' });
+});
 
 // ── API: WHO AM I ────────────────────────────────────────────────────────────
 app.get('/api/me', reqAuth, (req, res) => {
@@ -5289,10 +5367,10 @@ function deliveryTicketBody(l) {
   const rows = (l.trips || []).map(t => { const st = t.isoStamps || {}; const done = tripIsCompleted(t);
     return `<tr><td>${esc(t.tripNum)}</td><td>${esc(t.actualYardName || resolvePickupYard(l, po, null).name + ' (planned)')}</td><td>${esc(t.ticket ? t.ticket.number : '—')}${t.ticket && t.ticket.source === 'vbt' ? ' <small>(VBT)</small>' : ''}</td><td class="r">${t.ticket && t.ticket.netTons != null ? Number(t.ticket.netTons).toFixed(2) : '—'}</td><td>${esc(t.truckNum || (truck ? truck.truckNum : ''))}</td><td>${st.loadedAt ? esc(fmtClock(st.loadedAt)) : '—'}</td><td>${st.completed ? esc(fmtClock(st.completed)) : '—'}</td><td>${done ? 'delivered' : '<b>not delivered</b>'}</td></tr>`; }).join('');
   const images = (l.trips || []).filter(t => t.ticket && (t.ticket.photoUrl || t.ticket.photo)).map(t => `<div class="block" style="page-break-inside:avoid"><div class="k">Ticket ${esc(t.ticket.number || '')} · trip ${esc(t.tripNum)}${tripIsCompleted(t) ? '' : ' · NOT delivered'}</div>${imgTag(t.ticket.photoUrl, t.ticket.photo, 'ticket ' + (t.ticket.number || ''))}</div>`).join('')
-    + ((l.ticketImageUrl || l.ticketImage) && !(l.trips || []).some(t => t.ticket && t.ticket.photoUrl && t.ticket.photoUrl === l.ticketImageUrl) ? `<div class="block" style="page-break-inside:avoid"><div class="k">Ticket photo on the load</div>${imgTag(l.ticketImageUrl, l.ticketImage, 'ticket photo')}</div>` : '');
+    + ((l.ticketImageUrl || l.ticketImage) && !(l.trips || []).some(t => t.ticket && ((t.ticket.photoUrl && t.ticket.photoUrl === l.ticketImageUrl) || (t.ticket.photo && t.ticket.photo === l.ticketImage))) ? `<div class="block" style="page-break-inside:avoid"><div class="k">Ticket photo on the load</div>${imgTag(l.ticketImageUrl, l.ticketImage, 'ticket photo')}</div>` : '');
   const version = docVersion({ id: l.id, po: po.poNumber, customer: po.customer, material: l.material, delivered: dr, trips: (l.trips || []).map(t => [t.tripNum, t.ticket && t.ticket.number, t.ticket && t.ticket.netTons, t.isoStamps && t.isoStamps.completed]), pod: [pod.signedBy, pod.signedAt], approved: [l.approvalStatus, l.approvedAt], voided: !!l.voided });
   const body = `<h1>Delivery Ticket / Proof of Delivery <span style="font-size:13px;font-weight:600;color:#555">DT-${esc(l.id)}</span></h1>
-  <div class="sub">${esc(l.deliveryDate || '')} · <span class="stamp ${final ? 'final' : 'draft'}">${l.voided ? 'VOID' : final ? `FINAL — approved by ${esc(l.approvedBy || 'the office')}${l.approvedAt ? ' ' + esc(fmtClock(l.approvedAt)) : ''}${checks.length ? ' with the exceptions below' : ''}` : l.approvalStatus === 'submitted' ? 'DRAFT — awaiting approval' : 'DRAFT — not yet submitted'}</span></div>
+  <div class="sub">${esc(fmtLogDate(l.deliveryDate || ''))} · <span class="stamp ${final ? 'final' : 'draft'}">${l.voided ? 'VOID' : final ? `FINAL — approved by ${esc(l.approvedBy || 'the office')}${l.approvedAt ? ' ' + esc(fmtClock(l.approvedAt)) : ''}${checks.length ? ' with the exceptions below' : ''}` : l.approvalStatus === 'submitted' ? 'DRAFT — awaiting approval' : 'DRAFT — not yet submitted'}</span></div>
   <div class="grid">${kv('Customer', po.customer)}${kv('PO', po.poNumber)}${kv('Job', po.job)}${kv('Deliver to', destinationLabelOf(po))}
     ${kv('Material', l.material)}${kv('Driver', l.driverName)}${kv('Truck', truck ? truck.truckNum : '')}${kv('Trailer', trailer ? trailer.number : '')}
     ${kv('Loads delivered', `${dr.count} of ${l.loadsAssigned} planned`)}${kv('Ticket tons', tons.actualTons ? tons.actualTons.toFixed(2) : '—')}${kv('Planned tons', tons.plannedTons != null ? Number(tons.plannedTons).toFixed(2) : '—')}</div>
@@ -5323,15 +5401,15 @@ function freightBillBody(seg) {
   const dl = shift && shift.dayLog ? shift.dayLog : null;
   const extra = `<h2>Quantities</h2><table><tr><th>PO</th><th>Load</th><th>Material</th><th class="r">Planned</th><th class="r">Delivered (load)</th><th class="r">Completed trips</th><th class="r">In this freight</th><th>Approval</th></tr>${recon.map(r => `<tr><td>${esc((findPoAnywhere(r.l.poId) || {}).poNumber || '')}</td><td>${esc(r.l.id)}</td><td>${esc(r.l.material)}</td><td class="r">${esc(r.l.loadsAssigned)}</td><td class="r">${r.dr.record}</td><td class="r">${r.dr.completed}${r.dr.mismatch ? ' ⚠' : ''}</td><td class="r">${r.deliveredHere}${r.tripsHere !== r.deliveredHere ? ` (+${r.tripsHere - r.deliveredHere} not delivered)` : ''}</td><td>${r.l.voided ? 'VOID' : esc(r.l.approvalStatus || 'not submitted')}</td></tr>`).join('')}</table>
   ${exceptions.length ? `<div class="block" style="border-color:#c00"><b>${p.locked ? 'Exceptions on record — the loads were approved with them' : 'Exceptions — to resolve before the loads are approved'}</b><ul style="margin:6px 0 0 18px">${exceptions.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div>` : ''}
-  <div class="grid" style="margin-top:12px">${kv('Lunch', lunch.length ? lunch.map(b => `${fmtClock(b.startAt)} – ${b.endAt ? fmtClock(b.endAt) : 'open'}`).join(', ') : 'none recorded')}${kv('Fuel purchased', fuel.length ? `${gallons.toFixed(1)} gal` : 'none recorded')}${kv('Fuel location', fuel.length ? [...new Set(fuel.map(f => f.location || f.yardName || '').filter(Boolean))].join(', ') : '')}
-    ${kv("Driver's signature", dl ? `${dl.signedBy || seg.driverName} signed the Daily Log ${fmtClock(dl.signedAt)}` : 'Daily Log not signed yet')}</div>
+  <div class="grid" style="margin-top:12px">${kv('Lunch', lunch.length ? lunch.map(b => `${fmtClock(b.startAt)} – ${b.endAt ? fmtClock(b.endAt) : 'open'}`).join(', ') : 'none recorded')}${kv('Fuel purchased (day)', fuel.length ? `${gallons.toFixed(1)} gal` : 'none recorded')}${kv('Fuel location', fuel.length ? [...new Set(fuel.map(f => f.location || f.yardName || '').filter(Boolean))].join(', ') : '')}
+    ${kv("Driver's signature", dl ? `${!dl.signedBy || dl.signedBy === seg.driverId ? seg.driverName : dl.signedBy} signed the Daily Log ${fmtClock(dl.signedAt)}` : 'Daily Log not signed yet')}</div>
   ${dl && (dl.signatureUrl || dl.signature) ? `<div class="block" style="page-break-inside:avoid;max-width:340px">${imgTag(dl.signatureUrl, dl.signature, 'driver signature')}</div>` : ''}`;
   const rows = trips.map(({ load, trip }, i) => {
     const po = findPoAnywhere(load.poId) || {};
     const ts = trip.timestamps || {};
     return `<tr><td>${i + 1}</td><td>${esc(po.poNumber || '')}</td><td>${esc(load.material)}</td><td>${esc(trip.actualYardName || seg.originName)}</td><td>${esc(trip.ticket ? trip.ticket.number : '—')}${trip.ticket && trip.ticket.source === 'vbt' ? ' <small>(VBT)</small>' : ''}</td><td class="r">${trip.ticket && trip.ticket.netTons != null ? Number(trip.ticket.netTons).toFixed(2) : '—'}</td><td>${esc(ts.arrivedPickup || '')}</td><td>${esc(ts.loadedAt || '')}</td><td>${esc(ts.arrivedJobsite || '')}</td><td>${esc(ts.completed || '')}</td></tr>`;
   }).join('');
-  const body = `<h1>Freight Bill / Log <span style="font-size:13px;font-weight:600;color:#555">${esc(docNo)}</span></h1><div class="sub">${esc(seg.date)} · <span class="stamp ${p.locked ? 'final' : 'draft'}">${p.locked ? 'FINAL — all loads approved' : (seg.status === 'open' ? 'DRAFT — freight still open' : seg.needsReview ? 'DRAFT — closed by the office, awaiting review' : 'DRAFT — awaiting approval')}</span></div>
+  const body = `<h1>Freight Bill / Log <span style="font-size:13px;font-weight:600;color:#555">${esc(docNo)}</span></h1><div class="sub">${esc(fmtLogDate(seg.date))} · <span class="stamp ${p.locked ? 'final' : 'draft'}">${p.locked ? 'FINAL — all loads approved' : (seg.status === 'open' ? 'DRAFT — freight still open' : seg.needsReview ? 'DRAFT — closed by the office, awaiting review' : 'DRAFT — awaiting approval')}</span></div>
   <div class="grid">${kv('Customer', seg.customer)}${kv('PO', p.poNumbers.join(', '))}${kv('Origin', seg.originName + (seg.originYards.length > 1 ? ` (+ ${seg.originYards.slice(1).map(y => y.name).join(', ')})` : ''))}${kv('Destination', seg.destination.label)}
     ${kv('Driver', seg.driverName)}${kv('Truck', seg.truckNum)}${kv('Trailer', seg.trailerNum)}
     ${kv('Time start', fmtClock(seg.timeStart))}${kv('Time end', seg.timeEnd ? fmtClock(seg.timeEnd) : 'open')}${kv('Total hours', p.billableHours == null ? null : p.billableHours.toFixed(2))}
@@ -5386,11 +5464,21 @@ app.get('/api/billing-batches/:id/packet', reqMgr, (req, res) => {
   const sent = b.syncStatus === 'sent_to_quickbooks';
   const r2 = n => Math.round(Number(n) * 100) / 100;
   const qty = li => MEASURED_UNITS[li.unit] ? `${r2(li.measure)} ${li.unit}${r2(li.measure) === 1 ? '' : 's'}` : li.unit === 'ton' ? `${r2(li.tons).toFixed(2)} tons` : `${li.loads} load${li.loads === 1 ? '' : 's'}`;
+  // Ton lines bill on planned tons (the quantity-per-load rule) unless the
+  // customer's billing basis is "actual". Either way the packet says which, and
+  // shows the scale-ticket tons beside the billed tons so the difference is seen.
+  const basisWords = li => MEASURED_UNITS[li.unit] ? 'freight ' + MEASURED_UNITS[li.unit] : li.unit === 'ton' ? (li.basis === 'actual' ? 'scale-ticket tons' : 'planned tons (per-load rule)') : 'loads delivered';
+  const billedTons = (b.lineItems || []).filter(li => li.unit === 'ton').reduce((n, li) => n + (Number(li.tons) || 0), 0);
+  const ticketTons = r2(loads.reduce((n, l) => n + (loadTons(l).actualTons || 0), 0));
+  const plannedLines = (b.lineItems || []).some(li => li.unit === 'ton' && li.basis !== 'actual');
+  const tonNote = plannedLines && ticketTons > 0 && Math.abs(r2(billedTons) - ticketTons) >= 0.01
+    ? `<div class="block" style="border-color:#c60"><b>Billed ${r2(billedTons).toFixed(2)} tons; the scale tickets total ${ticketTons.toFixed(2)} tons</b> (${(r2(billedTons) - ticketTons > 0 ? '+' : '') + r2(r2(billedTons) - ticketTons).toFixed(2)}). This customer is billed on planned tons per load, not on ticket tons. That is the customer's billing basis, set on the customer record.</div>` : '';
   const STATUS_WORDS = { ready_to_bill: 'ready to send', syncing: 'being sent now', failed: 'QuickBooks refused it', pending: 'not sent yet' };
   const cover = `<h1>Invoice packet <span style="font-size:13px;font-weight:600;color:#555">${esc(b.id)}</span></h1>
   <div class="sub"><span class="stamp ${sent ? 'final' : 'draft'}">${b.voided || b.syncStatus === 'voided' ? 'VOIDED' : sent ? `SENT — QuickBooks invoice ${esc(b.qbInvoiceNumber || b.qbDocNumber || b.qbInvoiceId || '')}` : b.syncStatus === 'unknown' ? 'QuickBooks result unknown — reconcile before relying on this packet' : 'NOT SENT — ' + esc(STATUS_WORDS[b.syncStatus] || b.syncStatus || 'not sent yet')}</span></div>
   <div class="grid">${kv('Customer', b.customer)}${kv('PO', b.poNumber)}${kv('Jobsite', [b.address, b.city].filter(Boolean).join(', '))}${kv('Deliveries', b.deliveryStart === b.deliveryEnd ? b.deliveryStart : `${b.deliveryStart} – ${b.deliveryEnd}`)}${kv('Loads', b.totalLoads)}${kv('Total', usd(b.totalAmount))}</div>
-  <h2>Invoice lines (as frozen on the batch)</h2><table><tr><th>Description</th><th class="r">Quantity</th><th class="r">Rate</th><th class="r">Amount</th></tr>${(b.lineItems || []).map(li => `<tr><td>${esc(li.description || li.material || '')}</td><td class="r">${esc(qty(li))}</td><td class="r">${li.rate != null ? usd(li.rate) + (li.unit ? ' / ' + esc(li.unit) : '') : '—'}</td><td class="r">${usd(li.amount)}</td></tr>`).join('')}<tr class="tot"><td colspan="3">Total</td><td class="r">${usd(b.totalAmount)}</td></tr></table>
+  <h2>Invoice lines (as frozen on the batch)</h2><table><tr><th>Description</th><th>Billed on</th><th class="r">Quantity</th><th class="r">Rate</th><th class="r">Amount</th></tr>${(b.lineItems || []).map(li => `<tr><td>${esc(li.description || li.material || '')}</td><td>${esc(basisWords(li))}</td><td class="r">${esc(qty(li))}</td><td class="r">${li.rate != null ? usd(li.rate) + (li.unit ? ' / ' + esc(li.unit) : '') : '—'}</td><td class="r">${usd(li.amount)}</td></tr>`).join('')}<tr class="tot"><td colspan="4">Total</td><td class="r">${usd(b.totalAmount)}</td></tr></table>
+  ${tonNote}
   <h2>Supporting documents</h2><table><tr><th>Load</th><th>Delivery ticket</th><th class="r">Delivered</th><th>Tickets</th><th>POD</th><th>Record</th></tr>${loads.map((l, i) => `<tr><td>${esc(l.id)}</td><td>DT-${esc(l.id)}</td><td class="r">${deliveredRecord(l).count}</td><td>${esc((l.trips || []).filter(tripIsCompleted).map(t => t.ticket && t.ticket.number).filter(Boolean).join(', ') || '—')}</td><td>${l.pod && l.pod.signedBy ? 'signed by ' + esc(l.pod.signedBy) : '<b>missing</b>'}</td><td>${tickets[i].final ? 'final' : '<b>' + esc(tickets[i].checks[0] || 'not final') + '</b>'}</td></tr>`).join('')}</table>
   ${missing.length ? `<div class="block" style="border-color:#c00"><b>${missing.length} load${missing.length === 1 ? '' : 's'} on this batch could not be found:</b> ${esc(missing.join(', '))}</div>` : ''}
   <div class="foot">Packet for batch ${esc(b.id)} · the amounts are the batch's frozen lines; the delivery tickets are read from the load records.</div>`;
@@ -8210,8 +8298,8 @@ app.post('/api/drivers', reqMgr, async (req, res) => {
       const existing = await pg.query('SELECT 1 FROM users WHERE company_id=$1 AND username=$2', [DEFAULT_COMPANY_ID, uname]);
       if (existing.rows.length) return res.status(409).json({ error: 'username already exists' });
       await pg.query(
-        `INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
-         VALUES ($1, $2, $3, $4, 'driver', $5, $6, true)`,
+        `INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active, must_change)
+         VALUES ($1, $2, $3, $4, 'driver', $5, $6, true, true)`,
         [`user-${DEFAULT_COMPANY_ID}-${uname}`, DEFAULT_COMPANY_ID, uname, hashPassword(password), uname, dName]
       );
       loginCreated = true;
@@ -8222,7 +8310,7 @@ app.post('/api/drivers', reqMgr, async (req, res) => {
   } else if (password && String(password).length >= 4) {
     // File mode (no Postgres, never production): the login lives in the store.
     if (!store.fileLogins) store.fileLogins = {};
-    store.fileLogins[uname] = { password: hashPassword(String(password)), createdAt: new Date().toISOString() };
+    store.fileLogins[uname] = { password: hashPassword(String(password)), mustChange: true, createdAt: new Date().toISOString() };
     loginCreated = true;
   }
   upsertRosterDriver({ id: uname, name: dName, defaultTruckId: defaultTruckId || null, active: true });
@@ -8256,7 +8344,7 @@ app.put('/api/drivers/:username', reqMgr, async (req, res) => {
     const sets = []; const vals = []; let i = 1;
     if (b.displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(b.displayName).trim()); }
     if (b.active !== undefined)      { sets.push(`active = $${i++}`); vals.push(!!b.active); }
-    if (b.password !== undefined && String(b.password).length >= 4) { sets.push(`password = $${i++}`); vals.push(hashPassword(String(b.password))); }
+    if (b.password !== undefined && String(b.password).length >= 4) { sets.push(`password = $${i++}`); vals.push(hashPassword(String(b.password))); sets.push('must_change = true'); }   // the office knows it: temporary
     // truck_id is the driver's roster id, never a vehicle.
     sets.push(`truck_id = $${i++}`); vals.push(uname);
     vals.push(DEFAULT_COMPANY_ID, uname);
@@ -8268,7 +8356,7 @@ app.put('/api/drivers/:username', reqMgr, async (req, res) => {
     }
   } else if (b.password !== undefined && String(b.password).length >= 4) {
     if (!store.fileLogins) store.fileLogins = {};
-    store.fileLogins[uname] = { ...(store.fileLogins[uname] || {}), password: hashPassword(String(b.password)), ...(USERS[uname] ? { selfChanged: true } : {}) };
+    store.fileLogins[uname] = { ...(store.fileLogins[uname] || {}), password: hashPassword(String(b.password)), mustChange: true, ...(USERS[uname] ? { selfChanged: true } : {}) };
   }
   upsertRosterDriver({ id: uname, name: b.displayName ?? b.name, defaultTruckId, active: b.active, status: b.status, phone: b.phone, notes: b.notes, linxupPersonId: b.linxupPersonId });
   logAction(req.session.user, 'updated-driver', uname, { fields: Object.keys(b) });
@@ -10241,6 +10329,9 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
     // A held truck takes no assignment. `force` overrides conflicts, not a hold.
     if (t && refuseHeldTruck(res, t.id)) return;
   }
+  // …and a driver is not put on a load whose truck is held: that is dispatching
+  // the held truck by its other handle. Taking the driver off stays allowed.
+  if (truckUnitId === undefined && driverId && l.truckUnitId && refuseHeldTruck(res, l.truckUnitId)) return;
   if (yardId !== undefined) {
     v = store.vendors.find(x => x.id === yardId);
     if (yardId && !v) return res.status(400).json({ error: 'Unknown pickup yard' });

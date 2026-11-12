@@ -12,3 +12,5 @@ service-account.json
 *.p12
 telemetry.json
 data-ids.json
+# generated sample documents may contain real ticket scans
+sample-documents/
