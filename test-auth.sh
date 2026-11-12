@@ -82,6 +82,40 @@ if [ -x "$PGB/initdb" ]; then
   S=$(mktemp); login $S oscar 'Gravel-Haul-99' >/dev/null
   chk "Postgres: a revoked session stays revoked across a restart (its row is deleted, not only forgotten in memory)" \
     "$(curl -s -b $S -H 'Content-Type: application/json' -X POST $B/api/account/password -d '{"current":"Gravel-Haul-99","next":"Gravel-Haul-11"}' | jq "d['ok']") $(T=$(mktemp); login $T oscar 'Gravel-Haul-11' >/dev/null; curl -s -b $T -H 'Content-Type: application/json' -X POST $B/api/account/password -d '{"current":"Gravel-Haul-11","next":"Gravel-Haul-22"}' -o /dev/null; stop; start VBT_FORCE_PASSWORD_CHANGE=1 DATABASE_URL=$DBURL SESSION_SECRET=test-session-secret; echo "$(code -b $S $B/api/me) $(code -b $T $B/api/me)"; rm -f $T)" "True 401 200"
+  # Admin vs manager, and the owner's remote fix for a login still on a default.
+  psql -q -h /tmp -p $PGPORT -U vbt vbt_auth -c "UPDATE users SET role='manager' WHERE username='perla'" >/dev/null
+  stop; start VBT_FORCE_PASSWORD_CHANGE=1 DATABASE_URL=$DBURL SESSION_SECRET=test-session-secret PERLA_PASS=Perla-Private-55 OSCAR_PASS=Should-Not-Apply-1
+  P=$(mktemp); O=$(mktemp)
+  chk "PERLA_PASS set in the environment: a login still on its published default moves to it at boot — the default is dead, the new one signs in with no hold" \
+    "$(login $P perla perla123) $(login $P perla Perla-Private-55)" "/login?error=1 /app/"
+  chk "  …and the boot log says so" "$(grep -c '"perla" was still on a published default password' /tmp/vbt-auth.log)" "1"
+  chk "  a password someone chose is never replaced from the environment (OSCAR_PASS is ignored for oscar)" \
+    "$(login $O oscar Should-Not-Apply-1) $(login $O oscar Gravel-Haul-22)" "/login?error=1 /app/"
+  chk "a manager runs the day: the board and the PO list answer" "$(code -b $P $B/api/today) $(code -b $P $B/api/data)" "200 200"
+  chk "  …but cannot list or restore backups, set default rates, or connect / disconnect QuickBooks (403 each)" \
+    "$(code -b $P $B/api/admin/backups) $(code -b $P -H 'Content-Type: application/json' -X POST $B/api/admin/restore -d '{"source":"store_prev"}') $(code -b $P -H 'Content-Type: application/json' -X PUT $B/api/default-rates -d '{"side":"customer","material":"Dirt","rate":1}') $(code -b $P $B/api/quickbooks/connect) $(code -b $P -X POST $B/api/quickbooks/disconnect)" "403 403 403 403 403"
+  chk "  an admin still can (backups list answers)" "$(code -b $O $B/api/admin/backups)" "200"
+  # A vehicle hold is cleared by an admin, not by a manager.
+  curl -s -b $O -H 'Content-Type: application/json' -X POST $B/api/drivers -d '{"username":"dvir1","password":"dvir-private-1","displayName":"Dvir One"}' -o /dev/null
+  DV=$(mktemp); login $DV dvir1 dvir-private-1 >/dev/null
+  TK=$(curl -s -b $DV $B/api/shifts/current | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['trucks'][0]['id'])")
+  ANS=$(curl -s -b $DV $B/api/shifts/current | python3 -c "import json,sys;d=json.load(sys.stdin);print(json.dumps({i:('defect' if i=='Brakes' else 'ok') for i in d['inspectionItems']}))")
+  RID=$(curl -s -b $DV -H 'Content-Type: application/json' -X POST $B/api/shifts/start -d "{\"truckId\":\"$TK\",\"odometer\":10,\"inspection\":{\"answers\":$ANS,\"remarks\":\"no pedal\"},\"signature\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"}" | jq "d['report']['id']")
+  chk "a truck held for a blocking defect: a manager sees the report but cannot record the clearance (403 clearance_admin_only); an admin can" \
+    "$(curl -s -b $P $B/api/defect-reports | jq "d['held']") $(curl -s -b $P -H 'Content-Type: application/json' -X POST $B/api/defect-reports/$RID/resolve -d '{"decision":"corrected","by":"Hector","note":"new brake line"}' | jq "d['code']") $(curl -s -b $O -H 'Content-Type: application/json' -X POST $B/api/defect-reports/$RID/resolve -d '{"decision":"corrected","by":"Hector","note":"new brake line"}' | jq "d['report']['status'], d['report']['resolution']['recordedByRole']")" "1 clearance_admin_only cleared admin"
+  rm -f $DV
+  chk "the browser's favicon request is answered (it was the one 404 on every first visit)" "$(code $B/favicon.ico)" "200"
+  rm -f $P $O
+  stop
+  # A first production start on an empty database never plants a published default.
+  run "$PGB/createdb -h /tmp -p $PGPORT -U vbt vbt_fresh" >/dev/null 2>&1
+  start NODE_ENV=production DATABASE_URL="postgres://vbt@localhost:$PGPORT/vbt_fresh?sslmode=disable" SESSION_SECRET=test-session-secret QB_ENCRYPTION_KEY=test-qb-key MATTHEW_PASS=Matthew-Private-9
+  OT=$(grep -E '^    joshua: ' /tmp/vbt-auth.log | sed 's/^    joshua: //')
+  chk "production, first start, empty database: the published default does not sign in; the one-time set-up password from the boot log does; a login with <NAME>_PASS uses that" \
+    "$(curl -s -o /dev/null -w '%{redirect_url}' -H 'X-Forwarded-Proto: https' -X POST -d 'username=joshua&password=joshua123' $B/login | loc) $(curl -s -o /dev/null -w '%{redirect_url}' -H 'X-Forwarded-Proto: https' -X POST --data-urlencode "username=joshua" --data-urlencode "password=$OT" $B/login | loc) $(curl -s -o /dev/null -w '%{redirect_url}' -H 'X-Forwarded-Proto: https' -X POST -d 'username=matthew&password=Matthew-Private-9' $B/login | loc) $(grep -cE '^    matthew: ' /tmp/vbt-auth.log)" "/login?error=1 /app/ /app/ 0"
+  stop
+  start NODE_ENV=production DATABASE_URL="postgres://vbt@localhost:$PGPORT/vbt_fresh?sslmode=disable" SESSION_SECRET=test-session-secret QB_ENCRYPTION_KEY=test-qb-key
+  chk "  the set-up passwords are printed once: a second start prints none and reports no login on a default" "$(grep -cE '^    joshua: |still open with a published default' /tmp/vbt-auth.log)" "0"
   stop
   start NODE_ENV=production DATABASE_URL=$DBURL SESSION_SECRET=test-session-secret QB_ENCRYPTION_KEY=test-qb-key HEALTH_TOKEN=monitor-token
   chk "production: the public /healthz is the verdict only — no error list, no store size, no integration detail" \

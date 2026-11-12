@@ -848,13 +848,27 @@ async function seedDefaultCompanyAndUsers() {
     // on the next deploy with the default password.
     const have = await pg.query('SELECT count(*)::int AS n FROM users WHERE company_id = $1', [DEFAULT_COMPANY_ID]);
     if ((have.rows[0] || {}).n > 0) { console.log(`✓ Default company "${DEFAULT_COMPANY_ID}" present; ${have.rows[0].n} login(s) on record — seed logins not re-inserted`); return; }
+    // Production never plants a published default: a login with no
+    // <NAME>_PASS gets a random set-up password, printed once in this log.
+    // (With a published default, whoever signs in first — anyone who has read
+    // the source — would choose the account's new password.)
+    const seedPw = {}; const oneTime = [];
+    for (const [uname, u] of Object.entries(USERS)) {
+      if (IS_PROD && isPublishedPassword(u.password)) { seedPw[uname] = crypto.randomBytes(9).toString('base64url'); oneTime.push(uname); }
+      else seedPw[uname] = u.password;
+    }
     for (const [uname, u] of Object.entries(USERS)) {
       const userId = `user-${DEFAULT_COMPANY_ID}-${uname}`;
       await pg.query(`
         INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
         VALUES ($1, $2, $3, $4, $5, $6, $7, true)
         ON CONFLICT (company_id, username) DO NOTHING
-      `, [userId, DEFAULT_COMPANY_ID, uname, hashPassword(u.password), u.role, u.truckId || null, u.displayName || uname]);
+      `, [userId, DEFAULT_COMPANY_ID, uname, hashPassword(seedPw[uname]), u.role, u.truckId || null, u.displayName || uname]);
+    }
+    if (oneTime.length) {
+      console.warn('⚠ First start with no <NAME>_PASS set for: ' + oneTime.join(', ') + '. Each was given a random set-up password, shown ONCE here:');
+      for (const uname of oneTime) console.warn(`    ${uname}: ${seedPw[uname]}`);
+      console.warn('  Sign in with it and choose your own on Change password. These lines are not printed again.');
     }
     console.log(`✓ Seeded default company "${DEFAULT_COMPANY_ID}" + ${Object.keys(USERS).length} legacy users`);
   } catch (e) {
@@ -872,7 +886,19 @@ async function auditDefaultPasswords() {
       const r = await pg.query('SELECT username, password FROM users WHERE company_id = $1 AND active = true', [DEFAULT_COMPANY_ID]);
       for (const row of r.rows) {
         const candidates = new Set([SEED_DEFAULT_PASSWORDS[row.username], 'vbt2025!'].filter(Boolean));
-        for (const c of candidates) if (verifyPassword(c, row.password).ok) { accountsOnDefaultPassword.add(row.username); break; }
+        if (![...candidates].some(c => verifyPassword(c, row.password).ok)) continue;
+        // The owner's remote fix: with <NAME>_PASS set in the service
+        // variables to a private value, a login still on a published default
+        // is moved to it at boot and its sessions end. Nothing else is ever
+        // changed from the environment — a password someone chose stays.
+        const envPw = String(process.env[row.username.toUpperCase() + '_PASS'] || '');
+        if (envPw.length >= PASSWORD_MIN && !isPublishedPassword(envPw)) {
+          await pg.query('UPDATE users SET password = $1 WHERE company_id = $2 AND username = $3', [hashPassword(envPw), DEFAULT_COMPANY_ID, row.username]);
+          await revokeUserSessions(row.username);
+          console.warn(`[security] "${row.username}" was still on a published default password; it now opens with ${row.username.toUpperCase()}_PASS and its sessions were ended.`);
+          continue;
+        }
+        accountsOnDefaultPassword.add(row.username);
       }
     } else {
       for (const [uname, u] of Object.entries(USERS)) if (isPublishedPassword(u.password) && !(store.fileLogins || {})[uname]?.selfChanged) accountsOnDefaultPassword.add(uname);
@@ -1402,6 +1428,8 @@ function normalizeStore() {
   // Shifts (the driver's day) and freight segments (one continuous billable
   // operation). Additive: loads without a segment behave exactly as before.
   if (!Array.isArray(store.shifts)) store.shifts = [];
+  if (!Array.isArray(store.defectReports)) store.defectReports = [];
+  if (!Array.isArray(store.reviewAcks)) store.reviewAcks = [];
   if (!Array.isArray(store.freightSegments)) store.freightSegments = [];
   store.trailers.forEach(t => { if (t.active === undefined) t.active = true; if (!t.status) t.status = 'available'; });
   store.trucks.forEach(t => {
@@ -2312,11 +2340,13 @@ function reqAuth(req, res, next) {
   res.redirect('/login');
 }
 function reqMgr(req, res, next)   { const r = req.session?.user?.role; if (r === 'admin' || r === 'manager') return next(); res.status(403).json({ error: 'Office access required' }); }
-// Manager and admin are treated as equivalent permission levels.
+// Admin only. A manager (a dispatcher login, when the office adds one) runs
+// the day — POs, assignment, approval, billing — but does not restore a
+// backup, connect or disconnect QuickBooks, or set the default rates.
 function reqAdmin(req, res, next) {
   const r = req.session?.user?.role;
-  if (r === 'admin' || r === 'manager') return next();
-  res.status(403).json({ error: 'Admin access required' });
+  if (r === 'admin') return next();
+  res.status(403).json({ error: 'Admin access required', adminOnly: true });
 }
 
 // Live database probe with its own short timeout, so /healthz answers in
@@ -3090,6 +3120,8 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   app.get('/api/_test/sync-throw', (req, res) => { throw new Error('test: sync throw'); });
 }
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
+// Browsers ask for this on every first visit; without it each page logged a 404.
+app.get('/favicon.ico', (req, res) => res.type('png').sendFile(path.join(__dirname, 'public', 'logo.png')));
 
 // ── PASSWORDS ────────────────────────────────────────────────────────────────
 // scrypt (Node built-in, no dependency). Stored form: scrypt$<salt>$<hash>.
@@ -3996,6 +4028,7 @@ app.post('/api/pos', reqMgr, async (req, res) => {
     const rd = sp.truckId ? rosterDriver(sp.truckId) : null;
     if (rd && rd.status === 'off') return res.status(400).json({ error: `${rd.name} is marked off today` });
     const tk = sp.truckUnitId ? (store.trucks || []).find(t => t.id === sp.truckUnitId) : null;
+    if (tk && refuseHeldTruck(res, tk.id)) return;   // never overridable: not a conflict, a hold
     if (tk && (tk.active === false || tk.status === 'maintenance' || tk.status === 'out-of-service')) return res.status(400).json({ error: `${tk.truckNum} is ${tk.active === false ? 'deactivated' : tk.status}` });
     const probe = { id: `load assignment ${i + 1} of this PO`, poId: '__new__', deliveryDate: po.deliveryDate, truckId: sp.truckId || null, truckUnitId: sp.truckUnitId || null, trailerId: sp.trailerId || null,
                     driverName: (driverRoster().find(d => d.id === sp.truckId) || {}).label || '', trips: [], approvalStatus: 'pending', voided: false };
@@ -4365,6 +4398,7 @@ app.post('/api/pos/:id/loads', reqMgr, async (req, res) => {
   const rd = s.truckId ? rosterDriver(s.truckId) : null;
   if (rd && rd.status === 'off') return res.status(400).json({ error: `${rd.name} is marked off today` });
   const tk = s.truckUnitId ? (store.trucks || []).find(t => t.id === s.truckUnitId) : null;
+  if (tk && refuseHeldTruck(res, tk.id)) return;
   if (tk && (tk.active === false || tk.status === 'maintenance' || tk.status === 'out-of-service')) return res.status(400).json({ error: `${tk.truckNum} is ${tk.active === false ? 'deactivated' : tk.status}` });
   const blank = { id: 'the new load', poId: po.id, deliveryDate: po.deliveryDate, truckId: null, truckUnitId: null, trailerId: null, driverName: '', trips: [], approvalStatus: 'pending', voided: false };
   const conflicts = assignmentConflicts(blank, { driverId: s.truckId || undefined, truckUnitId: s.truckUnitId || undefined, trailerId: s.trailerId || undefined }, { skipDriverBusy: true });
@@ -4649,6 +4683,11 @@ app.post('/api/loads/:id/trip-action', reqAuth, async (req, res) => {
   // `incomplete` are load-level finalizers — they don't need an active trip.
   const isFinalizer = (action === 'delivered' || action === 'incomplete');
   // Guard: don't allow starting more trips than the assigned count
+  // Dispatch: no trip starts on a held truck — the load's, or the one the driver's day is on.
+  if (action === 'start-trip') {
+    const dayTruck = (openShiftFor(l.truckId) || {}).truckId;
+    if (refuseHeldTruck(res, l.truckUnitId) || (dayTruck && dayTruck !== l.truckUnitId && refuseHeldTruck(res, dayTruck))) return;
+  }
   if (action === 'start-trip' && (l.loadsDelivered || 0) >= l.loadsAssigned) {
     return res.status(400).json({ error: 'All assigned loads already delivered — submit when ready' });
   }
@@ -4824,6 +4863,70 @@ const INSPECTION_ITEMS = [
   'Brakes', 'Tires and wheels', 'Lights and reflectors', 'Steering', 'Horn', 'Mirrors',
   'Windshield and wipers', 'Coupling / fifth wheel', 'Trailer and tarp', 'Fluid leaks', 'Emergency equipment',
 ];
+// ── DVIR — the driver's answers, the defects, the clearance ──────────────────
+// The inspection is the driver's own statement, item by item. The app never
+// answers for him: every item must arrive as 'ok' or 'defect'; nothing is
+// assumed from silence. A defect needs his words (remarks) and his explicit
+// statement whether the truck is safe to drive today.
+//   safe to drive  → the day starts; the defect is an open report the office
+//                    must close (corrected / no correction needed, by whom).
+//   not safe       → the day does not start on that truck; the truck is HELD:
+//                    nobody starts a day on it, or changes to it, until the
+//                    office records the clearance.
+// Two kinds of defect:
+//   BLOCKING (brakes, steering, tires and wheels, the coupling) — the truck is
+//     out of service. It is held whatever the driver declares; his "safe to
+//     drive" is recorded and changes nothing.
+//   MINOR (everything else) — the driver states whether the truck is safe to
+//     drive today; "not safe" holds it the same way.
+// A held truck starts no day, takes no truck change, no assignment and no
+// trip, until an admin records the clearance (what was repaired, by whom).
+// A report is closed only by a person, with a name and a note. Nothing clears
+// a truck automatically — not time, not a later satisfactory inspection. The
+// inspection as the driver made it is never edited; every later step (closed,
+// reopened, closed again) is appended to the report's history.
+const BLOCKING_INSPECTION_ITEMS = ['Brakes', 'Tires and wheels', 'Steering', 'Coupling / fifth wheel'];
+function readInspection(insp) {
+  insp = insp || {};
+  const answers = insp.answers && typeof insp.answers === 'object' && !Array.isArray(insp.answers) ? insp.answers : null;
+  if (!answers) return { error: 'Answer every inspection item (OK or Defect) — the inspection is not filled in for you', code: 'inspection_incomplete' };
+  const clean = {}; const unanswered = [];
+  for (const item of INSPECTION_ITEMS) {
+    const a = answers[item];
+    if (a === 'ok' || a === 'defect') clean[item] = a; else unanswered.push(item);
+  }
+  if (unanswered.length) return { error: `Answer every inspection item — not answered: ${unanswered.join(', ')}`, code: 'inspection_incomplete', unanswered };
+  const other = Array.isArray(insp.defects) ? insp.defects.map(x => String(x).trim()).filter(x => x && !INSPECTION_ITEMS.includes(x)) : [];
+  const defects = [...INSPECTION_ITEMS.filter(i => clean[i] === 'defect'), ...other];
+  const satisfactory = defects.length === 0;
+  if (typeof insp.satisfactory === 'boolean' && insp.satisfactory !== satisfactory) return { error: satisfactory ? 'Every item is marked OK but the inspection says "not satisfactory" — mark the defective item' : `Marked satisfactory, but a defect is listed (${defects.join(', ')})`, code: 'inspection_contradiction' };
+  const remarks = String(insp.remarks || '').trim().slice(0, 1000);
+  const blocking = defects.filter(d => BLOCKING_INSPECTION_ITEMS.includes(d));
+  if (!satisfactory) {
+    if (remarks.length < 3) return { error: `Describe the defect (${defects.join(', ')}) in the remarks`, code: 'defect_remarks_required' };
+    // Only a minor defect asks the driver; a blocking one is not his to waive.
+    if (!blocking.length && typeof insp.safeToOperate !== 'boolean') return { error: 'Say whether the truck is safe to drive today with this defect', code: 'safe_to_operate_required' };
+  }
+  const declared = satisfactory || typeof insp.safeToOperate !== 'boolean' ? null : insp.safeToOperate;
+  return { answers: clean, defects, satisfactory, remarks, blocking, safeToOperate: declared,
+    severity: satisfactory ? null : blocking.length ? 'out-of-service' : 'minor',
+    hold: !satisfactory && (blocking.length > 0 || declared === false),
+    holdReason: satisfactory ? null : blocking.length ? 'blocking-defect' : declared === false ? 'driver-declared-not-safe' : null };
+}
+function openDefectReports(truckId) { return (store.defectReports || []).filter(r => r.status === 'open' && (!truckId || r.truckId === truckId)); }
+function truckHold(truckId) { return truckId ? openDefectReports(truckId).find(r => r.hold) || null : null; }
+function defectReportPublic(r) {
+  const { signature, ...rest } = r;
+  return { ...rest, hasSignature: !!(r.signatureUrl || signature), held: r.status === 'open' && !!r.hold };
+}
+const HOLD_MSG = (r) => `${r.truckNum} is held out of service: ${r.defects.join(', ')} reported by ${r.driverName} on ${r.date}${r.holdReason === 'blocking-defect' ? ` (${r.blocking.join(', ')} — a blocking defect)` : ' as not safe to drive'}. An admin must record the clearance first.`;
+// The one question every path that puts a truck on work asks.
+function refuseHeldTruck(res, truckId) {
+  const hold = truckHold(truckId);
+  if (!hold) return false;
+  res.status(409).json({ error: HOLD_MSG(hold), code: 'vehicle_held', report: defectReportPublic(hold) });
+  return true;
+}
 // Today's open day only. An open day from an earlier date is "stale": it is
 // never treated as today's day (no trips attach to it, no segment opens on
 // it) and it blocks a new Start day until the office closes it.
@@ -5138,19 +5241,97 @@ app.put('/api/freight-segments/:id', reqMgr, async (req, res) => {
   res.json({ success: true, segment: segmentPublic(seg) });
 });
 // The Freight Bill: rendered from the segment and its trips. DRAFT until locked.
-app.get('/api/freight-segments/:id/freight-bill', reqAuth, (req, res) => {
-  const seg = segmentById(req.params.id);
-  if (!seg) return res.status(404).send('Freight segment not found');
-  if (req.session.user.role === 'driver' && seg.driverId !== req.session.user.truckId) return res.status(403).send('Not your freight');
+// ── PAPERWORK FROM THE RECORDS ───────────────────────────────────────────────
+// Every document here is read from the operational record at the moment it is
+// opened. Nothing is typed into a document and nothing is stored for one, so a
+// document can never disagree with dispatch, and there is exactly one per
+// record: the Freight Bill of a freight segment is FB-<segment id>, the
+// delivery ticket of a load is DT-<load id>; a reprint is the same document.
+// FINAL appears only once the record is locked (approved); until then the page
+// says DRAFT and why. A quantity that does not reconcile is printed as an
+// exception and keeps the page DRAFT — it is never smoothed over.
+function docVersion(obj) { return crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex').slice(0, 10); }
+function imgTag(url, inline, alt) {
+  const src = url || (/^data:image\//.test(String(inline || '')) ? inline : '');
+  return src ? `<img src="${esc(src)}" alt="${esc(alt)}" style="max-width:100%;max-height:520px;border:1px solid #ccc;border-radius:6px">` : '';
+}
+// What must agree before a load's paperwork is final. Words, not codes.
+function loadPaperworkChecks(l) {
+  const out = [];
+  const dr = deliveredRecord(l);
+  const trips = l.trips || [];
+  if (dr.mismatch) out.push(`Delivered count on the load (${dr.record}) does not match its completed trips (${dr.completed})`);
+  const done = trips.filter(tripIsCompleted);
+  const noTicket = done.filter(t => !(t.ticket && t.ticket.number));
+  if (noTicket.length) out.push(`${noTicket.length} delivered trip${noTicket.length === 1 ? ' has' : 's have'} no ticket number (trip ${noTicket.map(t => t.tripNum).join(', ')})`);
+  const noImage = done.filter(t => t.ticket && t.ticket.source === 'supplier' && !(t.ticket.photoUrl || t.ticket.photo));
+  if (noImage.length) out.push(`${noImage.length} supplier ticket${noImage.length === 1 ? ' has' : 's have'} no photo (trip ${noImage.map(t => t.tripNum).join(', ')})`);
+  const open = trips.filter(t => !tripIsCompleted(t));
+  if (open.length) out.push(`${open.length} trip${open.length === 1 ? ' was' : 's were'} started and not delivered (trip ${open.map(t => t.tripNum).join(', ')}) — listed, not counted`);
+  const pod = l.pod || {};
+  if (done.length && !(pod.signedBy && (pod.signature || pod.signatureUrl))) out.push('No customer signature (POD) on record');
+  if (l.voided) out.push(`This load is VOID${l.voidReason ? ': ' + l.voidReason : ''}`);
+  return out;
+}
+// The delivery ticket and proof of delivery of one load: what was hauled, the
+// trips with their scale tickets, the customer's signature, the images. No
+// prices — it is the document a driver or a customer may hold.
+function deliveryTicketBody(l) {
+  const po = findPoAnywhere(l.poId) || {};
+  const truck = getTruckForLoad(l), trailer = getTrailerForLoad(l);
+  const dr = deliveredRecord(l), tons = loadTons(l), checks = loadPaperworkChecks(l);
+  const approved = l.approvalStatus === 'approved' && !l.voided;
+  // Final once a person approved it. Gaps the approver accepted stay printed —
+  // the document never hides them — but the approval is what makes it final.
+  const final = approved;
+  const kv = (k, v) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(v == null || v === '' ? '—' : v)}</div></div>`;
+  const pod = l.pod || {};
+  const rows = (l.trips || []).map(t => { const st = t.isoStamps || {}; const done = tripIsCompleted(t);
+    return `<tr><td>${esc(t.tripNum)}</td><td>${esc(t.actualYardName || resolvePickupYard(l, po, null).name + ' (planned)')}</td><td>${esc(t.ticket ? t.ticket.number : '—')}${t.ticket && t.ticket.source === 'vbt' ? ' <small>(VBT)</small>' : ''}</td><td class="r">${t.ticket && t.ticket.netTons != null ? Number(t.ticket.netTons).toFixed(2) : '—'}</td><td>${esc(t.truckNum || (truck ? truck.truckNum : ''))}</td><td>${st.loadedAt ? esc(fmtClock(st.loadedAt)) : '—'}</td><td>${st.completed ? esc(fmtClock(st.completed)) : '—'}</td><td>${done ? 'delivered' : '<b>not delivered</b>'}</td></tr>`; }).join('');
+  const images = (l.trips || []).filter(t => t.ticket && (t.ticket.photoUrl || t.ticket.photo)).map(t => `<div class="block" style="page-break-inside:avoid"><div class="k">Ticket ${esc(t.ticket.number || '')} · trip ${esc(t.tripNum)}${tripIsCompleted(t) ? '' : ' · NOT delivered'}</div>${imgTag(t.ticket.photoUrl, t.ticket.photo, 'ticket ' + (t.ticket.number || ''))}</div>`).join('')
+    + ((l.ticketImageUrl || l.ticketImage) && !(l.trips || []).some(t => t.ticket && t.ticket.photoUrl && t.ticket.photoUrl === l.ticketImageUrl) ? `<div class="block" style="page-break-inside:avoid"><div class="k">Ticket photo on the load</div>${imgTag(l.ticketImageUrl, l.ticketImage, 'ticket photo')}</div>` : '');
+  const version = docVersion({ id: l.id, po: po.poNumber, customer: po.customer, material: l.material, delivered: dr, trips: (l.trips || []).map(t => [t.tripNum, t.ticket && t.ticket.number, t.ticket && t.ticket.netTons, t.isoStamps && t.isoStamps.completed]), pod: [pod.signedBy, pod.signedAt], approved: [l.approvalStatus, l.approvedAt], voided: !!l.voided });
+  const body = `<h1>Delivery Ticket / Proof of Delivery <span style="font-size:13px;font-weight:600;color:#555">DT-${esc(l.id)}</span></h1>
+  <div class="sub">${esc(l.deliveryDate || '')} · <span class="stamp ${final ? 'final' : 'draft'}">${l.voided ? 'VOID' : final ? `FINAL — approved by ${esc(l.approvedBy || 'the office')}${l.approvedAt ? ' ' + esc(fmtClock(l.approvedAt)) : ''}${checks.length ? ' with the exceptions below' : ''}` : l.approvalStatus === 'submitted' ? 'DRAFT — awaiting approval' : 'DRAFT — not yet submitted'}</span></div>
+  <div class="grid">${kv('Customer', po.customer)}${kv('PO', po.poNumber)}${kv('Job', po.job)}${kv('Deliver to', destinationLabelOf(po))}
+    ${kv('Material', l.material)}${kv('Driver', l.driverName)}${kv('Truck', truck ? truck.truckNum : '')}${kv('Trailer', trailer ? trailer.number : '')}
+    ${kv('Loads delivered', `${dr.count} of ${l.loadsAssigned} planned`)}${kv('Ticket tons', tons.actualTons ? tons.actualTons.toFixed(2) : '—')}${kv('Planned tons', tons.plannedTons != null ? Number(tons.plannedTons).toFixed(2) : '—')}</div>
+  ${checks.length ? `<div class="block" style="border-color:#c00"><b>${final ? 'Exceptions on this record — it was approved with them' : 'Exceptions on this record — to resolve before approval'}</b><ul style="margin:6px 0 0 18px">${checks.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div>` : ''}
+  <h2>Trips</h2><table><tr><th>#</th><th>Pickup yard</th><th>Ticket</th><th class="r">Net tons</th><th>Truck</th><th>Loaded</th><th>Delivered</th><th>Status</th></tr>${rows || '<tr><td colspan="8">No trips recorded</td></tr>'}</table>
+  <h2>Received by (customer signature)</h2><div class="block" style="page-break-inside:avoid">${pod.signedBy ? `<b>${esc(pod.signedBy)}</b>${pod.signedAt ? ' · ' + esc(new Date(pod.signedAt).toLocaleString('en-US', { timeZone: OPERATING_TZ })) : ''}<br>${imgTag(pod.signatureUrl, pod.signature, 'customer signature') || '<i>signature image not on record</i>'}` : '<i>Not signed</i>'}</div>
+  ${images ? `<h2>Scale tickets</h2>${images}` : ''}
+  <div class="foot">DT-${esc(l.id)} · record version ${version} · one delivery ticket per load; a reprint is this same document. Generated from the dispatch record — nothing on it was typed for the document.</div>`;
+  return { body, final, checks, version };
+}
+function freightBillBody(seg) {
   const p = segmentPublic(seg);
+  const docNo = 'FB-' + seg.id;
   const trips = segmentTrips(seg);
   const kv = (k, v) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(v == null || v === '' ? '—' : v)}</div></div>`;
+  const shift = (store.shifts || []).find(x => x.id === seg.shiftId) || null;
+  const loads = (seg.loadIds || []).map(findLoadAnywhere).filter(Boolean);
+  // Lunch: the breaks the driver tapped that fall inside this freight's window.
+  const within = (b) => b.startAt && Date.parse(b.startAt) >= Date.parse(seg.timeStart) && (!seg.timeEnd || Date.parse(b.startAt) <= Date.parse(seg.timeEnd));
+  const lunch = shift ? (shift.breaks || []).filter(within) : [];
+  const fuel = shift ? fuelLive(shift) : [];
+  const gallons = fuel.reduce((n, f) => n + (Number(f.gallons) || 0), 0);
+  // Quantities must reconcile, load by load, before the bill can be final.
+  const recon = loads.map(l => { const dr = deliveredRecord(l); const mine = (l.trips || []).filter(t => t.freightSegmentId === seg.id);
+    return { l, dr, tripsHere: mine.length, deliveredHere: mine.filter(tripIsCompleted).length, checks: loadPaperworkChecks(l) }; });
+  const exceptions = recon.flatMap(r => r.checks.map(c => `${(findPoAnywhere(r.l.poId) || {}).poNumber || r.l.id} (${r.l.id}): ${c}`));
+  if (seg.status === 'closed' && seg.odEnd == null) exceptions.push('The freight is closed with no ending odometer');
+  const dl = shift && shift.dayLog ? shift.dayLog : null;
+  const extra = `<h2>Quantities</h2><table><tr><th>PO</th><th>Load</th><th>Material</th><th class="r">Planned</th><th class="r">Delivered (load)</th><th class="r">Completed trips</th><th class="r">In this freight</th><th>Approval</th></tr>${recon.map(r => `<tr><td>${esc((findPoAnywhere(r.l.poId) || {}).poNumber || '')}</td><td>${esc(r.l.id)}</td><td>${esc(r.l.material)}</td><td class="r">${esc(r.l.loadsAssigned)}</td><td class="r">${r.dr.record}</td><td class="r">${r.dr.completed}${r.dr.mismatch ? ' ⚠' : ''}</td><td class="r">${r.deliveredHere}${r.tripsHere !== r.deliveredHere ? ` (+${r.tripsHere - r.deliveredHere} not delivered)` : ''}</td><td>${r.l.voided ? 'VOID' : esc(r.l.approvalStatus || 'not submitted')}</td></tr>`).join('')}</table>
+  ${exceptions.length ? `<div class="block" style="border-color:#c00"><b>${p.locked ? 'Exceptions on record — the loads were approved with them' : 'Exceptions — to resolve before the loads are approved'}</b><ul style="margin:6px 0 0 18px">${exceptions.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div>` : ''}
+  <div class="grid" style="margin-top:12px">${kv('Lunch', lunch.length ? lunch.map(b => `${fmtClock(b.startAt)} – ${b.endAt ? fmtClock(b.endAt) : 'open'}`).join(', ') : 'none recorded')}${kv('Fuel purchased', fuel.length ? `${gallons.toFixed(1)} gal` : 'none recorded')}${kv('Fuel location', fuel.length ? [...new Set(fuel.map(f => f.location || f.yardName || '').filter(Boolean))].join(', ') : '')}
+    ${kv("Driver's signature", dl ? `${dl.signedBy || seg.driverName} signed the Daily Log ${fmtClock(dl.signedAt)}` : 'Daily Log not signed yet')}</div>
+  ${dl && (dl.signatureUrl || dl.signature) ? `<div class="block" style="page-break-inside:avoid;max-width:340px">${imgTag(dl.signatureUrl, dl.signature, 'driver signature')}</div>` : ''}`;
   const rows = trips.map(({ load, trip }, i) => {
     const po = findPoAnywhere(load.poId) || {};
     const ts = trip.timestamps || {};
     return `<tr><td>${i + 1}</td><td>${esc(po.poNumber || '')}</td><td>${esc(load.material)}</td><td>${esc(trip.actualYardName || seg.originName)}</td><td>${esc(trip.ticket ? trip.ticket.number : '—')}${trip.ticket && trip.ticket.source === 'vbt' ? ' <small>(VBT)</small>' : ''}</td><td class="r">${trip.ticket && trip.ticket.netTons != null ? Number(trip.ticket.netTons).toFixed(2) : '—'}</td><td>${esc(ts.arrivedPickup || '')}</td><td>${esc(ts.loadedAt || '')}</td><td>${esc(ts.arrivedJobsite || '')}</td><td>${esc(ts.completed || '')}</td></tr>`;
   }).join('');
-  const body = `<h1>Freight Bill / Log</h1><div class="sub">${esc(seg.date)} · <span class="stamp ${p.locked ? 'final' : 'draft'}">${p.locked ? 'FINAL — all loads approved' : (seg.status === 'open' ? 'DRAFT — freight still open' : seg.needsReview ? 'DRAFT — closed by the office, awaiting review' : 'DRAFT — awaiting approval')}</span></div>
+  const body = `<h1>Freight Bill / Log <span style="font-size:13px;font-weight:600;color:#555">${esc(docNo)}</span></h1><div class="sub">${esc(seg.date)} · <span class="stamp ${p.locked ? 'final' : 'draft'}">${p.locked ? 'FINAL — all loads approved' : (seg.status === 'open' ? 'DRAFT — freight still open' : seg.needsReview ? 'DRAFT — closed by the office, awaiting review' : 'DRAFT — awaiting approval')}</span></div>
   <div class="grid">${kv('Customer', seg.customer)}${kv('PO', p.poNumbers.join(', '))}${kv('Origin', seg.originName + (seg.originYards.length > 1 ? ` (+ ${seg.originYards.slice(1).map(y => y.name).join(', ')})` : ''))}${kv('Destination', seg.destination.label)}
     ${kv('Driver', seg.driverName)}${kv('Truck', seg.truckNum)}${kv('Trailer', seg.trailerNum)}
     ${kv('Time start', fmtClock(seg.timeStart))}${kv('Time end', seg.timeEnd ? fmtClock(seg.timeEnd) : 'open')}${kv('Total hours', p.billableHours == null ? null : p.billableHours.toFixed(2))}
@@ -5159,8 +5340,61 @@ app.get('/api/freight-segments/:id/freight-bill', reqAuth, (req, res) => {
     <tr class="tot"><td colspan="5">${trips.length} load${trips.length === 1 ? '' : 's'} · ${p.ticketNumbers.length} ticket${p.ticketNumbers.length === 1 ? '' : 's'}</td><td class="r">${p.actualTons.toFixed(2)}</td><td colspan="4">actual tons (planned ${p.plannedTons.toFixed(2)})</td></tr></table>
   ${seg.truckMismatch ? `<div class="block" style="border-color:#c60">Note: the load was dispatched on a different truck than the driver's day (${esc(((store.trucks || []).find(t => t.id === seg.truckMismatch.loadTruckId) || {}).truckNum || seg.truckMismatch.loadTruckId)}); odometer readings are from ${esc(seg.truckNum)}.</div>` : ''}
   ${(seg.edits || []).length ? `<h2>Corrections</h2><table>${seg.edits.map(e => `<tr><td>${esc(fmtClock(e.at))}</td><td>${esc(e.by)}</td><td>${esc(e.type)}</td><td>${esc(e.reason)}</td></tr>`).join('')}</table>` : ''}
+  ${extra}
   <div class="foot">Closed ${seg.closedAt ? esc(fmtClock(seg.closedAt)) + ' by ' + esc(seg.closedBy) + (seg.closeReason && seg.closeReason !== 'driver' ? ' — ' + esc(seg.closeReason) : '') : 'not yet'} · Billable time and miles are this segment's own and are never split across its loads.</div>`;
-  res.type('html').send(printPage(`Freight Bill ${seg.date} ${seg.customer}`, body, { draft: !p.locked }));
+  const version = docVersion({ id: seg.id, od: [seg.odStart, seg.odEnd], t: [seg.timeStart, seg.timeEnd], status: seg.status, locked: p.locked, trips: trips.map(x => [x.load.id, x.trip.tripNum, x.trip.ticket && x.trip.ticket.number, x.trip.ticket && x.trip.ticket.netTons, x.trip.isoStamps && x.trip.isoStamps.completed]), recon: recon.map(r => [r.l.id, r.dr.record, r.dr.completed, r.l.approvalStatus, !!r.l.voided]) });
+  const final = p.locked;
+  return { body: body + `<div class="foot">${esc(docNo)} · record version ${version} · one Freight Bill per freight; a reprint is this same document.</div>`, final, locked: p.locked, exceptions, loads, version, docNo };
+}
+function canSeeLoadDocs(u, l) { return u.role !== 'driver' || l.truckId === u.truckId || (l.trips || []).some(t => t.driverId === u.truckId); }
+app.get('/api/freight-segments/:id/freight-bill', reqAuth, (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).send('Freight segment not found');
+  if (req.session.user.role === 'driver' && seg.driverId !== req.session.user.truckId) return res.status(403).send('Not your freight');
+  const fb = freightBillBody(seg);
+  res.type('html').send(printPage(`Freight Bill ${seg.date} ${seg.customer}`, fb.body, { draft: !fb.final }));
+});
+// The packet: the Freight Bill, then each load's delivery ticket with its
+// signed POD and scale-ticket images — what goes in the folder, in one print.
+const PAGE_BREAK = '<div style="page-break-before:always;height:0"></div>';
+app.get('/api/freight-segments/:id/packet', reqAuth, (req, res) => {
+  const seg = segmentById(req.params.id);
+  if (!seg) return res.status(404).send('Freight segment not found');
+  if (req.session.user.role === 'driver' && seg.driverId !== req.session.user.truckId) return res.status(403).send('Not your freight');
+  const fb = freightBillBody(seg);
+  const tickets = fb.loads.map(deliveryTicketBody);
+  res.type('html').send(printPage(`Packet ${seg.date} ${seg.customer}`, [fb.body, ...tickets.map(t => t.body)].join(PAGE_BREAK), { draft: !(fb.final && tickets.every(t => t.final)) }));
+});
+app.get('/api/loads/:id/delivery-ticket', reqAuth, (req, res) => {
+  const l = findLoadAnywhere(req.params.id);
+  if (!l) return res.status(404).send('Load not found');
+  if (!canSeeLoadDocs(req.session.user, l)) return res.status(403).send('Not your load');
+  const t = deliveryTicketBody(l);
+  res.type('html').send(printPage(`Delivery Ticket ${l.id}`, t.body, { draft: !t.final }));
+});
+// The invoice's supporting packet: the batch as it was frozen (lines and
+// amounts are the batch's own, never re-priced here), then every load's
+// delivery ticket. Office only — it carries money.
+app.get('/api/billing-batches/:id/packet', reqMgr, (req, res) => {
+  const b = (store.billingBatches || []).find(x => x.id === req.params.id);
+  if (!b) return res.status(404).send('Billing batch not found');
+  const loads = (b.loadIds || []).map(findLoadAnywhere).filter(Boolean);
+  const missing = (b.loadIds || []).filter(id => !findLoadAnywhere(id));
+  const tickets = loads.map(deliveryTicketBody);
+  const kv = (k, v) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(v == null || v === '' ? '—' : v)}</div></div>`;
+  const usd = n => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const sent = b.syncStatus === 'sent_to_quickbooks';
+  const r2 = n => Math.round(Number(n) * 100) / 100;
+  const qty = li => MEASURED_UNITS[li.unit] ? `${r2(li.measure)} ${li.unit}${r2(li.measure) === 1 ? '' : 's'}` : li.unit === 'ton' ? `${r2(li.tons).toFixed(2)} tons` : `${li.loads} load${li.loads === 1 ? '' : 's'}`;
+  const STATUS_WORDS = { ready_to_bill: 'ready to send', syncing: 'being sent now', failed: 'QuickBooks refused it', pending: 'not sent yet' };
+  const cover = `<h1>Invoice packet <span style="font-size:13px;font-weight:600;color:#555">${esc(b.id)}</span></h1>
+  <div class="sub"><span class="stamp ${sent ? 'final' : 'draft'}">${b.voided || b.syncStatus === 'voided' ? 'VOIDED' : sent ? `SENT — QuickBooks invoice ${esc(b.qbInvoiceNumber || b.qbDocNumber || b.qbInvoiceId || '')}` : b.syncStatus === 'unknown' ? 'QuickBooks result unknown — reconcile before relying on this packet' : 'NOT SENT — ' + esc(STATUS_WORDS[b.syncStatus] || b.syncStatus || 'not sent yet')}</span></div>
+  <div class="grid">${kv('Customer', b.customer)}${kv('PO', b.poNumber)}${kv('Jobsite', [b.address, b.city].filter(Boolean).join(', '))}${kv('Deliveries', b.deliveryStart === b.deliveryEnd ? b.deliveryStart : `${b.deliveryStart} – ${b.deliveryEnd}`)}${kv('Loads', b.totalLoads)}${kv('Total', usd(b.totalAmount))}</div>
+  <h2>Invoice lines (as frozen on the batch)</h2><table><tr><th>Description</th><th class="r">Quantity</th><th class="r">Rate</th><th class="r">Amount</th></tr>${(b.lineItems || []).map(li => `<tr><td>${esc(li.description || li.material || '')}</td><td class="r">${esc(qty(li))}</td><td class="r">${li.rate != null ? usd(li.rate) + (li.unit ? ' / ' + esc(li.unit) : '') : '—'}</td><td class="r">${usd(li.amount)}</td></tr>`).join('')}<tr class="tot"><td colspan="3">Total</td><td class="r">${usd(b.totalAmount)}</td></tr></table>
+  <h2>Supporting documents</h2><table><tr><th>Load</th><th>Delivery ticket</th><th class="r">Delivered</th><th>Tickets</th><th>POD</th><th>Record</th></tr>${loads.map((l, i) => `<tr><td>${esc(l.id)}</td><td>DT-${esc(l.id)}</td><td class="r">${deliveredRecord(l).count}</td><td>${esc((l.trips || []).filter(tripIsCompleted).map(t => t.ticket && t.ticket.number).filter(Boolean).join(', ') || '—')}</td><td>${l.pod && l.pod.signedBy ? 'signed by ' + esc(l.pod.signedBy) : '<b>missing</b>'}</td><td>${tickets[i].final ? 'final' : '<b>' + esc(tickets[i].checks[0] || 'not final') + '</b>'}</td></tr>`).join('')}</table>
+  ${missing.length ? `<div class="block" style="border-color:#c00"><b>${missing.length} load${missing.length === 1 ? '' : 's'} on this batch could not be found:</b> ${esc(missing.join(', '))}</div>` : ''}
+  <div class="foot">Packet for batch ${esc(b.id)} · the amounts are the batch's frozen lines; the delivery tickets are read from the load records.</div>`;
+  res.type('html').send(printPage(`Invoice packet ${b.id}`, [cover, ...tickets.map(t => t.body)].join(PAGE_BREAK), { draft: !!missing.length || !tickets.every(t => t.final) }));
 });
 function shiftOwnedBy(s, u) { return u.role !== 'driver' || s.driverId === u.truckId; }
 // A driver may act only on today's day. An open day from an earlier date is
@@ -5194,6 +5428,8 @@ app.get('/api/shifts/current', reqAuth, (req, res) => {
   const trucks = (store.trucks || []).filter(t => t.active !== false).map(t => ({
     id: t.id, truckNum: t.truckNum, type: t.type || '', status: t.status || 'available', lastOdometer: t.mileage == null ? null : t.mileage,
     inUseBy: (openShiftOnTruck(t.id) || {}).driverName || '',
+    held: !!truckHold(t.id),
+    openDefects: openDefectReports(t.id).map(r => ({ id: r.id, defects: r.defects, remarks: r.remarks, driverName: r.driverName, date: r.date, severity: r.severity, hold: !!r.hold })),
   }));
   const trailers = (store.trailers || []).filter(t => t.active !== false).map(t => ({ id: t.id, number: t.number, type: t.type || '', status: t.status || 'available', defaultTruckId: t.defaultTruckId || null }));
   const usualTruckId = d ? d.defaultTruckId || null : null;
@@ -5208,7 +5444,7 @@ app.get('/api/shifts/current', reqAuth, (req, res) => {
   const assignedTrailerId = assignedTruckId ? ((todayLoads.find(l => l.truckUnitId === assignedTruckId && l.trailerId) || {}).trailerId || null) : null;
   const usualTrailer = defaultTruckId ? trailers.find(t => t.defaultTruckId === defaultTruckId) : null;
   res.json({
-    shift: shiftPublic(shift), staleShift: shiftPublic(stale), inspectionItems: INSPECTION_ITEMS, trucks, trailers,
+    shift: shiftPublic(shift), staleShift: shiftPublic(stale), inspectionItems: INSPECTION_ITEMS, blockingInspectionItems: BLOCKING_INSPECTION_ITEMS, trucks, trailers,
     defaults: { truckId: defaultTruckId, trailerId: assignedTrailerId || (usualTrailer ? usualTrailer.id : null), assignedTruckId, usualTruckId },
     lastShift: (() => { const prev = (store.shifts || []).filter(s => s.driverId === driverId && s.status === 'closed').sort((a, b) => (b.endAt || '').localeCompare(a.endAt || ''))[0]; if (!prev) return null; const pd = shiftDerived(prev); return { id: prev.id, truckId: prev.truckId, trailerId: prev.trailerId, truckNum: prev.truckNum, trailerNum: prev.trailerNum, date: prev.date, endAt: prev.endAt, endOdometer: prev.endOdometer, dailyMiles: pd.dailyMiles, billableMiles: pd.billableMiles, closedBy: prev.closedBy, dayLog: dayLogSummary(prev.dayLog) }; })(),
     today: todayStr(),
@@ -5242,31 +5478,116 @@ app.post('/api/shifts/start', reqAuth, async (req, res) => {
   if (truck.mileage != null && odo < truck.mileage && !b.acceptLowerOdometer) {
     return res.status(400).json({ error: `${truck.truckNum} last read ${truck.mileage.toLocaleString()} — the starting odometer cannot be lower. Check the reading, or confirm it if the last one was wrong.`, code: 'odometer_below_last', lastOdometer: truck.mileage });
   }
-  const insp = b.inspection || {};
-  if (typeof insp.satisfactory !== 'boolean') return res.status(400).json({ error: 'Complete the pre-trip inspection: all satisfactory, or list the defects' });
-  const defects = Array.isArray(insp.defects) ? insp.defects.map(x => String(x).trim()).filter(Boolean) : [];
-  if (!insp.satisfactory && !defects.length) return res.status(400).json({ error: 'List the defect(s) found, or mark the inspection satisfactory' });
+  // A held truck starts nobody's day; an open defect another driver judged
+  // safe is shown to this driver and must be acknowledged by him.
+  if (refuseHeldTruck(res, truck.id)) return;
+  const insp = readInspection(b.inspection);
+  if (insp.error) return res.status(400).json({ error: insp.error, code: insp.code, unanswered: insp.unanswered });
+  const { defects } = insp;
+  const known = openDefectReports(truck.id);
+  const acked = new Set(Array.isArray(b.acknowledgedDefectReports) ? b.acknowledgedDefectReports.map(String) : []);
+  const unseen = known.filter(r => !acked.has(r.id));
+  if (unseen.length) return res.status(409).json({ error: `${truck.truckNum} has ${unseen.length === 1 ? 'an open defect report' : unseen.length + ' open defect reports'} the office has not closed: ${unseen.map(r => `${r.defects.join(', ')} (${r.driverName}, ${r.date})`).join('; ')}. Confirm you have seen ${unseen.length === 1 ? 'it' : 'them'}.`, code: 'open_defects', reports: unseen.map(defectReportPublic) });
   const sig = await storeSignature(b.signature || b.signatureUrl, 'shift');
   if (sig.error) return res.status(400).json({ error: sig.error });
   if (!sig.url && !sig.inline) return res.status(400).json({ error: 'Sign the inspection to start your day' });
   const now = new Date().toISOString();
   const d = rosterDriver(u.truckId);
+  const driverName = (d && d.name) || u.displayName || u.username;
+  let report = null;
+  if (defects.length) {
+    report = {
+      id: genId('DR', id => (store.defectReports || []).some(r => r.id === id)), status: 'open', date: todayStr(), at: now,
+      truckId: truck.id, truckNum: truck.truckNum, trailerId: trailer ? trailer.id : null, trailerNum: trailer ? trailer.number : '',
+      driverId: u.truckId, driverName, defects, blocking: insp.blocking, severity: insp.severity, remarks: insp.remarks,
+      // What the driver declared (null when a blocking defect made the question moot or he gave none).
+      safeToOperate: insp.safeToOperate, hold: insp.hold, holdReason: insp.holdReason, odometer: odo,
+      // The inspection as he made it, kept with the report and never edited.
+      inspection: { items: INSPECTION_ITEMS, answers: insp.answers, remarks: insp.remarks, at: now },
+      signatureUrl: sig.url, signature: sig.inline, shiftId: null, resolution: null,
+      history: [{ type: 'reported', at: now, by: driverName, defects, severity: insp.severity, hold: insp.hold, holdReason: insp.holdReason, driverDeclaredSafe: insp.safeToOperate }],
+    };
+    store.defectReports.push(report);
+  }
+  if (report && report.hold) {
+    // A blocking defect, or the driver's own "not safe": the truck stops here.
+    // No day is opened on it, whatever else was declared.
+    logAction(u, 'vehicle-held', report.id, { truck: truck.truckNum, defects, blocking: insp.blocking, holdReason: insp.holdReason, driverDeclaredSafe: insp.safeToOperate, remarks: insp.remarks });
+    await saveData();
+    const why = insp.holdReason === 'blocking-defect'
+      ? `${insp.blocking.join(', ')} ${insp.blocking.length === 1 ? 'is a defect that takes' : 'are defects that take'} the truck out of service${insp.safeToOperate === true ? ' — that is not the driver\'s call to waive' : ''}`
+      : 'you reported it not safe to drive';
+    return res.status(409).json({ error: `${truck.truckNum} is now held out of service and the office has been told: ${why}. Your day was not started on it — pick another truck, or wait for the clearance.`, code: insp.holdReason === 'blocking-defect' ? 'vehicle_out_of_service' : 'vehicle_not_safe', report: defectReportPublic(report) });
+  }
   const shift = {
     id: genId('SH', id => (store.shifts || []).some(s => s.id === id)), date: todayStr(),
-    driverId: u.truckId, driverName: (d && d.name) || u.displayName || u.username,
+    driverId: u.truckId, driverName,
     truckId: truck.id, truckNum: truck.truckNum, startTruckId: truck.id, startTruckNum: truck.truckNum,
     trailerId: trailer ? trailer.id : null, trailerNum: trailer ? trailer.number : '',
     startAt: now, startOdometer: odo, endAt: '', endOdometer: null,
     status: 'open', breaks: [], events: [],
-    inspection: { items: INSPECTION_ITEMS, satisfactory: insp.satisfactory, defects, remarks: String(insp.remarks || '').trim(), signatureUrl: sig.url, signature: sig.inline, at: now },
+    inspection: { items: INSPECTION_ITEMS, answers: insp.answers, satisfactory: insp.satisfactory, defects, remarks: insp.remarks, signatureUrl: sig.url, signature: sig.inline, at: now,
+      ...(report ? { safeToOperate: true, severity: 'minor', defectReportId: report.id } : {}),
+      ...(known.length ? { acknowledgedOpenDefects: known.map(r => ({ id: r.id, defects: r.defects, reportedBy: r.driverName, date: r.date })) } : {}) },
     notes: '', closedBy: '', closedAt: '', closeReason: '',
   };
+  if (report) report.shiftId = shift.id;
   if (truck.mileage != null && odo < truck.mileage) shift.events.push({ type: 'odometer-below-last', at: now, truckId: truck.id, lastOdometer: truck.mileage, odometer: odo });
   truck.mileage = odo;
   store.shifts.push(shift);
-  logAction(u, 'started-shift', shift.id, { truck: truck.truckNum, trailer: shift.trailerNum, odometer: odo, satisfactory: insp.satisfactory, defects });
+  logAction(u, 'started-shift', shift.id, { truck: truck.truckNum, trailer: shift.trailerNum, odometer: odo, satisfactory: insp.satisfactory, defects, ...(report ? { defectReportId: report.id, safeToOperate: true } : {}), ...(known.length ? { acknowledgedOpenDefects: known.map(r => r.id) } : {}) });
   await saveData();
   res.json({ success: true, shift: shiftPublic(shift) });
+});
+
+// Defect reports: the office's list, and the one way a report is closed.
+app.get('/api/defect-reports', reqMgr, (req, res) => {
+  const status = String(req.query.status || '');
+  const rows = (store.defectReports || []).filter(r => !status || r.status === status).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  res.json({ reports: rows.map(defectReportPublic), open: openDefectReports().length, held: openDefectReports().filter(r => r.hold).length, blockingItems: BLOCKING_INSPECTION_ITEMS });
+});
+const DEFECT_DECISIONS = { 'corrected': 'Above defects corrected', 'no-correction-needed': 'Above defects need not be corrected for safe operation' };
+// Closing a report. A minor report is the office's (manager or admin). A HOLD
+// is released only by an admin — that is the vehicle's clearance — and a
+// blocking defect is cleared only by a repair, never by "no correction needed".
+app.post('/api/defect-reports/:id/resolve', reqMgr, async (req, res) => {
+  const r = (store.defectReports || []).find(x => x.id === req.params.id);
+  if (!r) return res.status(404).json({ error: 'Defect report not found' });
+  if (r.status !== 'open') return res.status(409).json({ error: `Already closed by ${r.resolution?.by || 'the office'} (${r.resolution?.decisionText || r.status})`, code: 'already_resolved' });
+  if (r.hold && req.session.user.role !== 'admin') return res.status(403).json({ error: `${r.truckNum} is held out of service — only an admin records its clearance`, code: 'clearance_admin_only', adminOnly: true });
+  const b = req.body || {};
+  if (!DEFECT_DECISIONS[b.decision]) return res.status(400).json({ error: 'Choose: corrected, or no correction needed for safe operation' });
+  if (r.holdReason === 'blocking-defect' && b.decision !== 'corrected') return res.status(400).json({ error: `${r.blocking.join(', ')} is a blocking defect — the truck is cleared by the repair, not by "no correction needed"`, code: 'repair_required' });
+  const by = String(b.by || '').trim().slice(0, 80);
+  if (by.length < 2) return res.status(400).json({ error: 'Name the mechanic or person who checked the truck' });
+  const note = String(b.note || '').trim().slice(0, 1000);
+  if (note.length < 3) return res.status(400).json({ error: b.decision === 'corrected' ? 'Say what was repaired' : 'Say why no correction is needed' });
+  const wasHeld = !!r.hold;
+  const at = new Date().toISOString();
+  const clearedBy = req.session.user.displayName || req.session.user.username;
+  r.status = 'cleared';
+  // repair (what was done) · person responsible (by) · clearance (who recorded it, when)
+  r.resolution = { decision: b.decision, decisionText: DEFECT_DECISIONS[b.decision], by, note, recordedBy: clearedBy, recordedByRole: req.session.user.role, at, releasedHold: wasHeld };
+  (r.history = r.history || []).push({ type: 'cleared', at, by: clearedBy, role: req.session.user.role, decision: b.decision, responsible: by, repair: note, releasedHold: wasHeld });
+  logAction(req.session.user, wasHeld ? 'cleared-vehicle-hold' : 'resolved-defect-report', r.id, { truck: r.truckNum, defects: r.defects, decision: b.decision, by, note, releasedHold: wasHeld });
+  await saveData();
+  res.json({ success: true, report: defectReportPublic(r), truckStillHeld: !!truckHold(r.truckId) });
+});
+// A correction to a closed report: it is reopened with a reason. The earlier
+// closure stays in the history; if the report held the truck, the hold is back.
+app.post('/api/defect-reports/:id/reopen', reqMgr, async (req, res) => {
+  const r = (store.defectReports || []).find(x => x.id === req.params.id);
+  if (!r) return res.status(404).json({ error: 'Defect report not found' });
+  if (r.status === 'open') return res.status(409).json({ error: 'This report is already open', code: 'already_open' });
+  const reason = String((req.body || {}).reason || '').trim().slice(0, 500);
+  if (reason.length < 3) return res.status(400).json({ error: 'Say why the report is reopened' });
+  const at = new Date().toISOString();
+  const by = req.session.user.displayName || req.session.user.username;
+  (r.history = r.history || []).push({ type: 'reopened', at, by, role: req.session.user.role, reason, previousResolution: r.resolution });
+  r.status = 'open'; r.resolution = null;
+  logAction(req.session.user, 'reopened-defect-report', r.id, { truck: r.truckNum, defects: r.defects, reason, holdRestored: !!r.hold });
+  await saveData();
+  res.json({ success: true, report: defectReportPublic(r), truckHeld: !!truckHold(r.truckId) });
 });
 
 app.post('/api/shifts/:id/break', reqAuth, async (req, res) => {
@@ -5304,6 +5625,7 @@ app.post('/api/shifts/:id/truck-change', reqAuth, async (req, res) => {
   if (!to) return res.status(400).json({ error: 'Pick the truck you are changing to' });
   if (to.id === s.truckId) return res.status(400).json({ error: `You are already on ${to.truckNum}` });
   if (to.active === false || to.status === 'maintenance' || to.status === 'out-of-service') return res.status(400).json({ error: `${to.truckNum} is not available` });
+  if (refuseHeldTruck(res, to.id)) return;
   const onTruck = openShiftOnTruck(to.id);
   if (onTruck) return res.status(409).json({ error: `${to.truckNum} is on ${onTruck.driverName}'s open day`, code: 'truck_in_use' });
   const fromOdo = parseOdometer(b.fromOdometer), toOdo = parseOdometer(b.toOdometer);
@@ -5585,11 +5907,17 @@ function dailyLogInspection(s) {
   // satisfactory: he listed defects, not a per-item verdict — a defect marks
   // the items its text names; the others stay blank (not attested).
   const checklist = items.map(name => {
+    // The driver's own answer, where the inspection recorded one per item.
+    if (insp.answers && insp.answers[name]) return insp.answers[name] === 'defect' ? { name, state: 'defect', defect: name } : { name, state: 'ok' };
     if (insp.satisfactory) return { name, state: 'ok' };
     const hit = defects.find(d => String(d).toLowerCase().includes(name.toLowerCase().split(' ')[0].replace(/s$/, '')) || name.toLowerCase().includes(String(d).toLowerCase()));
     return { name, state: hit ? 'defect' : 'blank', defect: hit || '' };
   });
-  return { recorded: true, shiftId: s.id, truckNum: s.startTruckNum || s.truckNum, items, checklist, satisfactory: insp.satisfactory, defects, remarks: insp.remarks || '', at: insp.at || '', hasSignature: !!(insp.signatureUrl || insp.signature) };
+  // Fields added only where the inspection recorded them, so a log signed
+  // before per-item answers existed still reads exactly as it was signed.
+  return { recorded: true, shiftId: s.id, truckNum: s.startTruckNum || s.truckNum, items, checklist, satisfactory: insp.satisfactory, defects, remarks: insp.remarks || '', at: insp.at || '', hasSignature: !!(insp.signatureUrl || insp.signature),
+    ...(insp.answers ? { answered: true } : {}), ...(insp.defectReportId ? { safeToOperate: insp.safeToOperate, defectReportId: insp.defectReportId } : {}),
+    ...(insp.acknowledgedOpenDefects ? { acknowledgedOpenDefects: insp.acknowledgedOpenDefects } : {}) };
 }
 // Everything below the sign-off block is what the driver signs; the hash is
 // taken over exactly these sections, in this order.
@@ -5672,7 +6000,15 @@ function dailyLogContent(driverId, date) {
     if (s.status === 'closed' && s.closeReason && s.closeReason !== 'driver') comments.push({ kind: 'office', text: `Day closed by the office (${s.closedBy}): ${s.closeReason}` });
     segmentsForShift(s).forEach(x => { if (x.needsReview) comments.push({ kind: 'office', text: `Freight ${x.customer} ending entered by the office — ${x.needsReview.reason || 'review'}` }); });
   });
-  return { header, hours, miles, trips: tripRows, totals, inspections, fuel, comments, exceptions, shifts };
+  // The office's follow-up on a defect is the office's record, made after the
+  // driver signs; it is shown beside the log, never part of what he signed.
+  const defectFollowUp = inspections.filter(i => i.defectReportId).map(i => {
+    const r = (store.defectReports || []).find(x => x.id === i.defectReportId);
+    if (!r) return null;
+    if (r.status === 'open') exceptions.push({ code: 'defect_open', text: `${r.truckNum}: ${r.defects.join(', ')} reported at the pre-trip inspection — the office has not recorded a correction or a clearance yet.` });
+    return { id: r.id, truckNum: r.truckNum, defects: r.defects, driverSaid: 'safe to drive today', status: r.status, resolution: r.resolution ? { decisionText: r.resolution.decisionText, by: r.resolution.by, note: r.resolution.note, at: r.resolution.at } : null };
+  }).filter(Boolean);
+  return { header, hours, miles, trips: tripRows, totals, inspections, fuel, comments, exceptions, shifts, defectFollowUp };
 }
 function dailyLogHash(content) {
   const { header, hours, miles, trips, totals, inspections, fuel, comments } = content;
@@ -5861,6 +6197,7 @@ function dailyLogPage(log, { signedView } = {}) {
   <tr class="tot"><td colspan="7">Loads delivered (completed trips only) · ticket tons on completed trips</td><td class="r">${log.totals.ticketTons.toFixed(2)}</td><td colspan="3"></td><td>${log.totals.loadsDelivered} of ${log.totals.tripsListed}</td></tr></table>` : '<div class="sub2">No trips on this date.</div>'}
   <h2>Condition checklist — mark X if condition is satisfactory</h2>${checklist}
   <h2>Comments / repairs</h2>${comments}
+  ${(log.defectFollowUp || []).map(f => `<div class="block"><b>Defect report ${esc(f.id)} — ${esc(f.truckNum)}: ${esc(f.defects.join(', '))}</b><br>Driver: ${esc(f.driverSaid)}.<br>${f.resolution ? `${esc(f.resolution.decisionText)} — ${esc(f.resolution.by)}, ${esc(new Date(f.resolution.at).toLocaleString('en-US', { timeZone: OPERATING_TZ }))}: ${esc(f.resolution.note)}` : '<b>Not yet corrected or cleared by the office.</b>'}</div>`).join('')}
   <h2>Fuel purchase</h2>${fuel}
   <h2>Driver's signature</h2><div class="block">${sigBlock}</div>`;
   return printPage(`Daily Log Book ${h.date} ${h.driverName}`, body, { draft: signedView ? false : log.status !== 'signed' });
@@ -9048,6 +9385,8 @@ function boardLoadRow(l, holding) {
   const bucket = boardBucket(l);
   const stage = bucket === 'in-progress' ? boardStage(l) : null;
   const conflicts = [];
+  // Work already planned on a truck that has since been held: said on the row.
+  if (loadHoldsResources(l) && truckHold(l.truckUnitId)) conflicts.push(`${truck ? truck.truckNum : 'The truck'} is held out of service (${truckHold(l.truckUnitId).defects.join(', ')}) — put this load on another truck or wait for the clearance`);
   if (loadHoldsResources(l) && l.truckId) {
     for (const o of holding) {
       if (o.id === l.id || !o.truckId || o.truckId === l.truckId) continue;
@@ -9335,6 +9674,7 @@ function officeFingerprint(day) {
     'rtb:' + live.filter(isReadyToBill).length,
     'sh:' + (store.shifts || []).filter(s => s.status === 'open').map(s => s.id + ':' + (s.truckId || '')).sort().join(','),
     'lx:' + linxup.version,   // a new truck position or tracker change repaints the board
+    'dr:' + (store.defectReports || []).filter(r => r.status === 'open').map(r => r.id).sort().join(','),   // a defect reported or cleared
     'cal:' + calendarFingerprint(),   // any scheduled day changing repaints the calendar
     'd:' + todayStr(),   // midnight repaints an open screen onto the new day
   ].join('|');
@@ -9401,12 +9741,14 @@ async function buildBoard(dayArg) {
   holding.forEach(l => { if (l.truckUnitId && (!truckLoad.has(l.truckUnitId) || loadMidTrip(l))) truckLoad.set(l.truckUnitId, l); });
   const trucks = (store.trucks || []).filter(t => t.active).map(t => {
     const l = truckLoad.get(t.id) || null;
-    const unavailable = t.status === 'maintenance' || t.status === 'out-of-service';
+    const hold = truckHold(t.id);
+    const unavailable = t.status === 'maintenance' || t.status === 'out-of-service' || !!hold;
     const state = unavailable ? 'unavailable' : l ? (loadMidTrip(l) ? 'in-progress' : 'assigned') : 'available';
     return {
       id: t.id, truckNum: t.truckNum, type: t.type, status: t.status, state,
       inUseOnLoadId: l ? l.id : null, driverName: l ? (l.driverName || '') : '',
-      available: !l && t.status === 'available',
+      available: !l && t.status === 'available' && !hold,
+      ...(hold ? { held: true, heldFor: hold.defects.join(', '), defectReportId: hold.id } : {}),
       telematics: telByTruck.get(t.id) || null,
     };
   });
@@ -9497,6 +9839,8 @@ async function buildBoard(dayArg) {
       availableDrivers: drivers.filter(d => d.available).length,
       availableTrucks: trucks.filter(t => t.available).length,
       telemetry: telIssues.length,
+      vehicleDefects: openDefectReports().length,
+      vehiclesHeld: openDefectReports().filter(r => r.hold).length,
     },
     telemetryIssues: telIssues,
     linxup: { enabled: linxup.enabled, linkedTrucks: trucks.filter(t => t.telematics && t.telematics.state !== 'not-linked').length },
@@ -9618,11 +9962,120 @@ function classifyDay(board) {
   const unknown = new Set(items.flatMap(i => i.reasons.filter(x => x.startsWith('QuickBooks result unknown')))).size;
   if (unknown) reconciliation.push(`${n(unknown, 'batch needs', 'batches need')} QuickBooks reconciliation.`);
   if (counts.open) reconciliation.push(`${n(counts.open, 'load is', 'loads are')} still open.`);
-  return { date: day, counts, items, reconciliation };
+  // The drivers' days and the trucks: the paperwork side of the same evening.
+  const days = classifyDriverDays(board);
+  const vehicles = openDefectReports().map(r => {
+    const text = r.hold ? `${r.truckNum} is HELD out of service — ${r.defects.join(', ')} reported by ${r.driverName} on ${r.date}${r.holdReason === 'blocking-defect' ? ' (blocking defect)' : ' (driver: not safe to drive)'}` : `${r.truckNum}: ${r.defects.join(', ')} reported by ${r.driverName} on ${r.date} (minor; driver: safe to drive) — not yet corrected or cleared`;
+    return { key: `vehicle|${r.id}`, code: r.hold ? 'vehicle_held' : 'defect_open', reportId: r.id, truckNum: r.truckNum, text, severity: 'attention', next: 'record the repair or the clearance on Vehicle Defects', resolveOnly: true };
+  });
+  // Acknowledgments: a person read the exception and wrote why it stands. An
+  // acknowledgment belongs to the exact wording it was made against — when the
+  // facts change, the exception reads differently and is open again.
+  const acks = new Map((store.reviewAcks || []).filter(a => a.date === day).map(a => [a.key, a]));
+  const ackOf = key => { const a = acks.get(key); return a ? { by: a.by, at: a.at, note: a.note } : null; };
+  for (const i of items) {
+    i.key = reviewKey(day, 'load:' + i.id, i.reasons.join('|'));
+    i.acknowledgeable = i.state === 'attention';
+    i.ack = i.acknowledgeable ? ackOf(i.key) : null;
+  }
+  for (const d of days) for (const it of d.items) it.ack = it.severity === 'attention' ? ackOf(it.key) : null;
+  const dayItems = days.flatMap(d => d.items);
+  counts.acknowledged = items.filter(i => i.ack).length;
+  counts.paperwork = {
+    attention: dayItems.filter(i => i.severity === 'attention' && !i.ack).length + vehicles.length,
+    open: dayItems.filter(i => i.severity === 'open').length,
+    acknowledged: dayItems.filter(i => i.ack).length,
+    notes: dayItems.filter(i => i.severity === 'note').length,
+  };
+  const unsigned = days.filter(d => d.logStatus === 'unsigned' || d.logStatus === 'changed').length;
+  if (days.length) reconciliation.push(`${n(days.length, 'driver day', 'driver days')}: ${days.filter(d => d.logStatus === 'signed').length} Daily Log${days.filter(d => d.logStatus === 'signed').length === 1 ? '' : 's'} signed, ${unsigned} waiting for the driver's signature, ${days.filter(d => d.logStatus === 'open').length} still open${days.some(d => d.logStatus === 'no-day') ? `, ${days.filter(d => d.logStatus === 'no-day').length} hauled with no day started` : ''}.`);
+  if (vehicles.length) reconciliation.push(`${n(vehicles.length, 'vehicle defect report is', 'vehicle defect reports are')} open${vehicles.some(v => v.code === 'vehicle_held') ? ' — a truck is held' : ''}.`);
+  return { date: day, counts, items, reconciliation, days, vehicles };
+}
+function reviewKey(day, subject, wording) { return `${day}|${subject}|${crypto.createHash('sha1').update(String(wording)).digest('hex').slice(0, 10)}`; }
+// One entry per driver who worked the day (a day started, or trips run). Built
+// from the Daily Log the driver signs — the same exceptions, in the same
+// words — plus what only the office can see: a day never ended, a log not
+// signed, freight left open, hours that look wrong. Nothing is written.
+//   attention — needs a person: fix it, or acknowledge it with a note.
+//   open      — today's work still under way; not an exception yet.
+//   note      — said once, never counted (no fuel recorded, no break recorded).
+const LONG_DAY_HOURS = 14, SHORT_DAY_HOURS = 0.5;
+function classifyDriverDays(board) {
+  const day = board.date;
+  const ids = new Set((store.shifts || []).filter(s => s.date === day).map(s => s.driverId));
+  // …and whoever has work on this day's board (a trip run with no day started must still be seen).
+  for (const r of board.loads) { const l = store.loads.find(x => x.id === r.id); if (l && l.truckId && (l.trips || []).length) ids.add(l.truckId); }
+  const out = [];
+  for (const driverId of ids) {
+    let log; try { log = buildDailyLog(driverId, day); } catch (e) { console.error('[day-review] daily log failed for', driverId, e.message); continue; }
+    if (log.status === 'no-day' && !log.trips.length) continue;
+    const items = [];
+    const add = (code, text, severity, next) => items.push({ key: reviewKey(day, 'driver:' + driverId + ':' + code, text), code, text, severity, next: next || '' });
+    const h = log.header;
+    if (log.status === 'no-day') add('no_shift', `${log.trips.length} trip${log.trips.length === 1 ? '' : 's'} ran with no day started — no inspection, odometer or hours exist for this day`, 'attention', board.isToday ? 'have the driver tap Start day now (inspection, truck, odometer); what already ran stays without them' : 'nothing can be added after the fact; acknowledge it with what happened');
+    else if (log.status === 'open') { if (board.isToday) add('shift_open', `day still open (started ${log.hours.timeStartLabel}${h.truckNum ? ' on ' + h.truckNum : ''})`, 'open'); else add('shift_never_ended', `the day started ${log.hours.timeStartLabel} was never ended`, 'attention', "close it on Today → Drivers' day with the ending odometer"); }
+    else if (log.status === 'unsigned') add('log_unsigned', 'Daily Log not signed by the driver', 'attention', 'the driver reviews and signs it on the phone (Review & sign Daily Log)');
+    else if (log.status === 'changed') add('log_changed', `Daily Log changed after it was signed (${(log.signoff.changes || []).join(', ')})`, 'attention', 'the driver reviews and signs it again');
+    const covered = new Set(['no_shift', 'shift_open', 'changed_since_signed', 'defect_open']);
+    // No day started: said once for the driver, not again for each of his trips.
+    if (log.status === 'no-day') { covered.add('trip_without_day'); covered.add('inspection_missing'); }
+    for (const e of log.exceptions) {
+      if (covered.has(e.code)) continue;
+      if (e.code === 'fuel_none') { add(e.code, 'no fuel purchase recorded', 'note'); continue; }
+      if (e.code === 'multiple_shifts') { add(e.code, e.text, 'note'); continue; }
+      // A trip under way on a day that is still open today is the day's work, not an exception yet.
+      if (e.code === 'trip_incomplete' && board.isToday && (log.status === 'open' || log.status === 'no-day')) { add(e.code, e.text.replace('was not completed', 'is not completed yet'), 'open'); continue; }
+      add(e.code, e.text, 'attention', e.code === 'inspection_missing' ? 'no inspection exists for this day; acknowledge it' : e.code === 'miles_unknown' ? 'correct the reading with the driver, or acknowledge it' : '');
+    }
+    const hrs = log.hours || {};
+    if (h.shiftStatus === 'closed') {
+      if (hrs.totalHours == null) add('hours_unknown', 'hours cannot be computed for this day', 'attention');
+      else if (hrs.totalHours > LONG_DAY_HOURS) add('hours_long', `${hrs.totalHours.toFixed(2)} hours on the day — unusually long; check the End day time`, 'attention', 'confirm the hours with the driver');
+      else if (hrs.totalHours < SHORT_DAY_HOURS && log.trips.length) add('hours_short', `${hrs.totalHours.toFixed(2)} hours on a day with ${log.trips.length} trip${log.trips.length === 1 ? '' : 's'} — unusually short; check the Start and End day times`, 'attention', 'confirm the hours with the driver');
+      if (hrs.totalHours != null && hrs.totalHours > 8 && !(hrs.breakMinutes > 0)) add('no_break', `no break recorded on a ${hrs.totalHours.toFixed(2)}-hour day`, 'note');
+    }
+    for (const s of dailyLogShifts(driverId, day)) for (const seg of segmentsForShift(s)) {
+      if (seg.status === 'open') add('freight_open', `freight for ${seg.customer} is still open — Finish freight was not tapped, so its miles and hours are not final`, board.isToday && s.status === 'open' ? 'open' : 'attention', 'the driver taps Finish freight, or the office closes it with the odometer');
+      else if (seg.needsReview) add('freight_review', `freight for ${seg.customer} was closed by the office — its end time and odometer need review`, 'attention', 'review the times on the Freight Bill');
+    }
+    const state = items.some(i => i.severity === 'attention') ? 'attention' : items.some(i => i.severity === 'open') ? 'open' : 'clean';
+    out.push({ driverId, driverName: h.driverName, truckNum: h.truckNum || '', trailerNum: h.trailerNum || '', logStatus: log.status, totalHours: hrs.totalHours == null ? null : hrs.totalHours, milesToday: log.miles ? log.miles.milesToday : null,
+      loads: log.totals ? log.totals.loadsDelivered : null, fuelEntries: (log.fuel || []).length, state, items });
+  }
+  out.sort((a, b) => String(a.driverName).localeCompare(String(b.driverName)));
+  return out;
 }
 app.get('/api/day-review', reqMgr, async (req, res) => {
   const board = await buildBoard(req.query.date);
   res.json({ ...classifyDay(board), isToday: board.isToday, version: board.version });
+});
+// Acknowledge one exception on the review: who read it, when, and why it
+// stands. It changes no load, no day, no document — the exception stays on the
+// list, marked acknowledged. A blocked item and a vehicle defect cannot be
+// acknowledged away; they are resolved where they live.
+app.post('/api/day-review/acknowledge', reqMgr, async (req, res) => {
+  const b = req.body || {};
+  const board = await buildBoard(b.date);
+  const review = classifyDay(board);
+  const key = String(b.key || '');
+  const target = review.items.find(i => i.key === key) || review.days.flatMap(d => d.items).find(i => i.key === key);
+  if (!target) return res.status(409).json({ error: 'That exception is no longer on the review (it was fixed or it changed). Reopen the review.', code: 'stale_review' });
+  if (review.items.includes(target) ? !target.acknowledgeable : target.severity !== 'attention') return res.status(400).json({ error: 'This item cannot be acknowledged — it is resolved by its next step', code: 'not_acknowledgeable' });
+  if (b.undo) {
+    const n0 = store.reviewAcks.length;
+    store.reviewAcks = store.reviewAcks.filter(a => !(a.date === review.date && a.key === key));
+    if (store.reviewAcks.length === n0) return res.status(409).json({ error: 'Not acknowledged', code: 'not_acknowledged' });
+    logAction(req.session.user, 'unacknowledged-review-exception', key, { date: review.date });
+  } else {
+    if (target.ack) return res.status(409).json({ error: `Already acknowledged by ${target.ack.by}`, code: 'already_acknowledged' });
+    const note = String(b.note || '').trim().slice(0, 500);
+    if (note.length < 3) return res.status(400).json({ error: 'Write why this stands (a few words) — the note is the acknowledgment' });
+    store.reviewAcks.push({ date: review.date, key, note, by: req.session.user.displayName || req.session.user.username, at: new Date().toISOString(), text: target.text || (target.reasons || []).join(' · ') });
+    logAction(req.session.user, 'acknowledged-review-exception', key, { date: review.date, note, exception: target.text || (target.reasons || []).join(' · ') });
+  }
+  await saveData();
+  res.json({ success: true, review: classifyDay(await buildBoard(b.date)) });
 });
 
 app.post('/api/fleet/trucks', reqMgr, async (req, res) => {
@@ -9785,6 +10238,8 @@ app.post('/api/loads/:id/assign', reqMgr, async (req, res) => {
     if (truckUnitId && !t) return res.status(400).json({ error: 'Unknown truck' });
     if (t && t.active === false) return res.status(400).json({ error: `${t.truckNum} is deactivated` });
     if (t && (t.status === 'maintenance' || t.status === 'out-of-service')) return res.status(400).json({ error: `${t.truckNum} is ${t.status}` });
+    // A held truck takes no assignment. `force` overrides conflicts, not a hold.
+    if (t && refuseHeldTruck(res, t.id)) return;
   }
   if (yardId !== undefined) {
     v = store.vendors.find(x => x.id === yardId);

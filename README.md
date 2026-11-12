@@ -32,6 +32,16 @@ built-in default that is in the source and therefore **public**.
   account are held the same way. The office sees which logins are left (a bar
   in the app, `security.accountsOnDefaultPassword` on `/healthz`), and the boot
   log lists them.
+- **A first production start never plants a published default.** On an empty
+  database, a login with no `<NAME>_PASS` gets a random set-up password that is
+  printed once in the boot log. For a login that is still on a published
+  default, setting `<NAME>_PASS` (8+ characters) in the service variables and
+  redeploying moves it to that value and ends its sessions; a password someone
+  chose is never replaced from the environment.
+- **Admin and manager are different.** Both run the day (POs, assignment,
+  approval, billing). Only an admin restores a backup, connects or disconnects
+  QuickBooks, or sets the default rates. All three seed office logins are
+  admins; `manager` is for a dispatcher login added later.
 - **Anyone can change their own password**: *Change password* beside *Sign out*
   (`/change-password`). The change is in the audit log.
 - **A revoked login stops on its next request**, not when its seven-day cookie
@@ -252,6 +262,50 @@ built-in default that is in the source and therefore **public**.
   jobsite, location — are attention items. Telemetry never completes, arrives,
   approves, assigns or bills anything.
 
+## Vehicle inspection, holds and clearance
+
+- **The inspection is the driver's, item by item.** Start day asks OK or Defect
+  for each item; nothing is pre-selected and an unanswered item refuses the
+  day. A defect needs his description.
+- **Blocking defects hold the truck** — Brakes, Tires and wheels, Steering,
+  Coupling / fifth wheel — whatever the driver declares. For any other defect
+  he states whether the truck is safe to drive today; "not safe" holds it too.
+- **A held truck cannot be dispatched**: no Start day, truck change, Quick
+  Assign, new PO or added load on it (`force` does not override a hold), and no
+  trip starts on a load already planned on it. The board shows it HELD.
+- **Clearance is recorded by an admin** on Dispatch → Vehicle Defects: the
+  decision, the person responsible, the repair. A blocking defect clears only
+  by a repair. A minor report with no hold may be closed by the office.
+- **Nothing is overwritten**: the original inspection stays with the report;
+  closing, reopening (with a reason) and closing again are appended.
+- API: `GET /api/defect-reports`, `POST /api/defect-reports/:id/resolve`,
+  `POST /api/defect-reports/:id/reopen`.
+
+## Documents from the records
+
+Every document is read from dispatch when it is opened; nothing is typed for a
+document, so it cannot disagree with the board. One document per record — a
+reprint is the same document, with a record-version stamp.
+
+- **Freight Bill** `FB-<segment>`: trips, tickets, tons, odometers, hours,
+  lunch, fuel, the driver's Daily Log signature, a quantity table per load and
+  any exceptions. FINAL only when the freight is locked.
+- **Delivery ticket / POD** `DT-<load>` (Load Details → Delivery ticket): trips
+  with scale tickets, the customer's signature, every ticket photo. No prices.
+  FINAL once approved; gaps the approver accepted stay printed.
+- **Packets**: per freight (Freight Bill + delivery tickets) and per billing
+  batch (the frozen invoice lines + delivery tickets) — Billing Batches →
+  Packet.
+
+## End of day, including paperwork
+
+The End of day review also lists each driver's day: Daily Log unsigned or
+changed since signed, day never ended, trips with no day started, miles or
+hours that cannot be computed or look wrong, freight left open, and open
+vehicle defects. Each item says why and what to do, and can be resolved at its
+source or acknowledged with a note (audited, undoable). An acknowledgment
+changes no record. See PAPERWORK.md §8.
+
 ## The Daily Log Book (paperwork P1)
 
 The paper Daily Log Book is generated, one per driver per operating day, from
@@ -293,7 +347,7 @@ Where it is:
 
 ## Tests
 
-Four suites, run one at a time (they share `data.json` and stop any running
+Five suites, run one at a time (they share `data.json` and stop any running
 server):
 
 ```
@@ -302,6 +356,7 @@ PORT=4630 VBT_TEST_HOOKS=1 node server.js &   # then:
 node test-browser.js          # headless Chromium, office and driver screens
 npm run test:scenario         # a five-truck day, start to billing to restart
 npm run test:auth             # bash test-auth.sh — sign-in safety (port 4640; adds a Postgres pass when PG 16 is installed)
+npm run test:paperwork        # bash test-paperwork.sh — inspection, holds and clearance, end-of-day review, documents (port 4660)
 ```
 
 ## Data
