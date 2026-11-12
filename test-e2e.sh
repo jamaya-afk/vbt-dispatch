@@ -595,7 +595,7 @@ chk "driver location accepted"    "$(curl -s -b $D -H 'Content-Type: application
 chk "rapid repeat is throttled (202)" "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":36.7379,"lng":-119.7872}')" "202"
 chk "out-of-range lat rejected"   "$(curl -s -b $D -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":99,"lng":0}')" "400"
 chk "manager cannot post a location" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":1,"lng":1}')" "403"
-chk "anonymous is redirected"     "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":1,"lng":1}')" "302"
+chk "anonymous API call is told it is signed out (JSON 401, never a redirect to the login page)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST $B/api/driver-location -d '{"lat":1,"lng":1}')" "401"
 chk "office sees the last position" "$(curl -s -b $M $B/api/driver-locations | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['locations'] if x['driverId']=='beryle'][0];print(r['lat'], r['driverName'])")" "36.7378 Beryle"
 chk "  ...and Quick Assign carries lastSeen" "$(curl -s -b $M $B/api/today | python3 -c "import json,sys;d=[x for x in json.load(sys.stdin)['drivers'] if x['id']=='beryle'][0];print(d['lastSeen']['lng'])")" "-119.7871"
 chk "  ...drivers cannot read it"  "$(curl -s -b $D -o /dev/null -w '%{http_code}' $B/api/driver-locations)" "403"
@@ -3168,7 +3168,7 @@ else
     chk "B/D. database down: /healthz 503 with a machine-readable reason" "$(curl -s --max-time 10 -o /tmp/hz.json -w '%{http_code}' $B2/healthz)|$(python3 -c "import json;d=json.load(open('/tmp/hz.json'));print(d['ok'], d['reason'], d['app'], d['db']['reachable'], 'unreachable' in d['sessionStore']['condition'])")" "503|False database_unreachable running False True"
     chk "C. login page still renders (not a 500)"        "$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' $B2/login)" "200"
     chk "   / redirects to login for an anonymous visitor" "$(curl -s --max-time 10 -o /dev/null -w '%{http_code} %{redirect_url}' $B2/ | sed 's|http://[^/]*||')" "302 /login"
-    chk "E. protected API with an existing cookie is refused, not served" "$(curl -s --max-time 10 -b $PM -o /dev/null -w '%{http_code}' $B2/api/data)" "302"
+    chk "E. protected API with an existing cookie is refused (401, signed out), not served" "$(curl -s --max-time 10 -b $PM -o /dev/null -w '%{http_code}' $B2/api/data)" "401"
     chk "   manager API without session → 403"          "$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' $B2/api/fleet/live)" "403"
     LG=$(curl -s -i --max-time 15 -X POST -d 'username=joshua&password=joshua123' $B2/login)
     chk "F. login attempt while down: redirect to a database message, no session" "$(echo "$LG" | grep -i '^location' | sed 's|.*/login?||; s/&ref=.*//' | tr -d '\r')|$(echo "$LG" | grep -ci '^set-cookie')" "error=db|0"

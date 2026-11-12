@@ -16,16 +16,37 @@ Clean rebuild — focused on the essentials.
 - Approved loads are locked and immutable
 - Archive billed loads into the database's history with one click
 
-## Users
+## Users and sign-in
 
-```
-manager / vbt2025!
-beryle / beryle123
-matthew / matthew123
-rigo / rigo123
-leonardo / leo123
-carlos / carlos123
-```
+Office: `joshua`, `oscar`, `perla`. Drivers: `beryle`, `matthew`, `rigo`,
+`leonardo`, `carlos`, plus anyone added on Drivers & Trucks.
+
+No password is written here. A fresh install seeds each login with the
+password in `<NAME>_PASS` (e.g. `OSCAR_PASS`) or, when that is unset, a
+built-in default that is in the source and therefore **public**.
+
+- **A published default cannot be used to work.** In production, a login that
+  still opens with one lands on *Choose a new password* and reaches nothing
+  else — no board, no API — until it has set one (8+ characters, not a
+  default, not containing the username). Sessions already open on such an
+  account are held the same way. The office sees which logins are left (a bar
+  in the app, `security.accountsOnDefaultPassword` on `/healthz`), and the boot
+  log lists them.
+- **Anyone can change their own password**: *Change password* beside *Sign out*
+  (`/change-password`). The change is in the audit log.
+- **A revoked login stops on its next request**, not when its seven-day cookie
+  runs out: a new password (the user's own or one the office set) signs out the
+  user's other devices; disabling or removing a driver signs out the phone.
+  The stored session rows are deleted, so a restart does not bring them back.
+- **A signed-out API call is told so** (`401 session_expired`, JSON) and the
+  screen says "You were signed out" and returns to the login form, instead of
+  a tap that does nothing. Pages still redirect to the login form.
+- Signing in issues a new session id; responses refuse framing by other sites
+  and content sniffing, and production asks for https only.
+- **`/healthz` in production** answers the verdict only (ok / degraded, database
+  reachable, store loaded). The full report — recent errors, store size,
+  integration state — needs an office session or the `X-Health-Token` header
+  matching `HEALTH_TOKEN`.
 
 ## Setup (Railway)
 
@@ -272,7 +293,7 @@ Where it is:
 
 ## Tests
 
-Three suites, run one at a time (they share `data.json` and stop any running
+Four suites, run one at a time (they share `data.json` and stop any running
 server):
 
 ```
@@ -280,6 +301,7 @@ npm test                      # bash test-e2e.sh — API end to end (port 4600)
 PORT=4630 VBT_TEST_HOOKS=1 node server.js &   # then:
 node test-browser.js          # headless Chromium, office and driver screens
 npm run test:scenario         # a five-truck day, start to billing to restart
+npm run test:auth             # bash test-auth.sh — sign-in safety (port 4640; adds a Postgres pass when PG 16 is installed)
 ```
 
 ## Data

@@ -185,6 +185,68 @@ if (process.env.DATABASE_URL) {
 }
 app.use(session(sessionOpts));
 
+// ── RESPONSE HEADERS ─────────────────────────────────────────────────────────
+// The app is never meant to be framed by another site (a framed dispatch
+// board is a click-jacking target: Approve, Send to QuickBooks), a photo is
+// never to be sniffed into a script, and in production the browser is told to
+// use https only.
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  if (IS_PROD) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+  next();
+});
+
+// ── SESSION GUARD ────────────────────────────────────────────────────────────
+// Runs before every route, so no handler can forget it.
+//  1. A login that was revoked — the office disabled or removed the driver, or
+//     the password changed — stops working on its next request, not when its
+//     seven-day cookie runs out. revokeUserSessions() records the moment in
+//     memory (immediate, covers the in-memory session store) and deletes the
+//     user's rows from user_sessions (durable across a restart).
+//  2. A session that signed in with a published default password can reach
+//     only the change-password page until it has chosen a new one.
+const sessionsRevokedAt = new Map();   // username -> ms; sessions signed in at or before it are dead
+const FORCE_PASSWORD_CHANGE = IS_PROD || process.env.VBT_FORCE_PASSWORD_CHANGE === '1';
+const PASSWORD_CHANGE_OPEN = new Set(['/change-password', '/api/account/password', '/logout', '/login', '/logo.png', '/healthz']);
+async function revokeUserSessions(username, keepReq) {
+  const uname = String(username || '').toLowerCase();
+  if (!uname) return;
+  const now = Date.now();
+  sessionsRevokedAt.set(uname, now);
+  // The session doing the change (a user changing their own password) stays.
+  if (keepReq?.session?.user?.username === uname) keepReq.session.user.loginAt = now + 1;
+  if (sessionPool) {
+    try {
+      await sessionPool.query(`DELETE FROM user_sessions WHERE sess->'user'->>'username' = $1 AND sid <> $2`, [uname, keepReq?.sessionID || '']);
+    } catch (e) {
+      // Still revoked for this process (the map above); a restart before the
+      // rows expire would bring them back, so say so where it will be seen.
+      if (e.code !== '42P01') console.error(`[sessions] could not delete stored sessions for "${uname}":`, e.message);
+    }
+  }
+}
+app.use((req, res, next) => {
+  const u = req.session?.user;
+  if (!u) return next();
+  const cut = sessionsRevokedAt.get(String(u.username || '').toLowerCase());
+  if (cut && !(Number(u.loginAt) > cut)) {
+    // A fresh, anonymous session: the request goes on as a signed-out visitor.
+    return req.session.regenerate(() => next());
+  }
+  // Held: it signed in with a published default, or it is a session from
+  // before this rule whose account is known to still open with one.
+  const held = u.mustChangePassword || (FORCE_PASSWORD_CHANGE && accountsOnDefaultPassword.has(String(u.username || '').toLowerCase()));
+  if (held && !u.mustChangePassword) u.mustChangePassword = true;
+  if (held && !PASSWORD_CHANGE_OPEN.has(req.path)) {
+    if (req.path.startsWith('/api/')) return res.set('X-VBT-Auth', 'password-change').status(403).json({ error: 'password_change_required', message: 'Choose a new password first.', changeAt: '/change-password' });
+    return res.redirect('/change-password');
+  }
+  next();
+});
+
 // ── SUPABASE STORAGE (for photo uploads — Phase 2) ──────────────────────────
 const SUPABASE_URL    = process.env.SUPABASE_URL || '';
 const SUPABASE_KEY    = process.env.SUPABASE_SERVICE_KEY || '';
@@ -285,17 +347,29 @@ async function uploadPhoto(kind, dataUrl, loadId) {
 //   manager — reserved for future office staff (e.g. dispatcher hires) who do day-to-day
 //             dispatch but shouldn't touch pricing or destructive actions. Unused for now.
 //   driver  — locked-down mobile flow, sees only their own loads.
+// The passwords a fresh install is seeded with. They are in the source and
+// were printed in the README, so they are public: anyone who has read either
+// knows them. An environment variable (<NAME>_PASS) replaces one at seed time;
+// a login that still verifies against any value in this list is asked for a
+// new password before it can do anything (see PASSWORD CHANGE below).
+const SEED_DEFAULT_PASSWORDS = {
+  joshua: 'joshua123', oscar: 'oscar123', perla: 'perla123',
+  beryle: 'beryle123', matthew: 'matthew123', rigo: 'rigo123', leonardo: 'leo123', carlos: 'carlos123',
+};
+// Also public, from earlier READMEs, whether or not an account ever used them.
+const PUBLISHED_PASSWORDS = new Set([...Object.values(SEED_DEFAULT_PASSWORDS), 'vbt2025!']);
+const seedPass = (uname) => process.env[uname.toUpperCase() + '_PASS'] || SEED_DEFAULT_PASSWORDS[uname];
 const USERS = {
   // Admins (full power)
-  joshua:   { password: process.env.JOSHUA_PASS   || 'joshua123',  role: 'admin',   truckId: null,       displayName: 'Joshua'   },
-  oscar:    { password: process.env.OSCAR_PASS    || 'oscar123',   role: 'admin',   truckId: null,       displayName: 'Oscar'    },
-  perla:    { password: process.env.PERLA_PASS    || 'perla123',   role: 'admin',   truckId: null,       displayName: 'Perla'    },
+  joshua:   { password: seedPass('joshua'),   role: 'admin',   truckId: null,       displayName: 'Joshua'   },
+  oscar:    { password: seedPass('oscar'),    role: 'admin',   truckId: null,       displayName: 'Oscar'    },
+  perla:    { password: seedPass('perla'),    role: 'admin',   truckId: null,       displayName: 'Perla'    },
   // Drivers
-  beryle:   { password: process.env.BERYLE_PASS   || 'beryle123',  role: 'driver',  truckId: 'beryle',   displayName: 'Beryle'   },
-  matthew:  { password: process.env.MATTHEW_PASS  || 'matthew123', role: 'driver',  truckId: 'matthew',  displayName: 'Matthew'  },
-  rigo:     { password: process.env.RIGO_PASS     || 'rigo123',    role: 'driver',  truckId: 'rigo',     displayName: 'Rigo'     },
-  leonardo: { password: process.env.LEONARDO_PASS || 'leo123',     role: 'driver',  truckId: 'leonardo', displayName: 'Leonardo' },
-  carlos:   { password: process.env.CARLOS_PASS   || 'carlos123',  role: 'driver',  truckId: 'carlos',   displayName: 'Carlos'   },
+  beryle:   { password: seedPass('beryle'),   role: 'driver',  truckId: 'beryle',   displayName: 'Beryle'   },
+  matthew:  { password: seedPass('matthew'),  role: 'driver',  truckId: 'matthew',  displayName: 'Matthew'  },
+  rigo:     { password: seedPass('rigo'),     role: 'driver',  truckId: 'rigo',     displayName: 'Rigo'     },
+  leonardo: { password: seedPass('leonardo'), role: 'driver',  truckId: 'leonardo', displayName: 'Leonardo' },
+  carlos:   { password: seedPass('carlos'),   role: 'driver',  truckId: 'carlos',   displayName: 'Carlos'   },
 };
 
 // LEGACY NAMING: `TRUCKS` is really the DRIVER roster — `id` is the driver's
@@ -786,6 +860,27 @@ async function seedDefaultCompanyAndUsers() {
   } catch (e) {
     console.error('✗ Seed default company/users failed:', e.message);
     // Don't crash — legacy hardcoded login will still work.
+  }
+}
+
+// Which logins still open with a published default password. Read-only; the
+// result is logged, shown on /healthz (office) and to the office in the app.
+async function auditDefaultPasswords() {
+  accountsOnDefaultPassword.clear();
+  try {
+    if (pg) {
+      const r = await pg.query('SELECT username, password FROM users WHERE company_id = $1 AND active = true', [DEFAULT_COMPANY_ID]);
+      for (const row of r.rows) {
+        const candidates = new Set([SEED_DEFAULT_PASSWORDS[row.username], 'vbt2025!'].filter(Boolean));
+        for (const c of candidates) if (verifyPassword(c, row.password).ok) { accountsOnDefaultPassword.add(row.username); break; }
+      }
+    } else {
+      for (const [uname, u] of Object.entries(USERS)) if (isPublishedPassword(u.password) && !(store.fileLogins || {})[uname]?.selfChanged) accountsOnDefaultPassword.add(uname);
+    }
+  } catch (e) { console.error('[security] default-password check failed:', e.message); return; }
+  if (accountsOnDefaultPassword.size) {
+    console.warn(`⚠ ${accountsOnDefaultPassword.size} login(s) still open with a published default password: ${[...accountsOnDefaultPassword].sort().join(', ')}.` +
+      (FORCE_PASSWORD_CHANGE ? ' Each is asked for a new password at its next sign-in.' : ' (Not enforced outside production.)'));
   }
 }
 
@@ -2204,7 +2299,18 @@ function logAction(user, action, target, details) {
 
 
 // ── AUTH ─────────────────────────────────────────────────────────────────────
-function reqAuth(req, res, next) { if (req.session?.user) return next(); res.redirect('/login'); }
+// A page is sent to the login form. An API call is told, in JSON, that it is
+// not signed in: a fetch() follows a redirect silently and would hand the
+// screen the login page's HTML as if it were the answer, so an expired session
+// used to look like a tap that did nothing (and a GPS post that "succeeded").
+function reqAuth(req, res, next) {
+  if (req.session?.user) return next();
+  // (A page opened in a tab under /api — a print page, the QuickBooks return —
+  // asks for HTML and still goes to the login form.)
+  const navigation = req.method === 'GET' && req.accepts(['json', 'html']) === 'html';
+  if (req.originalUrl.startsWith('/api/') && !navigation) return res.set('X-VBT-Auth', 'signed-out').status(401).json({ error: 'session_expired', message: 'You are signed out. Sign in again.' });
+  res.redirect('/login');
+}
 function reqMgr(req, res, next)   { const r = req.session?.user?.role; if (r === 'admin' || r === 'manager') return next(); res.status(403).json({ error: 'Office access required' }); }
 // Manager and admin are treated as equivalent permission levels.
 function reqAdmin(req, res, next) {
@@ -2236,6 +2342,23 @@ app.get('/healthz', async (req, res) => {
   const dbDown = db.configured && !db.reachable;
   const notLoaded = !persistence.loaded;
   const reason = dbDown ? 'database_unreachable' : notLoaded ? 'store_not_loaded' : '';
+  // In production the public answer is the verdict only. The detail below —
+  // error messages with their paths and roles, the size of the store, the
+  // integrations' state — is for the office (signed in) or a monitor that
+  // presents HEALTH_TOKEN, not for anyone who finds the URL.
+  const r = req.session?.user?.role;
+  const tok = String(process.env.HEALTH_TOKEN || '');
+  const given = String(req.get('x-health-token') || '');
+  const tokenOk = !!tok && given.length === tok.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(tok));
+  if (IS_PROD && !(r === 'admin' || r === 'manager') && !tokenOk) {
+    return res.status(reason ? 503 : 200).json({
+      ok: !reason, status: reason ? 'degraded' : 'ok', reason, app: 'running',
+      db: { configured: db.configured, reachable: db.reachable },
+      loaded: persistence.loaded,
+      time: new Date().toISOString(),
+      detail: 'sign in as office staff (or send X-Health-Token) for the full report',
+    });
+  }
   res.status(reason ? 503 : 200).json({
   ok: !reason,
   status: reason ? 'degraded' : 'ok',
@@ -2273,6 +2396,7 @@ app.get('/healthz', async (req, res) => {
   uptimeSeconds: Math.round(process.uptime()),
   storeSummary: persistence.loaded ? { pos: store.pos.length, loads: store.loads.length, archiveBatches: (store.archive || []).length, bytes: Buffer.byteLength(JSON.stringify(store)) } : null,
   recentErrors,
+  security: { forcePasswordChange: FORCE_PASSWORD_CHANGE, accountsOnDefaultPassword: [...accountsOnDefaultPassword].sort() },
   time: new Date().toISOString(),
   });
 });
@@ -3018,6 +3142,28 @@ function loginFailed(ip, user) {
 function loginSucceeded(user) { loginFailures.delete('u:' + user); }
 setInterval(() => { for (const k of loginFailures.keys()) loginKeyFailures(k); }, LOGIN_WINDOW_MS).unref();
 
+function isPublishedPassword(pw) { return PUBLISHED_PASSWORDS.has(String(pw)); }
+// Logins known to still open with a published default (checked at boot and
+// kept current as people sign in and change). Shown to the office.
+const accountsOnDefaultPassword = new Set();
+// One way into a session, for every login path: a new session id (a cookie
+// planted before sign-in is worthless after it), the moment of sign-in (what
+// revocation compares against), and the default-password hold.
+function signIn(req, res, user, passwordUsed) {
+  const onDefault = isPublishedPassword(passwordUsed);
+  if (onDefault) accountsOnDefaultPassword.add(user.username); else accountsOnDefaultPassword.delete(user.username);
+  const hold = onDefault && FORCE_PASSWORD_CHANGE;
+  req.session.regenerate((err) => {
+    if (err) { noteDbFailure(err); console.error('[LOGIN] session could not be created:', err.message); return res.redirect('/login?error=db'); }
+    req.session.user = { ...user, loginAt: Date.now(), ...(hold ? { mustChangePassword: true } : {}) };
+    req.session.save((err2) => {
+      if (err2) { noteDbFailure(err2); console.error('[LOGIN] session could not be saved:', err2.message); return res.redirect('/login?error=db'); }
+      if (hold) console.warn(`[LOGIN] "${user.username}" signed in with a published default password — held on /change-password`);
+      res.redirect(hold ? '/change-password' : '/app/');
+    });
+  });
+}
+
 app.get('/login', (req, res) => {
   const ref = String(req.query.ref || '').replace(/[^A-Z0-9]/g, '').slice(0, 12);
   const err = req.query.error === 'locked'
@@ -3093,14 +3239,13 @@ app.post('/login', async (req, res) => {
         // the driver still sees their own loads.
         let sessTruckId = dbUser.truck_id;
         if (dbUser.role === 'driver' && !rosterDriver(sessTruckId)) sessTruckId = dbUser.username;
-        req.session.user = {
+        console.log(`[LOGIN] SUCCESS (db): username="${dbUser.username}", role="${dbUser.role}"`);
+        return signIn(req, res, {
           username:    dbUser.username,
           role:        dbUser.role,
           truckId:     sessTruckId,
           displayName: dbUser.display_name || dbUser.username,
-        };
-        console.log(`[LOGIN] SUCCESS (db): username="${dbUser.username}", role="${dbUser.role}"`);
-        return res.redirect('/app/');
+        }, password);
       }
       // The users table answered and did not accept this login. That is the
       // final word: it must NOT fall through to the hardcoded legacy map,
@@ -3125,12 +3270,25 @@ app.post('/login', async (req, res) => {
   // 2) No database (dev / file mode only): drivers created on the Drivers &
   //    Trucks screen keep a scrypt-hashed login inside the store, so a driver
   //    added there can sign in exactly as they would with Postgres.
+  //    A seed login whose password was changed on /change-password is kept
+  //    here too (selfChanged), and that is then the final word for it: the
+  //    seed password below no longer opens the account.
   const fl = (store.fileLogins || {})[cleanName];
+  const seedUser = USERS[cleanName];
+  if (fl && fl.selfChanged && seedUser) {
+    if (!verifyPassword(password, fl.password).ok || (seedUser.role === 'driver' && rosterDriver(cleanName)?.active === false)) {
+      console.log(`[LOGIN] FAILED (file mode): username="${cleanName}"`);
+      loginFailed(ip, cleanName);
+      return res.redirect('/login?error=1');
+    }
+    loginSucceeded(cleanName);
+    console.log(`[LOGIN] SUCCESS (file mode): username="${cleanName}", role="${seedUser.role}"`);
+    return signIn(req, res, { username: cleanName, role: seedUser.role, truckId: seedUser.truckId, displayName: seedUser.displayName || cleanName }, password);
+  }
   if (fl && rosterDriver(cleanName)?.active !== false && verifyPassword(password, fl.password).ok) {
     loginSucceeded(cleanName);
-    req.session.user = { username: cleanName, role: 'driver', truckId: cleanName, displayName: rosterDriver(cleanName)?.name || cleanName };
     console.log(`[LOGIN] SUCCESS (file mode): username="${cleanName}", role="driver"`);
-    return res.redirect('/app/');
+    return signIn(req, res, { username: cleanName, role: 'driver', truckId: cleanName, displayName: rosterDriver(cleanName)?.name || cleanName }, password);
   }
 
   // 3) Legacy fallback: hardcoded VBT users (dev / no-database mode only).
@@ -3141,14 +3299,129 @@ app.post('/login', async (req, res) => {
     return res.redirect('/login?error=1');
   }
   loginSucceeded(cleanName);
-  req.session.user = {
+  console.log(`[LOGIN] SUCCESS (legacy): username="${cleanName}", role="${u.role}"`);
+  signIn(req, res, {
     username:    cleanName,
     role:        u.role,
     truckId:     u.truckId,
     displayName: u.displayName || (cleanName.charAt(0).toUpperCase() + cleanName.slice(1)),
-  };
-  console.log(`[LOGIN] SUCCESS (legacy): username="${cleanName}", role="${u.role}"`);
-  res.redirect('/app/');
+  }, password);
+});
+
+// ── PASSWORD CHANGE ──────────────────────────────────────────────────────────
+// Anyone signed in can change their own password here. A session that signed
+// in with a published default is held on this page (SESSION GUARD) until it
+// has: the seed passwords are in the source and were in the README, and an
+// office login opens pricing, approvals and the QuickBooks connection.
+const PASSWORD_MIN = 8;
+function newPasswordProblem(username, next, confirm) {
+  const pw = String(next || '');
+  if (pw.length < PASSWORD_MIN) return `The new password needs at least ${PASSWORD_MIN} characters.`;
+  if (pw.length > 200) return 'The new password is too long.';
+  if (pw !== String(confirm ?? pw)) return 'The two new passwords are not the same.';
+  if (isPublishedPassword(pw)) return 'That password is one of the published defaults. Choose another.';
+  if (pw.toLowerCase().includes(String(username).toLowerCase())) return 'The new password must not contain your username.';
+  return '';
+}
+// Where this user's password lives, and how to replace it.
+async function passwordRecord(username) {
+  if (pg) {
+    const r = await pg.query('SELECT id, password, active FROM users WHERE company_id = $1 AND username = $2', [DEFAULT_COMPANY_ID, username]);
+    const row = r.rows[0];
+    if (!row || !row.active) return null;
+    return { hash: row.password, write: (h) => pg.query('UPDATE users SET password = $1 WHERE id = $2', [h, row.id]).then(() => false) };
+  }
+  // File mode (dev only). A seed login opens with its seed password until it
+  // has been changed here; an office-set driver login is in fileLogins.
+  const fl = (store.fileLogins || {})[username];
+  const seed = USERS[username];
+  const own = fl && (fl.selfChanged || !seed);
+  const hash = own ? fl.password : seed ? seed.password : null;
+  if (!hash) return null;
+  return { hash, alsoAccept: !own && fl ? fl.password : null, write: async (h) => {
+    if (!store.fileLogins) store.fileLogins = {};
+    store.fileLogins[username] = { ...(store.fileLogins[username] || {}), password: h, selfChanged: !!seed, changedAt: new Date().toISOString() };
+    return true;   // the store changed: the caller saves
+  } };
+}
+function changePasswordPage(req, msg) {
+  const u = req.session.user;
+  const forced = !!u.mustChangePassword;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Change password — VBT Dispatch</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:linear-gradient(135deg,#0a0e1a 0%,#1a2342 50%,#0a0e1a 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;color:#fff}
+.card{background:rgba(255,255,255,.05);border-radius:18px;border:1px solid rgba(255,255,255,.1);padding:36px 32px;width:100%;max-width:420px;box-shadow:0 8px 40px rgba(0,0,0,.4)}
+h1{font-size:19px;margin-bottom:8px}
+p.lead{font-size:13px;line-height:1.5;color:rgba(255,255,255,.7);margin-bottom:20px}
+label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.55);display:block;margin-bottom:6px;font-weight:600}
+input{width:100%;padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;font-size:16px;font-family:inherit;margin-bottom:14px;color:#fff;background:rgba(255,255,255,.05)}
+input:focus{outline:none;border-color:#60a8f0;background:rgba(255,255,255,.08)}
+button{width:100%;padding:13px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer;margin-top:6px}
+.err{color:#fca5a5;font-size:13px;margin-bottom:16px;background:rgba(220,38,38,.12);padding:10px 14px;border-radius:8px;border:1px solid rgba(220,38,38,.3)}
+.links{font-size:12px;text-align:center;margin-top:18px}.links a{color:rgba(255,255,255,.6)}
+</style></head><body><div class="card">
+  <h1>${forced ? 'Choose a new password' : 'Change password'}</h1>
+  <p class="lead">${forced
+    ? `You signed in as <b>${esc(u.username)}</b> with the password this account was set up with. That password is not private, so it has to be replaced before you continue. This takes one minute and nothing else changes.`
+    : `Signed in as <b>${esc(u.username)}</b>. Your other devices will be signed out.`}</p>
+  ${msg ? `<p class="err">${esc(msg)}</p>` : ''}
+  <form method="POST" action="/api/account/password">
+    <label>Current password</label><input name="current" type="password" autocomplete="current-password" required>
+    <label>New password (at least ${PASSWORD_MIN} characters)</label><input name="next" type="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>
+    <label>New password again</label><input name="confirm" type="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>
+    <button type="submit">Save new password</button>
+  </form>
+  <div class="links">${forced ? '<a href="/logout">Sign out</a>' : '<a href="/app/">Back to the app</a>'}</div>
+</div></body></html>`;
+}
+const PW_MESSAGES = {
+  current: 'The current password is not right.',
+  locked: 'Too many attempts. Wait 15 minutes and try again.',
+  db: 'The database could not be reached. Nothing changed; try again in a minute.',
+  none: 'This login has no password on record here. Ask the office to reset it on Drivers & Trucks.',
+};
+app.get('/change-password', reqAuth, (req, res) => {
+  const code = String(req.query.error || '');
+  res.send(changePasswordPage(req, PW_MESSAGES[code] || (code === 'new' ? String(req.query.msg || '').slice(0, 200) : '')));
+});
+// Under /api so it takes the write lock like every other change (in file mode
+// the password lives in the store). Answers JSON to a JSON caller and a
+// redirect to the form.
+app.post('/api/account/password', reqAuth, async (req, res) => {
+  const u = req.session.user;
+  const uname = String(u.username || '').toLowerCase();
+  const wantsJson = req.is('application/json');
+  const fail = (status, code, message) => wantsJson
+    ? res.status(status).json({ error: code === 'new' ? 'new_password_refused' : 'password_' + code, message })
+    : res.redirect('/change-password?error=' + code + (code === 'new' ? '&msg=' + encodeURIComponent(message) : ''));
+  const ip = req.ip || req.socket?.remoteAddress || '';
+  if (loginBlocked(ip, 'pw:' + uname)) return fail(429, 'locked', PW_MESSAGES.locked);
+  const b = req.body || {};
+  let rec;
+  try { rec = await passwordRecord(uname); }
+  catch (e) { noteDbFailure(e); console.error('[password] lookup failed:', e.message); return fail(503, 'db', PW_MESSAGES.db); }
+  if (!rec) return fail(409, 'none', PW_MESSAGES.none);
+  const currentOk = verifyPassword(String(b.current || ''), rec.hash).ok || (rec.alsoAccept && verifyPassword(String(b.current || ''), rec.alsoAccept).ok);
+  if (!currentOk) { loginFailed(ip, 'pw:' + uname); return fail(400, 'current', PW_MESSAGES.current); }
+  const problem = newPasswordProblem(uname, b.next, wantsJson && b.confirm === undefined ? b.next : b.confirm)
+    || (String(b.next) === String(b.current) ? 'The new password must be different from the current one.' : '');
+  if (problem) return fail(400, 'new', problem);
+  let storeChanged;
+  try { storeChanged = await rec.write(hashPassword(String(b.next))); }
+  catch (e) { noteDbFailure(e); console.error('[password] write failed:', e.message); return fail(503, 'db', PW_MESSAGES.db); }
+  logAction(u, 'changed-own-password', uname, { forced: !!u.mustChangePassword });
+  // File mode: the password is in the store, and a refused save rolls it back
+  // (the error middleware answers 503). With Postgres the row is already
+  // written; the audit line rides with this save.
+  if (storeChanged) await saveData();
+  else await saveData().catch(e => console.error('[password] audit line not saved:', e.message));
+  loginSucceeded('pw:' + uname);
+  delete req.session.user.mustChangePassword;
+  await revokeUserSessions(uname, req);
+  accountsOnDefaultPassword.delete(uname);
+  console.log(`[password] "${uname}" changed their own password`);
+  req.session.save(() => wantsJson ? res.json({ ok: true }) : res.redirect('/app/'));
 });
 
 app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
@@ -3171,6 +3444,8 @@ app.get('/api/me', reqAuth, (req, res) => {
     role:        u.role,
     truckId:     u.truckId,
     displayName: u.displayName || u.username,
+    // Office only: logins that still open with a published default password.
+    ...(FORCE_PASSWORD_CHANGE && (u.role === 'admin' || u.role === 'manager') && accountsOnDefaultPassword.size ? { accountsOnDefaultPassword: [...accountsOnDefaultPassword].sort() } : {}),
   });
 });
 
@@ -7656,11 +7931,16 @@ app.put('/api/drivers/:username', reqMgr, async (req, res) => {
     }
   } else if (b.password !== undefined && String(b.password).length >= 4) {
     if (!store.fileLogins) store.fileLogins = {};
-    store.fileLogins[uname] = { ...(store.fileLogins[uname] || {}), password: hashPassword(String(b.password)) };
+    store.fileLogins[uname] = { ...(store.fileLogins[uname] || {}), password: hashPassword(String(b.password)), ...(USERS[uname] ? { selfChanged: true } : {}) };
   }
   upsertRosterDriver({ id: uname, name: b.displayName ?? b.name, defaultTruckId, active: b.active, status: b.status, phone: b.phone, notes: b.notes, linxupPersonId: b.linxupPersonId });
   logAction(req.session.user, 'updated-driver', uname, { fields: Object.keys(b) });
   await saveData();
+  // A new password or a disabled driver ends the phone's session now, not
+  // when its seven-day cookie runs out.
+  const passwordSet = b.password !== undefined && String(b.password).length >= 4;
+  if (passwordSet || b.active === false) await revokeUserSessions(uname);
+  if (passwordSet) { if (isPublishedPassword(b.password)) accountsOnDefaultPassword.add(uname); else accountsOnDefaultPassword.delete(uname); }
   res.json({ ok: true, drivers: await fleetDrivers(), roster: driverRoster() });
 });
 
@@ -7682,6 +7962,8 @@ app.delete('/api/drivers/:username', reqMgr, async (req, res) => {
     logAction(req.session.user, 'disabled-driver', uname, {});
   }
   await saveData();
+  await revokeUserSessions(uname);
+  accountsOnDefaultPassword.delete(uname);
   res.json({ ok: true, drivers: await fleetDrivers(), roster: driverRoster() });
 });
 
@@ -9839,6 +10121,7 @@ const PORT = process.env.PORT || 3000;
   await seedDefaultCompanyAndUsers();
   try {
     await loadData();
+    await auditDefaultPasswords();
     await snapshotBootStore();
     // Ids never rewind: the counters in the row are raised to the high-water
     // marks kept outside it and to the highest id on record before anything
