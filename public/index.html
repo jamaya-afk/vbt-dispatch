@@ -1391,6 +1391,17 @@ function signedOutAnswer(r) {
   setTimeout(() => { location = to; }, r.status === 401 ? 1800 : 300);
   return true;
 }
+// A request that never got an answer (no signal, dropped connection) must not
+// look like a tap that did nothing. Screens that handle it themselves (the trip
+// steps) catch it first; this is the net under every other one: say so, and
+// free the buttons a pending request had disabled so the person can try again.
+window.addEventListener('unhandledrejection', (e) => {
+  const m = String((e.reason && e.reason.message) || e.reason || '');
+  if (!(e.reason instanceof TypeError) || !/fetch|network|load failed/i.test(m)) return;
+  e.preventDefault();
+  try { toast('No connection — that did not get an answer. Check your signal, then check the screen before trying again.', 'error'); } catch (_) {}
+  document.querySelectorAll('.modal-bg button:disabled').forEach(b => { b.disabled = false; });
+});
 (function () {
   const realFetch = window.fetch.bind(window);
   window.fetch = function (...args) {

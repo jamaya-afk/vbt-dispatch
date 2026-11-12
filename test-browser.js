@@ -891,6 +891,11 @@ async function call(cookie, method, path, body) {
   await d.page.evaluate(() => submitStartDay()); await d.page.waitForTimeout(400);
   chk('   refused without a signature (no day created)', (await call(mgr, 'GET', '/api/today')).data.shifts.length, 0);
   await d.page.evaluate(() => { const c = document.getElementById('sd-sig'); const ctx = c.getContext('2d'); ctx.beginPath(); ctx.moveTo(20, 80); ctx.lineTo(200, 90); ctx.stroke(); sdSig.markInk(); });
+  await d.page.context().setOffline(true);
+  await d.page.evaluate(() => { submitStartDay(); }); await d.page.waitForTimeout(900);
+  const off = await d.page.evaluate(() => ({ toast: Array.from(document.querySelectorAll('.toast')).map(x => x.textContent).join(' | '), btn: document.getElementById('sd-save').disabled, open: document.getElementById('startday-modal').style.display === 'flex' }));
+  await d.page.context().setOffline(false); await d.page.waitForTimeout(3200);
+  chk('   no signal at Start day: the phone says the tap got no answer, the form stays open with its button usable, and no day was created', `${/No connection/.test(off.toast)} ${off.btn} ${off.open} ${(await call(mgr, 'GET', '/api/today')).data.shifts.length}`, 'true false true 0');
   await d.page.evaluate(() => submitStartDay()); await d.page.waitForTimeout(1500);
   const shifts = (await call(mgr, 'GET', '/api/today')).data.shifts;
   chk('   day started: Beryle on Truck #12 (the truck his load is on) at 41,000, inspection satisfactory, signed', shifts.length === 1 ? `${shifts[0].driverName} ${shifts[0].truckNum} ${shifts[0].startOdometer} ${shifts[0].inspection.satisfactory} ${shifts[0].inspection.hasSignature}` : 'none', 'Beryle Truck #12 41000 true true');

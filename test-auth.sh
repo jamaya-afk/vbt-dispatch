@@ -95,6 +95,15 @@ if [ -x "$PGB/initdb" ]; then
   chk "  …but cannot list or restore backups, set default rates, or connect / disconnect QuickBooks (403 each)" \
     "$(code -b $P $B/api/admin/backups) $(code -b $P -H 'Content-Type: application/json' -X POST $B/api/admin/restore -d '{"source":"store_prev"}') $(code -b $P -H 'Content-Type: application/json' -X PUT $B/api/default-rates -d '{"side":"customer","material":"Dirt","rate":1}') $(code -b $P $B/api/quickbooks/connect) $(code -b $P -X POST $B/api/quickbooks/disconnect)" "403 403 403 403 403"
   chk "  an admin still can (backups list answers)" "$(code -b $O $B/api/admin/backups)" "200"
+  # A vehicle hold is cleared by an admin, not by a manager.
+  curl -s -b $O -H 'Content-Type: application/json' -X POST $B/api/drivers -d '{"username":"dvir1","password":"dvir-private-1","displayName":"Dvir One"}' -o /dev/null
+  DV=$(mktemp); login $DV dvir1 dvir-private-1 >/dev/null
+  TK=$(curl -s -b $DV $B/api/shifts/current | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['trucks'][0]['id'])")
+  ANS=$(curl -s -b $DV $B/api/shifts/current | python3 -c "import json,sys;d=json.load(sys.stdin);print(json.dumps({i:('defect' if i=='Brakes' else 'ok') for i in d['inspectionItems']}))")
+  RID=$(curl -s -b $DV -H 'Content-Type: application/json' -X POST $B/api/shifts/start -d "{\"truckId\":\"$TK\",\"odometer\":10,\"inspection\":{\"answers\":$ANS,\"remarks\":\"no pedal\"},\"signature\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"}" | jq "d['report']['id']")
+  chk "a truck held for a blocking defect: a manager sees the report but cannot record the clearance (403 clearance_admin_only); an admin can" \
+    "$(curl -s -b $P $B/api/defect-reports | jq "d['held']") $(curl -s -b $P -H 'Content-Type: application/json' -X POST $B/api/defect-reports/$RID/resolve -d '{"decision":"corrected","by":"Hector","note":"new brake line"}' | jq "d['code']") $(curl -s -b $O -H 'Content-Type: application/json' -X POST $B/api/defect-reports/$RID/resolve -d '{"decision":"corrected","by":"Hector","note":"new brake line"}' | jq "d['report']['status'], d['report']['resolution']['recordedByRole']")" "1 clearance_admin_only cleared admin"
+  rm -f $DV
   chk "the browser's favicon request is answered (it was the one 404 on every first visit)" "$(code $B/favicon.ico)" "200"
   rm -f $P $O
   stop
