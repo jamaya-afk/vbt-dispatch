@@ -280,3 +280,129 @@ Blocked loads and vehicle defects cannot be acknowledged away.
 - The DOT item list and a trailer section; a post-trip inspection; an
   inspection of the second truck after a mid-day truck change.
 - Scale-ticket gross/tare capture and OCR (P5).
+
+
+---
+
+## 9. Pre-merge verification (November 2026)
+
+### 9.1 Sample documents against the scanned packet
+
+Generated with `sample-documents.sh` from records entered through the API, then
+read page by page against the CamScanner packet of 14 Sep 2026.
+
+| Paper | Generated | Result |
+|---|---|---|
+| Daily Log: Cornelio, Truck 3, 3B, 5:30 → 5:00, 11.5 − .5 = 11 hr | same header; breaks 0h 30m; total 11 hr | matches |
+| Daily Log rows: 85,558 → 85,591 (33), 85,591 → 85,808 (217, 4 loads, base), → 85,868; miles today 310 | three legs 33 / 217 / 60, miles today 310, 4 loads; billable 217, non-billable 93 | matches |
+| Daily Log row "3298 · 3/8 · VBT pre-load · end of day" | the pre-load is in the trips table (PO 3298, Pea Gravel, VBT Yard, ticket 4721, "in progress", not counted) and raises "not completed"; the third odometer row carries no PO | **differs** — see 9.4 (3) |
+| Daily Log fuel "75 VBT", signature, date | 75.00 gal at VBT Yard; the driver's signature with the server time | matches |
+| Daily Log checklist (the paper's 11 items) | VBT's 11 items — a different list | **differs** — see 9.2 |
+| Freight Bill: DCC, Truck 3 / 3B, 6:30 → 3:00, 8.5 hr, tons 23.20 / 23.19 / 24.45 / 23.80, tags 37432733 / 798 / 862 / 920, 85,591 → 85,808 | same values; total 94.64 tons, 217 miles; lunch 12:00–12:30; fuel; the driver's Daily Log signature; date with weekday | matches (the paper leaves total tons blank; 94.64 is the supplier's own "tons today" on ticket 37432920) |
+| Scale tickets (4) | each photo printed once under its ticket number in the delivery ticket and both packets | matches |
+| Internal ticket No. 4721 (pre-load, PO 3298, pea gravel) | delivery ticket DT for the pre-load load: DRAFT, "started and not delivered", no signature | no priced internal ticket exists (P3) |
+| DVIR | no standalone DVIR page; the inspection prints on the Daily Log | **gap** — see 9.2 |
+
+Defects found by this inspection and fixed: the load-level ticket photo was
+printed a second time when it was the same image as a trip's ticket; the
+Freight Bill and delivery ticket showed an ISO date without the weekday; the
+Freight Bill named the signer by username; fuel on the Freight Bill is the
+day's and now says so; the invoice packet did not say what quantity a ton line
+was billed on.
+
+**A billing fact the sample exposed (not a defect, a decision):** this
+customer's invoice line is 100.00 tons (4 loads × the 25-ton rule) = $3,000.00,
+while the four scale tickets total 94.64 tons ($2,839.20 at the same rate).
+That is the "planned" billing basis, which is the default for every customer.
+The packet now prints both figures and the difference. Which basis each
+customer is billed on is the owner's call (customer record → billing basis).
+
+### 9.2 The inspection against the requirements — what could and could not be verified
+
+**Not verified as compliant, and not claimed to be.** The regulation texts
+could not be opened from the development environment (the official sites were
+not reachable); what follows comes from search results over the regulation
+text and CHP material, and needs confirming against the current text or with
+the company's compliance adviser before anyone relies on it.
+
+What the sources consistently say:
+
+- **Federal (49 CFR 396.11, 396.13, 392.7)** — a written report "at the
+  completion of each day's work on each vehicle operated"; federally, a
+  property carrier's driver need not file one when no defect was found; before
+  driving, the driver satisfies himself the vehicle is safe and reviews the
+  last report. The minimum parts list was not retrieved verbatim.
+- **California (13 CCR 1215, 1234(e); Vehicle Code 34500.7)** — the driver
+  inspects daily before driving and reviews the last report; the report says
+  so when no defect was found, and the driver signs it in every case; a driver
+  who operates more than one vehicle in a day prepares a report for each; the
+  carrier must require the daily report (the CHP terminal checklist asks for a
+  "negative DVIR" when nothing was found) and keep reports at least three
+  months. Valley Best hauls within California, so these appear to apply; that
+  is for the owner or the adviser to confirm.
+
+Gaps between that and VBT today:
+
+| Topic | VBT today | Gap |
+|---|---|---|
+| When | one inspection, at Start day | **no end-of-day (post-trip) report**; the paper DVIR is filled for the whole day (5:30–5:00, 85,558–85,868) |
+| No-defect days | every Start day records an answer per item and a signature | appears to meet the "negative report" idea for the pre-trip; not for the end of day |
+| Each vehicle operated | the second truck after a mid-day truck change is not inspected | **gap** |
+| Reviewing the last report | an open defect report on the truck is shown and must be acknowledged | a *closed* last report is not shown to the next driver |
+| Items — the company's own Daily Log | Lights/Reflectors, Connections, Oil & Water, Brake Inspection, Horn & Wipers, Proof of Ins/Registration, Mirrors, Tires & Wheels, Steering System, Coupling Devices, Fire Extinguisher | VBT asks Brakes, Tires and wheels, Lights and reflectors, Steering, Horn, Mirrors, Windshield and wipers, Coupling / fifth wheel, Trailer and tarp, Fluid leaks, Emergency equipment. **Not asked:** Connections (trailer air/electrical), Oil & Water, Proof of Insurance/Registration, a separate parking-brake line |
+| Items — the DOT form in the packet | about 45 tractor items and 14 trailer items | VBT has **no trailer section** (one line, "Trailer and tarp") and none of the form's detail (air compressor, air lines, battery, belts and hoses, exhaust, frame, fuel tanks, suspension, landing gear, king pin, …) |
+| Mechanic's certification | name, repair, who cleared it and when; closing/reopening history | no mechanic signature image; no driver counter-signature after the repair |
+| Retention | reports are kept with the store indefinitely | none found |
+
+Recommended (needs the owner's approval — it changes what drivers do every
+day): (1) make the item list the company's own Daily Log list plus the trailer
+items that apply to the 3B-type trailers; (2) add an end-of-day inspection
+answer to End day (one more screen, same rules); (3) ask the same inspection
+for the new truck at a truck change; (4) decide the blocking list with the
+adviser. None of this is built.
+
+### 9.3 Odometer entry — recommendation, not built
+
+Where a reading is typed today: Start day; the first pickup of each freight at
+an outside yard; Finish freight; both trucks at a truck change; End day. On the
+sample day that is four readings (85,558 · 85,591 · 85,808 · 85,868) — the same
+four the paper Daily Log carries, so the app asks no more than the paper does.
+The repetition is in the typing, and in two places the same number is typed
+twice:
+
+1. **Finish freight immediately followed by End day** (the freight ends where
+   the day ends): two prompts, usually the same number.
+2. **End day refuses while a freight is open** (`segment_open`), sending the
+   driver back to Finish freight to type a reading, then to End day to type it
+   again.
+
+Recommended workflow (keeps every reading point, so freight miles, daily miles
+and the history stay exactly as they are):
+
+- **A. One reading closes both.** When the driver taps End day with a freight
+  open, ask once: "This also finishes the *customer* freight — ending odometer?"
+  with an explicit confirm. One number is stored as the freight's end and the
+  day's end. The freight is still closed by the driver's own confirmation,
+  never because a load was delivered.
+- **B. Offer the tracker's odometer as a suggestion.** On a truck linked to
+  Linxup with a fresh position, show "Tracker reads 85,808 — use it" beside the
+  field. The driver confirms or types his own; the record stores the value and
+  its source (typed / tracker-suggested). Nothing is filled in silently, and a
+  stale tracker offers nothing.
+- **C. Keep the freight-start reading** — it is what separates billable from
+  non-billable miles and is the one number that cannot be derived.
+
+A and B together remove most typed digits without removing any reading. Not
+recommended: dropping per-freight readings for ton-billed customers (the
+Freight Bill and the Daily Log rows both need them).
+
+### 9.4 Open decisions
+
+1. Billing basis per customer: planned tons (default) or scale-ticket tons.
+2. The inspection item list, the blocking list, an end-of-day inspection and a
+   truck-change inspection (9.2).
+3. Pre-loads: a load loaded today for tomorrow reads "trip not completed" on
+   the Daily Log and the review every time. Either accept it as the honest
+   record, or define a pre-load as its own kind of trip.
+4. Odometer workflow A and B (9.3).
+5. The priced internal ticket (ticket-number series, terms, pickup/delivery).
