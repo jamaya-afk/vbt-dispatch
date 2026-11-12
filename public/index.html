@@ -878,6 +878,7 @@ body.drv-dark #ticket-input{background:#252b3b;border-color:#2a3447;color:#e2e7f
           <div class="user-role" id="userrole">—</div>
         </div>
       </div>
+      <button class="signout-btn" onclick="location='/change-password'">Change password</button>
       <button class="signout-btn" onclick="location='/logout'">Sign out</button>
     </div>
   </aside>
@@ -1355,8 +1356,36 @@ function api(method, url, body) {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
-  }).then(r => r.json().then(d => ({ ok: r.ok, status: r.status, ...d })));
+  }).then(r => {
+    if (signedOutAnswer(r)) return new Promise(() => {});   // the page is leaving for the login form
+    return r.json().then(d => ({ ok: r.ok, status: r.status, ...d }));
+  });
 }
+// The server answers a signed-out API call with 401, and a session held for a
+// password change with 403 password_change_required. Either way the screen
+// says so and goes where the person can fix it, instead of a tap that does
+// nothing. Used by api() and by the window.fetch wrapper below, so every
+// request in the app is covered, including the ones that call fetch directly.
+let _signedOutHandled = false;
+function signedOutAnswer(r) {
+  if (!r || (r.status !== 401 && r.status !== 403)) return false;
+  let path = ''; try { path = new URL(r.url, location.href).pathname; } catch (e) {}
+  if (!path.startsWith('/api/') || path.startsWith('/api/quickbooks') || path.startsWith('/api/linxup')) return false;
+  if (r.status === 403 && r.headers.get('X-VBT-Auth') !== 'password-change') return false;
+  if (r.status === 401 && r.headers.get('X-VBT-Auth') !== 'signed-out') return false;
+  if (_signedOutHandled) return true;
+  _signedOutHandled = true;
+  const to = r.status === 401 ? '/login' : '/change-password';
+  try { toast(r.status === 401 ? 'You were signed out. Sign in again — nothing was saved by that tap.' : 'Choose a new password to continue.', 'error'); } catch (e) {}
+  setTimeout(() => { location = to; }, r.status === 401 ? 1800 : 300);
+  return true;
+}
+(function () {
+  const realFetch = window.fetch.bind(window);
+  window.fetch = function (...args) {
+    return realFetch(...args).then(r => { signedOutAnswer(r); return r; });
+  };
+})();
 // Upload a base64 image to the server, which forwards to Supabase Storage.
 // Returns { url } or throws on failure.
 // Falls back to embedding base64 if Supabase isn't configured.
@@ -1483,6 +1512,7 @@ async function init() {
     if (!r.ok) { location = '/login'; return; }
     me = await r.json();
     role = me.role;
+    showDefaultPasswordNotice(me.accountsOnDefaultPassword);
     myTruckId = me.truckId;
     myUsername = me.username;
     myDisplayName = me.displayName || (me.username.charAt(0).toUpperCase() + me.username.slice(1));
@@ -1559,6 +1589,7 @@ function goTab(tab) {
         ${isDark ? sunSvg : moonSvg}
         <span>${isDark ? 'Light' : 'Dark'}</span>
       </button>
+      <button class="btn ghost" onclick="location='/change-password'">Password</button>
       <button class="btn ghost" onclick="location='/logout'">Sign out</button>`;
   } else {
     actions.innerHTML = '';
@@ -4338,6 +4369,23 @@ async function voidBatch(id) {
   if (r.ok) toast('Batch voided', 'success'); else toast(r.error || 'Failed', 'error');
   await loadAll();
   renderBillBatches();
+}
+
+// ── DEFAULT-PASSWORD NOTICE (office) ─────────────────────────────────────────
+// Logins that still open with the password they were set up with. Each one is
+// asked for a new password at its next sign-in; until then the office can see
+// who is left and reset a driver's on Drivers & Trucks.
+function showDefaultPasswordNotice(names) {
+  document.getElementById('defpw-banner')?.remove();
+  if (!Array.isArray(names) || !names.length) return;
+  const bar = document.createElement('div');
+  bar.id = 'defpw-banner';
+  bar.style.cssText = 'position:sticky;top:0;z-index:240;background:#8a5a00;color:#fff;padding:10px 16px;'
+    + 'font-size:13px;font-weight:600;line-height:1.45;display:flex;gap:10px;align-items:center';
+  bar.innerHTML = `<span style="font-size:16px">&#9888;</span>
+    <span style="flex:1">${names.length === 1 ? 'One login still uses' : names.length + ' logins still use'} a set-up password that is not private: ${escapeHtml(names.join(', '))}. Each will be asked for a new one at its next sign-in.</span>
+    <button style="background:transparent;border:1px solid rgba(255,255,255,.6);color:#fff;border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit" onclick="this.parentNode.remove()">Dismiss</button>`;
+  document.body.prepend(bar);
 }
 
 // ── PERSISTENCE WARNING ─────────────────────────────────────────────────────
