@@ -4406,7 +4406,7 @@ async function checkPersistence() {
       <span style="flex:1">${escapeHtml(p.warning)}</span>`;
     // Only an office login can restore, and only when the store failed to load
     // (the one situation where nothing else in the app will work anyway).
-    if (p.loaded === false && (me?.role === 'admin' || me?.role === 'manager')) {
+    if (p.loaded === false && me?.role === 'admin') {
       const b = document.createElement('button');
       b.textContent = 'Restore backup…';
       b.style.cssText = 'background:#fff;color:#b42318;border:0;border-radius:6px;padding:7px 12px;font-weight:700;cursor:pointer';
@@ -5495,7 +5495,7 @@ async function renderQuickBooks() {
   const cfg = r.config || {};
   const conn = r.connection || {};
   const isConnected = conn.status === 'connected' && !!conn.realmId;
-  const isAdmin = role === 'admin' || role === 'manager';
+  const isAdmin = role === 'admin';   // connecting and disconnecting QuickBooks is admin-only on the server
 
   const statusBadge = isConnected
     ? `<span style="background:#e3f6e9;color:#0a8a3a;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600">Connected</span>`
@@ -5752,7 +5752,7 @@ function renderVendors() {
     <button class="view-btn ${vendorSubview === 'prices' ? 'active' : ''}" onclick="setVendorSubview('prices')">Vendor Prices</button>
     <button class="view-btn ${vendorSubview === 'master' ? 'active' : ''}" onclick="setVendorSubview('master')">Customers</button>
     <button class="view-btn ${vendorSubview === 'customers' ? 'active' : ''}" onclick="setVendorSubview('customers')">Customer Prices</button>
-    ${(role === 'admin' || role === 'manager') ? `<button class="view-btn ${vendorSubview === 'defaults' ? 'active' : ''}" onclick="setVendorSubview('defaults')">Default Rates</button>` : ''}
+    ${role === 'admin' ? `<button class="view-btn ${vendorSubview === 'defaults' ? 'active' : ''}" onclick="setVendorSubview('defaults')">Default Rates</button>` : ''}
     <button class="view-btn ${vendorSubview === 'costs' ? 'active' : ''}" onclick="setVendorSubview('costs')">Material Costs</button>
   </div>`;
 

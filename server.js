@@ -848,13 +848,27 @@ async function seedDefaultCompanyAndUsers() {
     // on the next deploy with the default password.
     const have = await pg.query('SELECT count(*)::int AS n FROM users WHERE company_id = $1', [DEFAULT_COMPANY_ID]);
     if ((have.rows[0] || {}).n > 0) { console.log(`✓ Default company "${DEFAULT_COMPANY_ID}" present; ${have.rows[0].n} login(s) on record — seed logins not re-inserted`); return; }
+    // Production never plants a published default: a login with no
+    // <NAME>_PASS gets a random set-up password, printed once in this log.
+    // (With a published default, whoever signs in first — anyone who has read
+    // the source — would choose the account's new password.)
+    const seedPw = {}; const oneTime = [];
+    for (const [uname, u] of Object.entries(USERS)) {
+      if (IS_PROD && isPublishedPassword(u.password)) { seedPw[uname] = crypto.randomBytes(9).toString('base64url'); oneTime.push(uname); }
+      else seedPw[uname] = u.password;
+    }
     for (const [uname, u] of Object.entries(USERS)) {
       const userId = `user-${DEFAULT_COMPANY_ID}-${uname}`;
       await pg.query(`
         INSERT INTO users (id, company_id, username, password, role, truck_id, display_name, active)
         VALUES ($1, $2, $3, $4, $5, $6, $7, true)
         ON CONFLICT (company_id, username) DO NOTHING
-      `, [userId, DEFAULT_COMPANY_ID, uname, hashPassword(u.password), u.role, u.truckId || null, u.displayName || uname]);
+      `, [userId, DEFAULT_COMPANY_ID, uname, hashPassword(seedPw[uname]), u.role, u.truckId || null, u.displayName || uname]);
+    }
+    if (oneTime.length) {
+      console.warn('⚠ First start with no <NAME>_PASS set for: ' + oneTime.join(', ') + '. Each was given a random set-up password, shown ONCE here:');
+      for (const uname of oneTime) console.warn(`    ${uname}: ${seedPw[uname]}`);
+      console.warn('  Sign in with it and choose your own on Change password. These lines are not printed again.');
     }
     console.log(`✓ Seeded default company "${DEFAULT_COMPANY_ID}" + ${Object.keys(USERS).length} legacy users`);
   } catch (e) {
@@ -872,7 +886,19 @@ async function auditDefaultPasswords() {
       const r = await pg.query('SELECT username, password FROM users WHERE company_id = $1 AND active = true', [DEFAULT_COMPANY_ID]);
       for (const row of r.rows) {
         const candidates = new Set([SEED_DEFAULT_PASSWORDS[row.username], 'vbt2025!'].filter(Boolean));
-        for (const c of candidates) if (verifyPassword(c, row.password).ok) { accountsOnDefaultPassword.add(row.username); break; }
+        if (![...candidates].some(c => verifyPassword(c, row.password).ok)) continue;
+        // The owner's remote fix: with <NAME>_PASS set in the service
+        // variables to a private value, a login still on a published default
+        // is moved to it at boot and its sessions end. Nothing else is ever
+        // changed from the environment — a password someone chose stays.
+        const envPw = String(process.env[row.username.toUpperCase() + '_PASS'] || '');
+        if (envPw.length >= PASSWORD_MIN && !isPublishedPassword(envPw)) {
+          await pg.query('UPDATE users SET password = $1 WHERE company_id = $2 AND username = $3', [hashPassword(envPw), DEFAULT_COMPANY_ID, row.username]);
+          await revokeUserSessions(row.username);
+          console.warn(`[security] "${row.username}" was still on a published default password; it now opens with ${row.username.toUpperCase()}_PASS and its sessions were ended.`);
+          continue;
+        }
+        accountsOnDefaultPassword.add(row.username);
       }
     } else {
       for (const [uname, u] of Object.entries(USERS)) if (isPublishedPassword(u.password) && !(store.fileLogins || {})[uname]?.selfChanged) accountsOnDefaultPassword.add(uname);
@@ -2312,11 +2338,13 @@ function reqAuth(req, res, next) {
   res.redirect('/login');
 }
 function reqMgr(req, res, next)   { const r = req.session?.user?.role; if (r === 'admin' || r === 'manager') return next(); res.status(403).json({ error: 'Office access required' }); }
-// Manager and admin are treated as equivalent permission levels.
+// Admin only. A manager (a dispatcher login, when the office adds one) runs
+// the day — POs, assignment, approval, billing — but does not restore a
+// backup, connect or disconnect QuickBooks, or set the default rates.
 function reqAdmin(req, res, next) {
   const r = req.session?.user?.role;
-  if (r === 'admin' || r === 'manager') return next();
-  res.status(403).json({ error: 'Admin access required' });
+  if (r === 'admin') return next();
+  res.status(403).json({ error: 'Admin access required', adminOnly: true });
 }
 
 // Live database probe with its own short timeout, so /healthz answers in
@@ -3090,6 +3118,8 @@ if (process.env.VBT_TEST_HOOKS === '1' && !IS_PROD) {
   app.get('/api/_test/sync-throw', (req, res) => { throw new Error('test: sync throw'); });
 }
 app.get('/logo.png', (req, res) => res.sendFile(path.join(__dirname, 'public', 'logo.png')));
+// Browsers ask for this on every first visit; without it each page logged a 404.
+app.get('/favicon.ico', (req, res) => res.type('png').sendFile(path.join(__dirname, 'public', 'logo.png')));
 
 // ── PASSWORDS ────────────────────────────────────────────────────────────────
 // scrypt (Node built-in, no dependency). Stored form: scrypt$<salt>$<hash>.

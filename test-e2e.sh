@@ -5,6 +5,9 @@
 # approval, Ready to Bill, and duplicate-billing protection.
 set -u
 export PORT=${PORT:-4600}
+# The yard's UTC offset today (-07:00 in summer, -08:00 in winter): times the
+# office types are yard-local, so a hardcoded offset fails half the year.
+TZOFF=$(TZ=America/Los_Angeles date +%:z)
 B=http://localhost:$PORT
 M=$(mktemp); D=$(mktemp)
 PASS=0; FAIL=0; SKIPPED=0
@@ -988,8 +991,8 @@ chk "11. finish freight below its start is refused" "$(curl -s -b $CD -H "$J" -X
 chk "   Finish freight at 85,808 → closed by the driver, 217 billable miles" "$(curl -s -b $CD -H "$J" -X POST $B/api/freight-segments/$FS/close -d '{"odometer":85808}' | jq "d['segment']['status'], d['segment']['billableMiles'], d['segment']['closedBy'], d['segment']['closeReason'], d['segment']['odEnd'] - d['segment']['odStart']")" "closed 217 cornelio driver 217"
 chk "   closing twice refused"                      "$(curl -s -b $CD -o /dev/null -w '%{http_code}' -H "$J" -X POST $B/api/freight-segments/$FS/close -d '{"odometer":85808}')" "400"
 # The paper's freight window is 6:30 → 3:00. The test ran in seconds, so the office sets the real times with a reason.
-chk "12. office correction without a reason refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"timeStart":"'"$TODAY"'T06:30:00-07:00"}')" "400"
-chk "   office sets 6:30 → 3:00 with a reason: 8.50 billable hours, 217 miles unchanged" "$(curl -s -b $M -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"timeStart":"'"$TODAY"'T06:30:00-07:00","timeEnd":"'"$TODAY"'T15:00:00-07:00","reason":"times from the paper log"}' | jq "d['segment']['billableHours'], d['segment']['billableMinutes'], d['segment']['billableMiles'], len(d['segment']['edits'])")" "8.5 510 217 1"
+chk "12. office correction without a reason refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"timeStart":"'"$TODAY"'T06:30:00'"$TZOFF"'"}')" "400"
+chk "   office sets 6:30 → 3:00 with a reason: 8.50 billable hours, 217 miles unchanged" "$(curl -s -b $M -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"timeStart":"'"$TODAY"'T06:30:00'"$TZOFF"'","timeEnd":"'"$TODAY"'T15:00:00'"$TZOFF"'","reason":"times from the paper log"}' | jq "d['segment']['billableHours'], d['segment']['billableMinutes'], d['segment']['billableMiles'], len(d['segment']['edits'])")" "8.5 510 217 1"
 chk "   an end odometer beyond the day is refused later, at End day it is checked"  "$(curl -s -b $M -H "$J" -X PUT $B/api/freight-segments/$FS -d '{"odEnd":85500,"reason":"typo"}' | jq "d['error']")" "The ending odometer (85,500) cannot be below the starting odometer (85,591)"
 # The ABC load: leave it unstarted for the packet numbers (void it), so the day has exactly one segment.
 curl -s -b $M -X DELETE $B/api/loads/$CA -o /dev/null
@@ -1032,10 +1035,10 @@ run $H1 cemex 41020; run $H2 cemex
 HS=$(curl -s -b $M $B/api/freight-segments | jq "[s['id'] for s in d['segments'] if s['customer']=='Hourly Co'][0]")
 chk "16. two hourly loads share one open segment → not priceable until it is finished" "$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$H1\",\"$H2\"]}" | jq "d['groups'][0]['unconfigured'], 'still open' in d['groups'][0]['unconfiguredReasons'][0]")" "True True"
 curl -s -b $LG -H "$J" -X POST $B/api/freight-segments/$HS/close -d '{"odometer":41080}' -o /dev/null
-chk "   both loads were already approved → the close locks it at once; time edit refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/freight-segments/$HS -d '{"timeStart":"'"$TODAY"'T07:00:00-07:00","timeEnd":"'"$TODAY"'T09:00:00-07:00","reason":"paper log"}')" "403"
+chk "   both loads were already approved → the close locks it at once; time edit refused" "$(curl -s -b $M -o /dev/null -w '%{http_code}' -H "$J" -X PUT $B/api/freight-segments/$HS -d '{"timeStart":"'"$TODAY"'T07:00:00'"$TZOFF"'","timeEnd":"'"$TODAY"'T09:00:00'"$TZOFF"'","reason":"paper log"}')" "403"
 # Correction goes through the existing void path: void one load, fix the window, restore the load.
 curl -s -b $M -H "$J" -X POST $B/api/loads/$H2/void -d '{"reason":"fix freight times"}' -o /dev/null
-chk "   voided → unlocked → office sets 7:00 → 9:00 with a reason" "$(curl -s -b $M -H "$J" -X PUT $B/api/freight-segments/$HS -d '{"timeStart":"'"$TODAY"'T07:00:00-07:00","timeEnd":"'"$TODAY"'T09:00:00-07:00","reason":"paper log"}' | jq "d.get('success'), d['segment']['billableHours'], d['segment']['locked']")" "True 2 False"
+chk "   voided → unlocked → office sets 7:00 → 9:00 with a reason" "$(curl -s -b $M -H "$J" -X PUT $B/api/freight-segments/$HS -d '{"timeStart":"'"$TODAY"'T07:00:00'"$TZOFF"'","timeEnd":"'"$TODAY"'T09:00:00'"$TZOFF"'","reason":"paper log"}' | jq "d.get('success'), d['segment']['billableHours'], d['segment']['locked']")" "True 2 False"
 curl -s -b $M -H "$J" -X POST $B/api/loads/$H2/unvoid -d '{}' -o /dev/null
 chk "   restored → locked again with the corrected window" "$(curl -s -b $M $B/api/freight-segments/$HS | jq "d['segment']['locked'], d['segment']['billableHours']")" "True 2"
 PV=$(curl -s -b $M -H "$J" -X POST $B/api/billing-batches/preview -d "{\"loadIds\":[\"$H1\",\"$H2\"]}")
@@ -2515,7 +2518,7 @@ o2trip $CH $H1 cemex 50020; o2pod $CH $H1; dr $CH $H1 '{"action":"delivered"}' >
 o2trip $CH $H2 cemex; o2pod $CH $H2; dr $CH $H2 '{"action":"delivered"}' >/dev/null
 FS2=$(curl -s -b $M $B/api/freight-segments | jq "[s['id'] for s in d['segments'] if s['customer']=='Hourly Two Co'][0]")
 curl -s -b $CH -H "$J" -X POST $B/api/freight-segments/$FS2/close -d '{"odometer":50080}' -o /dev/null
-mg PUT /api/freight-segments/$FS2 "{\"timeStart\":\"${TODAY}T06:30:00-07:00\",\"timeEnd\":\"${TODAY}T08:30:00-07:00\",\"reason\":\"times from the log\"}" >/dev/null
+mg PUT /api/freight-segments/$FS2 "{\"timeStart\":\"${TODAY}T06:30:00${TZOFF}\",\"timeEnd\":\"${TODAY}T08:30:00${TZOFF}\",\"reason\":\"times from the log\"}" >/dev/null
 mg POST /api/loads/$H1/approve '{}' >/dev/null; mg POST /api/loads/$H2/approve '{}' >/dev/null
 RTB0=$(curl -s -b $M $B/api/ready-to-bill | python3 -c "import json,sys;d=json.load(sys.stdin);print([(i['id']=='$H1', i['amount']) for i in d['items'] if i['id'] in ('$H1','$H2')])")
 mg POST /api/loads/$H1/void '{"reason":"duplicate entry"}' >/dev/null

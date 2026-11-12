@@ -32,6 +32,16 @@ built-in default that is in the source and therefore **public**.
   account are held the same way. The office sees which logins are left (a bar
   in the app, `security.accountsOnDefaultPassword` on `/healthz`), and the boot
   log lists them.
+- **A first production start never plants a published default.** On an empty
+  database, a login with no `<NAME>_PASS` gets a random set-up password that is
+  printed once in the boot log. For a login that is still on a published
+  default, setting `<NAME>_PASS` (8+ characters) in the service variables and
+  redeploying moves it to that value and ends its sessions; a password someone
+  chose is never replaced from the environment.
+- **Admin and manager are different.** Both run the day (POs, assignment,
+  approval, billing). Only an admin restores a backup, connects or disconnects
+  QuickBooks, or sets the default rates. All three seed office logins are
+  admins; `manager` is for a dispatcher login added later.
 - **Anyone can change their own password**: *Change password* beside *Sign out*
   (`/change-password`). The change is in the audit log.
 - **A revoked login stops on its next request**, not when its seven-day cookie
