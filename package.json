@@ -10,7 +10,8 @@
     "test:pg": "bash test-pg-local.sh",
     "test:browser": "node test-browser.js",
     "test:scenario": "bash test-scenario-day.sh",
-    "test:auth": "bash test-auth.sh"
+    "test:auth": "bash test-auth.sh",
+    "test:paperwork": "bash test-paperwork.sh"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.78.0",

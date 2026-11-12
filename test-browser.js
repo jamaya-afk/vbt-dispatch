@@ -355,8 +355,8 @@ async function call(cookie, method, path, body) {
     out.detail = detail.map(b => b.innerText.replace(/\s+/g, ' ')).join(' '); detail.forEach(b => b.remove());
     return out;
   });
-  chk('10. the End of day tile says nothing needs a person yet: 0, with 0 clean · 2 open', rv.tile, '0 END OF DAY 0 clean · 2 open');
-  chk('   …and opens the review: 2 loads, both still open, the day read back in sentences, nothing asked of the office', `${/^End of day · /.test(rv.title)} | ${rv.counts} | ${rv.groups} | ${rv.recon} | ${rv.clean}`, `true | 2 loads 0 clean 2 still open 0 need attention 0 blocked | STILL OPEN · 2 | No deliveries on ${today}. / 2 loads are still open. | Nothing needs you once the open work is done.`);
+  chk('10. the End of day tile: no load needs a person yet (0, with 0 clean · 2 open); the one driver hauling with no day started is counted as paperwork', rv.tile, '0 END OF DAY 0 clean · 2 open · 1 paperwork');
+  chk('   …and opens the review: 2 loads, both still open, the day read back in sentences, no load asked of the office; driver days are their own section, with its one exception', `${/^End of day · /.test(rv.title)} | ${rv.counts} | ${rv.groups} | ${rv.recon} | ${rv.clean}`, `true | 2 loads 0 clean 2 still open 0 need attention 0 blocked | STILL OPEN · 2|DRIVERS' DAYS AND PAPERWORK · 1 · 1 NEED ATTENTION | No deliveries on ${today}. / 2 loads are still open. / 1 driver day: 0 Daily Logs signed, 0 waiting for the driver's signature, 0 still open, 1 hauled with no day started. | No load needs you once the open work is done — 1 paperwork or vehicle item below.`);
   chk('   each row names the load, the driver and the truck, and says why: Beryle under way, Rigo assigned and not started', /ABC Materials · PO 10482 · \S+ · Beryle · Truck #12 still under way — Loaded \/ en route, 0\/3 delivered Details/.test(rv.rows) && /ABC Materials · PO 10483 · \S+ · Rigo · Truck #14 assigned, not started yet Details/.test(rv.rows), true);
   chk('   Details on a row closes the review and opens Load Details for that load', `${rv.after} ${/10482/.test(rv.detail)}`, 'true true true');
 
@@ -876,10 +876,18 @@ async function call(cookie, method, path, body) {
   console.log('── Driver: Start day ──');
   chk('day card offers Start day before anything else', await d.page.evaluate(() => /Your day has not started/.test(document.getElementById('day-card').innerText)), true);
   await d.page.evaluate(() => openStartDay()); await d.page.waitForTimeout(400);
-  let sd = await d.page.evaluate(() => ({ open: document.getElementById('startday-modal').style.display === 'flex', truck: document.getElementById('sd-truck').value, trailer: document.getElementById('sd-trailer').options.length, allok: document.getElementById('sd-allok').checked }));
-  chk("Start day form: today's dispatched truck prefilled (#12 — Beryle's load is on it; his usual #2 is only the fallback, OA7), trailer list, inspection defaults to all satisfactory", `${sd.open} ${sd.truck} ${sd.trailer > 1} ${sd.allok}`, 'true truck-12 true true');
+  let sd = await d.page.evaluate(() => ({ open: document.getElementById('startday-modal').style.display === 'flex', truck: document.getElementById('sd-truck').value, trailer: document.getElementById('sd-trailer').options.length, answered: document.querySelectorAll('.sd-ans[aria-pressed="true"]').length, items: document.querySelectorAll('.sd-item').length }));
+  chk("Start day form: today's dispatched truck prefilled (#12 — Beryle's load is on it; his usual #2 is only the fallback, OA7), trailer list, the 11 inspection items with NO answer pre-selected", `${sd.open} ${sd.truck} ${sd.trailer > 1} ${sd.items} ${sd.answered}`, 'true truck-12 true 11 0');
   chk("   the truck option says why it was chosen", await d.page.evaluate(() => document.querySelector('#sd-truck option[value="truck-12"]').textContent), "Truck #12 · today's load");
   await d.page.fill('#sd-odo', '41000');
+  await d.page.evaluate(() => { const c = document.getElementById('sd-sig'); const ctx = c.getContext('2d'); ctx.beginPath(); ctx.moveTo(20, 80); ctx.lineTo(200, 90); ctx.stroke(); sdSig.markInk(); });
+  await d.page.evaluate(() => submitStartDay()); await d.page.waitForTimeout(400);
+  chk('   signed but with no item answered: refused — the app never answers the inspection (no day created)', (await call(mgr, 'GET', '/api/today')).data.shifts.length, 0);
+  await d.page.evaluate(() => sdAnswer(0, 'ok')); await d.page.evaluate(() => submitStartDay()); await d.page.waitForTimeout(400);
+  chk('   one item answered of eleven: still refused', `${(await call(mgr, 'GET', '/api/today')).data.shifts.length} ${await d.page.evaluate(() => document.getElementById('sd-progress').textContent)}`, '0 1 of 11 answered');
+  await d.page.evaluate(() => sdAllOk());
+  chk("   the driver's one tap marks the unanswered items OK — his statement, made by him", await d.page.evaluate(() => `${document.querySelectorAll('.sd-ans[data-a="ok"][aria-pressed="true"]').length} ${document.getElementById('sd-safe').style.display}`), '11 none');
+  await d.page.evaluate(() => sdSig.clear());
   await d.page.evaluate(() => submitStartDay()); await d.page.waitForTimeout(400);
   chk('   refused without a signature (no day created)', (await call(mgr, 'GET', '/api/today')).data.shifts.length, 0);
   await d.page.evaluate(() => { const c = document.getElementById('sd-sig'); const ctx = c.getContext('2d'); ctx.beginPath(); ctx.moveTo(20, 80); ctx.lineTo(200, 90); ctx.stroke(); sdSig.markInk(); });
@@ -993,7 +1001,7 @@ async function call(cookie, method, path, body) {
   };
   // Day open again (Beryle ended the first one), so an odometer prompt WOULD
   // appear if VBT were treated as a freight start. It must not.
-  await call(drv, 'POST', '/api/shifts/start', { truckId: 'truck-2', odometer: 41080, inspection: { satisfactory: true }, signature: PNG });
+  await call(drv, 'POST', '/api/shifts/start', { truckId: 'truck-2', odometer: 41080, inspection: { answers: Object.fromEntries(['Brakes', 'Tires and wheels', 'Lights and reflectors', 'Steering', 'Horn', 'Mirrors', 'Windshield and wipers', 'Coupling / fifth wheel', 'Trailer and tarp', 'Fluid leaks', 'Emergency equipment'].map(i => [i, 'ok'])) }, signature: PNG });
   await d.page.evaluate(() => renderDriver()); await d.page.waitForTimeout(1200);
   chk('1. before anything: Start Load 1 of 3, indicator 1 of 3, 0 delivered', await cardState(), 'Start Load 1 of 3 | 1/3/0');
   console.log('── Driver: VBT pickup — one tap, no yard picker, no odometer, no freight ──');

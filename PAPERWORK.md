@@ -182,3 +182,101 @@ do not move: the internal ticket's price and amount come from the same engine
 as the invoice, the Freight Bill's tons are the tickets', the Daily Log's
 miles are the odometers', and every "could not be calculated" stays blank and
 flagged rather than guessed.
+
+
+---
+
+## 8. OA8 — lifecycle audit and what was built (November 2026)
+
+Hierarchy audited: **Shift → Freight Segment → Load → Trip**, against the code,
+not against this document. A freight segment is still closed only by the
+driver's Finish freight (or the office, with a reason) — never because its last
+known load was delivered.
+
+### 8.1 Status of each document
+
+| Document | Status | Where |
+|---|---|---|
+| Daily Log Book | **Done (P1)**, now with the driver's item-by-item inspection answers and the office's defect follow-up printed beside it | `/api/daily-log/print` |
+| Freight Bill / Log | **Done**: FB-`<segment id>`, trips with tickets and tons, odometers, hours, **lunch, fuel, the driver's Daily Log signature, a load-by-load quantity table and printed exceptions**; FINAL only when the freight is locked | `/api/freight-segments/:id/freight-bill` |
+| Delivery ticket + POD | **New**: DT-`<load id>`, one per load, trips with scale tickets, the customer's signature image, every ticket photo; no prices; FINAL once approved | `/api/loads/:id/delivery-ticket` |
+| Document packet | **New**: Freight Bill + every load's delivery ticket (per freight); the frozen invoice lines + every load's delivery ticket (per billing batch) | `/api/freight-segments/:id/packet`, `/api/billing-batches/:id/packet` |
+| Supplier scale ticket | Captured (number, net tons, photo), never recreated — unchanged | the Loaded step |
+| DVIR | **Reworked** (see 8.3) | Start day, Vehicle Defects |
+| Fuel | Done in P1 (driver entry, office add/remove with a reason); now also on the Freight Bill | day card |
+| End-of-day reconciliation | **Extended** to the drivers' days and paperwork, with acknowledgment (see 8.4) | End of day tile, `/api/day-review` |
+
+### 8.2 Entered once, carried forward — and where it still is not
+
+Carried, never retyped: customer, PO, job, jobsite (PO) → load → trip → Daily
+Log, Freight Bill, delivery ticket, invoice; driver/truck/trailer (dispatch →
+Start day default → shift → segment → trip stamp → every document); ticket
+number, tons and photo (Loaded step → Freight Bill, delivery ticket, invoice
+attachment); customer signature (delivery → delivery ticket, invoice
+attachment); inspection answers (Start day → Daily Log checklist, defect
+report); fuel (day card → Daily Log, Freight Bill); the driver's end-of-day
+signature (Daily Log → Freight Bill).
+
+Still entered more than once (each is a decision for the owner, not a bug):
+
+1. **Odometer** — Start day, each freight start, Finish freight, a truck
+   change, End day: four or more readings on an outside-yard day. The last
+   Finish freight and End day readings are often the same number typed twice.
+2. **Truck and trailer** — chosen at dispatch and confirmed at Start day (the
+   dispatched truck is the default, so it is one tap, but it is asked).
+3. **Ticket photo** — per trip at Loaded; the older load-level photo step is
+   still accepted and is filled from the trip's photo when it is empty.
+
+Fields the paper has and VBT does not record (printed as blank or absent,
+never invented): the DOT ~60-item inspection list and a separate trailer
+section (VBT asks 11 items); a post-trip inspection; the mechanic's own
+signature image (VBT records the name, the repair and who cleared it); gross
+and tare weights; customer payment terms and a pickup/delivery flag for the
+pre-printed internal ticket (the delivery ticket above carries no prices).
+
+### 8.3 DVIR rules, as built
+
+- **Nothing is pre-answered.** Every item arrives as OK or Defect from the
+  driver's own tap; an inspection with an unanswered item is refused. One tap
+  ("I inspected every item") marks the *unanswered* items OK — his statement —
+  and never changes an item he marked defective.
+- **Minor vs. out-of-service.** Brakes, Tires and wheels, Steering and
+  Coupling / fifth wheel are **blocking**: the truck is held whatever the
+  driver declares (his declaration is recorded and changes nothing). Any other
+  defect is **minor**: the driver states whether the truck is safe to drive
+  today; "not safe" holds it the same way. A defect needs his description.
+- **A hold stops every path.** No Start day, no truck change, no Quick Assign,
+  no new PO or added load on it (`force` overrides conflicts, never a hold), no
+  trip start on a load already planned on it. The board shows the truck as
+  HELD with the defect, flags loads planned on it, and counts it on the
+  Vehicle Defects tile and the End-of-day review.
+- **Clearance is a recorded act.** An admin records the decision, the person
+  responsible and the repair; a blocking defect is cleared only by a repair.
+  A minor report without a hold may be closed by the office. Nothing clears by
+  itself — not time, not a later clean inspection.
+- **History is kept.** The inspection as the driver made it is stored with the
+  report and never edited. Closing, reopening (with a reason — the hold
+  returns) and closing again are appended; nothing is overwritten.
+- The next driver on a truck with an open minor report is shown it and must
+  acknowledge it before his day starts.
+
+### 8.4 End-of-day review, as built
+
+Beside the loads, one block per driver who worked: Daily Log not signed,
+changed since signed, day never ended, trips run with no day started, no
+inspection, miles not computable, hours over 14 or under half an hour with
+trips, freight left open or closed by the office. Each says why and what to do.
+"No fuel recorded" and "no break recorded" are notes, never counted. An
+exception is resolved at its source or **acknowledged with a note** (who,
+when, why; undoable; audited). An acknowledgment changes no record and belongs
+to the exact wording it was made against, so a changed fact reopens it.
+Blocked loads and vehicle defects cannot be acknowledged away.
+
+### 8.5 Not built
+
+- The pre-printed internal ticket with price and terms (P3) — needs the
+  owner's decisions on a ticket-number series, terms and the pickup/delivery
+  flag. The delivery ticket above covers proof of delivery without money.
+- The DOT item list and a trailer section; a post-trip inspection; an
+  inspection of the second truck after a mid-day truck change.
+- Scale-ticket gross/tare capture and OCR (P5).
